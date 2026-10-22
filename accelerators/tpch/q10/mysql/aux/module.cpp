@@ -8,7 +8,7 @@
 #include <string_view>
 #include <utility>
 
-#include "prims/pg_numeric.hpp"
+#include "backends/mysql/api/mysql_decimal.hpp"
 #include "substrate/aux/core/parallel_slices.hpp"
 #include "substrate/aux/core/partitioned_build.hpp"
 #include "substrate/aux/core/query_module_helpers.hpp"
@@ -20,7 +20,7 @@ namespace accelerator_codegen::aux_state::query {
 namespace {
 
 namespace sql_date = core::sql_date;
-using Int128 = ::accelerator_codegen::pg_numeric::Int128;
+using Int128 = ::accelerator_codegen::mysql_decimal::Int128;
 
 constexpr core::PartitionId kStatePartition =
     core::TpchQ10Layout::kCustomerDimensions;
@@ -731,7 +731,7 @@ void TpchQ10Module::EmitResult(const TpchQ10State &s,
     const auto nation = s.nations.find(s.customer_nation.Get(c.custkey));
     if (nation == s.nations.end())
       continue;
-    namespace pgn = ::accelerator_codegen::pg_numeric;
+    namespace pgn = ::accelerator_codegen::mysql_decimal;
     sink.WriteRow(
         {{core::AuxValue::Of(core::AuxType::Int64, c.custkey),
           core::AuxValue::Of(core::AuxType::String, rec.name),

@@ -8,7 +8,7 @@
 #include <unordered_map>
 #include <vector>
 
-#include "prims/mysql_collation.hpp"
+#include "backends/mysql/api/mysql_collation.hpp"
 #include "prims/sql_like.hpp"
 #include "substrate/aux/core/parallel_slices.hpp"
 

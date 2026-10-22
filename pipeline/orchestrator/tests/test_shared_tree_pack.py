@@ -101,6 +101,33 @@ def test_parse_pack_queries(tmp_path: Path):
     assert qs[1].query == 5 and qs[1].stage == "implementation"
 
 
+def test_pack_expands_queries_by_engine(tmp_path: Path):
+    pack = {
+        "engines": ["duckdb", "postgres"],
+        "queries": [1, {"query": 6, "engines": ["mysql"]}],
+    }
+    runs = [(q.query, q.engine, q.workload) for q in parse_pack_queries(pack)]
+    assert runs == [
+        (1, "duckdb", "tpch_q1_aux"),
+        (1, "postgres", "tpch_q1_aux"),
+        (6, "mysql", "tpch_q6_aux"),
+    ]
+
+
+def test_pack_engine_runs_get_their_own_worker(tmp_path: Path):
+    from accel_pipeline.worker_isolation import worker_id_for_query
+
+    ids = {worker_id_for_query(q.query, q.workload, q.engine) for q in parse_pack_queries(
+        {"engines": ["duckdb", "postgres"], "queries": [1]}
+    )}
+    assert ids == {"tpch_q1_aux_duckdb", "tpch_q1_aux_postgres"}
+
+
+def test_pack_without_engines_defers_to_the_workload():
+    (entry,) = parse_pack_queries({"queries": [{"query": 1, "workload": "sec_edgar_q1_aux"}]})
+    assert entry.engine == ""
+
+
 def test_load_pack_file():
     from accel_pipeline.paths import find_repo_root
 
@@ -327,7 +354,7 @@ def test_repo_context_pack_roundtrip(tmp_path: Path):
     (tmp_path / "accelerators/tpch/q7/duckdb/aux/module.cpp").write_text("x\n", encoding="utf-8")
     out = ensure_repo_context_pack(tmp_path, force=True)
     assert out == pack_path(tmp_path)
-    assert "SharedQueries" in out.read_text(encoding="utf-8")
+    assert "Registration surfaces" in out.read_text(encoding="utf-8")
     ptr = format_seed_pointer(tmp_path)
     assert "repo_context_pack.md" in ptr
 

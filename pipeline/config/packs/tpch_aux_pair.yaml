@@ -6,8 +6,9 @@ display_name: TPC-H aux pair optimization (Q4 + Q7)
 concurrency: 2
 stage: optimization
 resume: true
-models_config: pipeline/config/models.codex.yaml
+models_config: pipeline/config/models.yaml
 
+engines: [postgres]
 workload_template: "tpch_q{q}_aux"
 
 queries:

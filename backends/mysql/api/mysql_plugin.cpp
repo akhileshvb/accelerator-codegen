@@ -309,12 +309,12 @@ char *mysql_accel_reset_observer(UDF_INIT *, UDF_ARGS *, char *result,
 }
 
 __attribute__((visibility("default")))
-bool mysql_accel_set_force_maintenance_action_init(UDF_INIT *initid,
+bool accel_set_force_maintenance_action_init(UDF_INIT *initid,
                                                    UDF_ARGS *args,
                                                    char *message) {
   if (args->arg_count != 1) {
     std::snprintf(message, MYSQL_ERRMSG_SIZE,
-                  "mysql_accel_set_force_maintenance_action takes 1 argument");
+                  "accel_set_force_maintenance_action takes 1 argument");
     return true;
   }
   if (args->arg_type) {
@@ -326,7 +326,7 @@ bool mysql_accel_set_force_maintenance_action_init(UDF_INIT *initid,
 }
 
 __attribute__((visibility("default")))
-char *mysql_accel_set_force_maintenance_action(UDF_INIT *, UDF_ARGS *args,
+char *accel_set_force_maintenance_action(UDF_INIT *, UDF_ARGS *args,
                                                char *result,
                                                unsigned long *length,
                                                unsigned char *,
@@ -338,10 +338,10 @@ char *mysql_accel_set_force_maintenance_action(UDF_INIT *, UDF_ARGS *args,
 }
 
 __attribute__((visibility("default")))
-bool mysql_accel_invalidate_all_init(UDF_INIT *initid, UDF_ARGS *args, char *message) {
+bool accel_invalidate_all_init(UDF_INIT *initid, UDF_ARGS *args, char *message) {
   if (args->arg_count != 0) {
     std::snprintf(message, MYSQL_ERRMSG_SIZE,
-                  "mysql_accel_invalidate_all takes no arguments");
+                  "accel_invalidate_all takes no arguments");
     return true;
   }
   initid->maybe_null = 0;
@@ -353,7 +353,7 @@ bool mysql_accel_invalidate_all_init(UDF_INIT *initid, UDF_ARGS *args, char *mes
 // from the tables (tests; recovery after out-of-band changes such as bulk
 // loads that bypass the capture triggers).
 __attribute__((visibility("default")))
-char *mysql_accel_invalidate_all(UDF_INIT *, UDF_ARGS *, char *result,
+char *accel_invalidate_all(UDF_INIT *, UDF_ARGS *, char *result,
                                  unsigned long *length, unsigned char *,
                                  unsigned char *) {
   mysql_rt::MysqlHost::Get().InvalidateAll();
@@ -379,7 +379,7 @@ bool mysql_accel_set_scan_database_init(UDF_INIT *initid, UDF_ARGS *args, char *
 
 // Selects the database the accelerators' table scans read (default: the
 // server's ACCEL_MYSQL_DB / MYSQL_DATABASE environment). Pair with
-// mysql_accel_invalidate_all() to rebuild from it.
+// accel_invalidate_all() to rebuild from it.
 __attribute__((visibility("default")))
 char *mysql_accel_set_scan_database(UDF_INIT *, UDF_ARGS *args, char *result,
                                     unsigned long *length, unsigned char *,
@@ -416,9 +416,9 @@ char *mysql_accel_set_scan_mode(UDF_INIT *, UDF_ARGS *args, char *result,
 }
 
 __attribute__((visibility("default")))
-bool mysql_accel_get_build_stats_init(UDF_INIT *initid, UDF_ARGS *args, char *message) {
+bool accel_get_build_stats_init(UDF_INIT *initid, UDF_ARGS *args, char *message) {
   if (args->arg_count != 0) {
-    std::snprintf(message, MYSQL_ERRMSG_SIZE, "mysql_accel_get_build_stats takes no arguments");
+    std::snprintf(message, MYSQL_ERRMSG_SIZE, "accel_get_build_stats takes no arguments");
     return true;
   }
   initid->maybe_null = 0;
@@ -430,7 +430,7 @@ bool mysql_accel_get_build_stats_init(UDF_INIT *initid, UDF_ARGS *args, char *me
 // commits applied and their time, commits applied after a build's snapshot
 // (catch-up), and how reads were answered.
 __attribute__((visibility("default")))
-char *mysql_accel_get_build_stats(UDF_INIT *, UDF_ARGS *, char *result,
+char *accel_get_build_stats(UDF_INIT *, UDF_ARGS *, char *result,
                                   unsigned long *length, unsigned char *,
                                   unsigned char *) {
   const auto s = mysql_rt::MysqlHost::Get().TotalStats();
@@ -447,11 +447,11 @@ char *mysql_accel_get_build_stats(UDF_INIT *, UDF_ARGS *, char *result,
 }
 
 __attribute__((visibility("default")))
-bool mysql_accel_get_last_maintenance_decision_init(UDF_INIT *initid, UDF_ARGS *args,
+bool accel_get_last_maintenance_decision_init(UDF_INIT *initid, UDF_ARGS *args,
                                                     char *message) {
   if (args->arg_count != 0) {
     std::snprintf(message, MYSQL_ERRMSG_SIZE,
-                  "mysql_accel_get_last_maintenance_decision takes no arguments");
+                  "accel_get_last_maintenance_decision takes no arguments");
     return true;
   }
   initid->maybe_null = 1;
@@ -462,7 +462,7 @@ bool mysql_accel_get_last_maintenance_decision_init(UDF_INIT *initid, UDF_ARGS *
 // The last maintenance decision ("action=A rows=N partitions=M"), for
 // calibration; NULL if none.
 __attribute__((visibility("default")))
-char *mysql_accel_get_last_maintenance_decision(UDF_INIT *, UDF_ARGS *, char *result,
+char *accel_get_last_maintenance_decision(UDF_INIT *, UDF_ARGS *, char *result,
                                                 unsigned long *length, unsigned char *is_null,
                                                 unsigned char *) {
   const auto text = mysql_rt::MysqlHost::Get().LastMaintenanceDecision();
@@ -478,11 +478,11 @@ char *mysql_accel_get_last_maintenance_decision(UDF_INIT *, UDF_ARGS *, char *re
 }
 
 __attribute__((visibility("default")))
-bool mysql_accel_get_execute_counts_init(UDF_INIT *initid, UDF_ARGS *args,
+bool accel_get_execute_counts_init(UDF_INIT *initid, UDF_ARGS *args,
                                          char *message) {
   if (args->arg_count != 0) {
     std::snprintf(message, MYSQL_ERRMSG_SIZE,
-                  "mysql_accel_get_execute_counts takes no arguments");
+                  "accel_get_execute_counts takes no arguments");
     return true;
   }
   initid->maybe_null = 0;
@@ -492,7 +492,7 @@ bool mysql_accel_get_execute_counts_init(UDF_INIT *initid, UDF_ARGS *args,
 
 // How accelerator queries were answered (hit / rebuilt_on_read / fallback).
 __attribute__((visibility("default")))
-char *mysql_accel_get_execute_counts(UDF_INIT *, UDF_ARGS *, char *result,
+char *accel_get_execute_counts(UDF_INIT *, UDF_ARGS *, char *result,
                                      unsigned long *length, unsigned char *,
                                      unsigned char *) {
   const auto text = accelerator_codegen::aux_state::core::FormatAuxExecuteCounts(
@@ -527,12 +527,12 @@ char *mysql_accel_set_expected_queries(UDF_INIT *, UDF_ARGS *args, char *result,
 }
 
 __attribute__((visibility("default")))
-bool mysql_accel_get_last_maintenance_action_init(UDF_INIT *initid,
+bool accel_get_last_maintenance_action_init(UDF_INIT *initid,
                                                   UDF_ARGS *args,
                                                   char *message) {
   if (args->arg_count != 0) {
     std::snprintf(message, MYSQL_ERRMSG_SIZE,
-                  "mysql_accel_get_last_maintenance_action takes no arguments");
+                  "accel_get_last_maintenance_action takes no arguments");
     return true;
   }
   initid->maybe_null = 0;
@@ -541,7 +541,7 @@ bool mysql_accel_get_last_maintenance_action_init(UDF_INIT *initid,
 }
 
 __attribute__((visibility("default")))
-char *mysql_accel_get_last_maintenance_action(UDF_INIT *, UDF_ARGS *,
+char *accel_get_last_maintenance_action(UDF_INIT *, UDF_ARGS *,
                                               char *result,
                                               unsigned long *length,
                                               unsigned char *,

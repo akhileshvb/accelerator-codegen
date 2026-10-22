@@ -22,9 +22,14 @@ disk.** After the reads below, write the two files (heredoc `cat > …`) and
 - **CMake target:** `{{layer_cmake_target}}`
 - Checklist rules owned here: `{{layer_rules}}`
 
+## Engine profile (this layer's sections)
+
+{{engine_profile}}
+A profile field given as `{na: reason}` declares that mechanic absent on this engine: it is not a requirement here. Do not fail, implement or test it; only make sure nothing depends on it.
+
 ## Read (in order)
 
-1. `pipeline/prompts/engine_backend/layer_contracts.md` — section `{{layer_id}}`
+1. `pipeline/prompts/engine_backend/layer_contracts.md` — section `{{layer_id}}` and the "Requirements every backend meets" that name this layer
 2. `pipeline/prompts/engine_backend/acceptance_checklist.md` — this layer’s rules
 3. `pipeline/prompts/engine_backend/layers.md` — this row only
 4. Backend + harness files for **this layer only** (paths in analysis
@@ -32,6 +37,10 @@ disk.** After the reads below, write the two files (heredoc `cat > …`) and
 5. Substrate headers those files include (`engine_slots.hpp`, `runtime_host.hpp`,
    `accelerator_runtime.hpp`, `columnar_batch.hpp` as relevant)
 6. Gate JSON if present: `{{artifacts_path}}/gates/{{layer_gate}}.json`
+
+The pipeline's own files (`pipeline/**`: gates, prompts, contracts) are fixed for this run and the
+backend cannot change them: judge the backend and its harness under `backends/{{engine_name}}/`, never
+ask for a change to a gate or a contract. A check you think a gate lacks is not a violation.
 
 Prior layers (reuse; do not re-litigate style). If **this** layer cannot meet
 its contract because a prior layer has a real bug or design flaw, **fail** and
@@ -59,6 +68,10 @@ gate passed. Typical holes:
 - Snapshot that blocks writers or whose epoch `b` does not bound its contents
   (scan layer)
 - Server-only symbols in a host shared library (host / runtime)
+- A requirement of `layer_contracts.md` ("Requirements every backend meets") that this
+  layer owns and the harness never exercises (own writes, DDL on a tracked table,
+  abort and closed-connection paths, a bounded wait), or an engine call made under a
+  lock an engine callback can take (`lock_discipline`)
 
 `violations[].rule` must be this layer’s checklist id, or one of
 `contract`, `harness_gap`, `substrate_api`.

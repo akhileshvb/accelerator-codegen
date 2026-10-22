@@ -50,18 +50,15 @@ def build_repo_context_pack_markdown(repo_root: Path) -> str:
         "- **Registration lives in the query's own directory** (registrars); the engine backend",
         "  names no query. Shared files (backend, arg variants, cross-accel helpers, CMake) are",
         "  frozen during optimization. Do not edit them mid-opt.",
-        "- **Cross-query writes are denied.** Read peers with `rip_grep` / `ast_grep` only.",
+        "- **Cross-query writes are denied.** Read peers (search with `rg`) only.",
         "",
         "## Registration surfaces (discover via peer search; do not invent partial wiring)",
         "",
-        "| Surface | Typical path | Failure if missing |",
-        "|---------|--------------|--------------------|",
-        "| Catalog entry | `accelerators/tpch/q{N}/duckdb/aux/register.cpp` (`SharedQueryRegistrar`) | `unsupported shared query` |",
-        "| SharedQueries list | **derived from the registered entries** (nothing to edit) | TF / multi-conn skip |",
-        "| DuckDB TF + binding | same file (`AuxQueryRegistrar`: table function, arg types, `MakeBinding<Scan, Module>`) | `Table Function … does not exist` / `no aux query registered` |",
-        "| Base kernel TF | `accelerators/tpch/q{N}/duckdb/base/single-threaded/register.cpp` (`BaseFunctionSetRegistrar`) | `Table Function … does not exist` |",
-        "| Cross-accel helpers | `eval/tests/test_support/cross_accel_helpers.cpp` | multi-conn / writer SQL fail |",
-        "| Arg variants | `eval/bench/tpch/single-threaded/tpch_arg_variants.cpp` | SampleTpchArgs unsupported |",
+        "| Surface | Where | Failure if missing |",
+        "|---------|-------|--------------------|",
+        "| Registrars and their headers | `backends/<engine>/api/README.md` (`## Contract roles` table) | compile / link errors |",
+        "| The query's registration | `accelerators/<bench>/q{N}/<engine>/register.cpp` (peer queries show the pattern) | `unsupported shared query` / function does not exist |",
+        "| Shared test and bench helpers | `eval/tests/test_support/`, `eval/bench/` (read peers) | multi-conn / writer SQL fail |",
         "",
         "## TPC-H aux module index (read-only references)",
         "",
@@ -70,7 +67,7 @@ def build_repo_context_pack_markdown(repo_root: Path) -> str:
         lines.append("(none found)")
     else:
         for rel in tpch:
-            # accelerators/tpch/q12/duckdb/aux/module.cpp
+            # accelerators/<bench>/q12/<engine>/aux/module.cpp
             parts = Path(rel).parts
             q = next((p for p in parts if p.startswith("q") and p[1:].isdigit()), "?")
             lines.append(f"- `{rel}` ({q})")
@@ -88,8 +85,7 @@ def build_repo_context_pack_markdown(repo_root: Path) -> str:
             "## Search examples",
             "",
             "```",
-            "rip_grep('NationNamePartition', path='accelerators/tpch/q18/duckdb/aux', context=5)",
-            "ast_grep('class $C { $$$ }', path='accelerators/tpch/q14/duckdb/aux', lang='cpp')",
+            "rg -n -C5 <Symbol> accelerators/<bench>/q<N>/<engine>/aux",
             "```",
             "",
         ]

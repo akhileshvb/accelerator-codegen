@@ -80,8 +80,8 @@ def format_host_bootstrap_critique_feedback(
     )
     lines.append("")
     lines.append(
-        "Fix the query host (SQL entrypoints, differential, CMake). Postgres: "
-        "build via Docker (`request_gate` `host_bootstrap`), not host "
+        "Fix the query host (SQL entrypoints, differential, CMake). Build "
+        "through the engine's host.sh (`request_gate` `host_bootstrap`), not host "
         "`cmake --build build-release`. Mid-loop `request_gate` `host_bootstrap` "
         "until green. Do not invent a second adapter tree."
     )

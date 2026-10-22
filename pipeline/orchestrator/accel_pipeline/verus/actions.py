@@ -1137,7 +1137,7 @@ def backend_addition_record(ctx: VerusContext, engine: str, helper: str, reason:
     with file_lock(path.with_suffix(".lock")):
         with path.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps({"ts": time.time(), "benchmark": ctx.benchmark, "query": ctx.query,
-                                 "helper": helper, "reason": reason, "status": "requested"}) + "\n")
+                                 "scope": "backend", "helper": helper, "reason": reason, "status": "requested"}) + "\n")
     return {"ok": True, "logged": str(path),
             "note": f"request logged for the {engine} engine_backend run; backends/{engine}/** is "
                     "not writable from a query run, so do not wait for or rely on the helper here"}

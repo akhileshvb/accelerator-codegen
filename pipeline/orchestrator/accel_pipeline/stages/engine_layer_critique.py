@@ -12,7 +12,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from accel_pipeline.config import ModelConfig, PipelineConfig, load_workload
+from accel_pipeline.config import ModelConfig, PipelineConfig, load_run_workload
 from accel_pipeline.gates import GateFailure
 from accel_pipeline.paths import query_artifacts_dir
 from accel_pipeline.stages.base import run_agent_stage
@@ -24,6 +24,25 @@ def critique_stage_name(layer_id: str) -> str:
 
 def layer_critique_path(art: Path, layer_id: str) -> Path:
     return art / f"layer_critique_{layer_id}.json"
+
+
+def report_problem(path: Path) -> str | None:
+    """Why `path` is not a usable report (missing, or not one JSON object); None when it is."""
+    if not path.is_file():
+        return "missing"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        return f"not valid JSON: {exc}"
+    return None if isinstance(data, dict) else "not a JSON object"
+
+
+def unreadable_artifact_nudge(path: Path, problem: str) -> str:
+    return (
+        f"`{path}` is {problem}. Rewrite it now as exactly one JSON object (status "
+        "pass|fail, required fields) with nothing before or after it, then stop. "
+        "Do not read more sources or edit adapter sources."
+    )
 
 
 def missing_artifact_nudge(path: Path) -> str:
@@ -46,14 +65,19 @@ def run_until_artifact(
     attempts: int = 2,
     dry_run: bool = False,
 ) -> Any:
-    """Run `invoke(extra_user_message)` until `artifact` exists (or attempts exhausted)."""
+    """Run `invoke(extra_user_message)` until `artifact` is one JSON object (or attempts run out)."""
     extra = ""
     result = None
     for attempt in range(1, max(1, attempts) + 1):
         result = invoke(extra)
-        if dry_run or artifact.is_file():
+        problem = None if dry_run else report_problem(artifact)
+        if problem is None:
             return result
-        extra = missing_artifact_nudge(artifact)
+        extra = (
+            missing_artifact_nudge(artifact)
+            if problem == "missing"
+            else unreadable_artifact_nudge(artifact, problem)
+        )
         if attempt >= attempts:
             break
     return result
@@ -79,6 +103,23 @@ def load_layer_critique(art: Path, layer_id: str) -> dict[str, Any]:
         )
     data["status"] = status
     data["layer"] = str(data.get("layer") or layer_id)
+    return _without_pipeline_harness_gaps(data)
+
+
+def _without_pipeline_harness_gaps(data: dict[str, Any]) -> dict[str, Any]:
+    """Drop harness gaps aimed at the pipeline's own files (gates, contracts): the backend agent
+    cannot change them, so they are never backend violations. A critique left with none passes."""
+    kept, dropped = [], []
+    for v in data.get("violations") or []:
+        paths = v.get("paths") or [] if isinstance(v, dict) else []
+        aimed_at_pipeline = isinstance(v, dict) and v.get("rule") == "harness_gap" and any(
+            str(p).startswith("pipeline/") for p in paths
+        )
+        (dropped if aimed_at_pipeline else kept).append(v)
+    if dropped:
+        data["violations"], data["dropped_pipeline_harness_gaps"] = kept, dropped
+        if data["status"] == "fail" and not kept:
+            data["status"] = "pass"
     return data
 
 
@@ -116,8 +157,11 @@ def format_layer_critique_feedback(critique: dict[str, Any], *, round_idx: int) 
     )
     lines.append("")
     lines.append(
-        "Fix this layer (and a prior layer only if a real bug there blocks this "
-        "contract — smallest patch, keep that prior harness green). Add harness "
+        "Fix this layer, including the wiring it needs in files other layers "
+        "own (plugin registration, host.sh, runtime binding); change a prior "
+        "layer's logic only if a real bug there blocks this contract (smallest "
+        "patch, keep that prior harness green). Never stop to ask: nobody "
+        "answers, so make the change. Add harness "
         "asserts for any untested contract path. Mid-loop `request_gate` "
         "`engine_build` then this layer's gate until green. Do not weaken the "
         "harness to greenwash."
@@ -137,7 +181,7 @@ def run_layer_critique_agent(
     round_idx: int,
     extra_context: dict[str, str],
 ) -> Any:
-    workload = load_workload(workload_name, pipeline_config.repo_root)
+    workload = load_run_workload(pipeline_config, workload_name)
     lid = str(layer.get("id") or "")
     engine = str(workload.get("engine_name") or "")
     art = query_artifacts_dir(pipeline_config.repo_root, query, workload=workload)

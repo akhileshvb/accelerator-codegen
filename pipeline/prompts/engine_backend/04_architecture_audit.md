@@ -10,6 +10,13 @@ violate the hard constraints — do not rewrite the backend yourself.
 
 {{engine_host_discovery}}
 
+## Engine profile
+
+Facts and hazards of the engine, to judge whether the backend respects them.
+
+{{engine_profile}}
+A profile field given as `{na: reason}` declares that mechanic absent on this engine: it is not a requirement here. Do not fail, implement or test it; only make sure nothing depends on it.
+
 ## Inputs (read these)
 
 - **Layer spec:** `pipeline/prompts/engine_backend/layers.md`
@@ -20,6 +27,13 @@ violate the hard constraints — do not rewrite the backend yourself.
 - Native scan (scan layer only): `pipeline/prompts/engine_backend/native_scan_contract.md`
 - Slot contracts: `pipeline/prompts/shared/engine_interfaces.md` ("Backend contract")
 - Analysis: `{{artifacts_path}}/backend_analysis.json`
+- Not findings: `host.sh slot` failing closed with "not wired yet" (validation wires it, after this
+  audit); behaviour the frozen substrate or a contract defines as process-wide (the substrate's
+  execute counters, which the introspection hooks of `api_contract.md` §3 report). Judge the backend
+  against the contracts as written, never against a stricter design of your own.
+- Open layer findings: `{{artifacts_path}}/layer_*.open_findings.md` (a layer whose gates passed but whose
+  last critique did not). Each one is a required fix of this audit: resolve it in the backend and its
+  harness, or show in the report why it does not hold.
 - Backend trees:
 {{engine_target_paths}}
 - Layer harnesses under `backends/{{engine_name}}/tests/test_{{engine_name}}_*.cpp`
@@ -29,10 +43,14 @@ violate the hard constraints — do not rewrite the backend yourself.
 Use **only** the fixed `rule` ids from `acceptance_checklist.md` (each is owned
 by a layer). Analysis extras beyond the checklist are **not** fail reasons.
 
-On each violation, set `layer` to the owning layer id (`capture`, `epochs`,
-`scan`, `runtime`, `host`) so implementation retry can re-run from that layer.
+On each violation, set `layer` to the owning layer id (`hostctl`, `capture`, `epochs`,
+`scan`, `runtime`, `host`, `api`) so implementation retry can re-run from that layer.
 Global rules (`slots_only`, `scale_safe`, `query_registries`, `independence`,
 `fail_closed`) name the layer whose files hold the evidence.
+
+The rules include `own_writes`, `commit_time_writes`, `ddl_events`,
+`lock_discipline` and `abort_paths`. Use the engine profile's hazards as where to look
+for evidence; a hazard no rule covers is not a fail reason.
 
 Check especially `slots_only`: grep the backend for commit ordering, gap or
 catch-up handling, build scheduling, version management, reader/build locks,

@@ -144,7 +144,7 @@ int main() {
 			SetupSyntheticFixture(connection);
 			accelerator_codegen::RegisterAcceleratorFunctions(connection);
 			const std::string reference = ReadFile(
-			    "/home/akhilvb/tpch-utils/generated/sf1_instances/seed_1/07.sql");
+			    ACCEL_TPCH_INSTANCES_DIR "/seed_1/07.sql");
 			RequireEqualQ7Results(connection, "synthetic_bidirectional", reference,
 			                      AcceleratorQ7Sql("UNITED KINGDOM", "BRAZIL"));
 		}

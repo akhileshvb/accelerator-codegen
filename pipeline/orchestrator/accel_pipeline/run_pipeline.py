@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import argparse
+import atexit
 import os
 import sys
 from pathlib import Path
 
+from accel_pipeline.workload_facts import workload_facts
 from accel_pipeline.config import apply_workload_overrides, load_model_config, load_pipeline_config, load_workload
+from accel_pipeline.engine_quarantine import apply_foreign_engine_quarantine, restore_quarantine
 from accel_pipeline.env_loader import load_repo_dotenv
 from accel_pipeline.paths import find_repo_root
 from accel_pipeline.prerequisites import ensure_base_accelerator_prerequisite
@@ -92,10 +95,11 @@ def _maybe_process_structural_reanalysis(
     new_count, next_idx = result
     state.structural_reanalysis_count = new_count
     state.stage = STAGES[next_idx]
-    state.save(state_path(pipeline_config.repo_root, query, workload_name))
+    state.save(state_path(pipeline_config.repo_root, query, workload_name, pipeline_config.engine_name))
     log_event(
         pipeline_config.repo_root,
         query,
+        workload,
         "structural_reanalysis_resume",
         rerun_number=new_count,
         resume_stage=STAGES[next_idx],
@@ -155,6 +159,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--query", type=int, required=True)
     parser.add_argument("--workload", type=str, default="tpch_q3")
     parser.add_argument(
+        "--engine",
+        default="",
+        help="Engine to build the accelerator for; required when the "
+        "workload supports more than one. Each query x engine is an independent run.",
+    )
+    parser.add_argument(
         "--stage",
         choices=[
             *STAGES,
@@ -162,11 +172,13 @@ def main(argv: list[str] | None = None) -> int:
             "host_bootstrap",
             "validation",
             "architecture_audit",
+            "impl_hostctl",
             "impl_capture",
             "impl_epochs",
             "impl_scan",
             "impl_runtime",
             "impl_host",
+            "impl_api",
             "all",
         ],
         default="all",
@@ -210,7 +222,7 @@ def main(argv: list[str] | None = None) -> int:
         except ValueError:
             print(f"loaded env file: {dotenv_path}", file=sys.stderr)
     pipeline_config = load_pipeline_config(args.config, repo_root)
-    workload = load_workload(args.workload, primary_root)
+    workload = load_workload(args.workload, primary_root, engine=args.engine)
     pipeline_config = apply_workload_overrides(pipeline_config, workload)
     # Concurrent pack workers: separate build dir + CODEX_HOME (+ optional worktree).
     if os.environ.get("ACCEL_PIPELINE_WORKER_ID") or os.environ.get("ACCEL_PIPELINE_BUILD_DIR"):
@@ -224,8 +236,15 @@ def main(argv: list[str] | None = None) -> int:
         )
         print(f"worker isolation: {isolation_summary(pipeline_config)}", file=sys.stderr)
     repo_root = Path(pipeline_config.repo_root)
+    if pipeline_config.engine_name:
+        # The host-contract environment the gates use, so the agents' own host.sh calls
+        # (forwarded to their tools as ACCEL_*) configure and reach the same build and instance.
+        from accel_pipeline.engine_host import instance_env
+
+        for key, value in instance_env(repo_root, pipeline_config.engine_name, Path(pipeline_config.build_dir)).items():
+            os.environ.setdefault(key, value)
     model_config = load_model_config(args.models_config, repo_root=primary_root)
-    print(f"agent provider: {model_config.provider}", file=sys.stderr)
+    print(f"agent provider: {', '.join(sorted(set(model_config.stage_providers.values())))}", file=sys.stderr)
     query = args.query
     if workload.get("query_number") is not None and int(workload["query_number"]) != query:
         if workload.get("workload_kind") != "engine_backend":
@@ -250,6 +269,18 @@ def main(argv: list[str] | None = None) -> int:
         print("pipeline complete", file=sys.stderr)
         return 0
 
+    facts = workload_facts(repo_root, workload, query)
+    print(
+        f"derived workload facts: {len(facts['output_schema'])} output columns, "
+        f"tables {[t['name'] for t in facts['dependent_tables']]}",
+        file=sys.stderr,
+    )
+
+    # Worker worktrees are private, so the query's other engines can be hidden from the
+    # agent (a shared tree would hide them from the sibling runs too).
+    if repo_root != primary_root and not args.dry_run:
+        atexit.register(restore_quarantine, apply_foreign_engine_quarantine(repo_root, workload))
+
     # Verus mode: same front end, then the Verus pipeline's own stages.  It
     # runs on DuckDB (in-process; no host bootstrap) and skips the C++
     # base-accelerator prerequisite: it must not see C++ accelerators.
@@ -273,9 +304,18 @@ def main(argv: list[str] | None = None) -> int:
         print(f"stage {args.stage!r} belongs to --mode verus", file=sys.stderr)
         return 2
 
-    # One-shot query-host bootstrap (non-duckdb) before per-query stages.
+    # One-shot query-host bootstrap (engines without a query-scoped harness) before per-query stages.
     if args.stage in {"all", "host_bootstrap"}:
+        from accel_pipeline.backend_requests import reopen_engine_backend
         from accel_pipeline.host_bootstrap import ensure_host_bootstrap_for_workload
+
+        if pipeline_config.engine_name and repo_root == primary_root:
+            # Backend defects earlier query runs recorded go back to the engine's backend run first
+            # (a pack does this before its workers).
+            reopen_engine_backend(
+                pipeline_config, model_config, pipeline_config.engine_name,
+                model_overrides=model_overrides, dry_run=args.dry_run,
+            )
 
         hb = ensure_host_bootstrap_for_workload(
             pipeline_config,
@@ -291,7 +331,7 @@ def main(argv: list[str] | None = None) -> int:
             print("pipeline complete", file=sys.stderr)
             return 0
 
-    state = load_or_create(repo_root, query, args.workload, resume=args.resume)
+    state = load_or_create(repo_root, query, args.workload, pipeline_config.engine_name, resume=args.resume)
 
     if workload.get("workload_kind") == "aux_state":
         ensure_base_accelerator_prerequisite(
@@ -317,7 +357,7 @@ def main(argv: list[str] | None = None) -> int:
             resume=args.resume,
         )
         state.stage = args.stage
-        state.save(state_path(repo_root, query, args.workload))
+        state.save(state_path(repo_root, query, args.workload, pipeline_config.engine_name))
         print("pipeline complete", file=sys.stderr)
         return 0
 
@@ -329,7 +369,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"=== stage: {stage} ===", file=sys.stderr)
         if not args.dry_run:
             state.stage = stage
-            state.save(state_path(repo_root, query, args.workload))
+            state.save(state_path(repo_root, query, args.workload, pipeline_config.engine_name))
         _run_stage(stage, pipeline_config, model_config, args.workload, query, model_overrides, args.dry_run, skip_gates=args.skip_gates, resume=args.resume)
 
         if stage == "implementation":
@@ -371,13 +411,13 @@ def main(argv: list[str] | None = None) -> int:
     if args.dry_run:
         # Dry-run must not poison --resume (e.g. leave stage=audit with no sources).
         state.stage = initial_stage
-        state.save(state_path(repo_root, query, args.workload))
+        state.save(state_path(repo_root, query, args.workload, pipeline_config.engine_name))
         print("pipeline dry-run complete (state unchanged)", file=sys.stderr)
         return 0
 
     state.stage = STAGES[-1]
-    state.save(state_path(repo_root, query, args.workload))
-    log_pipeline_summary(repo_root, query)
+    state.save(state_path(repo_root, query, args.workload, pipeline_config.engine_name))
+    log_pipeline_summary(repo_root, query, workload)
     print("pipeline complete", file=sys.stderr)
     return 0
 

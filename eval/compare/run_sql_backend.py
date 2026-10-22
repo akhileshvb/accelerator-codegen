@@ -343,7 +343,7 @@ def restart_shared_worker(a):
         return
     db = Db(a, accel=True)
     try:
-        db.execute("SELECT accel_postgres_stop_shard_workers()")
+        db.execute("SELECT accel_stop_shard_workers()")
         for _ in range(100):  # wait until they have exited (they restart on demand)
             db.execute("SELECT count(*) FROM pg_stat_activity WHERE backend_type = 'accel shard worker' AND datname = current_database()")
             if db.cur.fetchone()[0] == 0:
@@ -359,7 +359,7 @@ def shared_stats(a, db):
     if a.backend != "postgres":
         return None
     try:
-        rows, _ = db.query("SELECT accel_postgres_shard_stats()")
+        rows, _ = db.query("SELECT accel_shard_stats()")
         return {k: int(v) for k, v in re.findall(r"(\w+)=(\d+)", str(rows[0][0]))}
     except Exception:  # noqa: BLE001
         return None

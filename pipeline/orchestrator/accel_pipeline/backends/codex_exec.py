@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import sys
 import shlex
 import shutil
 import subprocess
@@ -17,9 +18,30 @@ from accel_pipeline.backends.base import StageRunRequest, StageRunResult
 from accel_pipeline.config import ModelConfig, PipelineConfig
 
 
+def _forwarded_to_mcp(key: str) -> bool:
+    """Engine, verus and mode settings reach the MCP server; the pipeline's own ACCEL_PIPELINE_* are set explicitly."""
+    return key == "ACCEL_PIPELINE_MODE" or (key.startswith("ACCEL_") and not key.startswith("ACCEL_PIPELINE_"))
+
+
 def sidecar_env_line(key: str, value: Any) -> str:
     """KEY=value line safe to `source` from bash (spaces, colons, etc.)."""
     return f"{key}={shlex.quote(str(value))}"
+
+
+_CODEX_DIR = Path(__file__).resolve().parents[3] / "codex"
+
+
+def ensure_codex_config(path: Path) -> Path:
+    """Materialize a missing CODEX_HOME config from the committed template (atomically: homes are shared)."""
+    if path.is_file():
+        return path
+    launcher = _CODEX_DIR / "run_mcp_server.sh"
+    text = (_CODEX_DIR / "config.template.toml").read_text(encoding="utf-8")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+    tmp.write_text(text.replace("{{mcp_launcher}}", str(launcher)), encoding="utf-8")
+    os.replace(tmp, path)
+    return path
 
 
 class CodexExecBackend:
@@ -56,22 +78,15 @@ class CodexExecBackend:
         )
 
     def _config_path(self) -> Path:
-        # Prefer per-worker CODEX_HOME when pack isolation is active.
-        worker_home = getattr(self._pipeline_config, "codex_home", None)
-        env_home = os.environ.get("ACCEL_PIPELINE_CODEX_HOME")
-        if worker_home:
-            path = Path(worker_home) / "config.toml"
-            if path.is_file():
-                return path
-        if env_home:
-            path = Path(env_home) / "config.toml"
-            if path.is_file():
-                return path
-        raw = getattr(self._model_config, "codex_config_path", "pipeline/.codex/config.toml")
-        path = Path(raw)
-        if not path.is_absolute():
-            path = self._pipeline_config.repo_root / path
-        return path
+        """The CODEX_HOME config: per-worker home, else ACCEL_PIPELINE_CODEX_HOME, else the configured path."""
+        home = self._pipeline_config.codex_home or os.environ.get("ACCEL_PIPELINE_CODEX_HOME")
+        if home:
+            path = Path(home) / "config.toml"
+        else:
+            path = Path(self._model_config.codex_config_path)
+            if not path.is_absolute():
+                path = self._pipeline_config.repo_root / path
+        return ensure_codex_config(path)
 
     def _write_mcp_env_sidecar(self, codex_home: Path) -> Path:
         """Write ACCEL_* for the MCP launcher — Codex often sanitizes child env."""
@@ -79,6 +94,7 @@ class CodexExecBackend:
             sidecar_env_line("ACCEL_PIPELINE_QUERY", self._query),
             sidecar_env_line("ACCEL_PIPELINE_STAGE", self._stage),
             sidecar_env_line("ACCEL_PIPELINE_WORKLOAD", self._workload_name),
+            sidecar_env_line("ACCEL_PIPELINE_ENGINE", self._pipeline_config.engine_name),
             sidecar_env_line("ACCEL_PIPELINE_OPT_ITER", self._optimization_iter),
             sidecar_env_line("ACCEL_PIPELINE_REPO_ROOT", self._pipeline_config.repo_root),
             sidecar_env_line(
@@ -86,6 +102,8 @@ class CodexExecBackend:
                 getattr(self._pipeline_config, "worker_id", "") or self._query,
             ),
             sidecar_env_line("ACCEL_PIPELINE_BUILD_DIR", self._pipeline_config.build_dir),
+            # The MCP server runs on the orchestrator's own interpreter (its venv).
+            sidecar_env_line("ACCEL_PIPELINE_PYTHON", sys.executable),
         ]
         if self._art_dir is not None:
             lines.append(sidecar_env_line("ACCEL_PIPELINE_ART_DIR", self._art_dir))
@@ -97,19 +115,11 @@ class CodexExecBackend:
             "ACCEL_PIPELINE_PRIMARY_REPO",
             "ACCEL_PIPELINE_PACK_QUERIES",
             "ACCEL_PIPELINE_ISOLATION_MODE",
-            "ACCEL_DUCKDB_ROOT",
-            "PG_CONFIG",
-            "ACCEL_PG_CONFIG",
-            "ACCEL_PG_BINDIR",
-            "ACCEL_PG_ROOT",
-            "ACCEL_PG_INCLUDEDIR_SERVER",
-            "ACCEL_PG_LIBDIR",
-            "ACCEL_PG_DISCOVERY",
         ):
             if os.environ.get(key):
                 lines.append(sidecar_env_line(key, os.environ[key]))
         for key, value in os.environ.items():
-            if key.startswith("ACCEL_VERUS_") or key == "ACCEL_PIPELINE_MODE":
+            if _forwarded_to_mcp(key):
                 lines.append(sidecar_env_line(key, value))
         path = codex_home / "accel_pipeline_mcp.env"
         # atomically: parallel pipelines share this CODEX_HOME, and a reader must never
@@ -154,6 +164,7 @@ class CodexExecBackend:
         env["ACCEL_PIPELINE_QUERY"] = str(self._query)
         env["ACCEL_PIPELINE_STAGE"] = self._stage
         env["ACCEL_PIPELINE_WORKLOAD"] = self._workload_name
+        env["ACCEL_PIPELINE_ENGINE"] = self._pipeline_config.engine_name
         env["ACCEL_PIPELINE_OPT_ITER"] = str(self._optimization_iter)
         env["ACCEL_PIPELINE_REPO_ROOT"] = str(self._pipeline_config.repo_root)
         env["ACCEL_PIPELINE_BUILD_DIR"] = str(self._pipeline_config.build_dir)
@@ -168,18 +179,13 @@ class CodexExecBackend:
             env["ACCEL_PIPELINE_ISOLATION_MODE"] = os.environ["ACCEL_PIPELINE_ISOLATION_MODE"]
         if os.environ.get("ACCEL_PIPELINE_PACK_QUERIES"):
             env["ACCEL_PIPELINE_PACK_QUERIES"] = os.environ["ACCEL_PIPELINE_PACK_QUERIES"]
-        if os.environ.get("ACCEL_DUCKDB_ROOT"):
-            env["ACCEL_DUCKDB_ROOT"] = os.environ["ACCEL_DUCKDB_ROOT"]
         if self._art_dir is not None:
             env["ACCEL_PIPELINE_ART_DIR"] = str(self._art_dir)
 
-        # Codex loads model_providers from $CODEX_HOME/config.toml (user-level).
-        # Project .codex/ configs ignore model_providers, so point CODEX_HOME at
-        # the directory that contains our openrouter provider definition.
-        if config_path.is_file():
-            codex_home = config_path.parent
-            env["CODEX_HOME"] = str(codex_home)
-            self._write_mcp_env_sidecar(codex_home)
+        # Codex loads model_providers from $CODEX_HOME/config.toml (user-level), not from project configs.
+        codex_home = config_path.parent
+        env["CODEX_HOME"] = str(codex_home)
+        self._write_mcp_env_sidecar(codex_home)
 
         # task_dir: where the task file goes when codex runs in a sandbox that
         # does not share the host's /tmp.
@@ -196,9 +202,11 @@ class CodexExecBackend:
                 f'ACCEL_PIPELINE_QUERY="{self._query}"',
                 f'ACCEL_PIPELINE_STAGE="{self._stage}"',
                 f'ACCEL_PIPELINE_WORKLOAD="{self._workload_name}"',
+                f'ACCEL_PIPELINE_ENGINE="{self._pipeline_config.engine_name}"',
                 f'ACCEL_PIPELINE_OPT_ITER="{self._optimization_iter}"',
                 f'ACCEL_PIPELINE_REPO_ROOT="{self._pipeline_config.repo_root}"',
                 f'ACCEL_PIPELINE_BUILD_DIR="{self._pipeline_config.build_dir}"',
+                f'ACCEL_PIPELINE_PYTHON="{sys.executable}"',
                 f'ACCEL_PIPELINE_WORKER_ID="{getattr(self._pipeline_config, "worker_id", "") or self._query}"',
             ]
             if self._art_dir is not None:
@@ -215,22 +223,8 @@ class CodexExecBackend:
                 mcp_env_parts.append(
                     f'ACCEL_PIPELINE_PACK_QUERIES="{os.environ["ACCEL_PIPELINE_PACK_QUERIES"]}"'
                 )
-            if os.environ.get("ACCEL_DUCKDB_ROOT"):
-                mcp_env_parts.append(
-                    f'ACCEL_DUCKDB_ROOT="{os.environ["ACCEL_DUCKDB_ROOT"]}"'
-                )
-            for key in (
-                "PG_CONFIG",
-                "ACCEL_PG_CONFIG",
-                "ACCEL_PG_BINDIR",
-                "ACCEL_PG_ROOT",
-                "ACCEL_PG_INCLUDEDIR_SERVER",
-                "ACCEL_PG_LIBDIR",
-            ):
-                if os.environ.get(key):
-                    mcp_env_parts.append(f'{key}="{os.environ[key]}"')
             for key, value in os.environ.items():
-                if key.startswith("ACCEL_VERUS_") or key == "ACCEL_PIPELINE_MODE":
+                if _forwarded_to_mcp(key):
                     mcp_env_parts.append(f'{key}="{value}"')
             mcp_env_toml = "{" + ", ".join(mcp_env_parts) + "}"
             # resume_session_id: continue that codex session (its context kept)

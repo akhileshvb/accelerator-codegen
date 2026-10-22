@@ -47,7 +47,7 @@ function(accel_add_aux_state_query)
         message(FATAL_ERROR "accel_add_aux_state_query requires LIBRARY_TARGET")
     endif()
     if(NOT AUX_BENCHMARK)
-        set(AUX_BENCHMARK "tpch")
+        message(FATAL_ERROR "accel_add_aux_state_query requires BENCHMARK")
     endif()
 
     accel_aux_state_library_sources(_aux_sources "${AUX_BENCHMARK}" ${AUX_QUERY_NUM})
@@ -61,173 +61,24 @@ function(accel_add_aux_state_query)
     target_sources(${AUX_LIBRARY_TARGET} PRIVATE ${_aux_sources})
 endfunction()
 
-function(accel_add_aux_cost_model_calibrator)
-    set(oneValueArgs BENCHMARK QUERY_NUM)
-    cmake_parse_arguments(CAL "" "${oneValueArgs}" "" ${ARGN})
-
-    if(NOT CAL_QUERY_NUM)
-        message(FATAL_ERROR "accel_add_aux_cost_model_calibrator requires QUERY_NUM")
-    endif()
-    if(NOT CAL_BENCHMARK)
-        set(CAL_BENCHMARK "tpch")
-    endif()
-
-    accel_aux_benchmark_slug("${CAL_BENCHMARK}" _bench_slug)
-    set(_wrapper "accelerators/${_bench_slug}/q${CAL_QUERY_NUM}/bench/calibrate_q${CAL_QUERY_NUM}_aux_cost_model.cpp")
-    if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${_wrapper}")
-        return()
-    endif()
-
-    set(_target "calibrate_${_bench_slug}_q${CAL_QUERY_NUM}_aux_cost_model")
-    if(TARGET ${_target})
-        return()
-    endif()
-
-    add_executable(${_target}
-        ${_wrapper}
-        eval/bench/tpch/single-threaded/calibrate_aux_cost_model_common.cpp
-        eval/tests/test_support/cross_accel_helpers.cpp
-        eval/tests/test_support/multi_connection_stress.cpp
-    )
-    target_link_libraries(${_target}
-        PRIVATE
-            accelerator_codegen
-            duckdb_sibling
-    )
-    target_include_directories(${_target}
-        PRIVATE
-            ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/accelerators
-            ${CMAKE_CURRENT_SOURCE_DIR}
-    )
-endfunction()
-
-function(accel_add_tpch_aux_pipeline_targets QUERY_NUM)
-    set(_q "${QUERY_NUM}")
-    set(_bench_src_per_query "accelerators/tpch/q${_q}/bench/benchmark_q${_q}_aux.cpp")
-    set(_bench_src_sweep "eval/bench/tpch/single-threaded/benchmark_tpch_aux_sweep.cpp")
-    set(_cal_src "accelerators/tpch/q${_q}/bench/calibrate_q${_q}_aux_cost_model.cpp")
-
-    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${_bench_src_per_query}")
-        set(_bench_tgt "benchmark_tpch_q${_q}_aux")
-        if(NOT TARGET ${_bench_tgt})
-            set(_bench_sources "${_bench_src_per_query}")
-            set(_baseline_cache "eval/bench/tpch/single-threaded/aux_benchmark_baseline_cache.cpp")
-            set(_sweep_session "eval/bench/tpch/single-threaded/aux_benchmark_sweep_session.cpp")
-            set(_arg_variants "eval/bench/tpch/single-threaded/tpch_arg_variants.cpp")
-            if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${_baseline_cache}")
-                list(APPEND _bench_sources "${_baseline_cache}")
-            endif()
-            if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${_sweep_session}")
-                list(APPEND _bench_sources "${_sweep_session}")
-            endif()
-            if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${_arg_variants}")
-                list(APPEND _bench_sources "${_arg_variants}")
-            endif()
-            add_executable(${_bench_tgt} ${_bench_sources})
-            target_link_libraries(${_bench_tgt}
-                PRIVATE
-                    accelerator_codegen
-                    duckdb_sibling
-            )
-            target_include_directories(${_bench_tgt}
-                PRIVATE
-                    ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/accelerators
-                    ${CMAKE_CURRENT_SOURCE_DIR}
-            )
-        endif()
-    elseif(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${_bench_src_sweep}")
-        set(_bench_tgt "benchmark_tpch_q${_q}_aux")
-        if(NOT TARGET ${_bench_tgt})
-            set(_sweep_session "eval/bench/tpch/single-threaded/aux_benchmark_sweep_session.cpp")
-            set(_arg_variants "eval/bench/tpch/single-threaded/tpch_arg_variants.cpp")
-            set(_bench_sources "${_bench_src_sweep}")
-            if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${_sweep_session}")
-                list(APPEND _bench_sources "${_sweep_session}")
-            endif()
-            if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${_arg_variants}")
-                list(APPEND _bench_sources "${_arg_variants}")
-            endif()
-            add_executable(${_bench_tgt} ${_bench_sources})
-            target_compile_definitions(${_bench_tgt}
-                PRIVATE
-                    ACCEL_AUX_BENCH_QUERY_NUM=${_q}
-            )
-            target_link_libraries(${_bench_tgt}
-                PRIVATE
-                    accelerator_codegen
-                    duckdb_sibling
-            )
-            target_include_directories(${_bench_tgt}
-                PRIVATE
-                    ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/accelerators
-                    ${CMAKE_CURRENT_SOURCE_DIR}
-            )
-        endif()
-    endif()
-
-    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${_cal_src}")
-        accel_add_aux_cost_model_calibrator(QUERY_NUM ${_q})
-    endif()
-endfunction()
-
-function(accel_register_tpch_aux_finalize_queries LIBRARY_TARGET TEST_ROOT)
-    if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/backends/duckdb/engine/duckdb_scan_adapter.cpp")
-        return()
-    endif()
+# Adds the aux state of every accelerators/<bench>/q<N>/<engine>/aux/finalize.cpp
+# of the selected engine to LIBRARY_TARGET; a new query needs no CMake edit.
+function(accel_register_aux_state_queries LIBRARY_TARGET)
     accel_codegen_engine_name(_engine)
     if(_engine STREQUAL "")
         return()
     endif()
-    file(GLOB _tpch_aux_finalize CONFIGURE_DEPENDS
-        "${CMAKE_CURRENT_SOURCE_DIR}/accelerators/tpch/q*/${_engine}/aux/finalize.cpp")
-    foreach(_finalize IN LISTS _tpch_aux_finalize)
-        if(_finalize MATCHES "/tpch/q([0-9]+)/[^/]+/aux/finalize\\.cpp$")
-            set(_q "${CMAKE_MATCH_1}")
+    file(GLOB _finalizers CONFIGURE_DEPENDS
+        "${CMAKE_CURRENT_SOURCE_DIR}/accelerators/*/q*/${_engine}/aux/finalize.cpp")
+    foreach(_finalize IN LISTS _finalizers)
+        if(_finalize MATCHES "/accelerators/([^/]+)/q([0-9]+)/[^/]+/aux/finalize\\.cpp$")
             accel_add_aux_state_query(
-                QUERY_NUM ${_q}
+                BENCHMARK ${CMAKE_MATCH_1}
+                QUERY_NUM ${CMAKE_MATCH_2}
                 LIBRARY_TARGET ${LIBRARY_TARGET}
-                TEST_ROOT ${TEST_ROOT}
+                TEST_ROOT ${CMAKE_CURRENT_SOURCE_DIR}
             )
         endif()
-    endforeach()
-endfunction()
-
-function(accel_register_tpch_aux_pipeline_targets)
-    if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/backends/duckdb/engine/duckdb_scan_adapter.cpp")
-        return()
-    endif()
-    file(GLOB _tpch_aux_modules CONFIGURE_DEPENDS
-        "${CMAKE_CURRENT_SOURCE_DIR}/accelerators/tpch/q*/duckdb/aux/finalize.cpp")
-    foreach(_finalize IN LISTS _tpch_aux_modules)
-        if(_finalize MATCHES "/tpch/q([0-9]+)/duckdb/aux/finalize\\.cpp$")
-            accel_add_tpch_aux_pipeline_targets("${CMAKE_MATCH_1}")
-        endif()
-    endforeach()
-endfunction()
-
-# The module unit test of every TPC-H query with a DuckDB aux module: one
-# shared source (eval/tests/test_tpch_module.cpp) built per query as
-# test_tpch_q<N>_aux, run on the small test database (fixture tpch_test_db).
-function(accel_register_tpch_aux_ctests)
-    file(GLOB _tpch_aux_modules CONFIGURE_DEPENDS
-        "${CMAKE_CURRENT_SOURCE_DIR}/accelerators/tpch/q*/duckdb/aux/register.cpp")
-    foreach(_register IN LISTS _tpch_aux_modules)
-        if(NOT _register MATCHES "/tpch/q([0-9]+)/duckdb/aux/register\\.cpp$")
-            continue()
-        endif()
-        set(_q "${CMAKE_MATCH_1}")
-        set(_test_tgt "test_tpch_q${_q}_aux")
-        add_executable(${_test_tgt}
-            eval/tests/test_tpch_module.cpp
-            eval/bench/tpch/single-threaded/tpch_arg_variants.cpp)
-        target_compile_definitions(${_test_tgt} PRIVATE ACCEL_TPCH_QUERY=${_q})
-        target_link_libraries(${_test_tgt} PRIVATE accelerator_codegen duckdb_sibling)
-        target_include_directories(${_test_tgt}
-            PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/accelerators)
-        add_test(NAME tpch_q${_q}_aux_smoke_test
-                 COMMAND ${_test_tgt} "${ACCEL_TPCH_TEST_DB_PATH}")
-        set_tests_properties(tpch_q${_q}_aux_smoke_test PROPERTIES
-            FIXTURES_REQUIRED tpch_test_db TIMEOUT 300)
     endforeach()
 endfunction()
 
@@ -244,7 +95,7 @@ function(accel_add_aux_state_ctests)
         endif()
     endif()
     if(NOT AUX_BENCHMARK)
-        set(AUX_BENCHMARK "tpch")
+        message(FATAL_ERROR "accel_add_aux_state_ctests requires BENCHMARK")
     endif()
 
     set(_q ${AUX_QUERY_NUM})

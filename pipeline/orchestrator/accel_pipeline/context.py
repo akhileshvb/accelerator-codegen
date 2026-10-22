@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 from typing import Any
 
@@ -20,16 +19,19 @@ from accel_pipeline.analysis_context import (
     stage_analysis_json,
 )
 from accel_pipeline.aux_bench import load_bench_summary, load_optimization_state
+from accel_pipeline.backend_api import render_accelerator_engine_profile, render_backend_api
 from accel_pipeline.base_bench import (
     compact_base_optimization_state,
     compact_summary_for_prompt,
     load_base_optimization_state,
 )
 from accel_pipeline.config import PipelineConfig, resolve_optimization_edit_paths, resolve_workload_paths
+from accel_pipeline.engine_host import format_host_block
+from accel_pipeline.engine_profile import render_engine_profile
 from accel_pipeline.implementation_bootstrap import build_implementation_bootstrap
-from accel_pipeline.kernel_inspiration import format_kernel_inspiration_section
 from accel_pipeline.models import is_critique_stage, is_implementation_stage
 from accel_pipeline.optimization_runtime import runtime_path_for_prompt
+from accel_pipeline.workload_facts import with_facts
 from accel_pipeline.paths import (
     load_query_analysis,
     pipeline_root,
@@ -105,13 +107,13 @@ def build_retrieval_brief(
     return "\n".join(lines)
 
 
-def _accelerator_engine_host_block(workload: dict[str, Any]) -> str:
+def _accelerator_engine_host_block(workload: dict[str, Any], repo_root: Path, build_dir: Path) -> str:
     """Host registration / differential conventions for query-accelerator workloads."""
     from accel_pipeline.config import engine_host_conventions, sanitize_engine_name
 
     raw = workload.get("engine_name")
     engine = sanitize_engine_name(str(raw) if raw else "")
-    host = dict(workload.get("engine_host") or engine_host_conventions(engine))
+    host = dict(workload.get("engine_host") or engine_host_conventions(engine, repo_root=repo_root))
     lines = [
         "### Engine host (query accelerator)",
         "",
@@ -139,59 +141,23 @@ def _accelerator_engine_host_block(workload: dict[str, Any]) -> str:
     hint = str(host.get("query_host_ready_hint") or "").strip()
     if hint:
         lines.extend(["", f"**Host readiness:** {hint}"])
-    if host.get("agent_builds_query_host"):
-        lines.extend(
-            [
-                "",
-                "**Agent-buildable query host:** if SQL entrypoints or the differential binary "
-                "are missing, create/extend them during implementation "
-                "(`pipeline/prompts/shared/query_host_bootstrap.md`). "
-                f"Expected differential source: `{host.get('differential_source', '')}`.",
-            ]
-        )
-    if engine == "postgres":
-        from accel_pipeline.postgres_docker import (
-            docker_host_from_env,
-            format_agent_discovery_block,
-        )
-
-        lines.extend(["", format_agent_discovery_block(docker_host_from_env())])
-    elif engine == "mysql":
-        from accel_pipeline.mysql_docker import (
-            docker_host_from_env as mysql_host_from_env,
-            format_agent_discovery_block as format_mysql_discovery_block,
-        )
-
-        lines.extend(["", format_mysql_discovery_block(mysql_host_from_env())])
+    lines.extend(["", format_host_block(workload, repo_root, build_dir)])
     return "\n".join(lines)
 
 
-def _engine_host_discovery_block(workload: dict[str, Any]) -> str:
-    """Resolved host SDK paths for engines that need an external install."""
-    host = dict(workload.get("host_runtime") or {})
-    discovery = str(host.get("discovery") or "")
-    if discovery == "postgres_docker":
-        from accel_pipeline.postgres_docker import (
-            docker_host_from_env,
-            format_agent_discovery_block,
-        )
+def _engine_host_discovery_block(workload: dict[str, Any], repo_root: Path, build_dir: Path) -> str:
+    return format_host_block(workload, repo_root, build_dir)
 
-        return format_agent_discovery_block(docker_host_from_env())
-    if discovery == "mysql_docker":
-        from accel_pipeline.mysql_docker import (
-            docker_host_from_env,
-            format_agent_discovery_block,
-        )
 
-        return format_agent_discovery_block(docker_host_from_env())
-    hints = workload.get("engine_sdk_hints") or []
-    hint_lines = "\n".join(f"- {h}" for h in hints) if hints else "- (none)"
-    return (
-        "### Host SDK discovery\n\n"
-        "No auto-discovery plugin is configured for this engine "
-        f"(host_runtime.kind=`{host.get('kind') or 'host_cmake'}`). "
-        "Follow `engine_sdk_hints`:\n\n"
-        f"{hint_lines}"
+def _engine_profile_for_stage(workload: dict[str, Any], stage: str) -> str:
+    """The engine profile sections this stage sees (impl_<layer> / critique_<layer> use the layer's)."""
+    layer = stage.split("_", 1)[1] if stage.startswith(("impl_", "critique_")) else None
+    sections = workload["engine_profile_sections"][layer or stage]
+    return render_engine_profile(
+        workload["engine_profile"],
+        sections,
+        layer=layer,
+        host_layer_runs=bool(workload.get("requires_in_process_host", False)),
     )
 
 
@@ -206,6 +172,8 @@ def build_prompt_context(
     pipe = pipeline_config.pipeline_root
     art = query_artifacts_dir(repo, query, workload=workload)
     is_aux = workload.get("workload_kind") == "aux_state"
+    if workload.get("workload_kind") != "engine_backend":
+        workload = with_facts(repo, workload, query)
 
     reference_sql = ""
     reference_sql_path = ""
@@ -216,18 +184,6 @@ def build_prompt_context(
             reference_sql = Path(ref_path).read_text(encoding="utf-8")
 
     import yaml
-
-    refs = workload.get("reference_accelerators", [])
-    if refs:
-        optional_reference_accelerators = (
-            "## Optional reference accelerators\n\n"
-            f"Inspect if helpful (not required): {', '.join(str(x) for x in refs)}"
-        )
-    else:
-        optional_reference_accelerators = (
-            "## Reference accelerators\n\n"
-            "None configured. Design from SQL, workload YAML, and shared pattern docs only."
-        )
 
     constraints_path = (
         pipe / "prompts" / "aux_state" / "shared" / "constraints.md"
@@ -301,7 +257,7 @@ def build_prompt_context(
     engine_pascal = engine_pascal_name(engine_name) if engine_name else ""
     engine_host = dict(
         workload.get("engine_host")
-        or (engine_host_conventions(engine_name) if engine_name else {})
+        or (engine_host_conventions(engine_name, repo_root=repo) if engine_name else {})
     )
     opt_stages = (
         "optimization",
@@ -330,12 +286,8 @@ def build_prompt_context(
             for p in (prompt_header_path, prompt_kernel_path, prompt_package_path)
         )
     benchmark = str(workload.get("benchmark_name", "tpch"))
-    if is_engine:
-        artifacts_rel = f"pipeline/artifacts/engines/{engine_name or 'engine'}"
-        analysis_artifact_rel = f"{artifacts_rel}/backend_analysis.json"
-    else:
-        artifacts_rel = f"pipeline/artifacts/{workload.get('artifact_namespace', benchmark)}/q{query}"
-        analysis_artifact_rel = f"{artifacts_rel}/{analysis_path.name}"
+    artifacts_rel = str(art.relative_to(repo))
+    analysis_artifact_rel = f"{artifacts_rel}/{'backend_analysis.json' if is_engine else analysis_path.name}"
 
     schema_ref = workload.get("schema_reference_path", "")
     if schema_ref and Path(schema_ref).is_file():
@@ -360,11 +312,11 @@ def build_prompt_context(
         )
         if is_aux:
             benchmark_notes += (
-                f"\n- SEC EDGAR aux state: `accelerators/sec_edgar/q{query}/{engine_name or 'duckdb'}/aux/module.hpp` "
-                f"(base API: `accelerators/sec_edgar/q{query}/{engine_name or 'duckdb'}/base/query.hpp`).\n"
+                f"\n- SEC EDGAR aux state: `accelerators/sec_edgar/q{query}/{engine_name}/aux/module.hpp` "
+                f"(base API: `accelerators/sec_edgar/q{query}/{engine_name}/base/query.hpp`).\n"
                 "- Write workload suite is **`filing_append`** / **`value_append`**, not TPC-H `lineitem` point updates.\n"
                 "- Partition by filing semantics (`stmt`, `adsh`, `cik`+`fy`) — see `pipeline/prompts/sec_edgar/aux_state_notes.md`.\n"
-                "- Register with `accel_add_aux_state_query(BENCHMARK sec_edgar QUERY_NUM N ...)` in CMakeLists.txt.\n"
+                "- The aux state is discovered from `aux/finalize.cpp`; no CMake registration.\n"
                 "- Scale: SF3 is both iteration and production scale here — still size from `row_estimate`, not profile snapshots."
             )
         optimization_gate_suffix = " → profile"
@@ -419,16 +371,6 @@ def build_prompt_context(
         "adversarial_tests",
         "audit",
     )
-    compact_inspiration = stage in ("optimization", "crash_debug", "implementation", "analysis")
-    kernel_inspiration_section = ""
-    if stage in ("implementation", "optimization", "crash_debug", "analysis"):
-        kernel_inspiration_section = format_kernel_inspiration_section(
-            repo,
-            workload_refs=refs,
-            stage=stage,
-            compact=compact_inspiration,
-        )
-
     profile_summary_path = art / "profile_summary.json"
     profile_data: dict[str, Any] = {}
     if profile_summary_path.is_file():
@@ -460,13 +402,13 @@ def build_prompt_context(
             base_kernel_optimization = ""
         else:
             base_kernel_optimization = (
-                "See `pipeline/prompts/shared/base_kernel_optimization.md` (read_file if needed)."
+                "See `pipeline/prompts/shared/base_kernel_optimization.md` (read it if needed)."
             )
         constraints_text = (
             "See `pipeline/prompts/shared/hard_guidelines.md`, `constraints.md`, "
-            "`generated_layout.md`, and `scale_factor_contract.md` (read_file if needed)."
+            "`generated_layout.md`, and `scale_factor_contract.md` (read it if needed)."
         )
-        profiling_text = "See `pipeline/prompts/shared/profiling_conventions.md` (read_file if needed)."
+        profiling_text = "See `pipeline/prompts/shared/profiling_conventions.md` (read it if needed)."
     else:
         base_kernel_optimization = _read_text(base_kernel_opt_path)
         constraints_text = _read_text(constraints_path)
@@ -558,7 +500,6 @@ def build_prompt_context(
         "analysis_artifact_path": analysis_artifact_rel,
         "schema_reference_section": schema_reference_section,
         "benchmark_notes": benchmark_notes,
-        "kernel_inspiration_section": kernel_inspiration_section,
         "fused_scan_path": paths["fused_scan_path"],
         "fused_header_path": paths["fused_header_path"],
         "optimization_gate_suffix": optimization_gate_suffix,
@@ -567,18 +508,6 @@ def build_prompt_context(
         "benchmark_template_path": str(workload.get("benchmark_template_path", "")),
         "repo_root": str(repo),
         "build_dir": pipeline_config.build_dir.name,
-        "duckdb_root": str(
-            Path(
-                os.environ.get("ACCEL_DUCKDB_ROOT")
-                or (
-                    Path(
-                        os.environ.get("ACCEL_PIPELINE_PRIMARY_REPO")
-                        or pipeline_config.repo_root
-                    ).resolve().parent
-                    / "accelerator-codegen-duckdb"
-                )
-            ).resolve()
-        ),
         "reference_sql": reference_sql,
         "reference_sql_path": reference_sql_path,
         "workload_reference_section": workload_reference_section,
@@ -586,25 +515,23 @@ def build_prompt_context(
         "output_schema_yaml": yaml.safe_dump(workload.get("output_schema", [])) if stage == "analysis" else "",
         "dependent_tables_yaml": yaml.safe_dump(workload.get("dependent_tables", [])) if stage == "analysis" else "",
         "partitioning_yaml": yaml.safe_dump(workload.get("partitioning", {})) if stage == "analysis" else "",
-        "reference_accelerators": ", ".join(str(x) for x in refs),
-        "optional_reference_accelerators": optional_reference_accelerators,
         "accelerator_id": str(workload.get("accelerator_id", "")),
         "base_function_name": str(workload.get("base_function_name", "")),
         "aux_function_name": str(workload.get("aux_function_name", "")),
-        "cost_model_config": str(workload.get("cost_model_config", "")),
+        "cost_model_config": paths.get("cost_model_config", ""),
         "shared_docs_reference": shared_docs,
         "agent_boundary": (
-            "See `pipeline/prompts/aux_state/shared/agent_boundary.md` (read_file if needed)."
+            "See `pipeline/prompts/aux_state/shared/agent_boundary.md` (read it if needed)."
             if is_aux
             else ""
         ),
         "constraints": (
-            "See `pipeline/prompts/aux_state/shared/constraints.md` (read_file if needed)."
+            "See `pipeline/prompts/aux_state/shared/constraints.md` (read it if needed)."
             if is_aux
             else constraints_text
         ),
         "profiling_conventions": (
-            "See `pipeline/prompts/shared/profiling_conventions.md` (read_file if needed)."
+            "See `pipeline/prompts/shared/profiling_conventions.md` (read it if needed)."
             if is_aux or lean_stage
             else profiling_text
         ),
@@ -657,16 +584,7 @@ def build_prompt_context(
         "retrieval_brief": retrieval_brief,
         "experiment_log_excerpt": _tail_lines(art / "experiment_log.md", 2 if lean_stage else 5),
         "experiment_summary": _tail_lines(art / "experiment_log.md", 2 if lean_stage else 8),
-        "handbook_excerpt": "",
         "optimization_iter": str(optimization_iter),
-        "aux_state_fitness": "",
-        "aux_state_design": "",
-        "mutation_coverage": "",
-        "substrate_contract": "",
-        "maintenance_framework": "",
-        "module_layout": "",
-        "registration_checklist": "",
-        "runtime_policy": "",
         "aux_bench_summary_json": compact_json(
             compact_bench_summary(bench_summary) if stage == "optimization" else bench_summary
         )
@@ -679,7 +597,9 @@ def build_prompt_context(
         ),
         "analysis_revision_request": "",
         "implementation_bootstrap": (
-            build_implementation_bootstrap(repo, workload, query, analysis)
+            build_implementation_bootstrap(
+                repo, workload, query, analysis, cost_model_config=paths.get("cost_model_config", "")
+            )
             if is_aux and stage == "implementation" and analysis
             else ""
         ),
@@ -692,19 +612,20 @@ def build_prompt_context(
         "differential_binary": str(engine_host.get("differential_binary") or ""),
         "differential_source": str(engine_host.get("differential_source") or ""),
         "differential_command": str(engine_host.get("differential_command") or ""),
-        "multi_conn_ctest_regex": str(engine_host.get("multi_conn_ctest_regex") or ""),
-        "cross_accel_ctest_regex": str(engine_host.get("cross_accel_ctest_regex") or ""),
-        "dataset_env": str(engine_host.get("dataset_env") or "ACCEL_TPCH_DB"),
-        "engine_sdk_hints": (
-            "\n".join(f"- {h}" for h in (workload.get("engine_sdk_hints") or []))
-            or "- (none provided — use engine-native storage docs externally)"
-            if is_engine
-            else ""
+        "multi_conn_target": str(engine_host.get("multi_conn_target") or ""),
+        "cross_accel_target": str(engine_host.get("cross_accel_target") or ""),
+        "harness_bench_target": str(engine_host.get("bench_target") or ""),
+        "harness_calibrate_target": str(engine_host.get("calibrate_target") or ""),
+        "dataset_env": str(engine_host.get("dataset_env") or ""),
+        "engine_profile": _engine_profile_for_stage(workload, stage) if is_engine else "",
+        "backend_api": "" if is_engine or not engine_name else render_backend_api(repo, engine_name),
+        "accelerator_engine_profile": (
+            "" if is_engine or not engine_name else render_accelerator_engine_profile(pipe, engine_name)
         ),
         "engine_host_discovery": (
-            _engine_host_discovery_block(workload)
+            _engine_host_discovery_block(workload, repo, pipeline_config.build_dir)
             if is_engine
-            else _accelerator_engine_host_block(workload)
+            else _accelerator_engine_host_block(workload, repo, pipeline_config.build_dir)
         ),
 
         "optional_examples_section": (
@@ -738,8 +659,8 @@ def build_prompt_context(
             if is_engine
             else ""
         ),
-        "engine_cmake_collect_fn": (
-            str((workload.get("cmake") or {}).get("collect_fn") or "")
+        "engine_cmake_entry": (
+            str((workload.get("cmake") or {}).get("entry") or "")
             if is_engine
             else ""
         ),
@@ -758,6 +679,11 @@ def build_prompt_context(
             if is_engine
             else ""
         ),
+        "host_contract": (
+            _read_text(pipe / "prompts" / "engine_backend" / "host_contract.md")
+            if is_engine
+            else ""
+        ),
         "layer_id": "",
         "layer_title": "",
         "layer_gate": "",
@@ -767,16 +693,6 @@ def build_prompt_context(
         "prior_layers": "",
         "host_runtime_kind": (
             str((workload.get("host_runtime") or {}).get("kind") or "host_cmake")
-            if is_engine
-            else ""
-        ),
-        "host_ensure_script": (
-            str((workload.get("host_runtime") or {}).get("ensure_script") or "")
-            if is_engine
-            else ""
-        ),
-        "host_build_script": (
-            str((workload.get("host_runtime") or {}).get("build_script") or "")
             if is_engine
             else ""
         ),

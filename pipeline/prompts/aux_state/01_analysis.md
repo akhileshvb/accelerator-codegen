@@ -7,12 +7,12 @@ Design an auxiliary-state accelerator for **{{display_name}}** **Q{{query_number
 ## Workload
 
 - Accelerator id: `{{accelerator_id}}`
-- Base accelerator: `{{base_function_name}}`
 - Cost model config: `{{cost_model_config}}`
 
 {{workload_reference_section}}
 
-{{optional_reference_accelerators}}
+{{backend_api}}
+{{accelerator_engine_profile}}
 
 ## Shared docs (read on demand)
 
@@ -40,7 +40,7 @@ Output `fitness_assessment`. Read `aux_state_fitness.md` if needed.
 
 In `performance_hypotheses.base_path_cost_decomposition`: dominant scans/joins/agg/sort, parameter-dependent work, scaling with cardinality/range/output, work remaining after aux replacement. Label as hypotheses.
 
-Ask explicitly: *What work does the base kernel repeat on every invocation that we can move into maintained state?*
+Ask explicitly: *What work does the query repeat on every invocation that we can move into maintained state?*
 
 ### 3. State candidate search (when recommended) — think hard here
 
@@ -74,7 +74,7 @@ Keep prose fields concise (≤3 sentences each unless schema requires lists).
 
 **Scale and parallelism (required, `correctness_facts.scale_plan`).** Design for SF3000 (`scale_factor_contract.md`: ~2e10 fact rows, ids beyond 2^32, sums beyond 2^63, refreshes of 10^5-10^7 rows, all state in memory). Choose state whose size, build, refresh and read costs follow touched/selected keys, not total rows. Fill `failure_classes` with one `{class, handling}` per row of the contract's failure-class table (state `n/a` with a reason only when it cannot apply), and say how each phase splits over its thread cap using the substrate helpers (`substrate_primitives.md`): `read_parallelism` (what `Execute` splits, or why a read is output-bound and stays one slice), `build_parallelism` (the `PartitionedBuild` `Partial` and its merge; a floating-point partial uses `kFloatBuildPartitions`), `maintenance_parallelism` (which per-key work splits after the serial engine lookups). Reject candidates whose build or refresh is inherently one serial pass over rows, whose merge is not associative, or whose partials are not cheap to create.
 
-**Primitives (optional fields `primitives_used[]`, `primitives_proposed[]`).** Search `prims/README.md` first. List each existing primitive the design uses with `name` and `why`. If the state needs a container no primitive covers, list a `primitives_proposed[]` entry: `name` (generic, by what it is), `description` (generic, no table/column/query words), `api_sketch`, `closest_existing` (which existing primitive is nearest) and `why_not_closest`. Proposed primitives are written and published (`primitive_publish`) in implementation, before use. Workload-specific structures stay in the module (still COW, built from primitives) and are not proposed.
+**Primitives (optional fields `primitives_used[]`, `primitives_proposed[]`).** Consult the `prims/README.md` catalogue (it may be empty) first. List each existing primitive the design uses with `name` and `why`. If the state needs a container no primitive covers, list a `primitives_proposed[]` entry: `name` (generic, by what it is), `description` (generic, no table/column/query words), `api_sketch`, `closest_existing` (which existing primitive is nearest) and `why_not_closest`. Proposed primitives are written and published (`primitive_publish`) in implementation, before use. Workload-specific structures stay in the module (still COW, built from primitives) and are not proposed.
 
 ### 5. Performance hypotheses
 

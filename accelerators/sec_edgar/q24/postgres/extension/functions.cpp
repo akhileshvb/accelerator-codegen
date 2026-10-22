@@ -26,7 +26,7 @@ Datum AcceleratorCodegenAuxSecEdgarQ24(PG_FUNCTION_ARGS) {
 namespace accelerator_codegen::aux_state::engine::postgres {
 namespace {
 
-// Executed by accel_postgres_register_queries(). Same SQL name as DuckDB.
+// Executed by accel_register_queries(). Same SQL name as DuckDB.
 constexpr char kFunctionsSql[] = R"SQL(
 DROP FUNCTION IF EXISTS accel_sec_edgar_q24_aux() CASCADE;
 DROP FUNCTION IF EXISTS accel_sec_edgar_q24_aux(bigint, text) CASCADE;

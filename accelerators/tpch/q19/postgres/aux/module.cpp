@@ -3,7 +3,7 @@
 #include "substrate/aux/core/aux_cells.hpp"
 #include "substrate/aux/core/parallel_slices.hpp"
 #include "substrate/aux/core/partitioned_build.hpp"
-#include "prims/pg_numeric.hpp"
+#include "backends/postgres/api/pg_numeric.hpp"
 
 #include <algorithm>
 #include <limits>

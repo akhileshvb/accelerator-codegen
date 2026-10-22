@@ -1,6 +1,6 @@
 #include "tpch/q6/mysql/aux/module.hpp"
 #include "tpch/q6/calibration_writes.hpp"
-#include "prims/pg_numeric.hpp"
+#include "backends/mysql/api/mysql_decimal.hpp"
 #include "substrate/aux/core/aux_cells.hpp"
 #include "substrate/aux/core/parallel_slices.hpp"
 #include "substrate/aux/core/parallel_sort.hpp"
@@ -353,7 +353,7 @@ void TpchQ6Module::EmitResult(const ::accelerator_codegen::Q6Result &result,
   else
     sink.WriteRow({{core::AuxValue::Of(
         core::AuxType::String,
-        ::accelerator_codegen::pg_numeric::ToText(result.revenue, 4))}});
+        ::accelerator_codegen::mysql_decimal::ToText(result.revenue, 4))}});
   sink.End();
 }
 

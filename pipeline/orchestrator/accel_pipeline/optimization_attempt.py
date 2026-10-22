@@ -16,7 +16,7 @@ from accel_pipeline.config import (
     ModelConfig,
     PipelineConfig,
     apply_workload_overrides,
-    load_workload,
+    load_run_workload,
     resolve_optimization_edit_paths,
     resolve_workload_paths,
 )
@@ -70,9 +70,8 @@ from accel_pipeline.optimization_worker import OptimizationWorker
 from accel_pipeline.optimization_worker_checkpoint import load_worker_checkpoint
 from accel_pipeline.pipeline_log import log_event, log_stage_complete, log_stage_start
 from accel_pipeline.playbook import append_experiment_log
-from accel_pipeline.prompts import render_prompt, save_rendered_prompt
+from accel_pipeline.prompts import render_prompt, save_rendered_prompt, with_codex_tooling
 from accel_pipeline.stages.base import resolve_optimization_max_turns
-from accel_pipeline.tools.tool_policy import tool_usage_instructions
 
 HYPOTHESIS_COMPLETE = "HYPOTHESIS_COMPLETE"
 PATCH_COMPLETE = "HYPOTHESIS_PATCH_COMPLETE"
@@ -105,6 +104,7 @@ def _try_honor_saturation(
     log_event(
         pipeline_config.repo_root,
         query,
+        workload,
         "optimization_saturation_claim",
         honored=ok,
         detail=detail[:500],
@@ -140,7 +140,6 @@ def _try_honor_saturation(
     )
     if worker is not None:
         worker.pending.push(reject_msg)
-        worker.compact_between_cycles()
         worker.save_checkpoint()
     _record_failure(
         art,
@@ -346,7 +345,7 @@ def _run_agent_substage(
     optimization_iter: int,
     extra_context: dict[str, str] | None = None,
 ) -> Any:
-    workload = load_workload(workload_name, pipeline_config.repo_root)
+    workload = load_run_workload(pipeline_config, workload_name)
     pipeline_config = apply_workload_overrides(pipeline_config, workload)
     prompt = render_prompt(
         pipeline_config,
@@ -357,7 +356,7 @@ def _run_agent_substage(
         optimization_iter=optimization_iter,
         extra_context=extra_context,
     )
-    save_rendered_prompt(pipeline_config, query, stage, prompt, optimization_iter=optimization_iter)
+    save_rendered_prompt(pipeline_config, workload, query, stage, prompt, optimization_iter=optimization_iter)
 
     model_id = make_model_id(stage, pipeline_config, model_config, model_overrides)
     agent_model = resolve_agent_model(stage, pipeline_config, model_config, model_overrides)
@@ -381,16 +380,9 @@ def _run_agent_substage(
         model_config=model_config,
         workload_name=workload_name,
         optimization_iter=optimization_iter,
-        budget_tracker=None,
     )
 
-    instructions = prompt
-    if stage_provider not in {"cursor", "codex_exec"}:
-        instructions = f"{prompt.rstrip()}\n\n{tool_usage_instructions(stage)}"
-    elif stage_provider == "codex_exec":
-        codex_doc = pipeline_config.pipeline_root / "prompts" / "shared" / "codex_tooling.md"
-        if codex_doc.is_file() and "codex_tooling.md" not in instructions:
-            instructions = f"{prompt.rstrip()}\n\n{codex_doc.read_text(encoding='utf-8')}"
+    instructions = with_codex_tooling(pipeline_config, prompt)
 
     request = StageRunRequest(
         stage=stage,
@@ -526,7 +518,7 @@ def _run_unified_optimization_attempt(
     model_overrides: dict[str, str] | None,
     experimental_summary: str = "",
 ) -> UnifiedAttemptResult:
-    workload = load_workload(workload_name, pipeline_config.repo_root)
+    workload = load_run_workload(pipeline_config, workload_name)
     guidance = str(workload.get("optimization_guidance", "") or "").strip()
     if _two_phase_optimization_enabled(workload):
         hypo_message = build_optimization_user_message(
@@ -582,9 +574,9 @@ def _run_unified_optimization_attempt(
     )
     user_message = (
         user_message.replace(
-            "Hypothesis is locked — patch phase only. Use write_file/apply_patch; "
-            "no rip_grep/ast_grep/glob_files.\n",
-            "Hypothesize, implement with write_file/apply_patch, then end with "
+            "Hypothesis is locked — patch phase only. Edit the editable sources; "
+            "no repository exploration.\n",
+            "Hypothesize, implement, then end with "
             f"`{PATCH_COMPLETE}` in one short session.\n",
         )
     )
@@ -862,7 +854,7 @@ def run_optimization_iteration(
     deadline: float | None = None,
 ) -> Any:
     """One optimization iteration; no new attempt starts after `deadline` (time.time())."""
-    workload = load_workload(workload_name, pipeline_config.repo_root)
+    workload = load_run_workload(pipeline_config, workload_name)
     pipeline_config = apply_workload_overrides(pipeline_config, workload)
     art = query_artifacts_dir(pipeline_config.repo_root, query, workload=workload)
     eval_config = eval_config_from_pipeline(pipeline_config)
@@ -879,6 +871,7 @@ def run_optimization_iteration(
     log_stage_start(
         pipeline_config.repo_root,
         query,
+        workload,
         stage="optimization",
         model_id=make_model_id("optimization", pipeline_config, model_config, model_overrides),
         optimization_iter=optimization_iter,
@@ -1076,7 +1069,6 @@ def run_optimization_iteration(
                     hypothesis=hypothesis,
                     reason=f"cannot_test: {cycle.reason}",
                 )
-                worker.compact_between_cycles()
                 worker.save_checkpoint()
                 if consecutive_fails >= consecutive_fail_stop:
                     break
@@ -1097,7 +1089,6 @@ def run_optimization_iteration(
                     hypothesis=hypothesis,
                     reason=cycle.reason or "worker_candidate_failed",
                 )
-                worker.compact_between_cycles()
                 worker.save_checkpoint()
                 if consecutive_fails >= consecutive_fail_stop:
                     break
@@ -1129,7 +1120,6 @@ def run_optimization_iteration(
                         reverted=True,
                     )
                 )
-                worker.compact_between_cycles()
                 worker.save_checkpoint()
                 _record_failure(art, attempt=attempt, hypothesis=hypothesis, reason=reason)
                 if infra or consecutive_fails >= consecutive_fail_stop:
@@ -1158,7 +1148,6 @@ def run_optimization_iteration(
                         reverted=True,
                     )
                 )
-                worker.compact_between_cycles()
                 worker.save_checkpoint()
                 _record_failure(
                     art,
@@ -1190,7 +1179,6 @@ def run_optimization_iteration(
                         reverted=True,
                     )
                 )
-                worker.compact_between_cycles()
                 worker.save_checkpoint()
                 _record_failure(
                     art,
@@ -1223,7 +1211,6 @@ def run_optimization_iteration(
                         reverted=True,
                     )
                 )
-                worker.compact_between_cycles()
                 worker.save_checkpoint()
                 _record_failure(art, attempt=attempt, hypothesis=hypothesis, reason="auth_benchmark_failed")
                 if consecutive_fails >= consecutive_fail_stop:
@@ -1241,6 +1228,7 @@ def run_optimization_iteration(
             log_event(
                 pipeline_config.repo_root,
                 query,
+                workload,
                 "optimization_worker_gate_verdict",
                 verdict=outcome.verdict,
                 improvement_pct=outcome.improvement_pct,
@@ -1272,7 +1260,6 @@ def run_optimization_iteration(
                     workload=workload,
                     verdict=outcome.verdict,
                 )
-                worker.compact_between_cycles()
                 worker.save_checkpoint()
                 if consecutive_fails >= consecutive_fail_stop:
                     break
@@ -1290,7 +1277,6 @@ def run_optimization_iteration(
                         improvement_pct=outcome.improvement_pct,
                         candidate_metrics=candidate.median_metrics,
                     )
-                    worker.compact_between_cycles()
                     worker.save_checkpoint()
                     if consecutive_fails >= consecutive_fail_stop:
                         break
@@ -1327,7 +1313,6 @@ def run_optimization_iteration(
                     },
                 )
                 clear_attempt_checkpoint(art)
-                worker.compact_between_cycles()
                 worker.save_checkpoint()
                 continue
 
@@ -1369,7 +1354,6 @@ def run_optimization_iteration(
                     },
                 )
                 clear_attempt_checkpoint(art)
-                worker.compact_between_cycles()
                 worker.save_checkpoint()
                 if consecutive_fails >= consecutive_fail_stop:
                     break
@@ -1412,7 +1396,6 @@ def run_optimization_iteration(
                     "reason": outcome.reason,
                 },
             )
-            worker.compact_between_cycles()
             worker.save_checkpoint()
             continue
 
@@ -1432,7 +1415,7 @@ def run_optimization_iteration(
         save_optimization_bootstrap(art, bootstrap_markdown, bootstrap_sources)
         print(
             f"[pipeline] optimization bootstrap: {len(bootstrap_sources)} files, "
-            f"{len(bootstrap_markdown)} chars (read_file disabled for agent)",
+            f"{len(bootstrap_markdown)} chars (sources inlined in the agent message)",
             file=sys.stderr,
             flush=True,
         )
@@ -1763,9 +1746,10 @@ def run_optimization_iteration(
     log_stage_complete(
         pipeline_config.repo_root,
         query,
+        workload,
         stage="optimization",
         model_id=make_model_id("optimization", pipeline_config, model_config, model_overrides),
-        backend=model_config.provider,
+        backend="codex_exec",
         duration_ms=None,
         usage=None,
         optimization_iter=optimization_iter,

@@ -1,6 +1,6 @@
 # Read-path scaffold (agent-generated `aux/module.cpp`)
 
-Port from shipped modules under `accelerators/tpch/q{1,3,10,12,14}/duckdb/aux/module.cpp`. Every aux query implements the same `AuxQueryModule` surface.
+Port from shipped peer modules under `accelerators/{bench}/q*/<engine>/aux/module.cpp` (the workload's reference accelerators). Every aux query implements the same `AuxQueryModule` surface.
 
 ## Module methods (required)
 
@@ -65,7 +65,7 @@ rows cross a process boundary, and the substrate (`runtime/wire.hpp`) encodes th
 
 | Pattern | Reference |
 |---------|-----------|
-| Single-partition | `accelerators/tpch/q14/duckdb/aux/module.cpp` |
-| Multi-partition window | `accelerators/tpch/q10/duckdb/aux/module.cpp`, `q12/duckdb/aux/module.cpp` |
-| Prefix / cumulative | `accelerators/tpch/q1/duckdb/aux/module.cpp` |
-| SEC EDGAR append workload | `accelerators/sec_edgar/q1/common/module.cpp` |
+| Single-partition | a peer with one window partition |
+| Multi-partition window | a peer with windowed partitions |
+| Prefix / cumulative | a peer with prefix state |
+| Append workload | a peer with append-only state |

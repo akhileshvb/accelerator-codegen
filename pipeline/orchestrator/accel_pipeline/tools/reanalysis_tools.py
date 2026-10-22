@@ -10,7 +10,7 @@ from accel_pipeline.structural_reanalysis import (
     max_structural_reanalysis_count,
     write_request,
 )
-from accel_pipeline.config import load_workload
+from accel_pipeline.config import load_run_workload
 from accel_pipeline.state import load_or_create, state_path
 
 
@@ -41,14 +41,15 @@ def make_reanalysis_tools(ctx: ToolContext):
         Do NOT use for coefficient tweaks, EWMA tuning, or minor threshold changes.
         """
         cost_model_insufficient_reason = str(cost_model_insufficient_reason or "")
-        workload = load_workload(ctx.workload_name, ctx.pipeline_config.repo_root)
+        workload = load_run_workload(ctx.pipeline_config, ctx.workload_name)
         state = load_or_create(
-            ctx.pipeline_config.repo_root, ctx.query, ctx.workload_name, resume=True
+            ctx.pipeline_config.repo_root, ctx.query, ctx.workload_name, ctx.pipeline_config.engine_name, resume=True
         )
         if state.structural_reanalysis_count >= max_structural_reanalysis_count(workload):
             log_structural_reanalysis_request(
                 ctx.pipeline_config.repo_root,
                 ctx.query,
+                workload,
                 status="rejected",
                 source_stage=ctx.stage,
                 source_iteration=ctx.optimization_iter,
@@ -67,6 +68,7 @@ def make_reanalysis_tools(ctx: ToolContext):
             payload = write_request(
                 ctx.pipeline_config.repo_root,
                 ctx.query,
+                workload,
                 source_stage=ctx.stage,
                 source_iteration=ctx.optimization_iter,
                 bottleneck_type=bottleneck_type,
@@ -80,6 +82,7 @@ def make_reanalysis_tools(ctx: ToolContext):
             log_structural_reanalysis_request(
                 ctx.pipeline_config.repo_root,
                 ctx.query,
+                workload,
                 status="rejected",
                 source_stage=ctx.stage,
                 source_iteration=ctx.optimization_iter,
@@ -93,6 +96,7 @@ def make_reanalysis_tools(ctx: ToolContext):
         log_structural_reanalysis_request(
             ctx.pipeline_config.repo_root,
             ctx.query,
+            workload,
             status="queued",
             source_stage=ctx.stage,
             source_iteration=ctx.optimization_iter,

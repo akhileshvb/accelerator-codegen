@@ -5,7 +5,7 @@
 #include "tpch/q17/duckdb/aux/module.hpp"
 #include "tpch/q17/cost_model.hpp"
 #include "backends/duckdb/api/aux_query_registry.hpp"
-#include "backends/duckdb/engine/build_scan.hpp"
+#include "backends/duckdb/api/build_scan.hpp"
 #include "catalog/query_catalog.hpp"
 
 #include <functional>

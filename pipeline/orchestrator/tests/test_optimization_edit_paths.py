@@ -13,7 +13,7 @@ from accel_pipeline.paths import find_repo_root
 
 def test_aux_optimization_edit_paths_point_at_aux_module():
     repo = find_repo_root()
-    workload = load_workload("tpch_q18_aux", repo)
+    workload = load_workload("tpch_q18_aux", repo, engine="duckdb")
     pc = PipelineConfig(
         repo_root=repo,
         pipeline_root=repo / "pipeline",
@@ -28,5 +28,5 @@ def test_aux_optimization_edit_paths_point_at_aux_module():
     assert edit["primary_cpp"] == f"accelerators/tpch/q18/{eng}/aux/module.cpp"
     assert edit["header"] == f"accelerators/tpch/q18/{eng}/aux/module.hpp"
     assert edit["secondary_cpp"] == f"accelerators/tpch/q18/{eng}/aux/finalize.cpp"
-    assert "accelerators/tpch/q18/config/q18_aux_cost_model.json" in edit["all_paths"]
+    assert "accelerators/tpch/q18/config/q18_aux_cost_model_duckdb.json" in edit["all_paths"]
     assert edit["base_kernel_path"] == base["kernel_path"]

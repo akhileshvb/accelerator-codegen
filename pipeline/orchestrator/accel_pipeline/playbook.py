@@ -14,6 +14,11 @@ def _artifacts_dir(repo_root: Path, query: int, workload: dict | None = None) ->
     return query_artifacts_dir(repo_root, query, workload=workload)
 
 
+def _shared_playbook_path(repo_root: Path, workload: dict | None) -> Path:
+    engine = str((workload or {}).get("engine_name") or "")
+    return pipeline_root(repo_root) / "artifacts" / "shared" / engine / "optimization_playbook.md"
+
+
 def _load_technique_store(path: Path) -> dict[str, Any]:
     if not path.is_file():
         return {"techniques": []}
@@ -112,7 +117,7 @@ def merge_playbook_proposal(repo_root: Path, query: int, *, workload: dict | Non
     )
     store_path.write_text(json.dumps(store, indent=2), encoding="utf-8")
 
-    playbook = pipeline_root(repo_root) / "artifacts" / "shared" / "optimization_playbook.md"
+    playbook = _shared_playbook_path(repo_root, workload)
     appendix = _format_playbook_appendix(query, iteration, summary, techniques)
     existing = playbook.read_text(encoding="utf-8") if playbook.is_file() else ""
     playbook.parent.mkdir(parents=True, exist_ok=True)
@@ -127,7 +132,7 @@ def merge_playbook_proposal_legacy(repo_root: Path, query: int, *, workload: dic
     if not proposal.is_file():
         return False
 
-    playbook = pipeline_root(repo_root) / "artifacts" / "shared" / "optimization_playbook.md"
+    playbook = _shared_playbook_path(repo_root, workload)
     text = proposal.read_text(encoding="utf-8").strip()
     if not text:
         return False
@@ -147,10 +152,3 @@ def append_experiment_log(
     with path.open("a", encoding="utf-8") as f:
         f.write(line.rstrip() + "\n")
     return path
-
-
-def append_patch_log(repo_root: Path, query: int, message: str) -> None:
-    path = pipeline_root(repo_root) / "artifacts" / f"q{query}" / "patches.log"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as f:
-        f.write(message.rstrip() + "\n")

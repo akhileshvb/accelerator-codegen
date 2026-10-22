@@ -6,42 +6,33 @@ import subprocess
 import sys
 from pathlib import Path
 
-from accel_pipeline.config import ModelConfig, PipelineConfig, load_workload, resolve_workload_paths
+from accel_pipeline import naming
+from accel_pipeline.config import (
+    ModelConfig,
+    PipelineConfig,
+    load_run_workload,
+    resolve_workload_paths,
+    workload_supported_engines,
+)
 from accel_pipeline.paths import analysis_artifact_path, load_query_analysis
 
 
 def base_smoke_test_ctest_regex(workload: dict, query: int) -> str:
-    benchmark = str(workload.get("benchmark_name", "tpch"))
-    smoke_suffix = str(workload.get("ctest_smoke_suffix", "_smoke_test"))
-    explicit = workload.get("ctest_smoke_regex")
-    if explicit:
-        return str(explicit)
-    return f"^{benchmark}_q{query}{smoke_suffix}$"
+    return f"^{naming.smoke_ctest_name(str(workload.get('benchmark_name', 'tpch')), query)}$"
 
 
 def base_accelerator_header_path(repo_root: Path, workload: dict, query: int) -> Path:
-    benchmark = str(workload.get("benchmark_name", "tpch"))
-    engine = str(workload.get("engine_name") or "").strip().lower()
-    base = repo_root / "accelerators" / benchmark / f"q{query}"
-    if engine and engine != "duckdb":
-        return base / engine / "base" / "query.hpp"
-    # Prefer per-engine layout when present, else legacy flat path.
-    engine_path = base / "duckdb" / "base" / "query.hpp"
-    if engine_path.is_file():
-        return engine_path
-    return base / "base" / "query.hpp"
+    return _engine_query_dir(repo_root, workload, query) / "base" / "query.hpp"
 
 
 def base_kernel_source_path(repo_root: Path, workload: dict, query: int) -> Path:
+    return _engine_query_dir(repo_root, workload, query) / "base" / "single-threaded" / "kernel.cpp"
+
+
+def _engine_query_dir(repo_root: Path, workload: dict, query: int) -> Path:
     benchmark = str(workload.get("benchmark_name", "tpch"))
     engine = str(workload.get("engine_name") or "").strip().lower()
-    base = repo_root / "accelerators" / benchmark / f"q{query}"
-    if engine and engine != "duckdb":
-        return base / engine / "base" / "single-threaded" / "kernel.cpp"
-    engine_path = base / "duckdb" / "base" / "single-threaded" / "kernel.cpp"
-    if engine_path.is_file():
-        return engine_path
-    return base / "base" / "single-threaded" / "kernel.cpp"
+    return repo_root / "accelerators" / benchmark / f"q{query}" / engine
 
 
 def base_accelerator_exists(repo_root: Path, workload: dict, query: int) -> bool:
@@ -51,7 +42,7 @@ def base_accelerator_exists(repo_root: Path, workload: dict, query: int) -> bool
 
 
 def base_smoke_test_binary_path(build_dir: Path, workload: dict, query: int) -> Path:
-    test_target = str(workload.get("test_target", f"test_{workload.get('benchmark_name', 'tpch')}_q{query}"))
+    test_target = naming.unit_test_target(str(workload.get("benchmark_name", "tpch")), query)
     return build_dir / test_target
 
 
@@ -59,7 +50,7 @@ def ensure_smoke_test_binary(build_dir: Path, workload: dict, query: int) -> Pat
     binary = base_smoke_test_binary_path(build_dir, workload, query)
     if binary.is_file():
         return binary
-    target = str(workload.get("test_target", f"test_{workload.get('benchmark_name', 'tpch')}_q{query}"))
+    target = naming.unit_test_target(str(workload.get("benchmark_name", "tpch")), query)
     subprocess.run(
         ["cmake", "--build", str(build_dir), "--target", target],
         cwd=build_dir,
@@ -164,15 +155,24 @@ def ensure_base_accelerator_prerequisite(
     If aux workload requires a base accelerator, ensure it exists and passes correctness.
     Returns True if prerequisite was run, False if already satisfied or not required.
     """
-    workload = load_workload(workload_name, pipeline_config.repo_root)
+    workload = load_run_workload(pipeline_config, workload_name)
     if workload.get("workload_kind") != "aux_state":
         return False
     if not workload.get("requires_base_accelerator", False):
         return False
 
     benchmark = str(workload.get("benchmark_name", "tpch"))
-    prereq_name = workload.get("prerequisite_workload") or f"{benchmark}_q{query}"
-    prereq_workload = load_workload(str(prereq_name), pipeline_config.repo_root)
+    prereq_name = naming.base_workload_name(benchmark, query)
+    engine = pipeline_config.engine_name
+    if engine not in workload_supported_engines(str(prereq_name), pipeline_config.repo_root):
+        print(
+            f"[pipeline] base workload {prereq_name!r} has no {engine} variant; "
+            "skipping the base prerequisite",
+            file=sys.stderr,
+            flush=True,
+        )
+        return False
+    prereq_workload = load_run_workload(pipeline_config, str(prereq_name))
     repo = pipeline_config.repo_root
 
     # TEMPORARY: skip the slow multi-seed base smoke test before aux implementation when

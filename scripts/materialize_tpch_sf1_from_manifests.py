@@ -2,10 +2,10 @@
 """Materialize sf1_instances SQL from tpch_placeholders + C++ manifests.
 
 Keeps SQL aligned with accelerators/tpch/q*/tests/q*_manifest.hpp (accelerator bind args)
-while using the real placeholder templates from tpch-utils.
+while using the real placeholder templates (--placeholders).
 
 Usage:
-  python3 scripts/materialize_tpch_sf1_from_manifests.py
+  python3 scripts/materialize_tpch_sf1_from_manifests.py --placeholders <dir>
 """
 
 from __future__ import annotations
@@ -16,9 +16,8 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_PLACEHOLDERS = Path.home() / "tpch-utils" / "tpch_placeholders"
 DEFAULT_MANIFESTS = ROOT / "accelerators" / "tpch"
-DEFAULT_OUT = Path.home() / "tpch-utils" / "generated" / "sf1_instances"
+DEFAULT_OUT = ROOT / "workloads" / "tpch" / "instances"
 
 
 def _parse_entry_args(arg_blob: str) -> list:
@@ -75,7 +74,7 @@ def _parse_entry_args(arg_blob: str) -> list:
 def parse_manifest(path: Path) -> list[tuple[int, list]]:
     text = path.read_text(encoding="utf-8")
     entries: list[tuple[int, list]] = []
-    for m in re.finditer(r'\{\s*"seed_(\d+)_q\d+"\s*,\s*"[^"]+"\s*,', text):
+    for m in re.finditer(r'\{\s*"seed_(\d+)_q\d+"\s*,\s*(?:ACCEL_TPCH_INSTANCES_DIR\s*)?"[^"]+"\s*,', text):
         seed = int(m.group(1))
         start = m.start()
         depth = 0
@@ -180,7 +179,7 @@ def apply_subs(template: str, subs: dict[int, str]) -> str:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--placeholders", type=Path, default=DEFAULT_PLACEHOLDERS)
+    ap.add_argument("--placeholders", type=Path, required=True, help="directory of the TPC-H placeholder templates")
     ap.add_argument("--manifests", type=Path, default=DEFAULT_MANIFESTS)
     ap.add_argument("--out", type=Path, default=DEFAULT_OUT)
     args = ap.parse_args()

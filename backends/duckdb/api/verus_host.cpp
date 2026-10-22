@@ -10,8 +10,8 @@
 #include <vector>
 
 #include "backends/duckdb/engine/capture.hpp"
-#include "backends/duckdb/engine/decimal128.hpp"
-#include "backends/duckdb/engine/scan.hpp"
+#include "backends/duckdb/api/decimal128.hpp"
+#include "backends/duckdb/api/scan.hpp"
 #include "substrate/verus/kit/verus_kit.hpp"
 #include "duckdb/common/types/value.hpp"
 #include "duckdb/main/materialized_query_result.hpp"

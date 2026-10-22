@@ -5,7 +5,7 @@
 #include <initializer_list>
 #include <string>
 
-#include "backends/duckdb/engine/native_scan_compat.hpp"
+#include "backends/duckdb/api/native_scan_compat.hpp"
 #include "substrate/aux/core/aux_types.hpp"
 #include "substrate/aux/maintenance/maintenance_action.hpp"
 #include "substrate/aux/state/invalidation_plan.hpp"

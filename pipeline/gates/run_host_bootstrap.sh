@@ -1,95 +1,76 @@
 #!/usr/bin/env bash
-# Verify one-shot query-host bootstrap for the selected engine.
-# Postgres: Docker build of differential + optional smoke against Docker PG.
-# Do not fall through from docker/duckdb into the host-cmake path — that
-# overwrites a docker pass with `make: No rule to make target`.
+# Verify the engine's workload harnesses (made by host_bootstrap under backends/<engine>/tests/harness
+# and bench): build every target through the engine host, then smoke each of them. The differential
+# runs one registered query when the engine has an accelerator, else every harness answers --help.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 QUERY="${1:-0}"
-BUILD="${ACCEL_PIPELINE_BUILD_DIR:-${ACCEL_BUILD_DIR:-${ROOT}/build-release}}"
 
-CTX="$(python3 "$(dirname "${BASH_SOURCE[0]}")/read_gate_context.py" "${ROOT}" "${QUERY}")"
-ENGINE_NAME="$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('engine_name') or 'duckdb')" "${CTX}")"
-DIFF_BINARY="$(python3 -c "import json,sys; h=json.loads(sys.argv[1]).get('engine_host') or {}; print(h.get('differential_binary') or '')" "${CTX}")"
-DIFF_SOURCE="$(python3 -c "import json,sys; h=json.loads(sys.argv[1]).get('engine_host') or {}; print(h.get('differential_source') or '')" "${CTX}")"
-REGISTER_PATH="$(python3 -c "import json,sys; h=json.loads(sys.argv[1]).get('engine_host') or {}; print(h.get('register_path') or '')" "${CTX}")"
-ART_NS="$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('artifact_namespace') or 'tpch')" "${CTX}")"
+# shellcheck source=aux_gate_common.sh
+source "$(dirname "${BASH_SOURCE[0]}")/aux_gate_common.sh"
+load_aux_gate_context "${ROOT}" "${QUERY}"
 
-OUT="${ROOT}/pipeline/artifacts/engines/${ENGINE_NAME}/host_bootstrap"
-mkdir -p "${OUT}"
-QOUT="${ROOT}/pipeline/artifacts/${ART_NS}/q${QUERY}/gates"
-mkdir -p "${QOUT}"
+ENGINE_JSON="${ROOT}/pipeline/artifacts/engines/${ENGINE_NAME}/host_bootstrap/host_bootstrap.json"
+QUERY_JSON="${GATE_OUT}/host_bootstrap.json"
+TARGETS=("${DIFF_BINARY}" "${MULTI_CONN_TARGET}" "${CROSS_ACCEL_TARGET}" "${HARNESS_BENCH_TARGET}" "${HARNESS_CALIBRATE_TARGET}")
 
-write_result() {
-  local status="$1"
-  local reason="$2"
-  local log_tail="${3:-}"
-  python3 - <<PY
-import json, pathlib
-payload = {
-    "gate": "host_bootstrap",
-    "query": int("${QUERY}"),
-    "engine_name": "${ENGINE_NAME}",
-    "status": "${status}",
-    "reason": """${reason}""",
-    "differential_binary": "${DIFF_BINARY}",
-    "mode": "docker" if "${ENGINE_NAME}" == "postgres" else "host",
-    "log_tail": """${log_tail}"""[-4000:],
-}
-for p in (pathlib.Path("${OUT}/host_bootstrap.json"), pathlib.Path("${QOUT}/host_bootstrap.json")):
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(json.dumps(payload, indent=2) + "\n")
-print(pathlib.Path("${OUT}/host_bootstrap.json").read_text())
-PY
-  if [[ "${status}" == "pass" ]]; then
-    return 0
-  fi
-  exit 1
+finish() { # status reason log
+  local rc=0 targets
+  targets="$(printf '%s\n' "${TARGETS[@]}" | python3 -c "import json,sys; print(json.dumps(sys.stdin.read().split()))")"
+  write_result "${ENGINE_JSON}" host_bootstrap "$@" "query:=${QUERY}" "targets:=${targets}" "smokes:=${SMOKES:-[]}" >/dev/null || rc=$?
+  write_result "${QUERY_JSON}" host_bootstrap "$@" "query:=${QUERY}" "targets:=${targets}" "smokes:=${SMOKES:-[]}" || rc=$?
+  exit "${rc}"
 }
 
-if [[ "${ENGINE_NAME}" == "duckdb" ]]; then
-  write_result "pass" "duckdb host already present"
-  exit 0
+for target in "${TARGETS[@]}"; do
+  [[ -n "${target}" ]] || finish fail "gate context lacks a harness target. ${HOST_HINT}" ""
+done
+for file in "${DIFF_SOURCE}" "backends/${ENGINE_NAME}/tests/harness.cmake"; do
+  [[ -f "${ROOT}/${file}" ]] || finish fail "missing ${file}. ${HOST_HINT}" ""
+done
+grep -q "aux/finalize.cpp" "${ROOT}/backends/${ENGINE_NAME}/tests/harness.cmake" ||
+  finish fail "harness.cmake declares no module test: glob accelerators/*/q*/${ENGINE_NAME}/aux/finalize.cpp into test_<bench>_q<N>_aux (query_host_bootstrap.md)" ""
+
+HARNESS_FILES=()
+while IFS= read -r file; do HARNESS_FILES+=("${file}"); done < <(cd "${ROOT}" &&
+  find "backends/${ENGINE_NAME}/tests/harness" "backends/${ENGINE_NAME}/bench" "backends/${ENGINE_NAME}/tests/harness.cmake" \
+    -type f \( -name '*.cpp' -o -name '*.hpp' -o -name '*.cmake' \) 2>/dev/null | sort)
+FILE_ARGS=()
+for file in "${HARNESS_FILES[@]}"; do FILE_ARGS+=(--file "${file}"); done
+if ! QUERY_FREE_LOG="$(cd "${ROOT}" && python3 scripts/check_backend_query_free.py "${FILE_ARGS[@]}" 2>&1)"; then
+  finish fail "the harnesses must be workload-generic (no query names or query-number dispatch)" "${QUERY_FREE_LOG}"
 fi
 
-DIFF_TARGET="${DIFF_BINARY:-test_${ENGINE_NAME}_tpch_differential}"
+if ! engine_ready "${TARGETS[@]}"; then
+  finish fail "${ENGINE_FAIL}: fix the harness sources / harness.cmake" "${ENGINE_LOG}"
+fi
 
-if [[ "${ENGINE_NAME}" == "postgres" ]]; then
-  BUILD_LOG=""
-  if ! BUILD_LOG="$(bash "${ROOT}/scripts/ensure_accel_pg_test.sh" 2>&1)"; then
-    write_result "fail" "docker ensure failed for postgres host_bootstrap" "${BUILD_LOG}"
+REGISTERED_QUERY=""
+for register in "${ROOT}"/accelerators/"${BENCHMARK_NAME}"/q*/"${ENGINE_NAME}"/aux/register.cpp; do
+  [[ -f "${register}" ]] || continue
+  REGISTERED_QUERY="$(sed -E 's#.*/q([0-9]+)/.*#\1#' <<<"${register}")"
+  break
+done
+
+SMOKE_LOG=""
+SMOKES="[]"
+smoke() { # target args...
+  local target="$1"
+  engine_run "$@"
+  SMOKE_LOG+="[smoke ${*}] rc=${RC}"$'\n'"${LOG}"$'\n'
+  SMOKES="$(python3 -c "import json,sys; d=json.loads(sys.argv[1]); d.append({'target': sys.argv[2], 'args': sys.argv[4:], 'exit_code': int(sys.argv[3])}); print(json.dumps(d))" "${SMOKES}" "${target}" "${RC}" "${@:2}")"
+  if [[ ${RC} -ne 0 ]]; then
+    finish fail "smoke failed: ${target} ${*:2} (exit ${RC})" "${ENGINE_LOG}${SMOKE_LOG}"
   fi
-  export ACCEL_PG_NINJA_TARGETS="${DIFF_TARGET}"
-  if ! BUILD_LOG="${BUILD_LOG}"$'\n'"$(bash "${ROOT}/scripts/build_accel_postgres_extension.sh" 2>&1)"; then
-    write_result "fail" "docker build failed for ${DIFF_TARGET}" "${BUILD_LOG}"
-  fi
-  CONTAINER="${ACCEL_PG_CONTAINER:-accel_pg_test}"
-  if ! docker exec "${CONTAINER}" test -x "/accel-build/accel/${DIFF_TARGET}"; then
-    write_result "fail" "missing in-container ${DIFF_TARGET}: create ${DIFF_SOURCE} + CMake + host SQL on ${REGISTER_PATH}" "${BUILD_LOG}"
-  fi
-  # Optional TPC-H DB for later correctness (best-effort).
-  ACCEL_PG_ENSURE_TPCH=0 bash "${ROOT}/scripts/setup_accel_postgres_tpch_test_db.sh" >/dev/null 2>&1 || true
-  write_result "pass" "${DIFF_TARGET} built in docker (${CONTAINER})" "${BUILD_LOG}"
-  exit 0
+}
+
+if [[ -n "${REGISTERED_QUERY}" ]]; then
+  smoke "${DIFF_BINARY}" "${REGISTERED_QUERY}"
+else
+  smoke "${DIFF_BINARY}" --help
 fi
-
-# Non-postgres / non-duckdb fallback: host cmake
-# shellcheck source=cmake_ensure_target.sh
-source "$(dirname "${BASH_SOURCE[0]}")/cmake_ensure_target.sh"
-
-if [[ ! -d "${BUILD}" ]]; then
-  write_result "fail" "build dir missing: ${BUILD}"
-fi
-
-BUILD_LOG=""
-if ! ensure_cmake_target "${ROOT}" "${BUILD}" "${DIFF_TARGET}"; then
-  BUILD_LOG="$(cmake --build "${BUILD}" --target "${DIFF_TARGET}" -j"$(nproc)" 2>&1 | tail -80 || true)"
-fi
-
-if [[ ! -x "${BUILD}/${DIFF_TARGET}" ]]; then
-  write_result "fail" "missing ${DIFF_TARGET}: create ${DIFF_SOURCE:-eval/tests/${DIFF_TARGET}.cpp} + CMake and host SQL entrypoints on ${REGISTER_PATH}" "${BUILD_LOG}"
-fi
-
-write_result "pass" "${DIFF_TARGET} built" "${BUILD_LOG}"
-exit 0
+for target in "${MULTI_CONN_TARGET}" "${CROSS_ACCEL_TARGET}" "${HARNESS_BENCH_TARGET}" "${HARNESS_CALIBRATE_TARGET}"; do
+  smoke "${target}" --help
+done
+finish pass "built and smoked ${TARGETS[*]}" "${ENGINE_LOG}${SMOKE_LOG}"

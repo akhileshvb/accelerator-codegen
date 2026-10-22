@@ -76,7 +76,6 @@ def build_semantic_worker_checkpoint(
     art_dir: Path,
     *,
     provider: str,
-    last_response_id: str | None,
     optimization_iter: int,
     attempt: int,
     seeded: bool,
@@ -96,7 +95,6 @@ def build_semantic_worker_checkpoint(
 
     payload: dict[str, Any] = {
         "provider": provider,
-        "last_response_id": last_response_id,
         "optimization_iter": optimization_iter,
         "attempt": attempt,
         "seeded": seeded,

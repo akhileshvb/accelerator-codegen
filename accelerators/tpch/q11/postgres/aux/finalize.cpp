@@ -7,7 +7,7 @@
 #include <string>
 #include <vector>
 
-#include "prims/pg_numeric.hpp"
+#include "backends/postgres/api/pg_numeric.hpp"
 
 namespace accelerator_codegen::aux_state::query {
 namespace {

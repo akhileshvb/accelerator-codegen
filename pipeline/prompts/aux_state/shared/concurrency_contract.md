@@ -2,7 +2,7 @@
 
 Aux accelerators run in a **multi-connection** environment: one connection may execute invalidating SQL while others read via aux table functions. The hand-written substrate provides txn isolation, per-accelerator epochs, and staged publication; generated `AuxQueryModule` code must cooperate.
 
-Read `substrate_contract.md` and `maintenance_framework.md` for substrate APIs. This doc states **agent obligations**.
+Read `maintenance_framework.md` and `engine_interfaces.md` for substrate APIs. This doc states **agent obligations**.
 
 ## Scope
 
@@ -62,7 +62,7 @@ In `correctness_facts.cross_accelerator_concurrency`, document:
 
 ## Harness wiring (required for new queries)
 
-`aux_cross_accel` / `aux_multi_connection` need this query present on **every** shared registration and helper surface that peer aux queries use (SQL helpers, invalidating writer cases, DuckDB TF registration, shared-query allowlists). Discover current files by searching a neighboring query id; append matching cases. Missing wiring fails with `unsupported …` / `Table Function … does not exist`.
+`aux_cross_accel` / `aux_multi_connection` need this query present on **every** shared registration and helper surface that peer aux queries use (SQL helpers, invalidating writer cases, SQL entry-point registration, shared-query allowlists). Discover current files by searching a neighboring query id; append matching cases. Missing wiring fails with `unsupported …` / a missing SQL function.
 
 ## Local verification
 

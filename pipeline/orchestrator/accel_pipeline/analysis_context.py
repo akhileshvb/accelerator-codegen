@@ -58,7 +58,7 @@ def build_shared_docs_reference(pipeline_root_rel: str = "pipeline", stage: str 
     base = f"{pipeline_root_rel}/prompts/aux_state/shared"
     shared_base = f"{pipeline_root_rel}/prompts/shared"
     docs = _STAGE_SHARED_DOCS.get(stage, _STAGE_SHARED_DOCS["analysis"])
-    lines = ["Read with `read_file` only when needed:", ""]
+    lines = ["Read only when needed:", ""]
     for label, path in docs:
         if path.startswith("../../shared/"):
             rel = f"{shared_base}/{path.removeprefix('../../shared/')}"

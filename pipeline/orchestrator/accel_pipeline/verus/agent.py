@@ -128,6 +128,11 @@ def inline_files(ctx: VerusContext, pattern: str) -> str:
 _calls: dict[str, int] = {}
 
 
+def _events_workload(ctx: VerusContext) -> dict[str, Any]:
+    """Identifies the run's artifact directory (Verus kits run on DuckDB)."""
+    return {"benchmark_name": ctx.benchmark, "engine_name": "duckdb"}
+
+
 def run_agent(
     ctx: VerusContext,
     *,
@@ -177,7 +182,7 @@ def run_agent(
         raise RuntimeError(
             f"Verus pipeline step {stage} resolves to provider {provider!r}: every Verus agent step runs on "
             f"codex_exec (set stage_providers.{stage}: codex_exec, e.g. --models-config "
-            "pipeline/config/models.codex.yaml)")
+            "pipeline/config/models.yaml)")
     # codex works in the workspace; its CODEX_HOME (and MCP launcher) stay the pipeline's
     codex_home = getattr(pipeline_config, "codex_home", None) or Path(ctx.pipeline_root) / ".codex"
     ws_config = dataclasses.replace(pipeline_config, repo_root=ctx.ws, codex_home=Path(codex_home))
@@ -188,7 +193,7 @@ def run_agent(
     os.environ["ACCEL_PIPELINE_MODE"] = "verus"
     model_id = make_model_id(stage, pipeline_config, mc, model_overrides)
     agent_model = resolve_agent_model(stage, pipeline_config, mc, model_overrides)
-    log_stage_start(ctx.root, ctx.query, stage=stage, model_id=model_id)
+    log_stage_start(ctx.root, ctx.query, _events_workload(ctx), stage=stage, model_id=model_id)
     backend = CodexExecBackend(pipeline_config=ws_config, model_config=mc, query=ctx.query, stage=stage,
                                workload_name=ctx.workload_name, art_dir=ctx.art)
     if str(ctx.setting("sandbox", "bwrap")) == "bwrap":
@@ -208,7 +213,7 @@ def run_agent(
     sid = str(result.metadata.get("session_id") or "")
     use = usage_mod.session_usage(Path(codex_home), sid, started) or usage_from_metadata(result.metadata) or {}
     cost = usage_mod.cost_usd(model_id, use, ctx.setting("pricing", {}) or {})
-    log_stage_complete(ctx.root, ctx.query, stage=stage, model_id=model_id, backend=result.backend,
+    log_stage_complete(ctx.root, ctx.query, _events_workload(ctx), stage=stage, model_id=model_id, backend=result.backend,
                        duration_ms=result.metadata.get("duration_ms"),
                        usage={**use, **({"cost_usd": cost} if cost is not None else {})} or None)
     usage_mod.record(ctx.art, {"stage": stage, "n": n, "model": model_id, "ok": result.status == "finished",

@@ -5,8 +5,8 @@
 #include "tpch/q19/duckdb/aux/module.hpp"
 #include "tpch/q19/cost_model.hpp"
 #include "backends/duckdb/api/aux_query_registry.hpp"
-#include "backends/duckdb/engine/build_scan.hpp"
-#include "backends/duckdb/engine/decimal128.hpp"
+#include "backends/duckdb/api/build_scan.hpp"
+#include "backends/duckdb/api/decimal128.hpp"
 #include "catalog/query_catalog.hpp"
 
 #include <functional>

@@ -5,7 +5,7 @@
 //! Production paths are hardcoded in kernels (no ambient ACCEL_* dependence).
 
 #include "eval/tests/test_support/db_paths.hpp"
-#include "backends/duckdb/engine/duckdb_scan_adapter.hpp"
+#include "backends/duckdb/api/duckdb_scan_adapter.hpp"
 #include "backends/duckdb/api/register.hpp"
 #include "tpch/q1/duckdb/base/query.hpp"
 #include "tpch/q3/duckdb/base/query.hpp"

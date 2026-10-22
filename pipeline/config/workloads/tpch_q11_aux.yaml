@@ -1,49 +1,13 @@
 workload_kind: aux_state
 benchmark_name: tpch
 query_number: 11
-engine_name: postgres
-query_id: "11"
-accelerator_id: tpch_q11_aux
-base_function_name: accel_tpch_q11
-aux_function_name: accel_tpch_q11_aux
-
-requires_base_accelerator: true
-prerequisite_workload: tpch_q11
-prerequisite_min_stage: implementation
-reference_accelerators:
-  - accelerators/tpch/q14/duckdb/aux/module.cpp
-  - accelerators/tpch/q1/duckdb/aux/module.cpp
-  - accelerators/tpch/q21/duckdb/aux/module.cpp
-
-allow_poor_fitness: false
-allow_unsuccessful_design: false
-
-reference_sql_path: /home/akhilvb/tpch-utils/generated/sf1_instances/seed_1/11.sql
-seed_manifest_root: /home/akhilvb/tpch-utils/generated/sf1_instances
-
+engines: [duckdb, postgres, mysql]
+reference_sql_path: workloads/tpch/instances/seed_1/11.sql
 parameters:
   - name: nation_name
     type: VARCHAR
   - name: fraction
     type: DOUBLE
-
-dependent_tables:
-  - name: partsupp
-    watched_columns: [ps_partkey, ps_suppkey, ps_availqty, ps_supplycost]
-  - name: supplier
-    watched_columns: [s_suppkey, s_nationkey]
-  - name: nation
-    watched_columns: [n_nationkey, n_name]
-
-partitioning: {}
-
-output_schema:
-  - name: ps_partkey
-    type: BIGINT
-  - name: value
-    type: DECIMAL
-
-cost_model_config: accelerators/tpch/q11/config/q11_aux_cost_model.json
 
 aux_bench_sweep:
   suites: lineitem_only
@@ -67,9 +31,3 @@ optimization_guidance: |
   Efficiency hints (after correctness):
   - Precompute per-nation totals and per-(nation, partkey) sums to avoid rescanning partsupp.
   - Invalidate or incrementally update on deltas to watched columns only.
-
-cmake:
-  query_num: 11
-  aux_state_module: accel_add_aux_state_query
-
-agent_boundary: prompts/aux_state/shared/agent_boundary.md

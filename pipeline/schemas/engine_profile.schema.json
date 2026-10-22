@@ -1,0 +1,541 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "engine_profile",
+  "description": "Standardized engine profile of an engine_backend workload: the same keys for every engine. A leaf is a value or {na: reason}; a blank is a decision. Facts and hazards only, never solutions.",
+  "type": "object",
+  "required": [
+    "identity",
+    "packaging",
+    "host_runtime",
+    "build",
+    "process_model",
+    "capture",
+    "transactions",
+    "locking",
+    "scan",
+    "entry_points",
+    "thread_knobs",
+    "query_host",
+    "oracle",
+    "hazards"
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "na": {
+      "type": "object",
+      "required": [
+        "na"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "na": {
+          "type": "string",
+          "minLength": 8
+        }
+      },
+      "description": "Explicitly not applicable, with the reason."
+    },
+    "text": {
+      "oneOf": [
+        {
+          "type": "string",
+          "minLength": 1
+        },
+        {
+          "$ref": "#/$defs/na"
+        }
+      ]
+    },
+    "flag": {
+      "oneOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "$ref": "#/$defs/na"
+        }
+      ]
+    },
+    "list": {
+      "oneOf": [
+        {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        {
+          "$ref": "#/$defs/na"
+        }
+      ]
+    }
+  },
+  "properties": {
+    "identity": {
+      "type": "object",
+      "description": "Who the engine is.",
+      "required": [
+        "name",
+        "display_name",
+        "version",
+        "sdk_headers",
+        "docs"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "description": "Engine id: lowercase identifier, equals the workload's engine_name.",
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]*$"
+        },
+        "display_name": {
+          "description": "Human name.",
+          "type": "string",
+          "minLength": 1
+        },
+        "version": {
+          "description": "The version the backend targets.",
+          "$ref": "#/$defs/text"
+        },
+        "sdk_headers": {
+          "description": "Headers / SDK roots the backend compiles against.",
+          "$ref": "#/$defs/list"
+        },
+        "docs": {
+          "description": "Engine documentation the agent may consult.",
+          "$ref": "#/$defs/list"
+        }
+      }
+    },
+    "packaging": {
+      "type": "object",
+      "description": "How the backend is delivered into the engine.",
+      "required": [
+        "kind",
+        "placement_candidates",
+        "requires_in_process_host",
+        "prod_target",
+        "test_target",
+        "install_path",
+        "test_only_code_rule"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "enum": [
+            "embedded_lib",
+            "server_extension",
+            "server_plugin"
+          ]
+        },
+        "placement_candidates": {
+          "description": "S6 placements this engine can host.",
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "in_process",
+              "shipped_worker"
+            ]
+          }
+        },
+        "requires_in_process_host": {
+          "description": "True when S7 entry points must load inside the engine (layer host runs).",
+          "type": "boolean"
+        },
+        "prod_target": {
+          "description": "Production artifact target name.",
+          "$ref": "#/$defs/text"
+        },
+        "test_target": {
+          "description": "Test-only artifact target name.",
+          "$ref": "#/$defs/text"
+        },
+        "install_path": {
+          "description": "Where the artifact must be installed for the engine to load it.",
+          "$ref": "#/$defs/text"
+        },
+        "test_only_code_rule": {
+          "description": "Fact about which artifact may hold test-only code.",
+          "$ref": "#/$defs/text"
+        }
+      }
+    },
+    "host_runtime": {
+      "type": "object",
+      "description": "The environment the gates run the engine in.",
+      "required": [
+        "kind",
+        "ninja_targets_env",
+        "container_env",
+        "default_container",
+        "binary_dir",
+        "connect",
+        "env"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "enum": [
+            "host_cmake",
+            "docker"
+          ]
+        },
+        "ninja_targets_env": {
+          "description": "Env var carrying the ninja targets to the build script.",
+          "$ref": "#/$defs/text"
+        },
+        "container_env": {
+          "description": "Env var naming the container.",
+          "$ref": "#/$defs/text"
+        },
+        "default_container": {
+          "description": "Default container name.",
+          "$ref": "#/$defs/text"
+        },
+        "binary_dir": {
+          "description": "Where harness binaries are built (inside the container).",
+          "$ref": "#/$defs/text"
+        },
+        "connect": {
+          "description": "How a client reaches the engine from the host and from inside the host.",
+          "$ref": "#/$defs/text"
+        },
+        "env": {
+          "description": "Environment variables the gates set.",
+          "anyOf": [
+            {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            },
+            {
+              "$ref": "#/$defs/na"
+            }
+          ]
+        }
+      }
+    },
+    "build": {
+      "type": "object",
+      "description": "Build-system facts.",
+      "required": [
+        "cmake_option",
+        "extra_find_packages"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "cmake_option": {
+          "description": "The CMake option that enables this engine's backend.",
+          "$ref": "#/$defs/text"
+        },
+        "extra_find_packages": {
+          "description": "find_package / module names beyond the engine SDK.",
+          "$ref": "#/$defs/list"
+        }
+      }
+    },
+    "process_model": {
+      "type": "object",
+      "description": "How the engine runs user work.",
+      "required": [
+        "connections",
+        "shared_memory_needed",
+        "engine_api_thread_safety",
+        "calls_forbidden_off_main_thread"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "connections": {
+          "description": "What serves a client connection.",
+          "enum": [
+            "threads",
+            "processes",
+            "other"
+          ]
+        },
+        "shared_memory_needed": {
+          "description": "Whether state shared by all connections needs OS shared memory.",
+          "$ref": "#/$defs/flag"
+        },
+        "engine_api_thread_safety": {
+          "description": "Which threads may call engine APIs.",
+          "$ref": "#/$defs/text"
+        },
+        "calls_forbidden_off_main_thread": {
+          "description": "Engine calls that are unsafe off the thread that owns the session.",
+          "$ref": "#/$defs/list"
+        }
+      }
+    },
+    "capture": {
+      "type": "object",
+      "description": "Observing writes.",
+      "required": [
+        "hook_mechanism",
+        "granularity",
+        "ddl_events",
+        "abort_signal",
+        "uncaptured_write_paths"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "hook_mechanism": {
+          "description": "The engine's own way to see row changes.",
+          "$ref": "#/$defs/text"
+        },
+        "granularity": {
+          "description": "Unit one hook invocation covers (row, statement, ...), and what it sees of old/new values.",
+          "$ref": "#/$defs/text"
+        },
+        "ddl_events": {
+          "description": "How TRUNCATE / DROP / RENAME / replace of a table become observable; none if they do not.",
+          "$ref": "#/$defs/text"
+        },
+        "abort_signal": {
+          "description": "How a rolled-back (sub)transaction is signalled.",
+          "$ref": "#/$defs/text"
+        },
+        "uncaptured_write_paths": {
+          "description": "Write paths that bypass the hook (bulk load, DDL, replication apply).",
+          "$ref": "#/$defs/list"
+        }
+      }
+    },
+    "transactions": {
+      "type": "object",
+      "description": "Transaction semantics.",
+      "required": [
+        "isolation_levels",
+        "commit_hook",
+        "commit_order_source",
+        "own_writes_visibility",
+        "snapshot_api",
+        "subtransactions"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "isolation_levels": {
+          "description": "Levels available and the default.",
+          "$ref": "#/$defs/list"
+        },
+        "commit_hook": {
+          "description": "Callbacks around commit and what each may do.",
+          "$ref": "#/$defs/text"
+        },
+        "commit_order_source": {
+          "description": "The engine's own clock that orders commits in visibility order.",
+          "$ref": "#/$defs/text"
+        },
+        "own_writes_visibility": {
+          "description": "What a read inside a writing transaction sees of its uncommitted rows.",
+          "$ref": "#/$defs/text"
+        },
+        "snapshot_api": {
+          "description": "How a reader's snapshot is obtained, named, and compared with commits.",
+          "$ref": "#/$defs/text"
+        },
+        "subtransactions": {
+          "description": "Savepoint support and how their abort is signalled.",
+          "$ref": "#/$defs/text"
+        }
+      }
+    },
+    "locking": {
+      "type": "object",
+      "description": "Engine locks that interact with backend code.",
+      "required": [
+        "engine_locks_relevant",
+        "locks_held_during_hooks",
+        "wait_timeout_knob"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "engine_locks_relevant": {
+          "description": "Engine locks taken by reads, scans and DDL, with their lifetime.",
+          "$ref": "#/$defs/list"
+        },
+        "locks_held_during_hooks": {
+          "description": "Engine locks the engine holds while it calls capture / commit hooks.",
+          "$ref": "#/$defs/list"
+        },
+        "wait_timeout_knob": {
+          "description": "Setting that bounds an engine lock wait.",
+          "$ref": "#/$defs/text"
+        }
+      }
+    },
+    "scan": {
+      "type": "object",
+      "description": "Reading base tables.",
+      "required": [
+        "native_scan_api",
+        "parallel_scan_api",
+        "row_count_source",
+        "type_quirks",
+        "collation_quirks"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "native_scan_api": {
+          "description": "In-process storage / table access API.",
+          "$ref": "#/$defs/text"
+        },
+        "parallel_scan_api": {
+          "description": "Engine support for partitioned or parallel reads at one snapshot.",
+          "$ref": "#/$defs/text"
+        },
+        "row_count_source": {
+          "description": "Cheap row-count estimate and its freshness.",
+          "$ref": "#/$defs/text"
+        },
+        "type_quirks": {
+          "description": "Numeric, date, text-width or NULL representation facts that differ from a plain C++ type.",
+          "$ref": "#/$defs/list"
+        },
+        "collation_quirks": {
+          "description": "How text compares and orders versus bytewise.",
+          "$ref": "#/$defs/list"
+        }
+      }
+    },
+    "entry_points": {
+      "type": "object",
+      "description": "SQL-visible functions.",
+      "required": [
+        "mechanism",
+        "argument_passing",
+        "result_return",
+        "registration_symbol"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "mechanism": {
+          "description": "How the engine registers and calls a function / table function.",
+          "$ref": "#/$defs/text"
+        },
+        "argument_passing": {
+          "description": "How arguments and NULLs arrive.",
+          "$ref": "#/$defs/text"
+        },
+        "result_return": {
+          "description": "How rows and types return to the engine.",
+          "$ref": "#/$defs/text"
+        },
+        "registration_symbol": {
+          "description": "Pattern of the per-query registration symbol the accelerators of this engine export ({Bench}: CamelCase benchmark, {N}: query number), or n/a when the engine has none.",
+          "$ref": "#/$defs/text"
+        }
+      }
+    },
+    "thread_knobs": {
+      "type": "object",
+      "description": "Engine-side settings for thread counts.",
+      "required": [
+        "mechanism",
+        "names",
+        "reload_semantics"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "mechanism": {
+          "description": "Where settings live (GUC, system variable, pragma, env) and who can set them.",
+          "$ref": "#/$defs/text"
+        },
+        "names": {
+          "description": "The settings' names.",
+          "$ref": "#/$defs/list"
+        },
+        "reload_semantics": {
+          "description": "When a changed setting takes effect.",
+          "$ref": "#/$defs/text"
+        }
+      }
+    },
+    "oracle": {
+      "type": "object",
+      "description": "Reference for differential tests.",
+      "required": [
+        "differential_db",
+        "sql_client"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "differential_db": {
+          "description": "Database the differential runs against.",
+          "$ref": "#/$defs/text"
+        },
+        "sql_client": {
+          "description": "The engine's own client for running SQL against the reference database (a fact, not a repository script).",
+          "$ref": "#/$defs/text"
+        }
+      }
+    },
+    "hazards": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": [
+          "symptom",
+          "engine_fact",
+          "layers"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "symptom": {
+            "description": "What goes wrong, observed.",
+            "type": "string",
+            "minLength": 8
+          },
+          "engine_fact": {
+            "description": "The engine behaviour that causes it. A fact, never a fix.",
+            "type": "string",
+            "minLength": 8
+          },
+          "layers": {
+            "description": "Implementation layers the fact matters to.",
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": {
+              "enum": [
+                "capture",
+                "epochs",
+                "scan",
+                "runtime",
+                "host",
+                "hostctl",
+                "api"
+              ]
+            }
+          }
+        }
+      },
+      "description": "Hard-won engine facts as symptom + cause."
+    },
+    "query_host": {
+      "type": "object",
+      "description": "How accelerator runs reach this engine's query host.",
+      "required": [
+        "dataset_env",
+        "work_db_suffix"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "dataset_env": {
+          "description": "Env var carrying the dataset location to harness binaries.",
+          "$ref": "#/$defs/text"
+        },
+        "work_db_suffix": {
+          "description": "Suffix of per-worker copies of the engine's database.",
+          "$ref": "#/$defs/text"
+        }
+      }
+    }
+  }
+}

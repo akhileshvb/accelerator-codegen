@@ -4,9 +4,10 @@ import json
 
 from accel_pipeline.aux_bench import initialize_optimization_state, process_aux_bench_after_gates
 from accel_pipeline.base_bench import process_base_bench_after_gates
-from accel_pipeline.config import ModelConfig, PipelineConfig, load_workload, resolve_workload_paths
+from accel_pipeline.config import ModelConfig, PipelineConfig, load_run_workload, resolve_workload_paths
 from accel_pipeline.crash_debug import run_post_stage_gates_with_crash_debug
 from accel_pipeline.gates import run_gate
+from accel_pipeline.layout import query_dir
 from accel_pipeline.paths import analysis_artifact_path, query_artifacts_dir
 from accel_pipeline.stages.gate_plan import workload_post_implementation_gates
 from accel_pipeline.stages.base import run_agent_stage
@@ -34,47 +35,35 @@ def _implementation_user_message(
     q = query
     build = pipeline_config.build_dir.name
     engine = sanitize_engine_name(str(workload.get("engine_name") or ""))
-    host = dict(workload.get("engine_host") or engine_host_conventions(engine))
-    diff_bin = str(host.get("differential_binary") or "test_tpch_shared_differential")
-    diff_cmd = str(
-        host.get("differential_command")
-        or f'./{build}/{diff_bin} "$ACCEL_TPCH_DB" {q}'
+    host = dict(workload.get("engine_host") or engine_host_conventions(engine, repo_root=pipeline_config.repo_root))
+    diff_bin = str(host["differential_binary"])
+    diff_cmd = str(host["differential_command"])
+    diff_src = str(host["differential_source"])
+    multi = str(host["multi_conn_target"])
+    diff_step = (
+        f"3. ./{build}/{diff_bin} {q}\n"
+        f"   (the harness {diff_src} is made by host_bootstrap; {diff_cmd})\n"
     )
-    if engine == "duckdb":
-        diff_step = f'3. ./{build}/{diff_bin} "$ACCEL_TPCH_DB" {q}\n'
-        trailing = (
-            "4. MCP run_multi_connection (or request_gate aux_multi_connection) until status=pass\n"
-            "Keep fixing and re-running steps 3–4 until both pass. "
-        )
-    else:
-        diff_src = str(host.get("differential_source") or f"eval/tests/{diff_bin}.cpp")
-        multi = str(host.get("multi_conn_ctest_regex") or f"test_{engine}_aux_multi_connection_stress")
-        diff_step = (
-            f"3. Bootstrap/extend {engine} query host if needed "
-            f"(see query_host_bootstrap.md), then ./{build}/{diff_bin} {q}\n"
-            f"   (create {diff_src} + CMake target if missing; {diff_cmd})\n"
-        )
-        trailing = (
-            f"4. MCP run_multi_connection until pass (ctest {multi}; "
-            f"replicate duckdb multi-conn/cross-accel/bench harnesses for {engine})\n"
-            "Keep fixing and re-running steps 3–4 until both pass. "
-        )
+    trailing = (
+        f"4. MCP run_multi_connection until pass ({multi})\n"
+        "Keep fixing and re-running steps 3–4 until both pass. "
+    )
     return (
         "RESUME partial aux implementation: sources already exist on disk from a prior run. "
-        "Do NOT rewrite module.hpp/module.cpp from scratch or explore AuxState.cmake unless fixing CMake registration.\n"
+        "Do NOT rewrite module.hpp/module.cpp from scratch or explore cmake/ (never edited).\n"
         f"Host engine: {engine}. Registered CMake targets: {test_target}, {bench_target}, "
         f"{calibrate_target}, {diff_bin}.\n"
         "Correctness requires SF1 SQL differential on the engine-selected host "
         "(see unit_test_contract.md / query_host_bootstrap.md / engine_host in gate context).\n"
         f"Register this query on every shared surface peer queries use (catalog / allowlists / "
         f"{engine} SQL entrypoint / helpers) — search a neighbor query to find sites.\n"
-        "Use only these allowlisted run_command patterns:\n"
+        "Build and test with these commands (this worker's build dir):\n"
         f"1. cmake --build {build} --target {test_target} {bench_target} {diff_bin} -j$(nproc)\n"
         f"2. ctest --test-dir {build} -R tpch_q{q}_aux --output-on-failure\n"
         f"{diff_step}"
         "   (or MCP run_correctness / request_gate aux_correctness — preferred)\n"
         f"{trailing}"
-        "Fix compile/test failures with minimal apply_patch on generated aux + shared registration appends. "
+        "Fix compile/test failures with minimal edits to the generated aux + shared registration appends. "
         "Do not weaken unit fixtures to hide kernel bugs."
     )
 
@@ -89,7 +78,7 @@ def run(
     *,
     skip_gates: bool = False,
 ):
-    workload = load_workload(workload_name, pipeline_config.repo_root)
+    workload = load_run_workload(pipeline_config, workload_name)
     if workload.get("workload_kind") != "aux_state":
         run_gate(pipeline_config, "scaffold", query, workload=workload)
     else:
@@ -113,9 +102,10 @@ def run(
         user_message=_implementation_user_message(pipeline_config, workload, query),
         model_overrides=model_overrides,
         dry_run=dry_run,
+        must_change=pipeline_config.repo_root / query_dir(str(workload.get("benchmark_name", "tpch")), query),
     )
     if not dry_run and not skip_gates:
-        workload = load_workload(workload_name, pipeline_config.repo_root)
+        workload = load_run_workload(pipeline_config, workload_name)
         analysis_path = analysis_artifact_path(pipeline_config.repo_root, query, workload=workload)
         if analysis_path.is_file() and workload.get("workload_kind") == "aux_state":
             analysis = json.loads(analysis_path.read_text(encoding="utf-8"))

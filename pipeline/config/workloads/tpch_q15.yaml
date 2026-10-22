@@ -1,31 +1,7 @@
 benchmark_name: tpch
 query_number: 15
-engine_name: postgres
-query_id: "15"
-function_name: accel_tpch_q15
-create_fn: CreateTpchQ15FunctionSet
-
-reference_sql_path: /home/akhilvb/tpch-utils/generated/sf1_instances/seed_1/15.sql
-seed_manifest_root: /home/akhilvb/tpch-utils/generated/sf1_instances
-
+engines: [duckdb, postgres]
+reference_sql_path: workloads/tpch/instances/seed_1/15.sql
 parameters:
   - name: start_date
     type: DATE
-
-reference_accelerators: [6, 11]
-
-output_schema:
-  - name: s_suppkey
-    type: BIGINT
-  - name: s_name
-    type: VARCHAR
-  - name: s_address
-    type: VARCHAR
-  - name: s_phone
-    type: VARCHAR
-  - name: total_revenue
-    type: DECIMAL
-
-tables:
-  - lineitem
-  - supplier

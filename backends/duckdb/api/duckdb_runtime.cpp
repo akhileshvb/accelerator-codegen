@@ -12,7 +12,7 @@
 #include "backends/duckdb/api/duckdb_host.hpp"
 #include "backends/duckdb/api/shared_query_engine.hpp"
 #include "backends/duckdb/api/verus_host.hpp"
-#include "backends/duckdb/engine/scan.hpp"
+#include "backends/duckdb/api/scan.hpp"
 #include "substrate/aux/core/aux_execute_stats.hpp"
 #include "substrate/aux/state/aux_state_footprint.hpp"
 #include "substrate/aux/state/verus_aux_store.hpp"

@@ -10,17 +10,6 @@ from accel_pipeline.optimization_bootstrap import (
     format_bootstrap_markdown,
     load_editable_sources,
 )
-from accel_pipeline.tools.tool_policy import STAGE_TOOL_NAMES
-
-
-def test_optimization_unified_has_no_read_tools() -> None:
-    tools = STAGE_TOOL_NAMES["optimization_unified"]
-    assert "write_file" in tools
-    assert "apply_patch" in tools
-    assert "read_file" not in tools
-    assert "read_reference_files" not in tools
-    assert "rip_grep" in tools
-    assert "search_repo" not in tools
 
 
 def test_bootstrap_includes_full_sources(tmp_path: Path) -> None:
@@ -55,8 +44,8 @@ def test_bootstrap_includes_full_sources(tmp_path: Path) -> None:
 
     md, loaded = build_optimization_bootstrap(pc, workload, 99)
     assert loaded
-    assert "do not call read_file" in md.lower()
-    assert "Reference aux accelerators" in md
+    assert "do not re-read" in md.lower()
+    assert "Shared repo context pack" in md
     assert "module.hpp" in md
     rendered = format_bootstrap_markdown(loaded, max_chars=500_000)
     assert "struct Foo" in rendered

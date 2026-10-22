@@ -1,34 +1,30 @@
-repo_root: /home/akhilvb/accelerator-codegen
-duckdb_root: /home/akhilvb/accelerator-codegen-duckdb
 build_dir: build-release
-# Query-accelerator workloads require explicit engine_name (no duckdb/postgres default).
-# Set per workload YAML or ACCEL_WORKLOAD_ENGINE_NAME.
-tpch_db_sf1: /home/akhilvb/accelerator-codegen-duckdb/tpch_sf1.duckdb
-tpch_db_sf10: /home/akhilvb/accelerator-codegen-duckdb/tpch_sf10.duckdb
+# Query-accelerator workloads list their `engines:`; a run picks one (--engine / pack `engines:`).
 
 # Paths that require the shared-file lease under concurrent pack workers.
 shared_paths:
-  - CMakeLists.txt
-  - cmake/**
   # Engine backends: generic only (queries register from their own
   # directories), so these change only for engine-level additions.
   - backends/*/api/**
   - backends/*/engine/**
   - backends/*/state/**
-  - eval/tests/test_support/cross_accel_helpers.cpp
-  - eval/tests/test_support/cross_accel_helpers.hpp
-  - eval/bench/tpch/single-threaded/tpch_arg_variants.cpp
-  - eval/bench/tpch/single-threaded/tpch_arg_variants.hpp
+  - eval/tests/test_support/**
+  - eval/bench/**/*_arg_variants.*
   # Shared primitives library: changed only through primitive_publish.
   - accelerators/prims/**
   # Helpers shared by one benchmark's queries (frozen during concurrent optimization).
   - accelerators/*/common/**
 
+# Dataset databases are run parameters: each key names the environment variable
+# that holds the database path (unset: the dataset is unavailable to the run).
+shared_bench_harness: [tpch]   # backends/<engine>/bench/: benchmark_<engine>_<bench>_aux, calibrate_<engine>_<bench>_aux_cost_model
+
 datasets:
-  tpch_sf1: /home/akhilvb/accelerator-codegen-duckdb/tpch_sf1.duckdb
-  tpch_sf10: /home/akhilvb/accelerator-codegen-duckdb/tpch_sf10.duckdb
-  tpch_sf20: /home/akhilvb/accelerator-codegen-duckdb/tpch_sf20.duckdb  # optional; manual production benchmark
-  sec_edgar_sf3: /home/akhilvb/accelerator-codegen-duckdb/sec_edgar_sf3.duckdb
+  tpch_sf1: ACCEL_TPCH_DB
+  tpch_sf10: ACCEL_TPCH_SF10_DB
+  tpch_sf20: ACCEL_TPCH_SF20_DB          # optional; manual production benchmark
+  tpch_test: ACCEL_TPCH_TEST_DB
+  sec_edgar_sf3: ACCEL_SEC_EDGAR_DB
 
 optimization:
   max_iterations: 3
@@ -54,14 +50,6 @@ optimization:
   accept_on_screen: true
   skip_confirmation: true
   smoke_runs: 2
-  attempt_budgets:
-    max_file_reads: 0  # 0 = unlimited
-    max_grep_calls: 0
-    max_tool_calls: 0
-  patch_budgets:
-    max_file_reads: 0
-    max_grep_calls: 0
-    max_tool_calls: 0
   max_turns:
     analysis: 0  # 0 = unlimited
     patch: 0
@@ -75,12 +63,6 @@ optimization:
   persistent_worker: true
   worker_max_turns_per_candidate: 0
   worker_safety_cap_turns: 80
-  continuation:
-    openai_auto_previous_response_id: true
-  openrouter_history:
-    max_chars: 120000
-    preserve_recent_cycles: 2
-    tool_output_summary_chars: 80
   hot_path_digest_max_chars: 25000
   turn_delta_max_chars: 4000
   checkpoint_file: optimization_worker_checkpoint.json
@@ -94,7 +76,7 @@ optimization:
 crash_debug:
   # 0 = keep crash-debugging within the same stage/iter until mandatory gates pass
   max_rounds: 0
-  safety_cap: 25
+  safety_cap: 10
 
 stage_max_turns:
   analysis: 8
@@ -105,13 +87,10 @@ stage_max_turns:
   host_bootstrap: 0  # unlimited (query-host bootstrap; gate retries separately)
 
 write_paths:
-  - CMakeLists.txt
-  - cmake/AuxState.cmake
   # a query owns its whole directory: kernels, tests, benchmarks, cost models
-  - accelerators/tpch/q*/**
+  - accelerators/*/q*/**
   - accelerators/sec_edgar/q*/**
-  - eval/tests/test_support/cross_accel_helpers.cpp
-  - eval/tests/test_support/cross_accel_helpers.hpp
+  - eval/tests/test_support/**
   - pipeline/artifacts/**
 
 allowed_commands:

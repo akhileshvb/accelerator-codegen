@@ -170,7 +170,6 @@ def build_context(pipeline_config: Any, workload: dict[str, Any], workload_name:
 # C++-pipeline workload fields the Verus mode never uses (they would give
 # agents context from C++ accelerators).
 IGNORED_WORKLOAD_FIELDS = (
-    "reference_accelerators",
     "optimization_guidance",
     "requires_base_accelerator",
     "prerequisite_workload",

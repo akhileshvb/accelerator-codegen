@@ -11,7 +11,7 @@ from accel_pipeline.base_bench import (
     build_optimization_diagnosis,
     load_base_optimization_state,
 )
-from accel_pipeline.config import PipelineConfig, load_workload, resolve_optimization_edit_paths, resolve_workload_paths
+from accel_pipeline.config import PipelineConfig, resolve_optimization_edit_paths, resolve_workload_paths
 from accel_pipeline.kernel_hot_path_review import (
     analyze_kernel_source,
     format_kernel_review_for_prompt,
@@ -29,15 +29,8 @@ RUNTIME_JSON = "optimization_runtime.json"
 AB_TRIALS_JSON = "ab_trials.json"
 EPISODE_LOG = "episode_log.jsonl"
 PLAYBOOK_TECHNIQUES_JSON = "playbook_techniques.json"
-TOOL_ARTIFACTS_DIR = "runtime_tool_artifacts"
 BASE_KERNEL_OPTIMIZATION_REL = "pipeline/prompts/shared/base_kernel_optimization.md"
 OPTIMIZATION_WORKFLOW_COMPACT_REL = "pipeline/prompts/shared/optimization_workflow_compact.md"
-
-
-def runtime_artifacts_dir(art: Path) -> Path:
-    path = art / TOOL_ARTIFACTS_DIR
-    path.mkdir(parents=True, exist_ok=True)
-    return path
 
 
 def load_runtime_json(art: Path) -> dict[str, Any]:
@@ -374,8 +367,8 @@ def build_runtime_state(
             "ab_trials": load_ab_trials(art)[-5:],
             "episode_summaries": load_episode_log(art, limit=5),
             "playbook_techniques": load_playbook_techniques(art, limit=8),
-            "negative_memory": load_negative_memory(pipeline_config.repo_root, limit=8),
-            "negative_memory_guidance": load_negative_memory_guidance(pipeline_config.repo_root),
+            "negative_memory": load_negative_memory(pipeline_config.repo_root, pipeline_config.engine_name, limit=8),
+            "negative_memory_guidance": load_negative_memory_guidance(pipeline_config.repo_root, pipeline_config.engine_name),
             "optimization_workflow_compact": load_optimization_workflow_compact(
                 pipeline_config.repo_root
             ),
@@ -436,8 +429,8 @@ def build_runtime_state(
         "ab_trials": load_ab_trials(art)[-5:],
         "episode_summaries": load_episode_log(art, limit=5),
         "playbook_techniques": load_playbook_techniques(art, limit=8),
-        "negative_memory": load_negative_memory(pipeline_config.repo_root, limit=8),
-        "negative_memory_guidance": load_negative_memory_guidance(pipeline_config.repo_root),
+        "negative_memory": load_negative_memory(pipeline_config.repo_root, pipeline_config.engine_name, limit=8),
+        "negative_memory_guidance": load_negative_memory_guidance(pipeline_config.repo_root, pipeline_config.engine_name),
         "optimization_workflow_compact": load_optimization_workflow_compact(pipeline_config.repo_root),
         "kernel_paths": {
             "header": edit_paths["header"],
@@ -544,7 +537,7 @@ def format_runtime_markdown(state: dict[str, Any]) -> str:
     questions = state.get("investigation_questions") or []
     if questions:
         lines.append("")
-        lines.append("## Investigate (grep_context before editing)")
+        lines.append("## Investigate (read the code before editing)")
         for item in questions:
             lines.append(f"- {item}")
     kernel_guidance = state.get("kernel_hot_path_guidance") or []
@@ -691,53 +684,6 @@ def runtime_path_for_prompt(
         return str(rel.relative_to(pipeline_config.repo_root))
     except ValueError:
         return str(rel)
-
-
-def store_tool_artifact(art: Path, tool_name: str, content: str) -> str:
-    artifacts = runtime_artifacts_dir(art)
-    existing = sorted(artifacts.glob("*.txt"))
-    seq = len(existing) + 1
-    path = artifacts / f"{seq:04d}_{tool_name}.txt"
-    path.write_text(content, encoding="utf-8")
-    try:
-        return str(path.relative_to(art.parent.parent.parent))
-    except ValueError:
-        return str(path)
-
-
-def compress_tool_output(art: Path, tool_name: str, raw: str) -> str:
-    if tool_name == "run_command" and len(raw) > 1800:
-        stored = store_tool_artifact(art, "run_command", raw)
-        tail = raw[-1200:]
-        parsed = _parse_benchmark_from_output(raw)
-        if parsed:
-            return (
-                f"compressed_command_output (full log: {stored})\n"
-                f"speedup_median={parsed.get('speedup_median')} "
-                f"ref_us={parsed.get('reference_median_us')} accel_us={parsed.get('accelerator_median_us')}\n"
-                f"profile: pre_consume_us={parsed.get('pre_consume_us')} generic_rows={parsed.get('generic_rows')}\n"
-                f"tail:\n{tail}"
-            )
-        return f"compressed_command_output (full log: {stored})\n{tail}"
-    if tool_name == "read_file" and len(raw) > 6_000:
-        stored = store_tool_artifact(art, "read_file", raw)
-        return raw[:6_000] + f"\n... [truncated {len(raw)} chars; full: {stored}; use offset/limit or grep_context]"
-    if tool_name == "grep_context" and len(raw) > 8_000:
-        stored = store_tool_artifact(art, "grep_context", raw)
-        return raw[:8_000] + f"\n... [truncated; full: {stored}; narrow pattern or reduce context]"
-    if tool_name in {"rip_grep", "ast_grep", "search_repo"} and len(raw) > 10_000:
-        stored = store_tool_artifact(art, tool_name, raw)
-        return raw[:10_000] + f"\n... [truncated; full: {stored}]"
-    return raw
-
-
-def _parse_benchmark_from_output(output: str) -> dict[str, Any]:
-    from accel_pipeline.base_bench import parse_benchmark_log
-
-    parsed = parse_benchmark_log(output)
-    if not parsed:
-        return {}
-    return parsed
 
 
 def record_ab_trial(

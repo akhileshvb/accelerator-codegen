@@ -33,7 +33,7 @@ def test_crash_debug_limit_raises_at_max_rounds():
 
 @patch("accel_pipeline.crash_debug.run_agent_stage")
 @patch("accel_pipeline.crash_debug.run_post_stage_gates_collect")
-@patch("accel_pipeline.crash_debug.load_workload")
+@patch("accel_pipeline.crash_debug.load_run_workload")
 @patch("accel_pipeline.crash_debug.query_artifacts_dir")
 @patch("accel_pipeline.crash_debug.append_experiment_log")
 def test_crash_debug_retries_until_gates_pass(

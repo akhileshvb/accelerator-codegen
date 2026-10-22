@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from accel_pipeline.config import ModelConfig, PipelineConfig, load_workload
+from accel_pipeline.config import ModelConfig, PipelineConfig, load_run_workload
 from accel_pipeline.gates import GateFailure, GateResult, gate_failure_message
+from accel_pipeline.layout import query_dir
 from accel_pipeline.paths import query_artifacts_dir
 from accel_pipeline.playbook import append_experiment_log
 from accel_pipeline.stages.base import run_agent_stage
@@ -108,7 +109,7 @@ def run_post_stage_gates_with_crash_debug(
     if dry_run:
         return []
 
-    workload = load_workload(workload_name, pipeline_config.repo_root)
+    workload = load_run_workload(pipeline_config, workload_name)
     reproduce = (
         f"cmake --build build-release --target {workload.get('test_target', 'test')} -j$(nproc) && "
         f"ctest -R {workload.get('ctest_smoke_regex', '')}"
@@ -166,4 +167,5 @@ def run_post_stage_gates_with_crash_debug(
             user_message=diagnosis,
             model_overrides=model_overrides,
             optimization_iter=iteration,
+            must_change=pipeline_config.repo_root / query_dir(str(workload.get("benchmark_name", "tpch")), query),
         )

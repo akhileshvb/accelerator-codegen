@@ -1,6 +1,6 @@
 # Verus accelerator pipeline (--mode verus) defaults.  A workload's `verus:`
 # section overrides any key.  Every agent step runs on codex exec
-# (stage_providers verus_* in models.codex.yaml).
+# (stage_providers verus_* in models.yaml).
 
 # Names (defaults derived from the benchmark and query):
 #   crate: tpch_q21_vgen          kernel crate accelerators/<bench>/q<N>/verus_kit/<crate>/crate, C ABI <crate>_verus.h
@@ -8,8 +8,8 @@
 #   ffi_prefix: tpchq21vgen       C names <prefix>_* / <prefix>s_*
 #   query_sql: workloads/<bench>/q<N>.sql   the query with $n parameters
 #   schema_sql: workloads/<bench>/schema.sql
-test_db: /home/akhilvb/accelerator-codegen-duckdb/tpch_test.duckdb   # correctness gates (copied per run)
-bench_db: /home/akhilvb/accelerator-codegen-duckdb/tpch_sf1.duckdb   # optimization A/B (copied per run)
+# test_db / bench_db: the `<bench>_test` / `<bench>_sf1` datasets of default.yaml (ACCEL_TPCH_TEST_DB, ACCEL_TPCH_DB);
+# correctness gates and optimization A/B work on per-run copies.
 # build_dir: build-release      # CMake build dir with the DuckDB engine (default: the pipeline's)
 # lib_dir: build-verus          # kernel static libraries
 # verus_bin: <tree>/tools/verus/verus-x86-linux/verus   (or env VERUS_BIN)

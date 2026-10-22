@@ -11,7 +11,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from accel_pipeline.config import ModelConfig, PipelineConfig, load_workload
+from accel_pipeline.config import ModelConfig, PipelineConfig, load_run_workload
 from accel_pipeline.gates import GateFailure
 from accel_pipeline.paths import query_artifacts_dir
 from accel_pipeline.playbook import append_experiment_log
@@ -72,11 +72,13 @@ def format_implementation_feedback(audit: dict[str, Any], *, round_idx: int) -> 
     lines.append(feedback or "(auditor left feedback_for_implementation empty — re-read violations)")
     lines.append("")
     lines.append(
-        "Re-implement only the failing layer(s) against `layers.md` + "
-        "`acceptance_checklist.md`. Smallest patch; do not weaken the harness "
-        "to greenwash. Mid-loop MCP `engine_build` plus that layer's gate until "
-        "green. The orchestrator re-runs only layers named in `violations[].layer` "
-        "(pipeline order), then re-audits."
+        "Resolve every violation named for this layer against `layers.md` + "
+        "`acceptance_checklist.md`, however large the change: a missing mechanism or "
+        "placement is built now, not deferred. A gate that passes without exercising a "
+        "violation does not resolve it: first add the harness assertion that fails on it, "
+        "then make it pass. Do not weaken the harness to greenwash. Mid-loop MCP "
+        "`engine_build` plus that layer's gate until green. The orchestrator re-runs only "
+        "layers named in `violations[].layer` (pipeline order), then re-audits."
     )
     return "\n".join(lines)
 
@@ -116,7 +118,7 @@ def run_architecture_audit_agent(
     round_idx: int,
     user_message: str = "",
 ) -> Any:
-    workload = load_workload(workload_name, pipeline_config.repo_root)
+    workload = load_run_workload(pipeline_config, workload_name)
     art = query_artifacts_dir(pipeline_config.repo_root, query, workload=workload)
     json_path = art / "architecture_audit.json"
     engine = str(workload.get("engine_name") or "")
@@ -169,7 +171,7 @@ def run_architecture_audit_with_impl_retry(
     ``run_implementation_fn`` is injected to avoid circular imports
     (``stages.engine_backend.run_implementation``).
     """
-    workload = load_workload(workload_name, pipeline_config.repo_root)
+    workload = load_run_workload(pipeline_config, workload_name)
     art = query_artifacts_dir(pipeline_config.repo_root, query, workload=workload)
     art.mkdir(parents=True, exist_ok=True)
 
@@ -275,7 +277,14 @@ def run_architecture_audit_with_impl_retry(
                 extra_user_message=feedback,
             )
 
-    raise GateFailure(
-        f"architecture audit still failing after {max_rounds} round(s): "
-        f"{last_audit.get('summary') or last_audit.get('feedback_for_implementation') or 'see architecture_audit.json'}"
+    # Every layer gate passes; what the audit still asks moves to validation (a required fix
+    # there, next to the adversarial tests and slot gates) instead of stopping the backend run.
+    art = query_artifacts_dir(pipeline_config.repo_root, query, workload=workload)
+    (art / "architecture_audit.open_findings.md").write_text(feedback + "\n", encoding="utf-8")
+    append_experiment_log(
+        pipeline_config.repo_root,
+        query,
+        f"- architecture audit: open findings after {max_rounds} round(s) handed to validation "
+        "(architecture_audit.open_findings.md)",
+        workload=workload,
     )

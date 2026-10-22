@@ -33,7 +33,7 @@ Each row is a way a design that passes at SF1-SF20 breaks or stops being increme
 
 | Failure class | The module must | How it is checked |
 |---|---|---|
-| Sums overflow 64 bits (scaled decimals, products of them, running totals, squares) | Accumulate, store, delta and emit in 128-bit (`i128::*`, `ScaledDecimal128`); widen before multiplying; never narrow to 64 bits without a checked cast; thresholds compared exactly | `tpch_big` database (money columns x3000): differential vs SQL for build, delta and rebuild paths |
+| Sums overflow 64 bits (scaled decimals, products of them, running totals, squares) | Accumulate, store, delta and emit in 128-bit (`ScaledDecimal128`, overflow-checked); widen before multiplying; never narrow to 64 bits without a checked cast; thresholds compared exactly | `tpch_big` database (money columns x3000): differential vs SQL for build, delta and rebuild paths |
 | Keys, ids, offsets or counts exceed 32 bits (row ids, arena / blob / dictionary offsets, per-key counters, partition ids, loop indices over rows, hash-combined ids) | Use 64-bit for all of them; a narrowing that can lose information is a checked cast that fails loudly, never wraps, skips the row or falls to per-row SQL | `tpch_shift` database (every key shifted to its SF3000 maximum): differential incl. writes of such keys |
 | Arrays or tables sized by the maximum key, or dense ranges over a sparse key space | Size by distinct or touched keys (paged / sparse COW containers); a dense layout only when the domain is bounded by table statistics, with a sparse fallback beyond its bound, not a skip | `tpch_shift`: state bytes and RSS track row counts, not the maximum key |
 | Fixed shard, slot or partition counts | Derive counts from expected rows (`DataScaleRows()`, bind-time row estimate) so entries per unit stay bounded; per-unit costs (clone, sort, memmove, index merge) must not grow with total rows | Per-changed-row maintenance time and per-key read time flat from SF1 to SF20 |
@@ -46,7 +46,7 @@ Each row is a way a design that passes at SF1-SF20 breaks or stops being increme
 
 Verification set for every accelerator (in addition to the SF1 gates; none of this is a gate yet, so run it and report it):
 
-1. `scripts/make_tpch_magnitude_dbs.sh <tpch_sf1.duckdb> <dir>` once, then the shared differential (`test_tpch_shared_differential`, and the engine's equivalent) with `ACCEL_TPCH_DB` or the path argument on `tpch_shift.duckdb` and `tpch_big.duckdb`: reads, RF-shaped bulk writes and point writes.
+1. `scripts/make_tpch_magnitude_dbs.sh <sf1 dataset> <dir>` once, then the engine's shared differential with `ACCEL_TPCH_DB` or the path argument on the generated shifted and big datasets: reads, RF-shaped bulk writes and point writes.
 2. The same differential at `ACCEL_AUX_READ_THREADS` / `BUILD_THREADS` / `MAINT_THREADS` = 1 and a higher value. A phase below its grain runs as one slice; set `ACCEL_AUX_TEST_GRAIN=1` (test-only cap on every slice grain) so even one-row commits and small reads split across threads, and the results must be identical.
 3. `ReadAuxExecuteCounts` and the maintenance decision log across the writes: no unexpected rebuild, no fallback.
 
@@ -60,10 +60,10 @@ Verification set for every accelerator (in addition to the SF1 gates; none of th
 
 ## Manual SF20+ validation (outside pipeline)
 
-When a `tpch_sf20` (or higher) DuckDB file is available:
+When a `tpch_sf20` (or higher) dataset is available:
 
 ```bash
-ACCEL_TPCH_DB=/path/to/tpch_sf20.duckdb ./build-release/benchmark_tpch_q{N}
+ACCEL_TPCH_DB=/path/to/tpch_sf20 ./build-release/benchmark_tpch_q{N}
 ```
 
 The pipeline does not run SF20 gates by default (runtime cost). Agents must still design as if it will.

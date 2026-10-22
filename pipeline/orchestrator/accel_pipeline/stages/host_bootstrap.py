@@ -1,4 +1,4 @@
-"""Stage: one-shot query-host bootstrap for non-duckdb engines."""
+"""Stage: one-shot workload-harness bootstrap (backends/<engine>/tests/harness, bench), every engine."""
 
 from __future__ import annotations
 
@@ -19,12 +19,12 @@ def run(
 ):
     engine = engine_name or "engine"
     user_message = (
-        f"Bootstrap the query host for engine={engine}: SQL entrypoints, "
-        f"differential harness test_{engine}_tpch_differential, and shared "
-        "registration helpers. Replicate duckdb gate surfaces for this backend. "
-        "Do not invent a second adapter tree. Postgres: Docker ninja only "
-        "(request_gate host_bootstrap) — do not cmake/make on the developer "
-        "host. Call request_gate host_bootstrap until it passes, then finish."
+        f"Build the workload harnesses of engine={engine}: the differential, multi-connection, "
+        f"cross-accelerator, bench and calibrate targets under backends/{engine}/tests/harness/ and "
+        f"bench/, declared in backends/{engine}/tests/harness.cmake (the only paths you may write). "
+        "One query-parameterised harness per kind, reaching the engine through the backend api/ and "
+        "host.sh only. Build through the engine's host.sh (request_gate host_bootstrap), not a host "
+        "cmake/make. Call request_gate host_bootstrap until it passes, then finish."
     )
     extra = (extra_user_message or "").strip()
     if extra:

@@ -1,4 +1,4 @@
-"""Pre-load editable sources into the optimization agent message (no read_file churn)."""
+"""Pre-load editable sources into the optimization agent message (no re-reading churn)."""
 
 from __future__ import annotations
 
@@ -54,10 +54,10 @@ def format_bootstrap_markdown(
         return "## Editable sources (bootstrap)\n\n(no editable files found on disk)\n"
 
     parts = [
-        "## Editable sources (bootstrap — full contents, do not call read_file)",
+        "## Editable sources (bootstrap — full contents, do not re-read)",
         "",
-        "All editable files are inlined below. Edit with `write_file` or `apply_patch` "
-        "using these line numbers. **Do not re-read files** — the orchestrator refreshes "
+        "All editable files are inlined below. Edit them in place using these line numbers. "
+        "**Do not re-read files** — the orchestrator refreshes "
         "this block each attempt.",
         "",
     ]
@@ -70,48 +70,6 @@ def format_bootstrap_markdown(
         parts.append("")
 
     return _truncate_chars("\n".join(parts), max_chars)
-
-
-def format_reference_aux_index(
-    repo_root: Path,
-    *,
-    benchmark: str = "tpch",
-    exclude_query: int | None = None,
-) -> str:
-    """List other aux modules the agent can explore via rip_grep / ast_grep."""
-    pattern = f"accelerators/{benchmark}/q*/*/aux/module.cpp"
-    paths = sorted(repo_root.glob(pattern))
-    lines = [
-        "## Reference aux accelerators (read-only — use `rip_grep` / `ast_grep`, not read_file)",
-        "",
-        "Explore patterns from other queries when redesigning aux-state layout, partitions, "
-        "encode/decode, or maintenance. **Ambitious structural changes are encouraged** when "
-        "evidence supports them (new partitions, dense layouts, alternate invalidation, etc.).",
-        "",
-    ]
-    count = 0
-    for path in paths:
-        rel = path.relative_to(repo_root)
-        parts = rel.parts
-        q_num = None
-        for part in parts:
-            if part.startswith("q") and part[1:].isdigit():
-                q_num = int(part[1:])
-                break
-        if exclude_query is not None and q_num == exclude_query:
-            continue
-        lines.append(f"- `{rel}` (Q{q_num})")
-        count += 1
-    if count == 0:
-        lines.append("(no other aux modules found)")
-    lines.append("")
-    lines.append(
-        "Example: `rip_grep('NationNamePartition', path='accelerators/tpch/q18/duckdb/aux', context=5)`"
-    )
-    lines.append(
-        "Example: `ast_grep('class $C { $$$ }', path='accelerators/tpch/q14/duckdb/aux', lang='cpp')`"
-    )
-    return "\n".join(lines)
 
 
 def build_optimization_bootstrap(

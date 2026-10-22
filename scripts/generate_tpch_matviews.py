@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Hand-authored optimized Postgres matviews for TPC-H Q1–Q22.
 
-Writes per-query SQL under eval/bench/postgres/baselines/tpch/q{N}/matview/ and
+Writes per-query SQL under backends/postgres/bench/baselines/tpch/q{N}/matview/ and
 workload YAMLs under pipeline/config/workloads/tpch_q{N}_matview.yaml.
 
 Design notes: SF3000-lean answer / calendar / param-domain grains (Top-K,
@@ -1923,7 +1923,7 @@ def write_workload(n: int) -> None:
     )
     deps = "\n".join(f"  - name: {t}\n    watched_columns: []" for t in DEPENDENT[n])
     # Prefer in-repo reference.sql once generated
-    ref = f"eval/bench/postgres/baselines/tpch/q{n}/matview/reference.sql"
+    ref = f"backends/postgres/bench/baselines/tpch/q{n}/matview/reference.sql"
     body = f"""workload_kind: materialized_view
 benchmark_name: tpch
 query_number: {n}
@@ -1938,7 +1938,6 @@ requires_base_accelerator: false
 allow_poor_fitness: false
 
 reference_sql_path: {ref}
-seed_manifest_root: /home/akhilvb/tpch-utils/generated/sf1_instances
 
 parameters:
 {params}

@@ -25,13 +25,15 @@ def build_implementation_bootstrap(
     workload: dict[str, Any],
     query: int,
     analysis: dict[str, Any],
+    *,
+    cost_model_config: str,
 ) -> str:
     benchmark = str(workload.get("benchmark_name", "tpch"))
-    engine = str(workload.get("engine_name") or "duckdb")
+    engine = str(workload.get("engine_name") or "")
     q = f"q{query}"
     qdir = f"accelerators/{benchmark}/{q}"
     lines = [
-        "## Implementation bootstrap (authoritative — do not re-discover via list_dir/glob)",
+        "## Implementation bootstrap (authoritative — do not re-discover by listing directories)",
         "",
         "### Files to create (write these; `implementation_context_json` has semantics)",
         "",
@@ -44,27 +46,6 @@ def build_implementation_bootstrap(
         else:
             lines.append(f"- `{item}`")
 
-    lines.extend(["", "### Reference aux modules (read with `read_reference_files`, not chunked read_file)", ""])
-    ref_paths: list[str] = []
-    for ref in workload.get("reference_accelerators") or []:
-        ref_str = str(ref)
-        if ref_str.endswith(".cpp") or ref_str.endswith(".hpp"):
-            if _existing(repo, ref_str):
-                ref_paths.append(ref_str)
-            continue
-        for suffix in ("aux/module.hpp", "aux/module.cpp", "aux/finalize.hpp", "aux/finalize.cpp"):
-            candidate = f"accelerators/{benchmark}/{ref_str}/{engine}/{suffix}"
-            if _existing(repo, candidate):
-                ref_paths.append(candidate)
-    if not ref_paths:
-        for fallback_q in (14, 10, 3, 1):
-            for suffix in ("aux/module.hpp", "aux/module.cpp"):
-                candidate = f"accelerators/{benchmark}/q{fallback_q}/{engine}/{suffix}"
-                if _existing(repo, candidate):
-                    ref_paths.append(candidate)
-    for path in ref_paths[:6]:
-        lines.append(f"- `{path}`")
-
     lines.extend(["", "### Templates & gates (only if needed after module.cpp exists)", ""])
     templates = [
         f"{qdir}/{engine}/base/single-threaded/kernel.cpp",
@@ -73,10 +54,10 @@ def build_implementation_bootstrap(
         f"{qdir}/tests/{q}_manifest.hpp",
         "eval/tests/test_tpch_module.cpp",
         f"accelerators/{benchmark}/q14/bench/benchmark_q14.cpp",
-        str(workload.get("cost_model_config") or f"{qdir}/config/{q}_aux_cost_model.json"),
+        cost_model_config,
         f"accelerators/{benchmark}/q14/cost_model.hpp",
         f"accelerators/{benchmark}/q14/layout.hpp",
-        f"accelerators/{benchmark}/q14/duckdb/aux/register.cpp",
+        f"accelerators/{benchmark}/q14/{engine}/register.cpp",
         "eval/tests/test_support/cross_accel_helpers.cpp",
         "pipeline/prompts/aux_state/shared/read_path_scaffold.md",
         "pipeline/prompts/aux_state/shared/unit_test_contract.md",
@@ -93,11 +74,11 @@ def build_implementation_bootstrap(
         [
             "### Turn discipline",
             "",
-            "1. **One** `read_reference_files` call on the reference aux paths above (limit_per_file=500).",
-            "2. **Immediately** `write_file` `module.hpp`, then `module.cpp`, then other `files_to_create`.",
+            "1. Read the reference aux paths above once (they are the layout to mirror).",
+            "2. **Immediately** write `module.hpp`, then `module.cpp`, then other `files_to_create`.",
             "3. Unit tests: none to write (shared ModuleRuntime test); make the catalog probe/arguments follow `unit_test_contract.md` + the predicate checklist above.",
-            "4. Do **not** `list_dir` the repo root, re-read analysis.json, or glob for q14/q1 after step 1.",
-            "5. `grep_context` requires a **file** path (not a directory). Use `search_repo` for multi-file search.",
+            "4. Do **not** list the repo root, re-read analysis.json, or search for q14/q1 layouts after step 1.",
+            "5. Search several files with `rg`; read a single file with `sed -n`.",
             "6. Build/test only after all primary sources exist; **register everywhere** (mirror peer-query wiring); finish only after MCP `run_correctness` **and** `run_multi_connection` both pass.",
             "",
         ]

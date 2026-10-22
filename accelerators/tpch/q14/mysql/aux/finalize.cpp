@@ -1,7 +1,6 @@
 #include "tpch/q14/mysql/aux/module.hpp"
 
-#include "prims/mysql_decimal.hpp"
-#include "prims/pg_numeric.hpp"
+#include "backends/mysql/api/mysql_decimal.hpp"
 
 namespace accelerator_codegen::aux_state::query {
 
@@ -11,10 +10,10 @@ namespace accelerator_codegen::aux_state::query {
 bool TpchQ14FinalizePromoRevenue(const TpchQ14DayTotals &totals, std::string &text) {
   if (totals.count == 0)
     return false;
-  pg_numeric::Decimal quotient;
+  mysql_decimal::Decimal quotient;
   if (!mysql_decimal::Div(totals.promo_revenue_raw * 10000, 6, totals.total_revenue_raw, 4, quotient))
     return false;
-  text = pg_numeric::ToText(quotient);
+  text = mysql_decimal::ToText(quotient);
   return true;
 }
 

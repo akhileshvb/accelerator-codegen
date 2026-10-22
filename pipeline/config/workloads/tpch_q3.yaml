@@ -1,43 +1,9 @@
 benchmark_name: tpch
 query_number: 3
-query_id: "3"
-# Target host for this accelerator run (do not omit — default would be duckdb).
-engine_name: postgres
-function_name: accel_tpch_q3
-create_fn: CreateTpchQ3FunctionSet
-
-reference_sql_path: /home/akhilvb/tpch-utils/generated/sf1_instances/seed_1/03.sql
-seed_manifest_root: /home/akhilvb/tpch-utils/generated/sf1_instances
-
+engines: [duckdb, postgres]
+reference_sql_path: workloads/tpch/instances/seed_1/03.sql
 parameters:
   - name: market_segment
     type: VARCHAR
   - name: cutoff_date
     type: DATE
-
-reference_accelerators: [6, 12]
-
-output_schema:
-  - name: l_orderkey
-    type: BIGINT
-  - name: revenue
-    type: DECIMAL
-  - name: o_orderdate
-    type: DATE
-  - name: o_shippriority
-    type: INTEGER
-
-tables:
-  - customer
-  - orders
-  - lineitem
-
-fairness:
-  kernel_search_paths:
-    - accelerators/tpch/q{N}/postgres/aux/module.cpp
-    - backends/postgres/api/extension_api.cpp
-    - backends/postgres/api/runtime.cpp
-  cardinality_constants:
-    - "150000"
-    - "600000"
-    - "800000"

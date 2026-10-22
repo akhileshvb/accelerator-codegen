@@ -116,13 +116,13 @@ def _parse_sweep_reader(reader: csv.DictReader) -> list[dict[str, Any]]:
                 "accel_profiler_query_median_us",
             }:
                 coerced = coerce_diagnostic_field(key, value)
-                if coerced is not None:
-                    parsed[key] = coerced
-                else:
+                if coerced is None or isinstance(coerced, str):
                     try:
                         parsed[key] = float(value)
                     except ValueError:
                         parsed[key] = value
+                else:
+                    parsed[key] = coerced
             else:
                 parsed[key] = value
         rows.append(parsed)

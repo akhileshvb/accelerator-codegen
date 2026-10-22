@@ -22,7 +22,7 @@ CMake hint: `pipeline/templates/engine_backend/cmake_adversarial_test.cmake.tpl`
    duplicate** them; add **new** scenarios.
 3. Invent >=4 adversarial cases from the categories below (those that stress
    *this* implementation's weak points).
-4. Register CMake, build, run `engine_adversarial` (and re-run layer gates and
+4. Build, run `engine_adversarial` (and re-run layer gates and
    the `slot_*` gates).
 5. On fail: fix the **backend** (preferred) or tighten the harness if the test
    was wrong — never weaken asserts to greenwash.
@@ -69,9 +69,9 @@ CMake hint: `pipeline/templates/engine_backend/cmake_adversarial_test.cmake.tpl`
 - Keep >=4 distinct adversarial cases; do not substitute hand-built batches
   for hook-driven paths.
 
-### Engine host tooling (from workload SDK hints)
+### Engine host tooling (engine profile `host_runtime`)
 
-If this engine's SDK hints name a Docker / attach helper, use it and fail
+If the engine profile's `host_runtime` names a Docker / attach helper, use it and fail
 closed if the orchestrated host is unreachable. Do **not** fall back to a
 host-local server SDK soft path.
 

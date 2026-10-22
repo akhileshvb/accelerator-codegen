@@ -1,5 +1,5 @@
 #include "eval/tests/test_support/db_paths.hpp"
-#include "backends/duckdb/engine/duckdb_scan_adapter.hpp"
+#include "backends/duckdb/api/duckdb_scan_adapter.hpp"
 #include "backends/duckdb/api/register.hpp"
 #include "sec_edgar/q2/duckdb/base/query.hpp"
 #include "sec_edgar/q2/duckdb/base/fused.hpp"

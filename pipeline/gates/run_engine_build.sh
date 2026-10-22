@@ -1,114 +1,52 @@
 #!/usr/bin/env bash
-# Build engine adapter library. Host vs docker comes from gate-context host_runtime.
+# Engine build gate: the backend's host.sh answers `info` for this engine, brings the
+# instance up and builds the backend; the backend must name no query.
 set -euo pipefail
-ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-BUILD_DIR="${ACCEL_PIPELINE_BUILD_DIR:-${ACCEL_BUILD_DIR:-$ROOT/build-release}}"
-CTX="${ACCEL_GATE_CONTEXT:-}"
-OUT_JSON="${ACCEL_GATE_OUT:-/tmp/engine_build.json}"
-export PYTHONPATH="${ROOT}/pipeline/orchestrator${PYTHONPATH:+:$PYTHONPATH}"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+export ROOT
 
-python3 - "$ROOT" "$BUILD_DIR" "$CTX" "$OUT_JSON" <<'PY'
-import json, os, subprocess, sys
-from pathlib import Path
+# shellcheck source=aux_gate_common.sh
+source "$(dirname "${BASH_SOURCE[0]}")/aux_gate_common.sh"
+load_engine_gate_context "${ROOT}" 0
 
-repo = Path(sys.argv[1])
-build_dir = Path(sys.argv[2])
-ctx_path = sys.argv[3]
-out = Path(sys.argv[4])
-
-status = "pass"
-notes: list[str] = []
-log_tail = ""
-engine = ""
-kind = "host_cmake"
-data: dict = {}
-
-if ctx_path and Path(ctx_path).is_file():
-    data = json.loads(Path(ctx_path).read_text(encoding="utf-8"))
-    engine = str(data.get("engine_name") or "")
-    kind = str((data.get("host_runtime") or {}).get("kind") or "host_cmake")
-else:
-    status = "fail"
-    notes.append("no gate context")
-
-
-def run(cmd: list[str], *, timeout: float | None = None, env=None) -> subprocess.CompletedProcess:
-    return subprocess.run(
-        cmd,
-        cwd=str(repo),
-        capture_output=True,
-        text=True,
-        env=env or os.environ,
-        timeout=timeout,
-        start_new_session=True,
-    )
-
-
-host = dict(data.get("host_runtime") or {})
-if status == "pass" and kind == "docker":
-    ensure_script = str(host.get("ensure_script") or "")
-    extra_env = {str(k): str(v) for k, v in dict(host.get("env") or {}).items()}
-    if not ensure_script:
-        status = "fail"
-        notes.append("host_runtime.kind=docker but ensure_script is empty")
-    else:
-        env = dict(os.environ)
-        env.update(extra_env)
-        # engine_build only needs the Docker host up; MODULE/plugin install is later layers.
-        env.setdefault("ACCEL_PG_ENSURE_BUILD", "0")
-        env.setdefault("ACCEL_MYSQL_ENSURE_BUILD", "0")
-        ensure = run(["bash", str(repo / ensure_script)], timeout=3600.0, env=env)
-        log_tail = ((ensure.stdout or "") + (ensure.stderr or ""))[-4000:]
-        if ensure.returncode != 0:
-            status = "fail"
-            notes.append("docker ensure script failed")
-        else:
-            notes.append(f"docker ensure engine={engine or 'unknown'}")
-elif status == "pass":
-    cfg = [
-        "cmake", "-S", str(repo), "-B", str(build_dir),
-        "-DACCEL_ENABLE_PARALLEL_KERNELS=OFF", "-DACCEL_ENABLE_PARALLEL_AUX=OFF",
-    ]
-    build_flag = str((data.get("cmake") or {}).get("build_flag") or "")
-    if build_flag:
-        cfg.append(f"-D{build_flag}=ON")
-    cfg_proc = run(cfg)
-    if cfg_proc.returncode != 0:
-        status = "fail"
-        notes.append("cmake configure failed")
-        log_tail = ((cfg_proc.stdout or "") + (cfg_proc.stderr or ""))[-4000:]
-    else:
-        build_proc = run(
-            ["cmake", "--build", str(build_dir), "--target", "accelerator_codegen",
-             "-j", str(os.cpu_count() or 4)]
-        )
-        log_tail = ((build_proc.stdout or "") + (build_proc.stderr or ""))[-4000:]
-        if build_proc.returncode != 0:
-            status = "fail"
-            notes.append("cmake build failed for accelerator_codegen")
-        else:
-            notes.append(
-                f"configured build-dir={build_dir} engine={engine or 'unknown'} "
-                "target=accelerator_codegen"
-            )
-
-# The backend names no query: queries register from accelerators/<bench>/q<N>/.
-if status == "pass" and engine in ("duckdb", "postgres", "mysql"):
-    check = run([sys.executable, str(repo / "scripts" / "check_backend_query_free.py"), "--engine", engine])
-    if check.returncode != 0:
-        status = "fail"
-        notes.append("per-query code in the backend (registries + generic dispatch only): "
-                     + (check.stdout or "")[-1500:])
-
-payload = {
-    "gate": "engine_build",
-    "status": status,
-    "notes": "; ".join(notes) if notes else status,
-    "engine": engine,
-    "mode": kind,
-    "log_tail": log_tail,
+JSON="${ACCEL_GATE_OUT:-/tmp/engine_build.json}"
+if [[ ! -x "${ENGINE_HOST}" ]]; then
+  emit_result "${JSON}" engine_build fail "missing or non-executable ${ENGINE_HOST}" "" "engine=${ENGINE_NAME}"
+fi
+if [[ "$(engine_host info | python3 -c "import json,sys; print(json.load(sys.stdin).get('engine',''))")" != "${ENGINE_NAME}" ]]; then
+  emit_result "${JSON}" engine_build fail "host.sh info does not report engine ${ENGINE_NAME}" "" "engine=${ENGINE_NAME}"
+fi
+if ! engine_steps "up" "build"; then
+  emit_result "${JSON}" engine_build fail "${ENGINE_FAIL}" "${ENGINE_LOG}" "engine=${ENGINE_NAME}"
+fi
+# No editor or agent debris in the backend tree (backup copies, scratch and debug variants of
+# files): what is in backends/<engine>/ is the backend.
+debris="$(cd "${ROOT}/backends/${ENGINE_NAME}" 2>/dev/null &&
+  find . -type f \( -name '*.bak' -o -name '*.orig' -o -name '*.rej' -o -name '*~' -o -name '*.swp' \
+    -o -name '*_debug.*' -o -name '*_scratch.*' -o -name '*.old' \) | sort)"
+if [[ -n "${debris}" ]]; then
+  emit_result "${JSON}" engine_build fail "stray files in backends/${ENGINE_NAME}/ (delete them): $(tr '\n' ' ' <<<"${debris}")" \
+    "" "engine=${ENGINE_NAME}"
+fi
+# The build really includes the backend: some CMake cache under the build dir (the host's,
+# or the one the engine's own build environment writes) has this backend switched on and was
+# configured with $ACCEL_CMAKE_ARGS' build type.
+switch="ACCELERATOR_CODEGEN_BUILD_${ENGINE_NAME^^}"
+build_type="$(sed -nE 's/.*-DCMAKE_BUILD_TYPE=([^ ]+).*/\1/p' <<<"${ACCEL_CMAKE_ARGS}")"
+configured() {
+  local cache
+  while IFS= read -r cache; do
+    grep -qx "${switch}:BOOL=ON" "${cache}" && grep -qx "CMAKE_BUILD_TYPE:STRING=${build_type}" "${cache}" && return 0
+  done < <(find "${ACCEL_BUILD_DIR}" -maxdepth 3 -name CMakeCache.txt 2>/dev/null)
+  return 1
 }
-out.parent.mkdir(parents=True, exist_ok=True)
-out.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-raise SystemExit(0 if status == "pass" else 1)
-PY
+if ! configured; then
+  emit_result "${JSON}" engine_build fail \
+    "the build dir is not configured with \$ACCEL_CMAKE_ARGS (${switch}=ON, CMAKE_BUILD_TYPE=${build_type}): host.sh build must configure it" \
+    "${ENGINE_LOG}" "engine=${ENGINE_NAME}"
+fi
+if ! CHECK_LOG="$(python3 "${ROOT}/scripts/check_backend_query_free.py" --engine "${ENGINE_NAME}" 2>&1)"; then
+  emit_result "${JSON}" engine_build fail "per-query code in the backend (registries + generic dispatch only)" \
+    "${CHECK_LOG}" "engine=${ENGINE_NAME}"
+fi
+emit_result "${JSON}" engine_build pass "host up + build ok" "${ENGINE_LOG}" "engine=${ENGINE_NAME}"

@@ -1,7 +1,7 @@
 #include "tpch/q3/mysql/aux/module.hpp"
 #include "tpch/q3/calibration_writes.hpp"
 
-#include "prims/mysql_collation.hpp"
+#include "backends/mysql/api/mysql_collation.hpp"
 #include "substrate/aux/core/aux_cells.hpp"
 #include "substrate/aux/core/parallel_slices.hpp"
 #include "substrate/aux/core/parallel_sort.hpp"

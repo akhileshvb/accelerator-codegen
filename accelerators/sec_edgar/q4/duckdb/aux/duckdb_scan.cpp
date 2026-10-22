@@ -8,8 +8,8 @@
 #include <unordered_set>
 #include <vector>
 
-#include "backends/duckdb/engine/duckdb_scan_adapter.hpp"
-#include "backends/duckdb/engine/native_scan_compat.hpp"
+#include "backends/duckdb/api/duckdb_scan_adapter.hpp"
+#include "backends/duckdb/api/native_scan_compat.hpp"
 #include "duckdb/common/types/vector.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/materialized_query_result.hpp"

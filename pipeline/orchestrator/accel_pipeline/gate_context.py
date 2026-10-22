@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -10,7 +11,9 @@ from accel_pipeline.config import (
     resolve_workload_paths,
     sanitize_engine_name,
 )
+from accel_pipeline.layout import workload_schema_sql
 from accel_pipeline.paths import gates_dir_for_query, query_artifacts_dir
+from accel_pipeline.workload_facts import FACTS_FILE, workload_facts
 
 
 def build_gate_context(
@@ -21,17 +24,13 @@ def build_gate_context(
     paths = resolve_workload_paths(pipeline_config, workload, query)
     benchmark = str(workload.get("benchmark_name", "tpch"))
     kind = str(workload.get("workload_kind", "base"))
-    # Accelerators default to duckdb; engine_backend always sets engine_name.
-    raw_engine = workload.get("engine_name")
-    if kind == "engine_backend":
-        engine = sanitize_engine_name(str(raw_engine or ""))
-    else:
-        engine = sanitize_engine_name(str(raw_engine) if raw_engine else "")
-    host = dict(workload.get("engine_host") or engine_host_conventions(engine))
+    engine = sanitize_engine_name(str(workload.get("engine_name") or ""))
+    host = dict(workload.get("engine_host") or engine_host_conventions(engine, repo_root=pipeline_config.repo_root))
     ctx: dict[str, Any] = {
         "query_number": query,
         "benchmark_name": benchmark,
         "artifact_namespace": str(workload.get("artifact_namespace", benchmark)),
+        "artifacts_dir": str(query_artifacts_dir(pipeline_config.repo_root, query, workload=workload)),
         "display_name": str(workload.get("display_name", benchmark)),
         "workload_kind": kind,
         "engine_name": engine,
@@ -44,6 +43,9 @@ def build_gate_context(
         "ctest_smoke_name": paths["ctest_smoke_name"],
         "ctest_smoke_regex": paths["ctest_smoke_regex"],
         "dataset_db": str(paths["dataset_db"]),
+        "dataset_dir": str(workload.get("dataset_dir") or os.environ.get("ACCEL_DATASET_DIR", "")),
+        "schema_sql": workload_schema_sql(str(workload.get("dataset_benchmark") or benchmark)),
+        "scale_dataset_dir": str(workload.get("scale_dataset_dir") or ""),
         "scale_db": str(paths.get("scale_db", "")),
         "db_env_var": paths["db_env_var"],
         "ctest_resource_lock": str(workload.get("ctest_resource_lock", f"{benchmark}_db")),
@@ -78,6 +80,9 @@ def build_gate_context(
         opt_sweep = workload.get("aux_bench_sweep_optimization", {})
         if isinstance(opt_sweep, dict) and opt_sweep:
             ctx["aux_bench_sweep_optimization"] = opt_sweep
+    if kind != "engine_backend":
+        workload_facts(pipeline_config.repo_root, workload, query)
+        ctx["workload_facts_path"] = str(Path(ctx["artifacts_dir"]) / FACTS_FILE)
     if kind == "engine_backend":
         ctx.update(
             {

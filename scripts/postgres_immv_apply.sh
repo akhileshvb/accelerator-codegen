@@ -13,7 +13,7 @@ fi
 
 CONTAINER="${ACCEL_PG_CONTAINER:-accel_pg_test}"
 DB="${TPCH_PG_DB:-accel_tpch_test}"
-IMMV_DIR="${ROOT}/eval/bench/postgres/baselines/tpch/q${QUERY}/immv"
+IMMV_DIR="${ROOT}/backends/postgres/bench/baselines/tpch/q${QUERY}/immv"
 REL="accel_tpch_q${QUERY}_immv"
 
 if [[ -f "${IMMV_DIR}/unsupported.txt" ]]; then

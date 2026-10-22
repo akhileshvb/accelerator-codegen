@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from accel_pipeline.analysis_quality import load_fixture_dir, score_analysis_against_fixture, _load_fixture
+from accel_pipeline.workload_facts import with_facts
 from accel_pipeline.validation import AuxAnalysisValidationError, validate_aux_analysis
 
 
@@ -260,45 +260,29 @@ class TestAuxAnalysisValidation:
             validate_aux_analysis(analysis)
 
 
-class TestAnalysisQualityFixtures:
-    def test_q14_fixture_scores_golden_analysis(self):
-        fixture_path = REPO_ROOT / "pipeline" / "fixtures" / "analysis_quality" / "q14_strong.yaml"
-        fixture = _load_fixture(fixture_path)
-        scores = score_analysis_against_fixture(_sample_valid_analysis(), fixture)
-        assert scores["dependencies"] == 1.0
-        assert scores["fitness"] == 1.0
-        assert scores["state_design"] == 1.0
-        assert scores["base_path_decomposition"] == 1.0
-        assert scores["candidate_search"] == 1.0
-
-    def test_fixtures_exist(self):
-        paths = load_fixture_dir(REPO_ROOT)
-        assert len(paths) >= 3
-
-
 class TestWorkloadConfig:
     def test_q10_aux_workload_loads(self):
         from accel_pipeline.config import load_workload
 
-        workload = load_workload("tpch_q10_aux", REPO_ROOT)
+        workload = load_workload("tpch_q10_aux", REPO_ROOT, engine="duckdb")
         assert workload["query_number"] == 10
         assert workload["workload_kind"] == "aux_state"
         assert workload["aux_function_name"] == "accel_tpch_q10_aux"
         assert workload["max_structural_reanalysis"] == 2
         assert len(workload["parameters"]) == 1
-        tables = {t["name"] for t in workload["dependent_tables"]}
+        tables = {t["name"] for t in with_facts(REPO_ROOT, workload, workload["query_number"])["dependent_tables"]}
         assert tables == {"customer", "orders", "lineitem", "nation"}
 
     def test_q12_aux_workload_loads(self):
         from accel_pipeline.config import load_workload
 
-        workload = load_workload("tpch_q12_aux", REPO_ROOT)
+        workload = load_workload("tpch_q12_aux", REPO_ROOT, engine="duckdb")
         assert workload["query_number"] == 12
         assert workload["workload_kind"] == "aux_state"
         assert workload["aux_function_name"] == "accel_tpch_q12_aux"
         assert workload["max_structural_reanalysis"] == 2
         assert len(workload["parameters"]) == 3
-        tables = {t["name"] for t in workload["dependent_tables"]}
+        tables = {t["name"] for t in with_facts(REPO_ROOT, workload, workload["query_number"])["dependent_tables"]}
         assert tables == {"orders", "lineitem"}
 
     def test_sec_edgar_q1_aux_workload_loads(self):
@@ -311,15 +295,15 @@ class TestWorkloadConfig:
         assert workload["aux_function_name"] == "accel_sec_edgar_q1_aux"
         assert workload["prerequisite_workload"] == "sec_edgar_q1"
         assert workload["aux_bench_sweep"]["suites"] == "filing_append"
-        tables = {t["name"] for t in workload["dependent_tables"]}
+        tables = {t["name"] for t in with_facts(REPO_ROOT, workload, workload["query_number"])["dependent_tables"]}
         assert tables == {"pre"}
 
         paths = resolve_workload_paths(load_pipeline_config(repo_root=REPO_ROOT), workload, 1)
         assert paths["aux_state_subdir"] == "accelerators/sec_edgar/q1/duckdb/aux"
         assert paths["aux_bench_target"] == "benchmark_sec_edgar_q1_aux"
-        assert paths["cost_model_config"] == "accelerators/sec_edgar/q1/config/sec_edgar_q1_aux_cost_model.json"
+        assert paths["cost_model_config"] == "accelerators/sec_edgar/q1/config/sec_edgar_q1_aux_cost_model_duckdb.json"
         assert workload.get("post_implementation_gates", [])[0] == "aux_correctness"
-        assert "sec_edgar_q*_aux" in " ".join(workload.get("write_paths", []))
+        assert "accelerators/sec_edgar/q1/**" in workload.get("write_paths", [])
 
     def test_sec_edgar_q2_aux_workload_loads(self):
         from accel_pipeline.config import load_pipeline_config, load_workload, resolve_workload_paths
@@ -331,13 +315,13 @@ class TestWorkloadConfig:
         assert workload["aux_function_name"] == "accel_sec_edgar_q2_aux"
         assert workload["prerequisite_workload"] == "sec_edgar_q2"
         assert workload["aux_bench_sweep"]["suites"] == "value_append"
-        tables = {t["name"] for t in workload["dependent_tables"]}
+        tables = {t["name"] for t in with_facts(REPO_ROOT, workload, workload["query_number"])["dependent_tables"]}
         assert tables == {"num", "sub"}
 
         paths = resolve_workload_paths(load_pipeline_config(repo_root=REPO_ROOT), workload, 2)
         assert paths["aux_state_subdir"] == "accelerators/sec_edgar/q2/duckdb/aux"
         assert paths["aux_bench_target"] == "benchmark_sec_edgar_q2_aux"
-        assert paths["cost_model_config"] == "accelerators/sec_edgar/q2/config/sec_edgar_q2_aux_cost_model.json"
+        assert paths["cost_model_config"] == "accelerators/sec_edgar/q2/config/sec_edgar_q2_aux_cost_model_duckdb.json"
         assert paths["aux_bench_suites"] == "value_append"
 
 
@@ -347,7 +331,7 @@ class TestPromptRendering:
         from accel_pipeline.prompts import render_prompt
 
         pipeline_config = load_pipeline_config(repo_root=REPO_ROOT)
-        workload = load_workload("tpch_q14_aux", REPO_ROOT)
+        workload = load_workload("tpch_q14_aux", REPO_ROOT, engine="duckdb")
         pipeline_config = apply_workload_overrides(pipeline_config, workload)
         prompt = render_prompt(pipeline_config, "01_analysis.md", workload, 14, "analysis")
         lowered = prompt.lower()
@@ -387,7 +371,7 @@ class TestPromptRendering:
         from accel_pipeline.stages.base import run_agent_stage
 
         pipeline_config = load_pipeline_config(repo_root=REPO_ROOT)
-        workload = load_workload("tpch_q14_aux", REPO_ROOT)
+        workload = load_workload("tpch_q14_aux", REPO_ROOT, engine="duckdb")
         pipeline_config = apply_workload_overrides(pipeline_config, workload)
         model_config = load_model_config(repo_root=REPO_ROOT)
         for stage, prompt in [

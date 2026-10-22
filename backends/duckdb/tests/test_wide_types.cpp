@@ -5,7 +5,7 @@
 #include <type_traits>
 
 #include "backends/duckdb/engine/capture.hpp"
-#include "backends/duckdb/engine/decimal128.hpp"
+#include "backends/duckdb/api/decimal128.hpp"
 #include "substrate/aux/core/aux_types.hpp"
 #include "substrate/aux/core/byte_stream.hpp"
 #include "duckdb.hpp"

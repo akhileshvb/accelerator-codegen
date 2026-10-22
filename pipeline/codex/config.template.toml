@@ -1,0 +1,19 @@
+# Template for $CODEX_HOME/config.toml (pipeline/.codex/ by default, per-worker homes under it).
+# CodexExecBackend materializes it when missing, filling in the absolute path of the MCP launcher.
+# model_providers are only honored from the user-level CODEX_HOME config.
+
+model_provider = "openrouter"
+
+[model_providers.openrouter]
+name = "OpenRouter"
+base_url = "https://openrouter.ai/api/v1"
+env_key = "OPENROUTER_API_KEY"
+wire_api = "responses"
+
+[mcp_servers.accel_pipeline]
+command = "{{mcp_launcher}}"
+enabled = true
+required = true
+startup_timeout_sec = 30.0
+tool_timeout_sec = 600.0
+default_tools_approval_mode = "approve"

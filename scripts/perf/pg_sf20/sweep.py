@@ -24,7 +24,7 @@ rsb.kit_sql = kit_sql
 
 def stats(db):
     try:
-        rows, _ = db.query("SELECT accel_postgres_shard_stats()")
+        rows, _ = db.query("SELECT accel_shard_stats()")
         t = str(rows[0][0])
         return {k: int(v) for k, v in re.findall(r"(\w+)=(\d+)", t)} | {"text": t}
     except Exception as e:  # noqa

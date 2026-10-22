@@ -1,6 +1,6 @@
 #include "tpch/q9/postgres/aux/module.hpp"
 #include "tpch/q9/calibration_writes.hpp"
-#include "prims/pg_numeric.hpp"
+#include "backends/postgres/api/pg_numeric.hpp"
 #include "prims/sql_date.hpp"
 #include "prims/sql_like.hpp"
 #include "substrate/aux/core/aux_cells.hpp"

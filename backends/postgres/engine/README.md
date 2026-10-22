@@ -19,11 +19,11 @@ SDK to build the optional `accelerator_codegen_pg` MODULE.
   `engine/extension_engine.cpp`) names no query. Per-query code lives in
   `accelerators/<bench>/q<N>/postgres/{aux/catalog.cpp,
   extension/scan.cpp, extension/functions.cpp, base/base.cpp}` and registers
-  through static registrars; `backends/postgres/engine/PostgresAdapter.cmake` globs
+  through static registrars; `backends/postgres/backend.cmake` globs
   each query's `postgres/extension/*.cpp` and `postgres/base/*.cpp` into the MODULE. SQL functions are
-  created by `SELECT accel_postgres_register_queries();` from the
+  created by `SELECT accel_register_queries();` from the
   registered per-query `CREATE FUNCTION` text (see
-  `scripts/postgres_register_tpch_all.sql`).
+  `backends/postgres/host/register.sql`).
 - **Mutations** go through statement-level transition triggers →
   `AcceleratorCodegenCaptureTransition` (`engine/transition_capture.cpp`), which
   reads the transition tables into one columnar batch per statement and table
@@ -83,10 +83,10 @@ idle (`accel.shard_idle_exit_s`), and the next use starts it again.
   maintenance pass of a worker may use of it (0: the budget, and 1 for
   maintenance; `ACCEL_AUX_{READ,BUILD,MAINT}_THREADS` in the server's
   environment override them).
-- **Diagnostics.** `SELECT accel_postgres_shard_stats()` (counters summed over
-  the running workers), `accel_postgres_stop_shard_workers()`,
-  `accel_postgres_get_last_maintenance_decision()`,
-  `accel_postgres_set_force_maintenance_action(text)`.
+- **Diagnostics.** `SELECT accel_shard_stats()` (counters summed over
+  the running workers), `accel_stop_shard_workers()`,
+  `accel_get_last_maintenance_decision()`,
+  `accel_set_force_maintenance_action(text)`.
 - **Known limits.** The workers run as the bootstrap superuser, so a backend
   without SELECT privilege on a dependency table can read aggregates the
   accelerator returns; a worker serves the state built under its own
@@ -111,5 +111,5 @@ falls back to the shared DuckDB JSON. Search order:
 
 1. per-query env var (for example `ACCELERATOR_CODEGEN_POSTGRES_Q6_COST_MODEL`)
 2. `accelerators/tpch/q<query>/config/q<query>_aux_cost_model_postgres.json` (from
-   `eval/bench/postgres/calibrate_postgres_tpch_aux_cost_model.cpp`)
+   `backends/postgres/bench/calibrate_postgres_tpch_aux_cost_model.cpp`)
 3. `accelerators/tpch/q<query>/config/q<query>_aux_cost_model.json`

@@ -2,13 +2,18 @@
 
 Non-negotiable for analysis (planning), implementation, optimization, and audit.
 
+You run unattended: nobody answers a question, and a turn that ends asking for files,
+scaffolds or permission changes nothing. A file this task names that does not exist yet is
+yours to create (the tree may start with none of the query's files); a backend API that
+looks unfamiliar is the one to use, through its `api/README.md`. "Blocked" is not a result:
+ship the work and make the gate pass.
+
 ## 1. Native base-table storage
 
 Accelerators read **base tables** through **this engine’s** (`{{engine_name}}`) native storage/scan APIs. Consume engine-local batches, slots, or typed rebuild callbacks — **not** a shared portable chunk IR.
 
 - Do **not** bypass with SQL-over-client “scans” on the hot path when a native adapter exists.
-- Do **not** require `ScanNativeBaseTable` → portable `DataChunk` as a cross-engine contract.
-- DuckDB may use host-private helpers under `backends/duckdb/engine/native_scan.hpp`; other engines' backends define theirs under `backends/{engine}/engine/` (read-only to query runs).
+- An engine's native scan helpers are private to its backend (the **scan** role of the Backend API index; read-only to query runs).
 
 **Auxiliary state** may and should use **custom storage** (typed in-process images, engine-local aux tables, shared-memory blobs, etc.).
 
@@ -31,6 +36,16 @@ Use measured profile/evidence to drive changes.
 ### High scale factor is a first-class goal
 
 Iteration benches are often SF1 for speed, but the accelerator must still deliver **strong speedups at high scale factor** (TPC-H **SF10 / SF20+**, with keys/offsets/sums/memory sized for **SF3000**; SEC at production scale). Treat SF1 wins that blow up memory, scan all groups globally, or hardcode iteration cardinalities as **failures**. Plan with bind-time estimates and data-shape/cardinality reasoning — not SF1 profile snapshots alone.
+
+### Low-level execution (base kernels and aux modules alike)
+
+Base kernels and aux accelerators are independent accelerators, and both are fast at the
+machine level: SIMD over columns (AVX-512 / AVX2 intrinsics guarded by `__AVX512F__` /
+`__AVX2__` with a scalar fallback; both are compiled with `-march=native`), branch-free
+predicates and selection vectors, tight typed loops over the engine's native vectors with no
+per-row virtual calls or allocation, cache-sized blocking, and prefetch where access is
+irregular. An aux accelerator adds what maintained state buys (less work per read, cheap
+incremental maintenance) on top of that, never instead of it.
 
 ### When you hit a read-path ceiling
 
@@ -69,14 +84,14 @@ Optimize **both** every attempt — not read-only first with maintenance as an a
 Fast is worthless if the answer is wrong or the state breaks at scale. Spec-value parameters, spec-range data and SF1 sizes are **test inputs, not assumptions**.
 
 **Parameters.** Every parameter of the SQL template must be answered **exactly for any value of its SQL type, including NULL** (SQL semantics: usually an empty result, never a throw/crash). Never enumerate or hardcode a parameter domain (a value list, a month-aligned date, a size range, a fixed set of words). Precompute for the *likely* values only as an optimization; a value the state did not precompute goes to a **fast exact path** (a bounded residual computation over compact state, or a window/partition-local scan), **never a per-call full rebuild**. Specifically:
-- Dates/intervals: use the substrate date helpers (`sql_date`) — arbitrary day, Feb 29, month-end + interval, `interval` arithmetic per the engine's rules; no assuming month alignment, no assuming the data's year range.
-- LIKE / string predicates: use `sql_like` — partial and mixed-case words, `_` and escapes, empty pattern, pattern chars inside data.
+- Dates/intervals: use the date helpers of the backend API (role "value semantics") — arbitrary day, Feb 29, month-end + interval, `interval` arithmetic per the engine's rules; no assuming month alignment, no assuming the data's year range.
+- LIKE / string predicates: use the backend API's LIKE/collation helpers — partial and mixed-case words, `_` and escapes, empty pattern, pattern chars inside data.
 - Enumerated-type params: unknown value, two params equal (e.g. `X1 = X2`), value absent from data. Numeric params: outside the documented range, fractional where the column is integral-looking.
 - Thresholds derived from other params (`> fraction * SUM(...)`) compare in exact arithmetic, not doubles.
 
 **Data.** Do not assume the data stays in its documented domain: out-of-range dates, unseen categorical values, off-range numbers, NULLs, negative or huge keys must produce the same result as SQL (and writes of such rows must maintain state correctly).
 
-**Exact numerics.** Decimals/money: integer-scaled or exact-decimal accumulation (`int128_acc`, `decimal_text`, engine numeric helpers), never `double`; never truncate a 128-bit accumulator to 64 bits; match the engine's rounding/scale rules for division and AVG.
+**Exact numerics.** Decimals/money: integer-scaled or exact-decimal accumulation (128-bit accumulators; numeric text and division from the backend API's "value semantics" helpers), never `double`; never truncate a 128-bit accumulator to 64 bits; match the engine's rounding/scale rules for division and AVG.
 
 **Key width and capacity.** Size every key, id, offset, count and sum for the **top** scale factor (SF3000: 64-bit keys, ~2e10 rows, > 4 GB string/blob heaps, 128-bit sums), not the iteration DB; the failure classes and their checks are in `scale_factor_contract.md`. Forbidden: 32-bit or bit-packed keys with a fixed field width (e.g. 20-bit id), fixed dense caps (e.g. 2^28), 32-bit blob offsets, hashing a key into a partition id that can collide (partition by an exact function, or store the full key). Keys may be negative or sparse.
 
@@ -88,7 +103,7 @@ Fast is worthless if the answer is wrong or the state breaks at scale. Spec-valu
 
 **Substrate primitives.** Services, parallel helpers (`ParallelReduce`, `PartitionedBuild`, ...), 128-bit types, maintenance outcomes and calibration hooks are catalogued in `substrate_primitives.md`: use them, do not re-implement.
 
-**Primitive selection and copy-on-write.** State must be versioned copy-on-write and built from the shared primitives in `accelerators/prims` (catalogue and the "Which one to use" guide: `prims/README.md`: COW arrays/maps/record stores/blob maps, sorted/Fenwick/radix structures, `sql_date`, `sql_like`, exact decimal/int128). Search it first and read the header comments of the candidates. If nothing fits, write a **generic** primitive named by what it is (not by the query), with the structured header comment (PURPOSE / COMPLEXITY / MEMORY / COW/THREADS / USE WHEN), a README row and randomized reference tests, **publish it with `primitive_publish`** (the only way `prims/` changes; additions only, workload-agnostic), then use it. Never hand-roll a private sharded/chunked COW container inside a module, and never deep-copy the state per commit. Workload-specific structures (an inverted index for a LIKE predicate, a query-specific cube layout) stay in the module but must still be COW, assembled from primitives.
+**Primitive selection and copy-on-write.** State must be versioned copy-on-write and built from the shared primitives in `accelerators/prims` (catalogue in `prims/README.md`, which may be empty). Consult it before writing any helper and read the header comments of the candidates. If nothing fits, write a **generic, engine-neutral** primitive named by what it is (not by the query), with the structured header comment (PURPOSE / KEY SPACE / COMPLEXITY / MEMORY / COW/THREADS / USE WHEN) and randomized reference tests, **publish it with `primitive_publish`** (the only way `prims/` changes; additions only; it adds the catalogue row and rejects a duplicate of a published primitive: reuse or extend that one), then use it. Engine-exact value semantics belong to the backend API, never `prims/`. Never hand-roll a private sharded/chunked COW container inside a module, and never deep-copy the state per commit. Workload-specific structures (an inverted index for a LIKE predicate, a query-specific cube layout) stay in the module but must still be COW, assembled from primitives.
 
 **Acceptance evidence.** Beyond the seed binding, when the host has a parameter/data differential harness (e.g. `eval/tests/test_<engine>_<bench>_params.cpp`), run it for this query: plain (classes a/b/c) plus `--data-perturb` (rebuild and delta variants), `--wide-keys`, `--negative-keys`. Where none exists, write equivalent differential cases (off-spec params incl. NULL, off-spec rows, shifted/negated keys) in the unit/differential tests. Also run the verification set of `scale_factor_contract.md` (magnitude databases, 1-vs-N thread differential). A mismatch is a correctness failure, not a tolerance issue.
 

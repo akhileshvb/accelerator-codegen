@@ -7,7 +7,7 @@ from pathlib import Path
 
 from accel_pipeline.config import PipelineConfig, load_pipeline_config
 from accel_pipeline.optimization_context import reconstruct_seed_from_artifacts
-from accel_pipeline.optimization_worker import OptimizationWorker, worker_enabled
+from accel_pipeline.optimization_worker import OptimizationWorker
 
 
 def test_reconstruct_seed_from_artifacts(tmp_path: Path):
@@ -23,6 +23,7 @@ def test_reconstruct_seed_from_artifacts(tmp_path: Path):
         "name": "tpch_q9_aux",
         "workload_kind": "aux_state",
         "benchmark_name": "tpch",
+        "engine_name": "duckdb",
         "query_number": 9,
         "artifact_namespace": "tpch",
     }
@@ -35,27 +36,8 @@ def test_reconstruct_seed_from_artifacts(tmp_path: Path):
     assert "try again" in seed
 
 
-def test_worker_enabled_openrouter():
-    from accel_pipeline.config import ModelConfig, PipelineConfig
-
-    pipeline_config = PipelineConfig(
-        repo_root=Path("/tmp"),
-        pipeline_root=Path("/tmp/pipeline"),
-        build_dir=Path("/tmp/build"),
-        tpch_db_sf1=Path("/tmp/sf1"),
-        tpch_db_sf10=Path("/tmp/sf10"),
-        optimization_persistent_worker=True,
-    )
-    model_config = ModelConfig(
-        provider="openrouter",
-        api_key_env="OPENROUTER_API_KEY",
-        presets={"code": "x"},
-        stages={"optimization_worker": "code"},
-    )
-    assert worker_enabled(pipeline_config, model_config) is True
-
-
-def test_worker_one_runner_per_candidate_cycle():
+def test_worker_one_runner_per_candidate_cycle(monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test")
     calls: list[str] = []
 
     class FakeBackend:
@@ -82,18 +64,14 @@ def test_worker_one_runner_per_candidate_cycle():
             build_dir=Path("/tmp/build"),
             tpch_db_sf1=Path("/tmp/sf1"),
             tpch_db_sf10=Path("/tmp/sf10"),
-            optimization_openai_auto_previous_response_id=True,
             optimization_turn_delta_max_chars=4000,
             optimization_checkpoint_file="optimization_worker_checkpoint.json",
-            optimization_openrouter_history_max_chars=1000,
-            optimization_openrouter_preserve_recent_cycles=1,
-            optimization_openrouter_tool_output_summary_chars=20,
         ),
         model_config=ModelConfig(
-            provider="openai",
-            api_key_env="OPENAI_API_KEY",
+            api_key_env="OPENROUTER_API_KEY",
             presets={"default": "gpt-test", "code": "gpt-test"},
             stages={"optimization_worker": "code", "optimization": "code"},
+            stage_providers={"optimization_worker": "codex_exec"},
         ),
         workload_name="w",
         query=9,
@@ -101,7 +79,7 @@ def test_worker_one_runner_per_candidate_cycle():
         art_dir=Path("/tmp/art"),
         backend=FakeBackend(),
         instructions="inst",
-        provider="openai",
+        provider="codex_exec",
         seeded=True,
     )
     worker.run_candidate_cycle("go")

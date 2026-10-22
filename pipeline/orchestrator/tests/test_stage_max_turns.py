@@ -32,7 +32,7 @@ def test_resolve_optimization_max_turns_unlimited_when_zero() -> None:
 def test_aux_implementation_resume_message() -> None:
     repo = find_repo_root()
     pipeline_config = load_pipeline_config(repo_root=repo)
-    workload = load_workload("tpch_q18_aux", repo)
+    workload = load_workload("tpch_q18_aux", repo, engine="duckdb")
     message = _implementation_user_message(pipeline_config, workload, 18)
     assert "RESUME partial aux implementation" in message
     assert "test_tpch_q18_aux" in message

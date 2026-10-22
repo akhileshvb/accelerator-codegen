@@ -1,4 +1,4 @@
-#include "backends/duckdb/engine/duckdb_scan_adapter.hpp"
+#include "backends/duckdb/api/duckdb_scan_adapter.hpp"
 #include "backends/duckdb/api/parallel/parallel_kernel.hpp"
 #include "backends/duckdb/api/parallel/parallel_runtime.hpp"
 #include "tpch/q5/duckdb/base/query.hpp"

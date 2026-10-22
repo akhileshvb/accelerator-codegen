@@ -9,12 +9,12 @@ Concurrent pack workers use **per-query git worktrees** and private build dirs.
 - **Edit only this query's owned files** (listed in the task). Never create/modify/delete another `qN` aux/module/test/cost-model — not even to "fix" a peer compile error.
 - Peer compile noise is not your bug under worktree isolation. Do **not** `git restore` / `cp` / Python-rewrite foreign `accelerators/tpch/q*/**`.
 - Always build/test against **this worker's build dir** (`build-release-<worker_id>` / `$ACCEL_PIPELINE_BUILD_DIR`). Never use shared `build-release/`.
-- Read-only inspection of **workload `reference_accelerators`** is OK. Broad grepping/editing of other pack queries is not.
+- Broad grepping/editing of other pack queries is not OK.
 
 ## Use Codex native tools for
 
 - Reading and searching code
-- Editing **owned** sources (prefer shell/`sed`/`python` edits when more reliable than `apply_patch`)
+- Editing **owned** sources (prefer shell/`sed`/`python` edits when more reliable than Codex's patch tool)
 - **Own shell commands and throwaway scripts** under `/tmp` or owned paths — inspect dumps, parse bench output, compare A/B CSVs, bisect hot paths, etc.
 - Ad-hoc local debug / rebuild / ctest when MCP is insufficient (**worker build dir only**)
 
@@ -84,7 +84,7 @@ For **implementation**, do **not** finish until these pass (keep iterating — a
 
 ### Query / aux accelerators
 
-1. Build the smoke / unit target for this query (and `test_tpch_shared_differential` for TPC-H aux).
+1. Build the smoke / unit target for this query (and the engine's `differential_binary` for TPC-H aux).
 2. Call MCP **`run_correctness`** (maps to `aux_correctness` for aux-state; else `correctness`).
 3. On fail: read `failure_summary`, fix implementation / registration, rebuild, re-run until `status=pass`.
 4. For **aux-state**, also call MCP **`run_multi_connection`** (or `request_gate` with `aux_multi_connection`). On fail (often missing TF / shared allowlist wiring), **register the query everywhere** peer queries are registered, rebuild, retry until pass.
@@ -113,7 +113,7 @@ Implementation is **sequential layers** (`layers.md`): `capture` → `epochs` �
    **Do not** treat host `cmake`, `ninja`, or `docker exec` of the harness as
    the pass bar — MCP is the official in-container (or host_cmake) gate.
 5. Do **not** author `test_<engine>_adversarial.cpp` during implementation.
-6. Do not start later layers or finish on cmake-only success.
+6. Do not implement later layers' contracts (this layer's own wiring in their files is yours), and do not finish on cmake-only success or a question.
 7. **Prior-layer patch (narrow):** if this layer is blocked by a real bug or
    design flaw in an earlier layer, make the smallest fix there, keep that
    prior harness green (add the missing assert if needed), and `request_gate`
@@ -131,7 +131,7 @@ Implementation is **sequential layers** (`layers.md`): `capture` → `epochs` �
 You are a **read-only critic**. Do **not** edit adapter, harness, or CMake sources
 (native Codex tools included). Write only
 `pipeline/artifacts/engines/<engine>/layer_critique_<layer>.json` and the
-matching `.md`. MCP `write_file` is allowed under `pipeline/artifacts/**`.
+matching `.md`; write them with a shell heredoc.
 A green layer gate is not enough — fail on untested contract paths.
 
 **Done = files on disk.** Last action: heredoc-write the JSON then the `.md`,

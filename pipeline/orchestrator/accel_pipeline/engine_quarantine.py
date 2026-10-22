@@ -1,7 +1,9 @@
-"""Quarantine foreign engine trees during engine_backend from-scratch experiments.
+"""Quarantine foreign engine trees from the agent's view.
 
 Codex runs with full sandbox bypass for MCP, so prompt denylists are not enough.
-Moving host adapter trees out of the workspace is the reliable hide.
+Moving trees out of the workspace is the reliable hide: other engines' backends
+during an engine_backend run, and a query's other engines (its accelerator
+and artifact trees) during an accelerator run.
 """
 
 from __future__ import annotations
@@ -13,12 +15,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-
-# Product host / sibling adapter layouts that must not be visible to the agent:
-# each engine backend is one tree, backends/<engine>/.
-_DEFAULT_FOREIGN_TREES = (
-    "backends/duckdb",
-)
+from accel_pipeline.config import workload_engines
+from accel_pipeline.layout import query_dir
 
 
 @dataclass
@@ -49,14 +47,32 @@ def quarantine_root_for(repo_root: Path) -> Path:
     return Path(repo_root) / "pipeline" / ".quarantine" / "foreign_engines"
 
 
+def sibling_engine_trees(workload: dict[str, Any]) -> list[str]:
+    """The query's trees of the other engines its workload supports (independent runs)."""
+    engine = str(workload.get("engine_name") or "")
+    bench = str(workload.get("benchmark_name") or "tpch")
+    query = workload.get("query_number")
+    return [
+        tree
+        for other in workload_engines(workload)
+        if other != engine
+        for tree in (
+            f"{query_dir(bench, query)}/{other}",
+            f"pipeline/artifacts/{bench}/q{query}/{other}",
+        )
+    ]
+
+
 def foreign_trees_for_workload(workload: dict[str, Any]) -> list[str]:
     """Return repo-relative trees to hide (never the target engine)."""
+    if workload.get("workload_kind") != "engine_backend":
+        return sibling_engine_trees(workload)
     engine = str(workload.get("engine_name") or "").strip()
     configured = workload.get("agent_hidden_trees")
     if isinstance(configured, list) and configured:
         trees = [str(p).strip().rstrip("/") for p in configured if str(p).strip()]
     else:
-        trees = list(_DEFAULT_FOREIGN_TREES)
+        trees = []
     # Never quarantine the engine being generated.
     if engine:
         trees = [

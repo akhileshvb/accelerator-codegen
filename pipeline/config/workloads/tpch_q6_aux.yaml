@@ -1,23 +1,8 @@
 workload_kind: aux_state
 benchmark_name: tpch
 query_number: 6
-engine_name: postgres
-query_id: "6"
-accelerator_id: tpch_q6_aux
-base_function_name: accel_tpch_q6
-aux_function_name: accel_tpch_q6_aux
-
-requires_base_accelerator: true
-prerequisite_workload: tpch_q6
-prerequisite_min_stage: implementation
-reference_accelerators: []
-
-allow_poor_fitness: false
-allow_unsuccessful_design: false
-
-reference_sql_path: /home/akhilvb/tpch-utils/generated/sf1_instances/seed_1/06.sql
-seed_manifest_root: /home/akhilvb/tpch-utils/generated/sf1_instances
-
+engines: [duckdb, postgres, mysql]
+reference_sql_path: workloads/tpch/instances/seed_1/06.sql
 parameters:
   - name: start_date
     type: DATE
@@ -25,21 +10,3 @@ parameters:
     type: DECIMAL
   - name: quantity
     type: DECIMAL
-
-dependent_tables:
-  - name: lineitem
-    watched_columns: [l_shipdate, l_discount, l_quantity, l_extendedprice]
-
-partitioning: {}   # analysis stage will propose grain (e.g. monthly/yearly shipdate)
-
-output_schema:
-  - name: revenue
-    type: DECIMAL
-
-cost_model_config: accelerators/tpch/q6/config/q6_aux_cost_model.json
-
-cmake:
-  query_num: 6
-  aux_state_module: accel_add_aux_state_query
-
-agent_boundary: prompts/aux_state/shared/agent_boundary.md

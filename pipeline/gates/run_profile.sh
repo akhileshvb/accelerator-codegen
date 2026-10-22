@@ -3,86 +3,23 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 QUERY="${1:-}"
-BUILD="${ACCEL_PIPELINE_BUILD_DIR:-${ACCEL_BUILD_DIR:-${ROOT}/build-release}}"
 if [[ -z "${QUERY}" ]]; then
   echo "usage: run_profile.sh <query_number>" >&2
   exit 1
 fi
 
-CTX="$(python3 "$(dirname "${BASH_SOURCE[0]}")/read_gate_context.py" "${ROOT}" "${QUERY}")"
-ART_NS="$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['artifact_namespace'])" "${CTX}")"
-DB="$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['dataset_db'])" "${CTX}")"
-DB_ENV="$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['db_env_var'])" "${CTX}")"
-BENCH_TARGET="$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['bench_target'])" "${CTX}")"
-ENGINE_NAME="$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('engine_name') or 'duckdb')" "${CTX}")"
+# shellcheck source=aux_gate_common.sh
+source "$(dirname "${BASH_SOURCE[0]}")/aux_gate_common.sh"
+load_aux_gate_context "${ROOT}" "${QUERY}"
 
-OUT="${ROOT}/pipeline/artifacts/${ART_NS}/q${QUERY}/gates"
-mkdir -p "${OUT}"
-BIN="${BUILD}/${BENCH_TARGET}"
-
-if [[ "${ENGINE_NAME}" != "duckdb" ]]; then
-  ENGINE_BENCH="benchmark_${ENGINE_NAME}_tpch_q${QUERY}"
-  if [[ -x "${BUILD}/${ENGINE_BENCH}" ]]; then
-    BIN="${BUILD}/${ENGINE_BENCH}"
-    BENCH_TARGET="${ENGINE_BENCH}"
-  else
-    python3 - <<PY
-import json, pathlib
-pathlib.Path("${OUT}/profile.json").write_text(json.dumps({
-    "gate": "profile",
-    "query": int("${QUERY}"),
-    "engine_name": "${ENGINE_NAME}",
-    "status": "skip",
-    "reason": (
-        f"DuckDB profile harness not used for engine={ENGINE_NAME}; "
-        f"correctness is {ENGINE_NAME} differential."
-    ),
-}, indent=2))
-print(pathlib.Path("${OUT}/profile.json").read_text())
-PY
-    exit 0
-  fi
+JSON="${GATE_OUT}/profile.json"
+if ! engine_ready "${BENCH_TARGET}"; then
+  emit_result "${JSON}" profile skip "benchmark target not built: ${ENGINE_FAIL}" "${ENGINE_LOG}" "query:=${QUERY}"
 fi
 
-# shellcheck source=cmake_ensure_target.sh
-source "$(dirname "${BASH_SOURCE[0]}")/cmake_ensure_target.sh"
-build_cmake_target "${ROOT}" "${BUILD}" "${BENCH_TARGET}" || true
-
-if [[ ! -x "${BIN}" ]]; then
-  python3 - <<PY
-import json, pathlib
-pathlib.Path("${OUT}/profile.json").write_text(json.dumps({
-    "gate": "profile", "query": int("${QUERY}"), "status": "skip",
-    "reason": "benchmark binary missing",
-    "engine_name": "${ENGINE_NAME}",
-}, indent=2))
-PY
-  exit 0
-fi
-
-set +e
-LOG="$(env "${DB_ENV}=${DB}" ACCEL_ENGINE_NAME="${ENGINE_NAME}" ACCEL_BENCH_PROFILE=1 "${BIN}" 2>&1)"
-RC=$?
-set -e
-
-if [[ ${RC} -eq 0 ]]; then
-  STATUS="pass"
-else
-  STATUS="fail"
-fi
-python3 - <<PY
-import json, pathlib
-profile_path = pathlib.Path("${ROOT}/pipeline/artifacts/${ART_NS}/q${QUERY}/profile_summary.json")
-profile_path.write_text(json.dumps({"log_tail": """${LOG}"""[-8000:]}, indent=2))
-pathlib.Path("${OUT}/profile.json").write_text(json.dumps({
-    "gate": "profile",
-    "query": int("${QUERY}"),
-    "engine_name": "${ENGINE_NAME}",
-    "status": "${STATUS}",
-    "exit_code": int("${RC}"),
-    "profile_summary": str(profile_path),
-    "log_tail": """${LOG}"""[-8000:],
-}, indent=2))
-PY
-
-[[ "${STATUS}" == "pass" || "${STATUS}" == "skip" ]]
+ACCEL_BENCH_PROFILE=1 engine_run "${BENCH_TARGET}" "${QUERY}"
+SUMMARY="${GATE_ART}/profile_summary.json"
+python3 -c "import json,sys; json.dump({'log_tail': sys.argv[1][-8000:]}, open(sys.argv[2], 'w'), indent=2)" "${LOG}" "${SUMMARY}"
+STATUS=pass
+[[ ${RC} -eq 0 ]] || STATUS=fail
+emit_result "${JSON}" profile "${STATUS}" "" "${ENGINE_LOG}${LOG}" "query:=${QUERY}" "exit_code:=${RC}" "profile_summary=${SUMMARY}"

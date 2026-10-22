@@ -21,17 +21,11 @@ sys.path.insert(0, str(root / "pipeline" / "gates"))
 from read_gate_context import find_gate_context
 
 ctx = find_gate_context(root, query)
-art_ns = ctx.get("artifact_namespace", "tpch")
-out = root / "pipeline" / "artifacts" / art_ns / f"q{query}" / "gates"
+out = pathlib.Path(ctx["artifacts_dir"]) / "gates"
 out.mkdir(parents=True, exist_ok=True)
 
 fairness = ctx.get("fairness", {})
-kernel_templates = fairness.get(
-    "kernel_search_paths",
-    [
-        f"accelerators/tpch/q{query}/duckdb/base/single-threaded/kernel.cpp",
-    ],
-)
+kernel_templates = fairness.get("kernel_search_paths", [])
 kernel_candidates = [root / tpl.replace("{N}", query) for tpl in kernel_templates]
 
 issues = []

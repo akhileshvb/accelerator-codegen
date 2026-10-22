@@ -1,5 +1,5 @@
 // Parallel build framework: core::PartitionedBuild over the DuckDB
-// partitioned typed scan (backends/duckdb/engine/build_scan.hpp).
+// partitioned typed scan (backends/duckdb/api/build_scan.hpp).
 //
 //  1. Partition bounds (DuckDB row groups, Postgres heap blocks) are
 //     deterministic, contiguous and cover every row.
@@ -25,7 +25,7 @@
 #include <unordered_map>
 #include <vector>
 
-#include "backends/duckdb/engine/build_scan.hpp"
+#include "backends/duckdb/api/build_scan.hpp"
 #include "backends/postgres/api/base/pg_base.hpp"
 #include "eval/tests/test_support/toy_build_state.hpp"
 #include "substrate/aux/core/partitioned_build.hpp"

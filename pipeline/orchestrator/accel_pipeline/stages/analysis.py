@@ -2,45 +2,12 @@ from __future__ import annotations
 
 import json
 import sys
-from pathlib import Path
 
-from accel_pipeline.config import ModelConfig, PipelineConfig, load_workload
-from accel_pipeline.paths import analysis_artifact_path, pipeline_root, query_artifacts_dir
+from accel_pipeline.config import ModelConfig, PipelineConfig, load_run_workload
+from accel_pipeline.paths import analysis_artifact_path
 from accel_pipeline.pipeline_log import log_analysis_candidates
 from accel_pipeline.stages.base import run_agent_stage
 from accel_pipeline.validation import AuxAnalysisValidationError, repair_aux_analysis, validate_aux_analysis_file
-
-
-def _legacy_analysis_path(repo_root: Path, query: int) -> Path:
-    return pipeline_root(repo_root) / "artifacts" / f"q{query}" / "analysis.json"
-
-
-def _analysis_is_valid(path: Path, *, allow_poor_fitness: bool) -> bool:
-    if not path.is_file():
-        return False
-    try:
-        validate_aux_analysis_file(path, allow_poor_fitness=allow_poor_fitness)
-    except AuxAnalysisValidationError:
-        return False
-    return True
-
-
-def _maybe_recover_legacy_analysis(
-    repo_root: Path,
-    query: int,
-    analysis_path: Path,
-    *,
-    allow_poor_fitness: bool,
-) -> bool:
-    """Copy valid aux analysis from legacy tpch-style path (pipeline/artifacts/qN/)."""
-    legacy_path = _legacy_analysis_path(repo_root, query)
-    if legacy_path.resolve() == analysis_path.resolve():
-        return False
-    if not _analysis_is_valid(legacy_path, allow_poor_fitness=allow_poor_fitness):
-        return False
-    analysis_path.parent.mkdir(parents=True, exist_ok=True)
-    analysis_path.write_text(legacy_path.read_text(encoding="utf-8"), encoding="utf-8")
-    return True
 
 
 def run(
@@ -70,19 +37,12 @@ def run(
     if dry_run:
         return result
 
-    workload = load_workload(workload_name, pipeline_config.repo_root)
+    workload = load_run_workload(pipeline_config, workload_name)
     if workload.get("workload_kind") != "aux_state":
         return result
 
     analysis_path = analysis_artifact_path(pipeline_config.repo_root, query, workload=workload)
     allow_poor = bool(workload.get("allow_poor_fitness", False))
-    if not _analysis_is_valid(analysis_path, allow_poor_fitness=allow_poor):
-        _maybe_recover_legacy_analysis(
-            pipeline_config.repo_root,
-            query,
-            analysis_path,
-            allow_poor_fitness=allow_poor,
-        )
     try:
         analysis = json.loads(analysis_path.read_text(encoding="utf-8"))
         repaired, repairs = repair_aux_analysis(analysis)

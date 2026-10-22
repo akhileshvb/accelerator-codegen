@@ -1,25 +1,8 @@
 workload_kind: aux_state
 benchmark_name: tpch
 query_number: 22
-engine_name: postgres
-query_id: "22"
-accelerator_id: tpch_q22_aux
-base_function_name: accel_tpch_q22
-aux_function_name: accel_tpch_q22_aux
-
-requires_base_accelerator: true
-prerequisite_workload: tpch_q22
-prerequisite_min_stage: implementation
-reference_accelerators:
-  - accelerators/tpch/q10/duckdb/aux/module.cpp
-  - accelerators/tpch/q18/duckdb/aux/module.cpp
-
-allow_poor_fitness: false
-allow_unsuccessful_design: false
-
-reference_sql_path: /home/akhilvb/tpch-utils/generated/sf1_instances/seed_1/22.sql
-seed_manifest_root: /home/akhilvb/tpch-utils/generated/sf1_instances
-
+engines: [duckdb, postgres, mysql]
+reference_sql_path: workloads/tpch/instances/seed_1/22.sql
 parameters:
   - name: country_code1
     type: VARCHAR
@@ -36,31 +19,7 @@ parameters:
   - name: country_code7
     type: VARCHAR
 
-dependent_tables:
-  - name: customer
-    watched_columns: [c_custkey, c_phone, c_acctbal]
-  - name: orders
-    watched_columns: [o_custkey]
-
-partitioning: {}
-
-output_schema:
-  - name: cntrycode
-    type: VARCHAR
-  - name: numcust
-    type: BIGINT
-  - name: totacctbal
-    type: DECIMAL
-
-cost_model_config: accelerators/tpch/q22/config/q22_aux_cost_model.json
-
 optimization_guidance: |
   Q22 aggregates customers in selected phone country codes with above-average
   positive acctbal and no orders. Maintain country-code filtered customer sets,
   average threshold, and order-existence flags; Prefer ApplyDelta on customer/orders.
-
-cmake:
-  query_num: 22
-  aux_state_module: accel_add_aux_state_query
-
-agent_boundary: prompts/aux_state/shared/agent_boundary.md

@@ -1,13 +1,10 @@
-# From-scratch MySQL adapter onboarding.
+# From-scratch MySQL backend onboarding.
 # Conventional paths/write_paths/cmake names come from pipeline/config/engine_backend.yaml.
-# Engine-specific SDK detail lives HERE only; shared prompts/gates stay engine-agnostic.
-#
-# Do not describe a prior in-repo adapter. The agent implements against the
-# substrate + MySQL 8.4 server plugin headers + these connection hints.
+# Engine-specific input is the engine_profile below (schema: pipeline/schemas/engine_profile.schema.json):
+# facts and hazards of the engine, never a design. Shared prompts/gates stay engine-agnostic.
 
 workload_kind: engine_backend
 engine_name: mysql
-display_name: MySQL
 allow_update_existing: false
 
 hide_foreign_engines: true
@@ -17,42 +14,153 @@ agent_hidden_trees:
   - accelerators/tpch
   - accelerators/sec_edgar
 
-# Server plugin packaging: host layer is required (UDF / daemon / component plugin).
-requires_in_process_host: true
+engine_profile:
+  identity:
+    name: mysql
+    display_name: MySQL
+    version: "MySQL 8.4 (mysql:8.4 image)"
+    sdk_headers:
+      - "server plugin headers: mysql/plugin.h, mysql/plugin_audit.h, mysql/udf_registration_types.h, component service headers"
+      - "the mysql:8.4 image ships only client headers (/usr/include/mysql, MariaDB Connector/C): none of the server plugin headers above; they are in include/ of the MySQL source distribution of the same release (e.g. the mysql-8.4.x source tarball from dev.mysql.com or the mysql/mysql-server tag on GitHub). The plugin, audit and UDF ABI are plain C structs and enums whose layout is fixed within a release."
+    docs:
+      - "MySQL 8.4 reference manual: plugin API, audit plugin, user-defined functions, InnoDB locking and metadata locking, triggers"
 
-host_runtime:
-  kind: docker
-  discovery: mysql_docker
-  ensure_script: scripts/ensure_accel_mysql_test.sh
-  build_script: scripts/build_accel_mysql_plugin.sh
-  ninja_targets_env: ACCEL_MYSQL_NINJA_TARGETS
-  container_env: ACCEL_MYSQL_CONTAINER
-  default_container: accel_mysql_test
-  binary_dir: /accel-build/accel
-  env:
-    ACCEL_MYSQL_DOCKER: "1"
-    # From-scratch: start the container only. Layer gates build via build_script;
-    # do not fail closed on missing live adapter sources / a stale plugin .so.
-    ACCEL_MYSQL_ENSURE_BUILD: "0"
-    # Layer gates need the gate-test UDFs (backends/mysql/tests/), which only
-    # the test variant of the plugin compiles in.
-    ACCEL_MYSQL_PLUGIN_VARIANT: "test"
+  packaging:
+    kind: server_plugin
+    placement_candidates: [in_process]
+    requires_in_process_host: true
+    prod_target: accelerator_codegen_mysql
+    test_target: "accelerator_codegen_mysql (built as a test variant of the plugin with gate-test UDFs)"
+    install_path: "/usr/lib/mysql/plugin/accelerator_codegen_mysql.so (Oracle images may use /usr/lib64/mysql/plugin)"
+    test_only_code_rule: "Gate-test UDFs and toy modules live in backends/mysql/tests/ and compile only into the test variant of the plugin; the production plugin holds only the real entry points. Server-only symbols belong only in the plugin, never in a host shared library that standalone harnesses link."
 
-engine_sdk_hints:
-  - "MySQL for this pipeline is Docker container `accel_mysql_test` (mysql:8.4). Start with `ACCEL_MYSQL_ENSURE_BUILD=0 bash scripts/ensure_accel_mysql_test.sh` (container only until the host plugin exists). Do not install a host pacman/$HOME/opt server SDK."
-  - "Edit sources on the host (mounted in the container at `/accel-src`). Rebuild with `bash scripts/build_accel_mysql_plugin.sh --test` (cmake/ninja inside the container); the layer harnesses need the test variant."
-  - "Gate-test UDFs and toy modules go in `backends/mysql/tests/` and build only into the test variant of the plugin (`-DACCEL_MYSQL_TEST_UDFS=ON`, selected by `--test`). The production plugin holds only the real entry points."
-  - "Connect from host: MYSQL_HOST=127.0.0.1 MYSQL_TCP_PORT=3307 (user root, password mysql). Inside the container / docker exec: MYSQL_HOST=127.0.0.1 MYSQL_TCP_PORT=3306. Env: ACCEL_MYSQL_DOCKER=1."
-  - "In-process plugin target name: `accelerator_codegen_mysql`. Installed .so path in the container: `/usr/lib/mysql/plugin/accelerator_codegen_mysql.so` (Oracle images may use `/usr/lib64/mysql/plugin`)."
-  - "Use MySQL 8.4 server plugin / UDF / component headers (`mysql/plugin.h`, `mysql/udf_registration.h`, component services). Server-only symbols belong only in the plugin — never in a host shared library that standalone harnesses link. Client libmysql (`mysql_real_query` over the protocol) is not a native scan."
-  - "Native scan must use in-process table/handler/plugin services (not a client SQL round-trip). Mutation capture should hook the engine (triggers that call a plugin UDF, audit/table APIs) so INSERT/UPDATE/DELETE reach RuntimeHost as one ColumnarBatch per statement (S1)."
-  - "Shared substrate (do not regenerate): substrate/aux/{core,state,maintenance}/ and the runtime skeleton substrate/aux/runtime/ (RuntimeHost, AcceleratorRuntime, ColumnarBatch, wire, ThreadBudget). You implement its slots S1-S8 (engine_slots.hpp, engine_interfaces.md)."
-  - "Do not read or copy another engine's backends/<engine>/ tree. Do not depend on generated TPC-H/SEC query modules."
+  host_runtime:
+    kind: docker
+    ninja_targets_env: ACCEL_MYSQL_NINJA_TARGETS
+    container_env: ACCEL_MYSQL_CONTAINER
+    default_container: accel_mysql_test
+    binary_dir: /accel-build/accel
+    connect: "From the host MYSQL_HOST=127.0.0.1 MYSQL_TCP_PORT=3307 (user root, password mysql); inside the container MYSQL_TCP_PORT=3306. Sources are mounted at /accel-src; the build runs cmake/ninja inside the container; the layer harnesses need the test variant (--test)."
+    env:
+      ACCEL_MYSQL_DOCKER: "1"
+      # From-scratch: start the container only. Layer gates build via host.sh build;
+      # do not fail closed on missing live adapter sources / a stale plugin .so.
+      ACCEL_MYSQL_ENSURE_BUILD: "0"
+      # Layer gates need the gate-test UDFs (backends/mysql/tests/), which only
+      # the test variant of the plugin compiles in.
+      ACCEL_MYSQL_PLUGIN_VARIANT: "test"
 
-placement_candidates:
-  - in_process
+  build:
+    cmake_option: ACCELERATOR_CODEGEN_BUILD_MYSQL
+    extra_find_packages:
+      na: "the MySQL server SDK is located by the backend's own Find module; a client library, if used, is resolved at run time"
+
+  process_model:
+    connections: threads
+    shared_memory_needed: false
+    engine_api_thread_safety: "Server APIs that take a THD (session handle) are valid on the thread serving that connection (one thread per connection under the default thread handling); thd_get_current_thd identifies the session. Plugin-created threads have no THD."
+    calls_forbidden_off_main_thread:
+      - "server calls that need the calling connection's THD (my_error, thd_* session queries) from a plugin-created thread"
+
+  capture:
+    hook_mechanism: "Row-level triggers (AFTER INSERT / UPDATE / DELETE ... FOR EACH ROW) whose body calls a plugin UDF with the old and new column values; statement and transaction ends are reported by an audit plugin (MYSQL_AUDIT_GENERAL_STATUS after a statement completes, MYSQL_AUDIT_CONNECTION_DISCONNECT on close)."
+    granularity: "One trigger call per row, with OLD and NEW column values; no statement-level trigger and no transition table, so a statement's rows are delivered separately and the statement's end is known only from the audit event."
+    ddl_events: "TRUNCATE, DROP/RENAME/ALTER/CREATE TABLE, DROP DATABASE and CREATE/DROP TRIGGER fire no row trigger; the audit event delivers their statement text."
+    abort_signal: "ROLLBACK and ROLLBACK TO SAVEPOINT arrive only as a general-status audit event carrying the statement text; closing a connection rolls back its open transaction with no statement event (MYSQL_AUDIT_CONNECTION_DISCONNECT)."
+    uncaptured_write_paths:
+      - "changes by foreign-key cascading actions do not activate triggers"
+      - "TRUNCATE and DDL change contents or capture without row triggers"
+      - "bulk loads and statements run while the triggers are being dropped or recreated"
+
+  transactions:
+    isolation_levels: ["READ UNCOMMITTED", "READ COMMITTED", "REPEATABLE READ (InnoDB default)", "SERIALIZABLE"]
+    commit_hook: "No commit callback is exported to plugins; a commit is observable as the general-status audit event of the COMMIT statement or, in autocommit, of the statement itself, after it completed. thd_in_active_multi_stmt_transaction tells whether a session is inside an explicit transaction."
+    commit_order_source: "InnoDB assigns transaction ids and read views; no public monotonic commit sequence is exposed to plugins (the binary log / GTID order is optional and not exposed)."
+    own_writes_visibility: "A read inside a writing transaction sees its own uncommitted rows (InnoDB read view plus the transaction's own changes)."
+    snapshot_api: "START TRANSACTION WITH CONSISTENT SNAPSHOT (or the first read in REPEATABLE READ) fixes a read view per connection; a read view cannot be shared or exported between connections; two connections started one after another see the same commits only if none committed in between."
+    subtransactions: "SAVEPOINT / ROLLBACK TO SAVEPOINT / RELEASE SAVEPOINT; a rollback to a savepoint reverts row changes whose triggers already fired, and arrives only as a statement event."
+
+  locking:
+    engine_locks_relevant:
+      - "metadata locks (MDL): a statement takes MDL SHARED_READ / SHARED_WRITE on each table it touches, held until the end of the statement's transaction; DDL (DROP TRIGGER, TRUNCATE, ALTER, RENAME) needs an exclusive MDL and queues behind existing holders; later SHARED_* requests on that table queue behind the waiting DDL"
+      - "InnoDB row locks and gap locks for locking reads and writes; a plain consistent read takes none"
+      - "an open transaction holds its MDLs even when its connection is idle"
+    locks_held_during_hooks:
+      - "row triggers run inside the writing statement, with the statement's table and row locks held"
+      - "the audit event after COMMIT runs after the transaction's locks are released"
+    wait_timeout_knob: "lock_wait_timeout (session; metadata locks, default 31536000 s), innodb_lock_wait_timeout (row locks, default 50 s)"
+
+  scan:
+    native_scan_api: "The server's storage-engine (handler) row iteration is internal, not a stable plugin API; a plugin can open client connections back to the server (loopback or socket) and run SELECTs there, each connection holding its own consistent snapshot."
+    parallel_scan_api: "No engine-provided parallel scan for plugins; parallel reads are separate connections each with a read view, restricted by primary-key or secondary-index ranges; InnoDB range scans over a clustered index return rows in primary-key order."
+    row_count_source: "information_schema.tables.table_rows is an InnoDB estimate served from a statistics cache (information_schema_stats_expiry, default 86400 s) unless the cache is bypassed per statement."
+    type_quirks:
+      - "DECIMAL(M,D) has up to 65 digits and reaches a plugin as text (UDF arguments and client results are strings); parsing must be exact, a value may exceed 64-bit unscaled"
+      - "UDF argument types are decided by the server per call: integer constants arrive binary, a DECIMAL literal arrives as its text unless the UDF's init coerces arguments to strings"
+      - "DATE and DATETIME values arrive as text; zero dates ('0000-00-00') can exist depending on sql_mode"
+      - "unsigned integer columns exceed int64"
+    collation_quirks:
+      - "the default collation utf8mb4_0900_ai_ci is case- and accent-insensitive (and = is not byte equality); *_bin collations with PAD SPACE ignore trailing spaces; only utf8mb4_0900_bin is NO PAD and compares bytes with memcmp"
+      - "a column's collation is per column (information_schema.columns.collation_name)"
+
+  entry_points:
+    mechanism: "User-defined functions (CREATE FUNCTION ... SONAME) with init / deinit / main callbacks; a UDF returns one scalar (string, integer, real) per call, so a multi-row result is one encoded value (bounded by max_allowed_packet and the declared result length)."
+    argument_passing: "UDF_ARGS with per-argument type, NULL as a null pointer, and byte lengths; init may request a type coercion for each argument."
+    result_return: "A scalar result buffer; an error is reported by the server's my_error (ER_UDF_ERROR), while returning NULL with the error flag set reads as plain NULL to clients."
+    registration_symbol: {na: "functions are named by CREATE FUNCTION DDL and UDF entry points, not by a per-query registration symbol"}
+
+  thread_knobs:
+    mechanism: "Plugin system variables (MYSQL_SYSVAR), settable with SET GLOBAL and a config file; the server prefixes each name with the plugin's name; an update callback runs on every SET GLOBAL."
+    names: [threads, read_threads, build_threads, maint_threads]
+    reload_semantics: "Applied at plugin init and by the update callback on SET GLOBAL; a client environment variable does not reach the server process."
+
+  query_host:
+    dataset_env: ACCEL_MYSQL_DOCKER
+    work_db_suffix: ".mysql_work"
+
+  oracle:
+    differential_db: "TPC-H database in the mysql container, schema with utf8mb4_0900_bin text columns."
+    sql_client: "The mysql command-line client against the server (MYSQL_HOST/MYSQL_TCP_PORT, user root), from the host or inside the container."
+
+  hazards:
+    - symptom: "A build that scans in parallel hangs or times out, or DDL (DROP TRIGGER, TRUNCATE) hangs indefinitely, while an accelerator build is running."
+      engine_fact: "MySQL holds metadata locks (MDL) for a statement's transaction; a DDL statement queues behind a table's existing SHARED_READ holders, and later SHARED_READ requests queue behind the DDL. When some scan connections already hold the table's MDL with a snapshot transaction open and an idle one has not yet touched the table, the late connection waits behind the DDL, which waits for the holders: a cycle the server cannot detect."
+      layers: [scan, runtime]
+    - symptom: "A partitioned scan segfaults the server, or a second scan of one build runs on a null connection."
+      engine_fact: "A client connection that fails (lock-wait timeout, lost connection, failed query) is closed by the client library, and its handle is invalid afterwards."
+      layers: [scan]
+    - symptom: "Accelerators keep serving old answers after TRUNCATE, DROP/RENAME/ALTER TABLE, or a bulk reload around trigger re-creation."
+      engine_fact: "These statements change a table's contents or its capture triggers without firing any row trigger; the only signal is the statement text in the audit event."
+      layers: [capture, runtime]
+    - symptom: "A cascading delete or update through a foreign key is missing from the accelerator's state."
+      engine_fact: "Foreign-key cascade actions performed by InnoDB do not activate triggers."
+      layers: [capture]
+    - symptom: "The accelerator treats the end of a transaction as a commit when it was a rollback, or never learns that a connection's transaction ended."
+      engine_fact: "There is no commit/abort callback for plugins; a rollback or commit is seen only as a statement-completion audit event, savepoint rollbacks arrive as statement text, and a dropped connection rolls back with only a disconnect event."
+      layers: [capture, epochs]
+    - symptom: "Internal connections the backend opens for scans make the backend see transaction events of its own."
+      engine_fact: "The audit plugin receives the events of every session, including connections opened by the plugin itself; a COMMIT or ROLLBACK statement issued on such a connection is indistinguishable from a user's."
+      layers: [scan, epochs]
+    - symptom: "Scan connections opened one after another show different commits."
+      engine_fact: "Each connection's consistent snapshot is taken when its transaction starts and cannot be shared; commits between the starts are visible to later connections only."
+      layers: [scan, epochs]
+    - symptom: "A statement fails with a lock wait timeout after a very long wait."
+      engine_fact: "lock_wait_timeout for metadata locks defaults to a year; innodb_lock_wait_timeout (50 s) covers row locks only."
+      layers: [scan, runtime]
+    - symptom: "Reads inside a transaction that already wrote tables return an answer that lacks the transaction's rows."
+      engine_fact: "Rows a transaction wrote are uncommitted and visible only to that session's reads; state kept elsewhere has them only after commit."
+      layers: [epochs, host]
+    - symptom: "Text keys group, compare or sort differently in the accelerator and in the SQL answer."
+      engine_fact: "Default collations ignore case and accents, *_bin collations ignore trailing spaces (PAD SPACE); only utf8mb4_0900_bin compares bytes."
+      layers: [scan, host, hostctl, api]
+    - symptom: "A decimal value is rounded, truncated or overflows between the engine and the accelerator."
+      engine_fact: "DECIMAL reaches the plugin as text of up to 65 digits; floats print with shortest round-trip digits; an integer constant reaches a UDF as binary, a decimal constant as text."
+      layers: [capture, scan, host, api]
+    - symptom: "A query UDF that fails returns NULL silently."
+      engine_fact: "Setting the UDF's error flag without raising an error through the server's my_error yields NULL to the client."
+      layers: [host]
+    - symptom: "Row counts are 0 or stale right after a bulk load."
+      engine_fact: "information_schema statistics are cached (information_schema_stats_expiry) and InnoDB's table_rows is an estimate."
+      layers: [runtime, hostctl]
 
 allowed_commands:
-  - "^bash scripts/ensure_accel_mysql_test\\.sh( .*)?$"
-  - "^bash scripts/start_accel_mysql_test\\.sh( .*)?$"
-  - "^bash scripts/build_accel_mysql_plugin\\.sh( .*)?$"

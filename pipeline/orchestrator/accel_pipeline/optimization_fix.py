@@ -50,7 +50,7 @@ def format_build_failure_diagnosis(
         lines.append("```")
     lines.append("")
     lines.append(
-        "Diagnose root cause, patch the minimum files, then `run_command` to rebuild. "
+        "Diagnose root cause, patch the minimum files, then rebuild in this worker's build dir. "
         "The orchestrator will re-run build automatically after you finish."
     )
     return "\n".join(lines)
@@ -89,7 +89,7 @@ def format_smoke_failure_diagnosis(
     lines.append("")
     lines.append(
         "Find why the smoke test failed (assertion, wrong result, segfault), patch, "
-        "then `run_command` to rebuild and re-run the smoke test."
+        "then rebuild and re-run the smoke test in this worker's build dir."
     )
     return "\n".join(lines)
 

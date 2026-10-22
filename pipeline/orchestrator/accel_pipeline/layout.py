@@ -51,6 +51,15 @@ def backend_glob(engine: str) -> str:
     return f"{BACKENDS}/{engine}/**"
 
 
+def harness_globs(engine: str) -> list[str]:
+    """The workload harnesses of one backend: the only part of it host_bootstrap writes."""
+    return [
+        f"{BACKENDS}/{engine}/tests/harness/**",
+        f"{BACKENDS}/{engine}/bench/**",
+        f"{BACKENDS}/{engine}/tests/harness.cmake",
+    ]
+
+
 def bench_dir(bench: str) -> str:
     return f"{ACCELERATORS}/{bench}"
 

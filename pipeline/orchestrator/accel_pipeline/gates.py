@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import json
+import os
+import signal
 import subprocess
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -29,10 +32,13 @@ GATE_SCRIPTS = {
     "aux_cross_accel": "run_aux_cross_accel.sh",
     "aux_multi_connection": "run_aux_multi_connection.sh",
     "aux_tsan": "run_aux_tsan.sh",
+    "module_tsan": "run_module_tsan.sh",
     "aux_cost_model_calibrate": "run_aux_cost_model_calibrate.sh",
     "aux_optimization_probe": "run_aux_optimization_probe.sh",
     "engine_build": "run_engine_build.sh",
     "engine_scan_conformance": "run_engine_scan_conformance.sh",
+    "engine_api_conformance": "run_engine_api_conformance.sh",
+    "engine_hostctl": "run_engine_hostctl.sh",
     "engine_contract": "run_engine_contract.sh",
     "engine_adversarial": "run_engine_adversarial.sh",
     "engine_aux_smoke": "run_engine_aux_smoke.sh",
@@ -46,8 +52,9 @@ GATE_SCRIPTS = {
     "slot_read_after_commit": "run_slot_gates.sh",
     "slot_txn_edges": "run_slot_gates.sh",
     "slot_restart": "run_slot_gates.sh",
+    "slot_own_writes": "run_slot_gates.sh",
+    "slot_ddl_events": "run_slot_gates.sh",
     "slot_tsan": "run_aux_tsan.sh",
-    "slot_differential": "run_slot_gates.sh",
 }
 
 
@@ -75,6 +82,7 @@ GATES_ALLOW_SKIP = frozenset(
         "engine_host",
         "slot_restart",
         "aux_tsan",
+        "module_tsan",
         "slot_tsan",
     }
 )
@@ -111,30 +119,30 @@ def require_gate_pass(result: GateResult, *, allow_skip: bool = False) -> None:
     raise GateFailure(gate_failure_message(result))
 
 
-def _gate_output_json(
-    pipeline_config: PipelineConfig,
-    gate_name: str,
-    query: int,
-    workload: dict[str, Any] | None,
-) -> Path:
-    if workload:
-        art = query_artifacts_dir(pipeline_config.repo_root, query, workload=workload)
-        return gates_dir_for_query(art) / f"{gate_name}.json"
-    return (
-        pipeline_config.repo_root
-        / "pipeline"
-        / "artifacts"
-        / f"q{query}"
-        / "gates"
-        / f"{gate_name}.json"
+GATE_TIMEOUT_S = float(os.environ.get("ACCEL_GATE_TIMEOUT", 7200))
+
+
+def _run_gate_script(script: Path, query: int, cwd: Path, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+    """Run a gate script in its own process group; past GATE_TIMEOUT_S the whole group is
+    killed (a hung harness and its children) and the gate fails with the reason."""
+    proc = subprocess.Popen(
+        ["bash", str(script), str(query)], cwd=cwd, env=env, text=True,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True,
     )
+    try:
+        out, err = proc.communicate(timeout=GATE_TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        os.killpg(proc.pid, signal.SIGKILL)
+        out, err = proc.communicate()
+        out += "\n" + json.dumps({"status": "fail", "reason": f"gate did not finish within {GATE_TIMEOUT_S:.0f}s"})
+    return subprocess.CompletedProcess(proc.args, proc.returncode, out, err)
 
 
 def run_gate(
     pipeline_config: PipelineConfig,
     gate_name: str,
     query: int,
-    workload: dict | None = None,
+    workload: dict,
     *,
     raise_on_failure: bool = False,
     allow_skip: bool | None = None,
@@ -152,10 +160,14 @@ def run_gate(
 
     import os
 
-    out_json = _gate_output_json(pipeline_config, gate_name, query, workload)
+    art = query_artifacts_dir(pipeline_config.repo_root, query, workload=workload)
+    out_json = gates_dir_for_query(art) / f"{gate_name}.json"
     out_json.parent.mkdir(parents=True, exist_ok=True)
+    out_json.unlink(missing_ok=True)  # a gate that dies before writing never reads as its last result
 
     gate_env = os.environ.copy()
+    # Gate scripts' `python3` is the pipeline's own interpreter (its packages), not the system one.
+    gate_env["PATH"] = f"{Path(sys.executable).parent}{os.pathsep}{gate_env.get('PATH', '')}"
     if change_kind:
         gate_env["ACCEL_GATE_CHANGE_KIND"] = change_kind
     gate_env["ACCEL_GATE_ITERATION"] = str(iteration)
@@ -169,26 +181,32 @@ def run_gate(
     # _gate_context.json alone is not enough; scripts read ACCEL_GATE_*.
     gate_env["ACCEL_GATE_OUT"] = str(out_json)
     gate_env["ACCEL_GATE_NAME"] = gate_name
-    if workload:
-        ctx_path = write_gate_context(pipeline_config, workload, query)
-        gate_env["ACCEL_GATE_CONTEXT"] = str(ctx_path)
-        gate_env["ACCEL_AUX_BENCHMARK"] = str(workload.get("benchmark_name") or "tpch")
-        gate_env["ACCEL_PIPELINE_BENCHMARK"] = gate_env["ACCEL_AUX_BENCHMARK"]
-        engine_name = str(workload.get("engine_name") or "").strip().lower()
-        if engine_name:
-            gate_env["ACCEL_ENGINE_NAME"] = engine_name
-            gate_env["ACCEL_WORKLOAD_ENGINE_NAME"] = engine_name
-        from accel_pipeline.host_runtime import inject_host_runtime_into_gate_env
+    ctx_path = write_gate_context(pipeline_config, workload, query)
+    gate_env["ACCEL_GATE_CONTEXT"] = str(ctx_path)
+    gate_env["ACCEL_AUX_BENCHMARK"] = str(workload.get("benchmark_name") or "tpch")
+    gate_env["ACCEL_PIPELINE_BENCHMARK"] = gate_env["ACCEL_AUX_BENCHMARK"]
+    engine_name = str(workload.get("engine_name") or "").strip().lower()
+    if engine_name:
+        gate_env["ACCEL_ENGINE_NAME"] = engine_name
+    from accel_pipeline.engine_host import inject_host_runtime_into_gate_env
 
-        inject_host_runtime_into_gate_env(gate_env, workload)
-        kind = str(workload.get("workload_kind") or "")
-        if kind:
-            gate_env["ACCEL_WORKLOAD_KIND"] = kind
+    inject_host_runtime_into_gate_env(
+        gate_env, workload, pipeline_config.repo_root, pipeline_config.build_dir
+    )
+    kind = str(workload.get("workload_kind") or "")
+    if kind:
+        gate_env["ACCEL_WORKLOAD_KIND"] = kind
 
-    # Codex may never create the worker build dir; configure it before gates.
+    # Codex may never create the worker build dir. Once the engine has a host.sh, only its
+    # `build` verb configures the dir (host_contract.md, $ACCEL_CMAKE_ARGS); a bare configure here
+    # would reset the backend switch and the generator, or fight a build that runs in the
+    # engine's own environment under another source path.
+    from accel_pipeline.engine_host import host_script
     from accel_pipeline.worker_isolation import ensure_worker_build_dir
 
-    ensure_worker_build_dir(pipeline_config, configure=True)
+    engine = pipeline_config.engine_name
+    has_host = bool(engine) and host_script(Path(pipeline_config.repo_root), engine).is_file()
+    ensure_worker_build_dir(pipeline_config, configure=not has_host)
 
     from accel_pipeline.pipeline_log import log_gate_complete, log_gate_start
 
@@ -201,14 +219,7 @@ def run_gate(
         count=gate_count,
     )
     started = time.monotonic()
-    proc = subprocess.run(
-        ["bash", str(script), str(query)],
-        cwd=pipeline_config.repo_root,
-        capture_output=True,
-        text=True,
-        check=False,
-        env=gate_env,
-    )
+    proc = _run_gate_script(script, query, pipeline_config.repo_root, gate_env)
     duration_ms = int((time.monotonic() - started) * 1000)
     data: dict[str, Any] = {}
     if out_json.is_file():
@@ -220,8 +231,12 @@ def run_gate(
             data = {"stdout": proc.stdout[-2000:], "stderr": proc.stderr[-2000:]}
 
     status = data.get("status", "pass" if proc.returncode == 0 else "fail")
-    if "status" not in data:
-        data["status"] = status
+    if proc.returncode != 0 and status == "pass" and not out_json.is_file():
+        # A script that failed after printing an early pass line has not passed.
+        status = "fail"
+        data["reason"] = f"gate script exited {proc.returncode} after reporting pass"
+        data["stderr"] = (proc.stderr or "")[-2000:]
+    data["status"] = status
     if status == "fail":
         from accel_pipeline.gate_capture import enrich_failed_gate_data
 
@@ -255,6 +270,7 @@ def run_gate(
         log_bench_sweep_results(
             pipeline_config.repo_root,
             query,
+            workload,
             gate_status=status,
             gate_data=data,
         )

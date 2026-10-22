@@ -32,6 +32,7 @@ def load_repo_dotenv(repo_root: Path) -> Path | None:
             key = key.strip()
             if not key:
                 continue
-            os.environ.setdefault(key, _strip_quotes(value))
+            if not os.environ.get(key):  # set and non-empty in the environment wins
+                os.environ[key] = _strip_quotes(value)
         loaded = path
     return loaded

@@ -20,6 +20,111 @@ around the substrate.
 `eval/tests/test_aux_runtime.cpp`, drop its fake slots) used by every layer
 harness.
 
+**Engine facts.** The engine profile (`engine_profile`, in your prompt) states how
+this engine does each mechanic below and lists its hazards; the requirements are
+the same for every engine.
+
+---
+
+## Requirements every backend meets
+
+Substrate owns commit order, epochs, versions, catch-up and builds; these are what
+the engine side must hold up. Each names its layer.
+
+- **Own writes** (`runtime`; entries in `host`). A read inside a transaction that
+  wrote a table the accelerator depends on is answered from SQL at that
+  transaction's own snapshot (`RuntimeHost::TxnWroteDependency`): its rows are in no
+  published state. It never returns an answer without them, whether the statement
+  was planned before or after the write, and whatever the isolation level.
+- **Writes are judged at commit** (`capture`, `epochs`). What a write did is decided
+  when its transaction commits, not when its statement ran: an aborted write is never
+  visible; a statement that was already running when an accelerator registered, or
+  a commit that lands after a build's snapshot without having been captured,
+  invalidates the state it would be missing (`InvalidateFrom`), never goes unseen.
+- **Lock discipline** (all layers). No engine call is made while holding a lock that an
+  engine callback of the same engine can take. No substrate lock is held across an
+  engine call. Every wait on an engine lock or on another thread inside a slot is
+  bounded; expiry fails the operation (a failed build: readers fall back, the next read
+  retries) and is never a hang. The engine locks that parallel scan lanes hold or
+  request (profile `locking`) cannot form a cycle with a concurrent DDL on the
+  scanned tables: a build ends as success or failure within its bound.
+- **DDL events** (`capture`, `runtime`). TRUNCATE, DROP, RENAME, replace or recreate of
+  a captured table, and a change of its columns, either reach the runtime as an
+  invalidating change or are detected before the next answer; the accelerator rebuilds
+  or answers from SQL. Where the engine delivers no event for one of them (profile
+  `capture.ddl_events`), the backend still never answers from state built for the old
+  table: detection never waits for a later write; every read and build checks the
+  table's catalog identity (the engine's table id plus its column list or schema
+  version) against the state's, and a mismatch invalidates before answering.
+- **Abort and crash paths** (`capture`, `epochs`, `runtime`). A rollback (also of a
+  subtransaction), an abort after pre-commit, a connection closed inside a
+  transaction, a commit whose outcome is unknown, and the death of a worker or session
+  leave no place held in commit order, no half-published epoch and no uncommitted row
+  in a state; an unknown outcome invalidates.
+- **Thread knobs** (`runtime`). Each phase cap is honoured through the mechanism the
+  profile names for `thread_knobs`, at startup and on every later change the engine
+  allows; `ACCEL_AUX_*_THREADS` override it.
+- **No process-wide state** (all layers). Backend state lives in objects owned by the
+  per-database host: no namespace-scope or static mutable map, set or counter keyed by
+  engine ids (they leak across databases, hosts and tests). Registries are the only
+  static storage.
+- **Harness rigour** (all layers). A harness compares complete results with an expected
+  set computed independently of the code under test (the engine's own SQL), never a
+  filtered subset or the same code path; it forces races with barriers, never sleeps;
+  and it asserts each contract clause of its layer positively. It drives the slot
+  through the engine: real writes, commits, rollbacks and DDL from engine sessions reach
+  the backend's production hooks, and builds read real tables. A harness that hands a
+  slot hand-built rows or calls its lifecycle callbacks (commit, abort, capture)
+  directly tests a helper, not the slot, and does not count.
+- **Query registries** (`runtime` on an embedded engine, `host` on a server engine; the
+  `api` layer exposes them). Every engine:
+
+  The backend is generated once and must serve any number of queries without
+  being edited: it **names no query**.  Query pipelines add each query under
+  `accelerators/<bench>/q<N>/<engine>/` and plug it in with static registrars,
+  so the backend exposes registries plus generic dispatch over them:
+
+  - **catalog** (`backends/<engine>/api/catalog/query_catalog.{hpp,cpp}`):
+    `Register…(Entry)` + a `…Registrar` struct; lookups and query lists iterate
+    the registry (sorted by query id).
+  - **SQL entry points**: one generic implementation the host calls with the
+    query's registered entry.  Where the host resolves functions by symbol name
+    (UDFs, `PG_FUNCTION_INFO_V1`), the per-name symbol is a one-line shim in the
+    query's directory that forwards to the generic implementation.  The SQL that
+    creates the functions (extension script, `CREATE FUNCTION` list) is assembled
+    from per-query fragments at build/install time, never hand-listed.
+  - **runtime bindings / scans**: a registry from accelerator id to the query's
+    module + scan factory; the backend's scan helpers are exported in a header
+    for the queries' scan code.
+  - Registries are plain functions in a backend `.cpp` with function-local
+    static storage and stable entry addresses (not header-only template
+    singletons, which can duplicate across the host library and the MODULE).
+    Per-query MODULE-side code (scans using server APIs, symbol shims) is
+    globbed into the MODULE from the query directories.
+
+  The build must succeed with **every** `accelerators/<bench>/q<N>/` removed
+  (zero registered queries), and `scripts/check_backend_query_free.py --engine
+  <engine>` must pass (the `engine_build` gate runs it).  Engine-level helpers a
+  query needs (e.g. a key-list predicate, a collation-safe literal) belong in the
+  backend, generic and documented; per-query code never does.
+
+---
+
+## `hostctl`
+
+Writes `backends/{engine}/host.sh` against `host_contract.md` (binding; the prompt carries
+it) and the minimal `backends/{engine}/backend.cmake` (the `accel_backend_{engine}`
+INTERFACE target and the test glob), so that `engine_build` configures and builds the
+backend from the first layer on. Later layers extend `build` and `backend.cmake`. At this
+layer there is nothing to install or load yet (no module, extension or plugin exists):
+`build` configures and compiles, and the layer that first produces a loadable unit adds
+installing and loading it. Do not fail `hostctl` for a missing install or load step.
+
+**Harness:** none of its own; the gate `engine_hostctl` drives the script: `info` names
+the engine and all eight verbs, `up` writes `env`, `load` twice (the second a no-op),
+`sql -` returns a CSV with a header, `down` removes the instance state. `slot` fails
+closed ("not wired yet") until validation wires it.
+
 ---
 
 ## `capture` (S1)
@@ -41,7 +146,7 @@ Implements the engine's capture of writes (`engine/capture.*`).
   allocation** (no `std::string` / `shared_ptr` per row).
 - Subtransaction depth: `CommitSubtransaction` / `AbortSubtransaction`; a
   rolled-back (sub)transaction never reaches a commit.
-- A change not expressible as rows (Postgres TRUNCATE) invalidates the
+- A change not expressible as rows (TRUNCATE) invalidates the
   accelerators of its tables at commit (`AcceleratorRuntime::Invalidate()`;
   shipped placement: an invalidating `CommittedChange`). An engine that
   reports TRUNCATE as deletes needs nothing special.
@@ -54,7 +159,9 @@ decimal, a string) and `updated_attnums`; a 3-row INSERT is one batch;
 register a second accelerator watching more columns -> `CaptureVersion()`
 changes and later batches carry the union; ROLLBACK and ROLLBACK TO SAVEPOINT
 -> no change reaches the toy state after the commit; TRUNCATE (or the
-engine's non-row change) -> the state ends invalid / rebuilt.
+engine's non-row change) -> the state ends invalid / rebuilt; DROP / RENAME /
+recreate of a tracked table -> no read answers from the old table's state; a
+statement running at registration whose transaction commits later is not lost.
 
 ---
 
@@ -82,6 +189,24 @@ commit / abort lifecycle: `PreCommit(txn)` before the commit is visible,
   never exceed); `kNoFloor` only when readers always read the newest.
 - Two accelerators on one transaction take their places in accelerator-id
   order (the runtime does this; the slot must not add a lock order of its own).
+- **No hook before visibility.** If the engine reports a commit only once it is
+  visible (a statement-completion or audit event, no pre-commit callback), the
+  slots are still implementable: call `PreCommit` and `Commit` together when the
+  commit is observed, with an epoch from a counter the backend owns; have
+  `PendingEpochLowerBound` return 0 (every reader waits for an in-flight commit)
+  and readers read at the newest applied epoch (`OldestReaderEpoch` = `kNoFloor`).
+  The guarantee that remains, and that the harness proves: a read that starts
+  after a commit was observed includes it, and no read is torn. This is a valid
+  design, not a missing feature; never stop this layer for want of a pre-commit hook.
+- **No snapshot identity.** If the engine cannot say which commits a reader's
+  snapshot holds, the reader epoch is the newest observed epoch at the moment the
+  snapshot was fixed. A statement whose snapshot is taken at its own start
+  (autocommit, statement-level isolation) reads at the newest observed epoch. A
+  transaction that fixed its snapshot earlier (first read under repeatable read,
+  or an explicit consistent snapshot: the profile says when) reads at the epoch
+  the backend recorded for its session at that moment. Only a reader whose
+  snapshot moment the backend could not observe answers from SQL. A reader epoch
+  that is "unknown" for every read is a backend that never serves, not a safe one.
 
 **Harness:** concurrent writers on two toy accelerators over the real engine
 commit path; record `(epoch, visible-at-snapshot)` pairs and assert epochs
@@ -90,7 +215,8 @@ SQL reference decides), including snapshots opened while a commit is held
 between pre-commit and visibility (use a sync barrier); two open readers at
 different points -> `OldestReaderEpoch()` <= the older's epoch, and it
 advances after they close; `Abort` after `PreCommit` releases the place (the
-next commit proceeds); no deadlock with two writers on two accelerators.
+next commit proceeds); a connection closed inside a writing transaction releases
+it too; no deadlock with two writers on two accelerators.
 
 ---
 
@@ -112,6 +238,14 @@ applies after visibility), and the engine-local typed chunked scans behind
   offsets; native engine types, no shared chunk IR, no client SQL round-trip.
   `RunBuild` calls the module's `Build` through them inside `snapshot` and
   **must call `builder.Finish()`**.
+- **Read views that cannot be shared.** If the engine fixes a snapshot per
+  connection and cannot hand it to another (no exported or shared read view),
+  the partitions still read one snapshot: hold commits at the backend's own
+  commit point only while the partitions' connections open their views (an
+  instant, never the scan), take `b` from the epoch counter at that instant,
+  then release. Writes continue for the whole scan. This is the valid design for
+  such engines, not a missing feature; never stop this layer for want of a
+  shareable snapshot.
 
 **Harness:** seed >=3 rows (one NULL); commit A; open the snapshot; commit B
 **while it is open** (the commit must complete); scan: A visible, B not,
@@ -120,7 +254,8 @@ dropping >=1 row; exact cell values incl. NULL; force >=2 chunk callbacks and
 assert their concatenation equals the golden set; `partitions = 1` and
 `partitions = N` return the same multiset, each partition's rows arrive in table order and the same partition holds the same rows on a repeated scan, partitions overlap in time (concurrency observed) with at most the build cap of threads, a writer commit between partition starts is invisible to every partition, a NULL in a non-`Nullable` column and an oversized decimal fail loudly; barrier: a writer that began
 earlier blocks `WaitForPreRegistrationWriters` until it commits, and a timeout
-returns false.
+returns false; a DDL on the scanned table issued while a multi-partition scan is
+under way ends the scan (success or failure) within its bound and never hangs.
 
 ---
 
@@ -140,8 +275,14 @@ Implements the host (`api/{engine}_host.*`): the `EngineSlots` object owning a
   cannot be delivered becomes a gap (the runtime rebuilds). Read threads call
   no engine API: no engine headers in their files, signals blocked. A worker
   restart is safe: the next build includes everything.
-- **Thread budget and phase caps.** One `ThreadBudget` from `ResolveThreadBudget(engine setting)`; the read, build and maintenance caps from `ResolveReadThreads` / `ResolveBuildThreads` / `ResolveMaintenanceThreads` with the engine's own settings when it has a settings mechanism (e.g. Postgres `accel.read_threads` / `build_threads` / `maint_threads`; `ACCEL_AUX_*_THREADS` always override), applied with `SetPhaseLimits`. A multi-process placement shares the budget across processes (`TokenSource`).
-- **Table sizes and cost model.** `TableRows(table)` returns the engine's cheap row estimate (64-bit; 0 only if unknown) so `DataScaleRows` scales the maintenance policy; `CostModel(accelerator)` comes from `core::ResolveAuxCostModelPath` with the engine name, the scale tag (DuckDB: `ACCEL_AUX_BENCH_DB_LABEL`) and the per-engine override env var.
+- **The placement is the analysis's.** Implement the placement the profile's
+  `placement_candidates` and the backend analysis select; another placement is
+  not a substitute, even when the harness passes with it. A shipped worker is
+  this layer's whole job: the worker process and how it starts (the engine's
+  worker mechanism from the profile, plus any server configuration it needs,
+  added to `host.sh up`), the commit transport, and the shared `TokenSource`.
+- **Thread budget and phase caps.** One `ThreadBudget` from `ResolveThreadBudget(engine setting)`; the read, build and maintenance caps from `ResolveReadThreads` / `ResolveBuildThreads` / `ResolveMaintenanceThreads` with the engine's own settings when it has a settings mechanism (the profile's `thread_knobs`, base names of `api_contract.md` §4; `ACCEL_AUX_*_THREADS` always override), applied with `SetPhaseLimits`. A multi-process placement shares the budget across processes (`TokenSource`).
+- **Table sizes and cost model.** `TableRows(table)` returns the engine's cheap row estimate (64-bit; 0 only if unknown) so `DataScaleRows` scales the maintenance policy; `CostModel(accelerator)` comes from `core::ResolveAuxCostModelPath` with the engine name, the scale tag (the profile names where it comes from) and the per-engine override env var.
 - No commit is dropped or skipped by the host; no thread pool, build
   scheduler, lock or version logic of its own.
 
@@ -149,9 +290,11 @@ Implements the host (`api/{engine}_host.*`): the `EngineSlots` object owning a
 read equals golden; DML + commit -> read equals the new golden; `Invalidate()`
 under a continuous writer loop -> synced within a bound while the writer keeps
 committing, final answer exact; a reader transaction older than the build
-reads its own snapshot's answer or gets `Fallback`, never a newer one; shipped
+reads its own snapshot's answer or gets `Fallback`, never a newer one; a read inside a
+transaction that wrote a dependency table equals the SQL answer that includes those
+rows; shipped
 placement: drop one commit message -> gap -> rebuild -> exact, kill the worker
--> reads fall back exact, then hit again; `ThreadBudget::PeakThreads()` <= the
+-> reads fall back exact, then hit again; a build that is slow (the toy module holds its scan open across a barrier) while another connection commits a write to a captured table: the commit and the build both finish within a bound (no engine callback waits on the thread budget while it holds an engine lock); `ThreadBudget::PeakThreads()` <= the
 configured budget; each phase cap set through the engine setting and through the env override is observed by `WorkerCount()` inside the toy module's `Build` / `Execute` / maintenance (e.g. a cap of 1 gives 1); `DataScaleRows()` equals the table's row count after a bulk insert (and `ChooseMaintenance` with a model whose `calibrated_scale_rows` is a tenth of it raises the ApplyDelta cap tenfold).
 
 ---
@@ -168,7 +311,9 @@ sources.
 
 **Harness:** load the host -> call the entry -> the `runtime` golden through
 SQL; NULL argument; a `Fallback` (invalid state) answered correctly through
-SQL; the entry named by the registry, not by a backend list.
+SQL; the entry named by the registry, not by a backend list; the same read inside a
+transaction that wrote a dependency table (own writes) equals SQL, also for a
+statement prepared before the write where the engine has prepared statements.
 
 **Test code stays out of the production MODULE.** Gate-test UDFs and toy
 bridges (test-table setup, state inspection, runtime-layer drivers, the toy
@@ -178,33 +323,22 @@ separate test-only MODULE/plugin (`<module>_test`, e.g.
 themselves. The production MODULE/plugin holds only real entry points
 (capture hooks, query registries and their SQL entry points).
 
-### Query registries (every engine)
+---
 
-The backend is generated once and must serve any number of queries without
-being edited: it **names no query**.  Query pipelines add each query under
-`accelerators/<bench>/q<N>/<engine>/` and plug it in with static registrars,
-so the backend exposes registries plus generic dispatch over them:
+## `api`
 
-- **catalog** (`backends/<engine>/api/catalog/query_catalog.{hpp,cpp}`):
-  `Register…(Entry)` + a `…Registrar` struct; lookups and query lists iterate
-  the registry (sorted by query id).
-- **SQL entry points**: one generic implementation the host calls with the
-  query's registered entry.  Where the host resolves functions by symbol name
-  (UDFs, `PG_FUNCTION_INFO_V1`), the per-name symbol is a one-line shim in the
-  query's directory that forwards to the generic implementation.  The SQL that
-  creates the functions (extension script, `CREATE FUNCTION` list) is assembled
-  from per-query fragments at build/install time, never hand-listed.
-- **runtime bindings / scans**: a registry from accelerator id to the query's
-  module + scan factory; the backend's scan helpers are exported in a header
-  for the queries' scan code.
-- Registries are plain functions in a backend `.cpp` with function-local
-  static storage and stable entry addresses (not header-only template
-  singletons, which can duplicate across the host library and the MODULE).
-  Per-query MODULE-side code (scans using server APIs, symbol shims) is
-  globbed into the MODULE from the query directories.
+Writes `backends/{engine}/api/` and `api/README.md` against
+`pipeline/prompts/engine_backend/api_contract.md` (binding; read it in full) and the
+manifest format of `host_contract.md`. The slot layers built the engine side; this
+layer exposes it. Move what accelerators and harnesses must reach (registries, runtime
+handle, scan helpers, SQL fallback, cost-model path, thread settings, engine-exact value
+helpers) into `api/`, keep everything else (`engine/`, `state/`, `tests/`) private, and
+add the introspection hooks.
 
-The build must succeed with **every** `accelerators/<bench>/q<N>/` removed
-(zero registered queries), and `scripts/check_backend_query_free.py --engine
-<engine>` must pass (the `engine_build` gate runs it).  Engine-level helpers a
-query needs (e.g. a key-list predicate, a collation-safe literal) belong in the
-backend, generic and documented; per-query code never does.
+**Harness:** none of its own. The gate builds `api_conformance_{engine}` through
+`host.sh build`: each `api/` header compiled alone with the flags of the code that
+includes it, so an `api/` header that needs another include, or the engine SDK set up
+first, fails here and not in the first accelerator.
+
+Before that it runs `pipeline/gates/check_api_manifest.py` and
+`scripts/check_layer_includes.py`; fix their output as it names the file and line.

@@ -9,7 +9,7 @@
 #include <new>
 #include <vector>
 
-#include "backends/duckdb/engine/duckdb_scan_adapter.hpp"
+#include "backends/duckdb/api/duckdb_scan_adapter.hpp"
 #include "duckdb/common/unique_ptr.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/parallel/task_executor.hpp"

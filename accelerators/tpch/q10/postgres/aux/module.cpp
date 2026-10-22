@@ -9,7 +9,7 @@
 #include <tuple>
 #include <utility>
 
-#include "prims/pg_numeric.hpp"
+#include "backends/postgres/api/pg_numeric.hpp"
 #include "substrate/aux/core/query_module_helpers.hpp"
 #include "prims/sql_date.hpp"
 #include "substrate/aux/core/parallel_slices.hpp"

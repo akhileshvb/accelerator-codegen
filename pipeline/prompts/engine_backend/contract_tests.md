@@ -23,7 +23,7 @@ layers. Architecture audit judges the **same** rules.
 | `host` | `backends/{engine}/tests/test_{engine}_host.cpp` | `engine_host` (skip if host not required) |
 
 Start from `pipeline/templates/engine_backend/test_engine_layer.cpp.tpl`.
-Register via `cmake_layer_test.cmake.tpl`. The toy module: copy `SumModule`
+Registered by the `backend.cmake` glob over `tests/test_{engine}_*.cpp` (`cmake_layer_test.cmake.tpl`). The toy module: copy `SumModule`
 and its sink from `eval/tests/test_aux_runtime.cpp`.
 
 Validation authors unseen `test_{engine}_adversarial.cpp`
@@ -48,5 +48,5 @@ gates (`pipeline/gates/README_runtime_gates.md`).
    registration and call the toy module through SQL.
 
 Host connection details come from the workload `host_runtime` /
-`engine_sdk_hints` block and `discover_host_sdk` — do not assume a particular
+engine profile and `discover_host_sdk` — do not assume a particular
 engine's layout.

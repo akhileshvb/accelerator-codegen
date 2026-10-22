@@ -8,8 +8,9 @@ display_name: TPC-H aux remaining optimization (Q7/Q8/Q13/Q15/Q19/Q20/Q22)
 concurrency: 7
 stage: optimization
 resume: false
-models_config: pipeline/config/models.codex.yaml
+models_config: pipeline/config/models.yaml
 
+engines: [postgres]
 workload_template: "tpch_q{q}_aux"
 
 queries:

@@ -35,7 +35,7 @@ def _build_context(args: argparse.Namespace):
     workload_name = args.workload or os.environ.get("ACCEL_PIPELINE_WORKLOAD") or "tpch_q3"
     stage = args.stage or os.environ.get("ACCEL_PIPELINE_STAGE") or "optimization_worker"
     optimization_iter = int(args.optimization_iter or _env_int("ACCEL_PIPELINE_OPT_ITER", 0))
-    workload = load_workload(workload_name, repo_root)
+    workload = load_workload(workload_name, repo_root, engine=os.environ.get("ACCEL_PIPELINE_ENGINE", ""))
     pipeline_config = apply_workload_overrides(pipeline_config, workload)
     art = query_artifacts_dir(repo_root, query, workload=workload)
     return pipeline_config, workload, workload_name, query, stage, optimization_iter, art
@@ -117,7 +117,7 @@ def build_mcp_tool_callables(
         return _run_named_gate(name)
 
     def run_multi_connection() -> str:
-        """Run aux_multi_connection gate (DuckDB TF + multi-conn stress). Aux-state only."""
+        """Run aux_multi_connection gate (registered entry points + multi-conn stress). Aux-state only."""
         if workload.get("workload_kind") != "aux_state":
             return json.dumps(
                 {
@@ -242,6 +242,7 @@ def build_mcp_tool_callables(
 
         entry = append_negative_memory(
             pipeline_config.repo_root,
+            pipeline_config.engine_name,
             trap=trap,
             when=when,
             evidence=evidence,
@@ -296,10 +297,10 @@ def build_mcp_tool_callables(
         return publish_tool(pipeline_config, query, files, rationale)
 
     def discover_host_sdk() -> str:
-        """Locate this engine's host from workload host_runtime (not engine_name)."""
-        from accel_pipeline.host_runtime import discover_host_sdk_json
+        """Describe this engine's host.sh verbs and how to connect."""
+        from accel_pipeline.engine_host import discover_host_sdk_json
 
-        return discover_host_sdk_json(workload)
+        return discover_host_sdk_json(workload, pipeline_config.repo_root, pipeline_config.build_dir)
 
     return {
         "request_gate": request_gate,
@@ -454,7 +455,7 @@ def main(argv: list[str] | None = None) -> int:
 
     @_tool(annotations=_ro)
     def run_multi_connection() -> str:
-        """Run aux_multi_connection gate (DuckDB TF registration + multi-conn stress)."""
+        """Run aux_multi_connection gate (entry-point registration + multi-conn stress)."""
         return _call("run_multi_connection")
 
     @_tool(annotations=_ro)
@@ -541,16 +542,19 @@ def main(argv: list[str] | None = None) -> int:
     def primitive_publish(files: list[str], rationale: str) -> str:
         """Publish staged primitives to the shared accelerators/prims/ library.
 
-        files: repo-relative paths (e.g. accelerators/prims/foo.hpp,
-        accelerators/prims/README.md, accelerators/prims/tests/test_prims.cpp),
-        each staged as a full file under pipeline/prims_staging/<same path>. Additions only,
-        generic only; builds and runs test_prims before publishing. rationale: one line.
+        files: repo-relative paths (a header accelerators/prims/foo.hpp and
+        accelerators/prims/tests/test_prims.cpp), each staged as a full file under
+        pipeline/prims_staging/<same path>. The header comment declares PURPOSE, KEY SPACE,
+        COMPLEXITY, MEMORY, COW/THREADS and USE WHEN; the README catalogue row is generated
+        from it. Rejected when its name or purpose duplicates a published primitive (reuse or
+        extend that one). Additions only, generic only; builds and runs test_prims before
+        publishing. rationale: one line.
         """
         return _call("primitive_publish", files, rationale)
 
     @_tool(annotations=_ro)
     def discover_host_sdk() -> str:
-        """Locate this engine's external server SDK (Postgres: pacman/apt/home-prefix)."""
+        """Describe this engine's host.sh verbs and how to connect."""
         return _call("discover_host_sdk")
 
     # ---- Verus pipeline (--mode verus); context from ACCEL_VERUS_CONTEXT ----
@@ -569,7 +573,7 @@ def main(argv: list[str] | None = None) -> int:
 
     @_tool(annotations=_ro)
     def verus_sql(query: str, max_rows: int = 50) -> str:
-        """Read-only SQL on the test database (DuckDB), to explore the data."""
+        """Read-only SQL on the test dataset database, to explore the data."""
         return _verus("verus_sql", query, max_rows)
 
     @_tool(annotations=_rw)

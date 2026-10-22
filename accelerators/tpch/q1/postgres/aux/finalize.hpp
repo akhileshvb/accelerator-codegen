@@ -5,7 +5,7 @@
 #include <vector>
 
 #include "prims/flat_hash_map.hpp"
-#include "prims/pg_numeric.hpp"
+#include "backends/postgres/api/pg_numeric.hpp"
 
 namespace accelerator_codegen {
 

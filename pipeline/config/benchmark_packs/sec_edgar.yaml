@@ -15,9 +15,9 @@ test_template_path: pipeline/templates/sec_edgar/test_template.cpp
 benchmark_template_path: pipeline/templates/sec_edgar/benchmark_template.cpp
 
 write_paths:
-  - backends/duckdb/engine/duckdb_scan_adapter.hpp
+  - backends/duckdb/api/duckdb_scan_adapter.hpp
   - accelerators/sec_edgar/**
-  - backends/duckdb/engine/duckdb_scan_adapter.cpp
+  - backends/duckdb/api/duckdb_scan_adapter.cpp
   - eval/bench/sec_edgar/**
 
 allowed_commands:
@@ -50,5 +50,5 @@ snapshot_paths:
 fairness:
   cardinality_constants: []
   kernel_search_paths:
-    - accelerators/sec_edgar/q{N}/duckdb/base/single-threaded/kernel.cpp
-    - accelerators/sec_edgar/q{N}/duckdb/base/single-threaded/fused_scan.cpp
+    - accelerators/{bench}/q{N}/{engine}/base/single-threaded/kernel.cpp
+    - accelerators/{bench}/q{N}/{engine}/base/single-threaded/fused_scan.cpp

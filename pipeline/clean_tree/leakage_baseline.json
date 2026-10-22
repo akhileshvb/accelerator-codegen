@@ -1,0 +1,913 @@
+{
+ ".env.example": {
+  "engine": 9
+ },
+ ".gitignore": {
+  "engine": 1
+ },
+ "CMakeLists.txt": {
+  "engine": 10
+ },
+ "README.md": {
+  "engine": 4,
+  "path": 1
+ },
+ "cmake/Backend.cmake": {
+  "engine": 4
+ },
+ "cmake/BaseQuery.cmake": {
+  "engine": 2
+ },
+ "docs/incremental-maintenance-audit.md": {
+  "engine": 12,
+  "path": 3,
+  "target": 1
+ },
+ "docs/perf-runbook.md": {
+  "engine": 16,
+  "target": 3
+ },
+ "docs/sf3000-duckdb-audit.md": {
+  "engine": 10,
+  "path": 2,
+  "symbol": 5,
+  "target": 11
+ },
+ "eval/bench/comparison/plot_gendb_bespoke_comparison.py": {
+  "engine": 9
+ },
+ "eval/bench/sec_edgar/generate_ground_truth.py": {
+  "engine": 5
+ },
+ "eval/bench/sec_edgar/load_data.py": {
+  "engine": 9
+ },
+ "eval/bench/sec_edgar/plot_aux_memory_overhead.py": {
+  "engine": 9
+ },
+ "eval/bench/sec_edgar/plot_aux_workload_write_interval_sweep.py": {
+  "engine": 1
+ },
+ "eval/bench/sec_edgar/plot_aux_write_freq_speedup.py": {
+  "engine": 3
+ },
+ "eval/bench/sec_edgar/plot_read_speedup_vs_gendb.py": {
+  "engine": 7
+ },
+ "eval/bench/sec_edgar/plot_speedup.py": {
+  "engine": 1
+ },
+ "eval/bench/sec_edgar/schema_reference.md": {
+  "engine": 2,
+  "symbol": 2
+ },
+ "eval/bench/tpch/plot_matview_vs_aux_write_mix.py": {
+  "engine": 8
+ },
+ "eval/bench/tpch/plot_parallel_speedup.py": {
+  "engine": 7
+ },
+ "eval/bench/tpch/plot_sf20_rf_workload_speedup.py": {
+  "engine": 3
+ },
+ "eval/bench/tpch/plot_stateless_geomean.py": {
+  "engine": 4
+ },
+ "eval/bench/tpch/plot_transient_state.py": {
+  "engine": 7
+ },
+ "eval/compare/plot_cycle.py": {
+  "engine": 9
+ },
+ "eval/compare/plot_headline_speedup.py": {
+  "engine": 14
+ },
+ "eval/compare/plot_memory_footprint.py": {
+  "engine": 1
+ },
+ "eval/compare/plot_read.py": {
+  "engine": 4
+ },
+ "eval/compare/plot_readonly_speedup.py": {
+  "engine": 30,
+  "target": 1
+ },
+ "eval/compare/plot_results.py": {
+  "engine": 16
+ },
+ "eval/compare/plot_rf_interval_sweep.py": {
+  "engine": 5
+ },
+ "eval/compare/plot_rf_multi_sweep.py": {
+  "engine": 8
+ },
+ "eval/compare/plot_tpch_perf.py": {
+  "engine": 11
+ },
+ "eval/compare/plotlib.py": {
+  "target": 1
+ },
+ "eval/compare/rf_intervals.py": {
+  "engine": 2,
+  "engine_branch": 1
+ },
+ "eval/compare/run_backends.sh": {
+  "engine": 49,
+  "path": 10,
+  "target": 4
+ },
+ "eval/compare/run_compare.py": {
+  "engine": 43,
+  "path": 3,
+  "target": 3
+ },
+ "eval/compare/run_experiments.sh": {
+  "engine": 5,
+  "path": 1,
+  "target": 3
+ },
+ "eval/compare/run_rf_interval_sweep.sh": {
+  "engine": 16,
+  "target": 3
+ },
+ "eval/compare/summarize_rf_interval_sweep.py": {
+  "engine": 7
+ },
+ "eval/compare/tpch_breakdown.py": {
+  "engine": 6
+ },
+ "eval/compare/workload.py": {
+  "engine": 6,
+  "target": 1
+ },
+ "eval/harness/float_order_ties.hpp": {
+  "engine": 4
+ },
+ "eval/tests/make_sec_edgar_test_db.cpp": {
+  "engine": 5
+ },
+ "eval/tests/make_tpch_test_db.cpp": {
+  "engine": 5
+ },
+ "eval/tests/test_aux_runtime.cpp": {
+  "engine": 3
+ },
+ "eval/tests/test_float_order_ties.cpp": {
+  "engine": 1
+ },
+ "eval/tests/test_support/benchmark_paired_timing.hpp": {
+  "engine": 13,
+  "target": 1
+ },
+ "eval/tests/test_support/db_paths.hpp": {
+  "engine": 12
+ },
+ "eval/tests/test_support/interference_calibration.hpp": {
+  "engine": 3
+ },
+ "eval/tests/test_support/result_compare.hpp": {
+  "engine": 25
+ },
+ "eval/tests/tpch_fuzz_writes.hpp": {
+  "engine": 13
+ },
+ "eval/tests/tpch_param_templates.hpp": {
+  "engine": 3,
+  "target": 1
+ },
+ "pipeline/README.md": {
+  "engine": 21,
+  "path": 2,
+  "target": 3
+ },
+ "pipeline/catalog/aux_transformations.yaml": {
+  "engine": 7,
+  "path": 7
+ },
+ "pipeline/config/aux_state.yaml": {
+  "engine": 4
+ },
+ "pipeline/config/benchmark_packs/sec_edgar.yaml": {
+  "engine": 7,
+  "path": 8
+ },
+ "pipeline/config/benchmark_packs/tpch.yaml": {
+  "path": 1
+ },
+ "pipeline/config/benchmark_packs/tpch_sf20_aux_sweep.yaml": {
+  "engine": 3
+ },
+ "pipeline/config/default.yaml": {
+  "path": 1
+ },
+ "pipeline/config/packs/tpch_aux_pair.yaml": {
+  "engine": 1
+ },
+ "pipeline/config/packs/tpch_aux_parallel.yaml": {
+  "engine": 1
+ },
+ "pipeline/config/packs/tpch_aux_remaining.yaml": {
+  "engine": 1
+ },
+ "pipeline/config/packs/tpch_duckdb_q1_q6.yaml": {
+  "engine": 4
+ },
+ "pipeline/config/packs/tpch_pg_aux_all22.yaml": {
+  "engine": 6,
+  "path": 1
+ },
+ "pipeline/config/packs/tpch_regen_all22.yaml": {
+  "engine": 1
+ },
+ "pipeline/config/sec_edgar_aux_state.yaml": {
+  "path": 3
+ },
+ "pipeline/config/verus.yaml": {
+  "engine": 3
+ },
+ "pipeline/config/workloads/engine_.template.yaml": {
+  "path": 2
+ },
+ "pipeline/config/workloads/engine_duckdb.yaml": {
+  "path": 5,
+  "symbol": 1
+ },
+ "pipeline/config/workloads/engine_mysql.yaml": {
+  "path": 6,
+  "target": 3
+ },
+ "pipeline/config/workloads/engine_postgres.yaml": {
+  "path": 5,
+  "target": 2
+ },
+ "pipeline/config/workloads/sec_edgar_q1.yaml": {
+  "engine": 1
+ },
+ "pipeline/config/workloads/sec_edgar_q1_aux.yaml": {
+  "engine": 1
+ },
+ "pipeline/config/workloads/sec_edgar_q2.yaml": {
+  "engine": 1
+ },
+ "pipeline/config/workloads/sec_edgar_q24.yaml": {
+  "engine": 1
+ },
+ "pipeline/config/workloads/sec_edgar_q24_aux.yaml": {
+  "engine": 1
+ },
+ "pipeline/config/workloads/sec_edgar_q2_aux.yaml": {
+  "engine": 1
+ },
+ "pipeline/config/workloads/sec_edgar_q3.yaml": {
+  "engine": 1
+ },
+ "pipeline/config/workloads/sec_edgar_q3_aux.yaml": {
+  "engine": 1
+ },
+ "pipeline/config/workloads/sec_edgar_q4.yaml": {
+  "engine": 1
+ },
+ "pipeline/config/workloads/sec_edgar_q4_aux.yaml": {
+  "engine": 1
+ },
+ "pipeline/config/workloads/sec_edgar_q6.yaml": {
+  "engine": 1
+ },
+ "pipeline/config/workloads/sec_edgar_q6_aux.yaml": {
+  "engine": 1
+ },
+ "pipeline/config/workloads/sec_edgar_q_aux.template.yaml": {
+  "engine": 1
+ },
+ "pipeline/config/workloads/tpch_q1.yaml": {
+  "engine": 1
+ },
+ "pipeline/config/workloads/tpch_q10.yaml": {
+  "engine": 1
+ },
+ "pipeline/config/workloads/tpch_q10_aux.yaml": {
+  "engine": 1
+ },
+ "pipeline/config/workloads/tpch_q11.yaml": {
+  "engine": 1
+ },
+ "pipeline/config/workloads/tpch_q11_aux.yaml": {
+  "engine": 1
+ },
+ "pipeline/config/workloads/tpch_q12.yaml": {
+  "engine": 1
+ },
+ "pipeline/config/workloads/tpch_q12_aux.yaml": {
+  "engine": 1
+ },
+ "pipeline/config/workloads/tpch_q13.yaml": {
+  "engine": 1
+ },
+ "pipeline/config/workloads/tpch_q13_aux.yaml": {
+  "engine": 1
+ },
+ "pipeline/config/workloads/tpch_q14.yaml": {
+  "engine": 1
+ },
+ "pipeline/config/workloads/tpch_q14_aux.yaml": {
+  "engine": 1
+ },
+ "pipeline/config/workloads/tpch_q15.yaml": {
+  "engine": 1
+ },
+ "pipeline/config/workloads/tpch_q15_aux.yaml": {
+  "engine": 1
+ },
+ "pipeline/config/workloads/tpch_q16.yaml": {
+  "engine": 1
+ },
+ "pipeline/config/workloads/tpch_q16_aux.yaml": {
+  "engine": 1
+ },
+ "pipeline/config/workloads/tpch_q17.yaml": {
+  "engine": 1
+ },
+ "pipeline/config/workloads/tpch_q17_aux.yaml": {
+  "engine": 1
+ },
+ "pipeline/config/workloads/tpch_q18.yaml": {
+  "engine": 1
+ },
+ "pipeline/config/workloads/tpch_q18_aux.yaml": {
+  "engine": 1
+ },
+ "pipeline/config/workloads/tpch_q19.yaml": {
+  "engine": 1
+ },
+ "pipeline/config/workloads/tpch_q19_aux.yaml": {
+  "engine": 1
+ },
+ "pipeline/config/workloads/tpch_q1_aux.yaml": {
+  "engine": 1
+ },
+ "pipeline/config/workloads/tpch_q2.yaml": {
+  "engine": 1
+ },
+ "pipeline/config/workloads/tpch_q20.yaml": {
+  "engine": 1
+ },
+ "pipeline/config/workloads/tpch_q20_aux.yaml": {
+  "engine": 1
+ },
+ "pipeline/config/workloads/tpch_q21.yaml": {
+  "engine": 1
+ },
+ "pipeline/config/workloads/tpch_q21_aux.yaml": {
+  "engine": 1
+ },
+ "pipeline/config/workloads/tpch_q21_verus_smoke.yaml": {
+  "engine": 2
+ },
+ "pipeline/config/workloads/tpch_q22.yaml": {
+  "engine": 1
+ },
+ "pipeline/config/workloads/tpch_q22_aux.yaml": {
+  "engine": 1
+ },
+ "pipeline/config/workloads/tpch_q2_aux.yaml": {
+  "engine": 1
+ },
+ "pipeline/config/workloads/tpch_q3.yaml": {
+  "engine": 1
+ },
+ "pipeline/config/workloads/tpch_q3_aux.yaml": {
+  "engine": 1
+ },
+ "pipeline/config/workloads/tpch_q4.yaml": {
+  "engine": 1
+ },
+ "pipeline/config/workloads/tpch_q4_aux.yaml": {
+  "engine": 1
+ },
+ "pipeline/config/workloads/tpch_q5.yaml": {
+  "engine": 1
+ },
+ "pipeline/config/workloads/tpch_q5_aux.yaml": {
+  "engine": 1
+ },
+ "pipeline/config/workloads/tpch_q6.yaml": {
+  "engine": 1
+ },
+ "pipeline/config/workloads/tpch_q6_aux.yaml": {
+  "engine": 1
+ },
+ "pipeline/config/workloads/tpch_q7.yaml": {
+  "engine": 1
+ },
+ "pipeline/config/workloads/tpch_q7_aux.yaml": {
+  "engine": 1
+ },
+ "pipeline/config/workloads/tpch_q8.yaml": {
+  "engine": 1
+ },
+ "pipeline/config/workloads/tpch_q8_aux.yaml": {
+  "engine": 1
+ },
+ "pipeline/config/workloads/tpch_q9.yaml": {
+  "engine": 1
+ },
+ "pipeline/config/workloads/tpch_q9_aux.yaml": {
+  "engine": 1
+ },
+ "pipeline/config/workloads/tpch_q_aux.template.yaml": {
+  "engine": 1
+ },
+ "pipeline/gates/README_runtime_gates.md": {
+  "engine": 5,
+  "path": 1
+ },
+ "pipeline/gates/run_aux_bench_sweep.sh": {
+  "engine": 3
+ },
+ "pipeline/gates/run_engine_scan_conformance.sh": {
+  "symbol": 1
+ },
+ "pipeline/gates/tests/test_gate_plumbing.py": {
+  "engine": 3
+ },
+ "pipeline/orchestrator/accel_pipeline/aux_bench.py": {
+  "engine": 1
+ },
+ "pipeline/orchestrator/accel_pipeline/base_bench.py": {
+  "engine": 7
+ },
+ "pipeline/orchestrator/accel_pipeline/context.py": {
+  "path": 2
+ },
+ "pipeline/orchestrator/accel_pipeline/data_shape.py": {
+  "engine": 4
+ },
+ "pipeline/orchestrator/accel_pipeline/implementation_bootstrap.py": {
+  "path": 2,
+  "symbol": 1
+ },
+ "pipeline/orchestrator/accel_pipeline/kernel_hot_path_review.py": {
+  "engine": 1,
+  "symbol": 4
+ },
+ "pipeline/orchestrator/accel_pipeline/mcp_server.py": {
+  "path": 1
+ },
+ "pipeline/orchestrator/accel_pipeline/optimization_eval.py": {
+  "engine": 3
+ },
+ "pipeline/orchestrator/accel_pipeline/optimization_runtime.py": {
+  "engine": 2
+ },
+ "pipeline/orchestrator/accel_pipeline/pipeline_log.py": {
+  "engine": 3
+ },
+ "pipeline/orchestrator/accel_pipeline/profile_investigation.py": {
+  "symbol": 4
+ },
+ "pipeline/orchestrator/accel_pipeline/run_pipeline.py": {
+  "engine": 1
+ },
+ "pipeline/orchestrator/accel_pipeline/scaffold_stubs.py": {
+  "symbol": 1
+ },
+ "pipeline/orchestrator/accel_pipeline/tools/ab_tools.py": {
+  "engine": 1
+ },
+ "pipeline/orchestrator/accel_pipeline/verus/actions.py": {
+  "engine": 7,
+  "engine_branch": 1,
+  "target": 3
+ },
+ "pipeline/orchestrator/accel_pipeline/verus/agent.py": {
+  "engine": 2
+ },
+ "pipeline/orchestrator/accel_pipeline/verus/context.py": {
+  "target": 1
+ },
+ "pipeline/orchestrator/accel_pipeline/verus/params.py": {
+  "target": 1
+ },
+ "pipeline/orchestrator/accel_pipeline/verus/sandbox.py": {
+  "engine": 4
+ },
+ "pipeline/orchestrator/accel_pipeline/verus/stages.py": {
+  "engine": 1,
+  "target": 1
+ },
+ "pipeline/orchestrator/accel_pipeline/verus/tools.py": {
+  "engine": 1
+ },
+ "pipeline/orchestrator/accel_pipeline/verus/workspace.py": {
+  "engine": 1
+ },
+ "pipeline/orchestrator/accel_pipeline/worker_isolation.py": {
+  "engine": 2
+ },
+ "pipeline/orchestrator/accel_pipeline/workload_facts.py": {
+  "engine": 8
+ },
+ "pipeline/orchestrator/pyproject.toml": {
+  "engine": 1
+ },
+ "pipeline/orchestrator/requirements.txt": {
+  "engine": 1
+ },
+ "pipeline/orchestrator/tests/fixtures/engine_toydb.yaml": {
+  "engine": 2,
+  "path": 4
+ },
+ "pipeline/orchestrator/tests/test_ab_tools.py": {
+  "engine": 3
+ },
+ "pipeline/orchestrator/tests/test_accelerator_engine.py": {
+  "engine": 78,
+  "engine_branch": 4,
+  "path": 7,
+  "symbol": 1,
+  "target": 11
+ },
+ "pipeline/orchestrator/tests/test_analysis_context.py": {
+  "engine": 4,
+  "path": 3
+ },
+ "pipeline/orchestrator/tests/test_analysis_paths.py": {
+  "engine": 3
+ },
+ "pipeline/orchestrator/tests/test_api_contract.py": {
+  "engine": 3,
+  "engine_branch": 1
+ },
+ "pipeline/orchestrator/tests/test_aux_bench.py": {
+  "engine": 7
+ },
+ "pipeline/orchestrator/tests/test_aux_pipeline.py": {
+  "engine": 10,
+  "path": 7
+ },
+ "pipeline/orchestrator/tests/test_backend_api.py": {
+  "engine": 1
+ },
+ "pipeline/orchestrator/tests/test_base_bench.py": {
+  "engine": 3
+ },
+ "pipeline/orchestrator/tests/test_benchmark_pack.py": {
+  "engine": 9,
+  "path": 4,
+  "symbol": 1
+ },
+ "pipeline/orchestrator/tests/test_codex_backend.py": {
+  "engine": 17,
+  "target": 1
+ },
+ "pipeline/orchestrator/tests/test_engine_backend.py": {
+  "engine": 94,
+  "path": 16,
+  "target": 2
+ },
+ "pipeline/orchestrator/tests/test_engine_profile.py": {
+  "engine": 19
+ },
+ "pipeline/orchestrator/tests/test_engine_runs.py": {
+  "engine": 16,
+  "path": 5
+ },
+ "pipeline/orchestrator/tests/test_gate_capture.py": {
+  "engine": 8
+ },
+ "pipeline/orchestrator/tests/test_host_bootstrap.py": {
+  "engine": 35,
+  "path": 10,
+  "target": 10
+ },
+ "pipeline/orchestrator/tests/test_implementation_bootstrap.py": {
+  "engine": 4,
+  "path": 2
+ },
+ "pipeline/orchestrator/tests/test_kernel_hot_path_review.py": {
+  "engine": 1
+ },
+ "pipeline/orchestrator/tests/test_kernel_snapshot.py": {
+  "engine": 11,
+  "path": 13
+ },
+ "pipeline/orchestrator/tests/test_layer_checks.py": {
+  "engine": 11,
+  "include": 5,
+  "path": 9,
+  "symbol": 1
+ },
+ "pipeline/orchestrator/tests/test_negative_memory.py": {
+  "engine": 10
+ },
+ "pipeline/orchestrator/tests/test_new_engine.py": {
+  "engine": 2,
+  "path": 2
+ },
+ "pipeline/orchestrator/tests/test_optimization_bootstrap.py": {
+  "engine": 5,
+  "path": 2
+ },
+ "pipeline/orchestrator/tests/test_optimization_edit_paths.py": {
+  "engine": 4,
+  "path": 4
+ },
+ "pipeline/orchestrator/tests/test_optimization_runtime.py": {
+  "engine": 2,
+  "path": 1
+ },
+ "pipeline/orchestrator/tests/test_pipeline_log.py": {
+  "engine": 3
+ },
+ "pipeline/orchestrator/tests/test_prims_library.py": {
+  "engine": 7,
+  "path": 6
+ },
+ "pipeline/orchestrator/tests/test_scaffold_stubs.py": {
+  "engine": 5,
+  "path": 2,
+  "symbol": 4
+ },
+ "pipeline/orchestrator/tests/test_shared_tree_pack.py": {
+  "engine": 31,
+  "path": 14
+ },
+ "pipeline/orchestrator/tests/test_shell_tools.py": {
+  "engine": 6
+ },
+ "pipeline/orchestrator/tests/test_stage_max_turns.py": {
+  "engine": 3
+ },
+ "pipeline/orchestrator/tests/test_structural_reanalysis.py": {
+  "engine": 9
+ },
+ "pipeline/orchestrator/tests/test_substrate_never_writable.py": {
+  "engine": 3,
+  "engine_branch": 1
+ },
+ "pipeline/orchestrator/tests/test_tsan_gate.py": {
+  "engine": 2
+ },
+ "pipeline/orchestrator/tests/test_verus_pipeline.py": {
+  "engine": 2
+ },
+ "pipeline/orchestrator/tests/test_worker_resume.py": {
+  "engine": 1
+ },
+ "pipeline/orchestrator/tests/test_workload_inputs.py": {
+  "engine": 6,
+  "symbol": 2
+ },
+ "pipeline/prompts/aux_state/01b_adversarial_tests.md": {
+  "symbol": 1
+ },
+ "pipeline/prompts/aux_state/03_optimization_unified.md": {
+  "path": 2
+ },
+ "pipeline/prompts/aux_state/shared/agent_boundary.md": {
+  "symbol": 1
+ },
+ "pipeline/prompts/aux_state/shared/aux_state_taxonomy.md": {
+  "symbol": 4
+ },
+ "pipeline/prompts/aux_state/shared/bench_sweep_contract.md": {
+  "engine": 1,
+  "path": 1
+ },
+ "pipeline/prompts/aux_state/shared/concurrency_contract.md": {
+  "path": 1
+ },
+ "pipeline/prompts/aux_state/shared/maintenance_framework.md": {
+  "path": 3
+ },
+ "pipeline/prompts/aux_state/shared/read_path_scaffold.md": {
+  "symbol": 2
+ },
+ "pipeline/prompts/aux_state/shared/unit_test_contract.md": {
+  "symbol": 2
+ },
+ "pipeline/prompts/engine_backend/04_architecture_audit.md": {
+  "symbol": 1
+ },
+ "pipeline/prompts/engine_backend/layer_contracts.md": {
+  "engine": 2
+ },
+ "pipeline/prompts/engine_backend/native_scan_contract.md": {
+  "symbol": 1
+ },
+ "pipeline/prompts/sec_edgar/aux_state_notes.md": {
+  "path": 1
+ },
+ "pipeline/prompts/shared/codex_tooling.md": {
+  "path": 1
+ },
+ "pipeline/prompts/shared/generated_layout.md": {
+  "path": 2
+ },
+ "pipeline/prompts/shared/scale_factor_contract.md": {
+  "symbol": 3
+ },
+ "pipeline/prompts/shared/substrate_primitives.md": {
+  "path": 1,
+  "symbol": 3
+ },
+ "pipeline/prompts/verus/03_tests.md": {
+  "engine": 1
+ },
+ "pipeline/prompts/verus/contracts/scale_principles.md": {
+  "engine": 1
+ },
+ "pipeline/templates/engine_backend/scan.cpp.tpl": {
+  "symbol": 1
+ },
+ "pipeline/templates/engine_backend/scan.hpp.tpl": {
+  "symbol": 2
+ },
+ "pipeline/templates/sec_edgar/benchmark_template.cpp": {
+  "engine": 5,
+  "include": 1,
+  "path": 1,
+  "symbol": 1
+ },
+ "pipeline/templates/sec_edgar/test_template.cpp": {
+  "engine": 5,
+  "include": 1,
+  "path": 1,
+  "symbol": 1
+ },
+ "scripts/aggregate_parallel_matrix.py": {
+  "engine": 11
+ },
+ "scripts/calibrate_rf_cost_models.py": {
+  "engine": 4,
+  "path": 1
+ },
+ "scripts/calibrate_verus_sf20_cost_models.sh": {
+  "engine": 6,
+  "path": 6,
+  "target": 2
+ },
+ "scripts/check_backend_query_free.py": {
+  "engine": 4,
+  "path": 2,
+  "symbol": 2
+ },
+ "scripts/check_doc_paths.py": {
+  "engine": 10,
+  "target": 1
+ },
+ "scripts/check_layer_includes.py": {
+  "engine": 1
+ },
+ "scripts/compile_one.sh": {
+  "engine": 3,
+  "path": 2,
+  "target": 1
+ },
+ "scripts/create_sec_edgar_test_db.py": {
+  "engine": 13
+ },
+ "scripts/create_tpch_test_db.py": {
+  "engine": 9
+ },
+ "scripts/gen_tpch_refresh_sets.sh": {
+  "engine": 4
+ },
+ "scripts/gen_verus_kit_params.py": {
+  "path": 3,
+  "target": 1
+ },
+ "scripts/make_tpch_magnitude_dbs.sh": {
+  "engine": 9
+ },
+ "scripts/make_verus_clean_tree.sh": {
+  "path": 2
+ },
+ "scripts/materialize_tpch_sf1_from_manifests.py": {
+  "path": 1
+ },
+ "scripts/perf/common.sh": {
+  "engine": 3,
+  "target": 2
+ },
+ "scripts/perf/run_qphh.sh": {
+  "engine": 4,
+  "target": 1
+ },
+ "scripts/perf/run_sf20_read.sh": {
+  "engine": 3,
+  "target": 1
+ },
+ "scripts/plot_q1_maintenance_phases.py": {
+  "engine": 6,
+  "target": 1
+ },
+ "scripts/plot_q1_maintenance_trace.py": {
+  "engine": 3,
+  "target": 1
+ },
+ "scripts/plot_q20_phase_bands_styled.py": {
+  "engine": 1
+ },
+ "scripts/plot_q20_phased_bench.py": {
+  "engine": 6
+ },
+ "scripts/run_aux_bench_sweep.sh": {
+  "engine": 7
+ },
+ "scripts/run_tpch_aux_sf20_sweep.sh": {
+  "engine": 3,
+  "path": 1
+ },
+ "scripts/run_verus_kit_tests.sh": {
+  "engine": 3,
+  "path": 2,
+  "target": 4
+ },
+ "scripts/run_verus_sf20_sweep.sh": {
+  "engine": 5,
+  "path": 4,
+  "target": 3
+ },
+ "scripts/setup_sec_edgar.sh": {
+  "engine": 17
+ },
+ "scripts/setup_sec_edgar_test_db.sh": {
+  "engine": 7
+ },
+ "scripts/setup_tpch_sf1_db.sh": {
+  "engine": 14
+ },
+ "scripts/setup_tpch_sf20_db.sh": {
+  "engine": 14
+ },
+ "scripts/setup_tpch_sf_db.sh": {
+  "engine": 25
+ },
+ "scripts/setup_tpch_test_db.sh": {
+  "engine": 5
+ },
+ "scripts/summarize_shared_interface_sweep.py": {
+  "engine": 3,
+  "engine_branch": 1
+ },
+ "scripts/summarize_tpch_aux_sf20_sweep.py": {
+  "engine": 3
+ },
+ "scripts/validate_tpch_refresh_sets.py": {
+  "engine": 5
+ },
+ "scripts/verus_sweep_summary.py": {
+  "target": 1
+ },
+ "substrate/aux/core/README.md": {
+  "engine": 5,
+  "path": 1,
+  "symbol": 1
+ },
+ "substrate/aux/core/aux_cost_model_path.hpp": {
+  "engine": 1
+ },
+ "substrate/aux/core/aux_maintenance_policy.hpp": {
+  "engine": 1
+ },
+ "substrate/aux/core/partitioned_build.hpp": {
+  "engine": 1
+ },
+ "substrate/aux/runtime/README.md": {
+  "engine": 8
+ },
+ "substrate/aux/runtime/accelerator_runtime.hpp": {
+  "engine": 3
+ },
+ "substrate/aux/runtime/engine_slots.hpp": {
+  "engine": 3
+ },
+ "substrate/aux/runtime/runtime_host.hpp": {
+  "engine": 2
+ },
+ "substrate/aux/runtime/sequenced_applier.cpp": {
+  "engine": 2
+ },
+ "substrate/aux/runtime/thread_budget.cpp": {
+  "engine": 1
+ },
+ "substrate/aux/runtime/thread_budget.hpp": {
+  "engine": 2
+ },
+ "substrate/verus/sql2verus/src/glue.rs": {
+  "path": 1
+ },
+ "substrate/verus/sql2verus/src/main.rs": {
+  "engine": 9
+ },
+ "workloads/sec_edgar/test_db_subset.sql": {
+  "engine": 2
+ },
+ "workloads/tpch/schema_constraints.sql": {
+  "target": 1
+ },
+ "workloads/tpch/test_db_subset.sql": {
+  "engine": 2
+ }
+}

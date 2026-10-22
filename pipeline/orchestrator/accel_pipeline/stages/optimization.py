@@ -9,7 +9,7 @@ from accel_pipeline.base_bench import (
     load_base_optimization_state,
     process_base_bench_after_gates,
 )
-from accel_pipeline.config import ModelConfig, PipelineConfig, load_workload
+from accel_pipeline.config import ModelConfig, PipelineConfig, load_run_workload
 from accel_pipeline.crash_debug import run_post_stage_gates_with_crash_debug
 from accel_pipeline.optimization_attempt import run_optimization_iteration
 from accel_pipeline.optimization_worker import OptimizationWorker, worker_enabled
@@ -32,7 +32,7 @@ def run(
 ):
     last_result = None
     no_improve_count = 0
-    workload = load_workload(workload_name, pipeline_config.repo_root)
+    workload = load_run_workload(pipeline_config, workload_name)
     opt_gates = workload_post_optimization_gates(workload)
     no_improve_stop = pipeline_config.optimization_no_improvement_stop
     budget = float(getattr(pipeline_config, "optimization_stage_budget_sec", 0) or 0)
@@ -40,7 +40,7 @@ def run(
     art = query_artifacts_dir(pipeline_config.repo_root, query, workload=workload)
 
     worker: OptimizationWorker | None = None
-    if not dry_run and worker_enabled(pipeline_config, model_config):
+    if not dry_run and worker_enabled(pipeline_config):
         worker = OptimizationWorker.create(
             pipeline_config=pipeline_config,
             model_config=model_config,

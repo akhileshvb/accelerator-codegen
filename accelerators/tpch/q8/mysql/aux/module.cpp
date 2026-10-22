@@ -12,8 +12,8 @@
 #include <unordered_map>
 #include <utility>
 
-#include "prims/mysql_collation.hpp"
-#include "prims/mysql_decimal.hpp"
+#include "backends/mysql/api/mysql_collation.hpp"
+#include "backends/mysql/api/mysql_decimal.hpp"
 #include "substrate/aux/core/query_module_helpers.hpp"
 #include "prims/sql_date.hpp"
 #include "substrate/aux/core/parallel_slices.hpp"
@@ -24,7 +24,7 @@ namespace accelerator_codegen::aux_state::query {
 namespace {
 
 namespace sql_date = core::sql_date;
-using Int128 = ::accelerator_codegen::pg_numeric::Int128;
+using Int128 = ::accelerator_codegen::mysql_decimal::Int128;
 
 constexpr core::PartitionId kStatePartition = TpchQ8Layout::kYear1995;
 // Order-map chunks (<= 1024 orders) per slice (~600 us: ~0.3 us per decoded order).
@@ -991,12 +991,12 @@ void TpchQ8Module::EmitResult(const TpchQ8State &s,
     // MySQL types SUM(CASE WHEN .. THEN volume ELSE 0 END) statically as
     // DECIMAL scale 4, so an empty THEN branch still prints 0.00000000
     // (PostgreSQL's dynamic numeric scale differs). a / b has scale 4 + 4.
-    pg_numeric::Decimal share;
+    mysql_decimal::Decimal share;
     const bool defined = myd::Div(nation_sum[y], kVolumeScale, total[y], kVolumeScale, share);
     sink.WriteRow(
         {{core::AuxValue::Of(core::AuxType::Int64,
                              static_cast<int64_t>(kTpchQ8MinYear + y)),
-          defined ? core::AuxValue::Of(core::AuxType::String, pg_numeric::ToText(share))
+          defined ? core::AuxValue::Of(core::AuxType::String, mysql_decimal::ToText(share))
                   : core::AuxValue::Null(core::AuxType::String)}});
   }
   sink.End();

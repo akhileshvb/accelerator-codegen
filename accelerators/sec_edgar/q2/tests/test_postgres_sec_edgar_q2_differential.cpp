@@ -262,7 +262,7 @@ struct Test {
     // A fresh session must agree too (its own build).
     Conn fresh(kScratchDb);
     RandomReads(fresh, "fresh session", 15);
-    const std::string counts = r->Scalar("SELECT accel_postgres_get_execute_counts()");
+    const std::string counts = r->Scalar("SELECT accel_get_execute_counts()");
     std::cout << "execute counts (reader): " << counts << "\n";
     std::cout << "txns=" << txns << " rollbacks=" << rollbacks << " failing_stmts=" << errors
               << " reads=" << reads << (failed ? " FAILED" : " ok") << "\n";

@@ -40,98 +40,22 @@ if [[ "${ACCEL_SKIP_AUX_CALIBRATE:-0}" == "1" ]]; then
   exit 0
 fi
 
-if [[ -f "${CONFIG}" ]]; then
-  if python3 - <<PY
-import json, sys
-from pathlib import Path
-data = json.loads(Path("${CONFIG}").read_text(encoding="utf-8"))
-delta = float(data.get("interference_delta_per_query_us") or 0)
-rebuild = float(data.get("interference_rebuild_per_query_us") or 0)
-sys.exit(0 if delta > 0 and rebuild > 0 else 1)
-PY
-  then
-    write_skip "reusing existing cost model at ${CONFIG}"
-    exit 0
-  fi
-fi
-
-# shellcheck source=cmake_ensure_target.sh
-source "$(dirname "${BASH_SOURCE[0]}")/cmake_ensure_target.sh"
-
-if ! ensure_build_tree "${ROOT}" "${BUILD}"; then
-  echo "{\"gate\":\"aux_cost_model_calibrate\",\"query\":${QUERY},\"status\":\"fail\",\"reason\":\"cmake configure failed for ${BUILD}\"}" > "${OUT}/aux_cost_model_calibrate.json"
-  exit 1
-fi
-
 TARGET="${AUX_CALIBRATE_TARGET}"
-CALIBRATOR_SOURCE="${ROOT}/accelerators/${BENCHMARK_NAME}/q${QUERY}/bench/calibrate_q${QUERY}_aux_cost_model.cpp"
-if [[ -f "${CALIBRATOR_SOURCE}" ]] && ! grep -q 'CalibrateAndWriteCostModel' "${CALIBRATOR_SOURCE}"; then
-  python3 - <<PY
-import json, pathlib, sys
-path = pathlib.Path("${OUT}/aux_cost_model_calibrate.json")
-payload = {
-    "gate": "aux_cost_model_calibrate",
-    "query": int("${QUERY}"),
-    "benchmark": "${BENCHMARK_NAME}",
-    "status": "fail",
-    "reason": "calibrate wrapper must call CalibrateAndWriteCostModel (stub calibrators are rejected)",
-    "config_path": "${CONFIG}",
-}
-path.write_text(json.dumps(payload, indent=2))
-print(path.read_text())
-sys.exit(1)
-PY
+if [[ -z "${TARGET}" ]]; then
+  emit_result "${OUT}/aux_cost_model_calibrate.json" aux_cost_model_calibrate fail "no calibrate target in the gate context" ""
 fi
-
-BUILD_LOG=""
-if ! ensure_cmake_target "${ROOT}" "${BUILD}" "${TARGET}"; then
-	BUILD_LOG="$(cmake --build "${BUILD}" --target "${TARGET}" -j"$(nproc)" 2>&1 | tail -40 || true)"
-fi
-
-if [[ ! -x "${BUILD}/${TARGET}" ]]; then
-	python3 - <<PY
-import json, pathlib, sys
-path = pathlib.Path("${OUT}/aux_cost_model_calibrate.json")
-payload = {
-    "gate": "aux_cost_model_calibrate",
-    "query": int("${QUERY}"),
-    "benchmark": "${BENCHMARK_NAME}",
-    "status": "fail",
-    "reason": "calibrate binary missing after cmake configure/build",
-    "log_tail": """${BUILD_LOG}"""[-4000:],
-}
-path.write_text(json.dumps(payload, indent=2))
-print(path.read_text())
-sys.exit(1)
-PY
+if ! engine_ready "${TARGET}"; then
+  emit_result "${OUT}/aux_cost_model_calibrate.json" aux_cost_model_calibrate fail "${ENGINE_FAIL}" "${ENGINE_LOG}"
 fi
 
 export ACCEL_MULTI_CONN_TEST_QUERIES="${ACCEL_MULTI_CONN_TEST_QUERIES:-${QUERY}}"
 export ACCEL_INTERFERENCE_CALIB_SEC="${ACCEL_INTERFERENCE_CALIB_SEC:-4}"
 export ACCEL_INTERFERENCE_ISOLATED_SAMPLES="${ACCEL_INTERFERENCE_ISOLATED_SAMPLES:-20}"
-
-CALIB_WORK_DIR="${BUILD}/q${QUERY}_aux_calibrate_${BENCHMARK_NAME}"
-mkdir -p "${CALIB_WORK_DIR}"
-export ACCEL_ENGINE_NAME="${ENGINE_NAME}"
-if [[ "${ENGINE_NAME}" == "duckdb" ]]; then
-  CALIB_DB="${CALIB_WORK_DIR}/calibrate.duckdb"
-  cp "${DATASET_DB}" "${CALIB_DB}"
-else
-  CALIB_DB="${CALIB_WORK_DIR}/calibrate_${ENGINE_NAME}_work"
-  mkdir -p "${CALIB_DB}"
-  if [[ -n "${DATASET_DB}" && -e "${DATASET_DB}" ]]; then
-    ln -sfn "${DATASET_DB}" "${CALIB_DB}/dataset_source" || true
-  fi
-fi
-
 export ACCEL_AUX_BENCHMARK="${BENCHMARK_NAME}"
-export "${DB_ENV_VAR}"="${CALIB_DB}"
-export ACCEL_ENGINE_WORK_DB="${CALIB_DB}"
 
-set +e
-LOG="$(env ACCEL_ENGINE_NAME="${ENGINE_NAME}" "${BUILD}/${TARGET}" "${CALIB_DB}" "${CONFIG}" 2>&1)"
-RC=$?
-set -e
+engine_run "${TARGET}" --query "${QUERY}" "${CONFIG}"
+RC_RUN=${RC}
+BUILD_LOG="${ENGINE_LOG}"
 
 python3 - <<PY
 import json, pathlib, sys
@@ -140,7 +64,7 @@ config_path = pathlib.Path("${CONFIG}")
 status = "pass"
 reason = ""
 interference = {}
-if int("${RC}") != 0:
+if int("${RC_RUN}") != 0:
     status = "fail"
     reason = "calibrate binary failed"
 elif not config_path.is_file():
@@ -166,11 +90,11 @@ payload = {
     "query": int("${QUERY}"),
     "benchmark": "${BENCHMARK_NAME}",
     "status": status,
-    "exit_code": int("${RC}"),
+    "exit_code": int("${RC_RUN}"),
     "config_path": str(config_path),
     "interference": interference,
     "reason": reason,
-    "log_tail": """${LOG}"""[-4000:],
+    "log_tail": """${BUILD_LOG}${LOG}"""[-4000:],
 }
 path.write_text(json.dumps(payload, indent=2))
 print(path.read_text())

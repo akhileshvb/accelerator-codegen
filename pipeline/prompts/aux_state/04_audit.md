@@ -24,8 +24,8 @@ Hard gates after this stage verify **correctness** and run a **fair SF1 bench sw
    - Any absolute SF1 cardinalities (`150000` / `600000` / `800000`) used as live capacities in **aux** code?
    - **Generality checklist** (list each as pass/fail with file:line evidence; any fail is `correctness_ok: false` or a scale risk):
      1. Every SQL parameter exact for any value of its type incl. NULL (no crash, no drop, no throw); no enumerated/hardcoded parameter domains.
-     2. Dates: non-month-aligned, Feb 29, month-end + interval, dates outside the data's usual years use `sql_date` semantics.
-     3. LIKE: partial/mixed-case words, `_`, escapes, empty pattern via `sql_like`.
+     2. Dates: non-month-aligned, Feb 29, month-end + interval, dates outside the data's usual years use the backend API's date semantics.
+     3. LIKE: partial/mixed-case words, `_`, escapes, empty pattern via the backend API's LIKE/collation semantics.
      4. Enum/numeric params: unknown value, params equal to each other, out-of-range, fractional.
      5. Data: out-of-range dates, unseen categories, off-range numbers, NULLs, negative/huge keys handled in build **and** delta paths.
      6. No key/id/offset narrower than 64-bit, no bit-packed fields, no fixed dense cap, no hashed ids used as exact partition ids, blob offsets 64-bit/chunked.

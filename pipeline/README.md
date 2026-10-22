@@ -8,7 +8,7 @@ Four-stage pipeline for generating TPC-H query accelerators:
 
 - Python 3.11+
 - API keys in environment or repo-root `.env` (copy from `.env.example`)
-- `CURSOR_API_KEY` (default backend) or `OPENROUTER_API_KEY` / `OPENAI_API_KEY` per `config/models.yaml`
+- `OPENROUTER_API_KEY` and the [Codex CLI](https://github.com/openai/codex) on `PATH` (the only agent harness)
 - Release build at `build-release/` (for gate scripts)
 - DuckDB databases in `accelerator-codegen-duckdb`
 
@@ -25,47 +25,34 @@ cp .env.example .env
 
 ```bash
 cd pipeline/orchestrator
-pip install -e ".[cursor]"
-```
-
-For OpenAI-only (no Cursor SDK):
-
-```bash
-pip install -e .
+pip install -e ".[dev]"
 ```
 
 ## Run (full pipeline)
 
-```bash
-export CURSOR_API_KEY=cursor_...
-python -m accel_pipeline.run_pipeline --query 3 --workload tpch_q3
-```
-
-### OpenRouter
+A run is one query on one engine: the engine is a run parameter, and each query x engine has an independent analysis and its own artifact tree, `artifacts/<bench>/q<N>/<engine>/`. A workload lists the engines it supports (`engines:`); `--engine` picks one (optional only when the workload lists a single engine).
 
 ```bash
-pip install -e ".[openrouter]"
 export OPENROUTER_API_KEY=sk-or-...
-python -m accel_pipeline.run_pipeline --query 3 --workload tpch_q3 \
-  --models-config pipeline/config/models.openrouter.yaml
+python -m accel_pipeline.run_pipeline --query 3 --workload tpch_q3 --engine postgres
 ```
 
 ## Run a single stage
 
 ```bash
-python -m accel_pipeline.run_pipeline --query 3 --workload tpch_q3 --stage implementation
+python -m accel_pipeline.run_pipeline --query 3 --workload tpch_q3 --engine postgres --stage implementation
 ```
 
 ## Resume
 
 ```bash
-python -m accel_pipeline.run_pipeline --query 3 --workload tpch_q3 --resume
+python -m accel_pipeline.run_pipeline --query 3 --workload tpch_q3 --engine postgres --resume
 ```
 
 ## Dry run (orchestration only, no LLM calls)
 
 ```bash
-python -m accel_pipeline.run_pipeline --query 3 --workload tpch_q3 --dry-run
+python -m accel_pipeline.run_pipeline --query 3 --workload tpch_q3 --engine postgres --dry-run
 ```
 
 ## Layout
@@ -78,10 +65,11 @@ substrate is read-only to it.
 - `prompts/` — stage prompts and shared constraints
 - `gates/` — deterministic gate scripts (ctest, benchmarks, fairness); the backend slot gates (`run_slot_gates.sh`, per-engine adapters) in `gates/README_runtime_gates.md`
 - `templates/scaffold/` — per-query stubs (kernel, package, the query's `register.cpp`) and CMake snippet
-- `artifacts/` — per-query pipeline state and reports
+- `artifacts/` — per-run pipeline state and reports (`<bench>/q<N>/<engine>/`)
 - `orchestrator/` — Python package (`accel_pipeline`)
 - `verus/` — shared Verus state: the playbook (`playbook/`) and provenance logs
-- `catalog/`, `schemas/`, `fixtures/` — catalog data, JSON schemas, test fixtures
+- `codex/` — committed Codex config template and MCP launcher (see Codex exec)
+- `catalog/`, `schemas/` — catalog data, JSON schemas
 
 ### Layers and who may write them
 
@@ -117,10 +105,11 @@ and `accelerators/`; headers sit next to their sources.
 Accelerator state is versioned copy-on-write and built from the generic, workload-agnostic
 primitives in `accelerators/prims` (catalogue: its `README.md`).
 The library grows through the `primitive_publish` tool (aux_state agents), the C++ analogue of
-the Verus `prooflib_publish`: the agent stages the new header, the updated README and
+the Verus `prooflib_publish`: the agent stages the new header and
 `accelerators/prims/tests/test_prims.cpp` under `pipeline/prims_staging/<repo path>`; under an exclusive
-lock (`pipeline/.locks/prims.lock`) the tool checks additions-only, header comment / README row /
-tests, and the workload-vocabulary check (`scripts/check_backend_query_free.py`), writes into the
+lock (`pipeline/.locks/prims.lock`) the tool checks additions-only, header comment / tests /
+no duplicate of a published primitive, and the workload-vocabulary check (`scripts/check_backend_query_free.py`), appends the
+catalogue row to the README itself, writes into the
 primary tree with a backup, builds and runs `test_prims` (and every target that includes a
 changed existing header), restores on failure, and appends `pipeline/prims_provenance.jsonl`.
 Direct writes to those paths are denied (`write_ownership.py`); `refresh_prims` mirrors the
@@ -128,32 +117,20 @@ primary's copy into each worker worktree at stage start and after a publish; wor
 never copies `prims/`. Gate `prims_tests` (`pipeline/gates/run_prims_tests.sh`) builds and runs
 `test_prims`, checks the vocabulary and that the library only grew relative to HEAD.
 
-## Agent backends
+## Codex exec (the agent harness)
 
-Set `provider` in `config/models.yaml` (and optional per-stage overrides via `stage_providers`):
+Every agent step runs `codex exec` against OpenRouter, with Codex's native
+edit/search/shell plus an MCP server (`accel_pipeline`, `orchestrator/accel_pipeline/mcp_server.py`)
+for gates, profile digests, A/B trials and the other pipeline tools.
 
-| Provider | Key | Install |
-|----------|-----|---------|
-| `cursor` (default) | `CURSOR_API_KEY` | `pip install -e ".[cursor]"` |
-| `openai` | `OPENAI_API_KEY` | `pip install -e .` |
-| `openrouter` | `OPENROUTER_API_KEY` | `pip install -e ".[openrouter]"` |
-| `codex_exec` (via `stage_providers`) | `OPENROUTER_API_KEY` + Codex CLI | `pip install -e ".[codex]"` |
-
-### Codex exec (analysis + implementation + optimization)
-
-Uses Codex CLI native edit/search/shell plus an MCP server for gates/profile digests/A/B:
-
-```bash
-pip install -e ".[codex]"
-# install Codex CLI separately; ensure `codex` is on PATH
-export OPENROUTER_API_KEY=sk-or-...
-python -m accel_pipeline.run_pipeline --query 3 --workload tpch_q3 \
-  --models-config pipeline/config/models.codex.yaml
-```
-
-Config: [`config/models.codex.yaml`](config/models.codex.yaml) + [`pipeline/.codex/config.toml`](pipeline/.codex/config.toml) (OpenRouter model provider + `accel_pipeline` MCP). Hard guidelines live in `prompts/shared/hard_guidelines.md`.
-
-Analysis and audit stay on OpenRouter Agents when using `models.codex.yaml`.
+- Stages, models and presets: [`config/models.yaml`](config/models.yaml) (`stage_providers` must name
+  every stage; an unlisted stage is an error). `--models-config` selects another file.
+- `CODEX_HOME` (`pipeline/.codex/`, gitignored; per-worker homes under `pipeline/.codex/workers/`)
+  holds the OpenRouter model provider and the MCP server definition. Missing, it is created from
+  [`codex/config.template.toml`](codex/config.template.toml); the MCP launcher is
+  [`codex/run_mcp_server.sh`](codex/run_mcp_server.sh).
+- Hard guidelines for agents: `prompts/shared/hard_guidelines.md`; Codex tooling guide:
+  `prompts/shared/codex_tooling.md`.
 
 ### Concurrent pack (shared tree, no stage barriers)
 
@@ -161,46 +138,18 @@ Run several query pipelines in parallel on one checkout. Isolation is **separate
 
 ```bash
 cd pipeline/orchestrator && source .venv/bin/activate
-accel-pipeline-pack --pack tpch_aux_parallel \
-  --models-config pipeline/config/models.codex.yaml
+accel-pipeline-pack --pack tpch_aux_parallel
 # or: python -m accel_pipeline.run_pack --pack tpch_aux_parallel ...
 ```
+
+A pack expands to one run per query x engine: `engines:` at the top of the pack, or on a single query entry, lists the engines (a workload with a single engine needs none). Each run gets its own worker (build dir, `CODEX_HOME`, worktree). In a worktree the query's other engines (their `accelerators/<bench>/q<N>/<engine>` and artifact trees) are moved out of the agent's view for the run.
 
 Pack YAML examples:
 - [`config/packs/tpch_aux_parallel.yaml`](config/packs/tpch_aux_parallel.yaml) — Q2/Q5/Q16
 - [`config/packs/tpch_aux_remaining.yaml`](config/packs/tpch_aux_remaining.yaml) — Q4/Q7/Q8/Q13/Q15/Q19/Q20/Q22
+- [`config/packs/tpch_pg_aux_all22.yaml`](config/packs/tpch_pg_aux_all22.yaml) — all 22 queries; set `engines:` for more than one engine
 
 Shared path globs: `shared_paths` in [`config/default.yaml`](config/default.yaml). Logs/summary under `pipeline/artifacts/packs/`.
-
-Set `provider: openrouter` in `config/models.yaml` (see `config/models.openrouter.yaml` for a starter config). OpenRouter Agents uses the same custom pipeline tools as Cursor (`read_file`, `apply_patch`, `run_command`, A/B benchmark tools, etc.) via the OpenAI Agents SDK + LiteLLM.
-
-### Cursor SDK timeouts and bridge lifecycle
-
-The Cursor SDK's default client launches a **global** bridge subprocess with `os.getcwd()` as workspace and a **60s** unary HTTP timeout. The pipeline instead:
-
-- Launches a **dedicated owned bridge per stage** with workspace = repo root (`accelerator-codegen/`)
-- Uses **300s unary / 7200s stream** timeouts by default
-- Retries the stage on bridge failures (default 2 retries)
-
-Override if needed:
-
-```bash
-export ACCEL_PIPELINE_CURSOR_UNARY_TIMEOUT=600
-export ACCEL_PIPELINE_CURSOR_STREAM_TIMEOUT=14400
-export ACCEL_PIPELINE_CURSOR_BRIDGE_LAUNCH_TIMEOUT=180
-export ACCEL_PIPELINE_CURSOR_BRIDGE_RETRIES=4
-```
-
-For maximum stability, run a persistent external bridge (e.g. from Cursor CLI) and point the pipeline at it:
-
-```bash
-export CURSOR_SDK_BRIDGE_URL=http://127.0.0.1:PORT
-export CURSOR_SDK_BRIDGE_TOKEN=...
-```
-
-If you see `NetworkError: Connection refused`, retry with `--resume`. With the dedicated-bridge fix, this should be rare; if it persists, use an external bridge.
-
-If you see `Missing value for --tool-callback-auth-token`, that is an intermittent cursor-sdk bridge bug (~1/64 launches) when the generated callback token starts with `-`. The pipeline retries automatically; you can also `--resume` the failed stage or upgrade `cursor-sdk` (`pip install -U 'cursor-sdk>=1.0.26'` in `pipeline/orchestrator`).
 
 ## TPC-H scale factors
 
@@ -224,9 +173,8 @@ built from the query alone (no C++ accelerator or other Verus kernel is
 visible to the agents). Every agent step runs on codex exec.
 
 ```bash
-python -m accel_pipeline.run_pipeline --query 21 --workload tpch_q21_aux --mode verus \
-  --models-config pipeline/config/models.codex.yaml
-accel-pipeline-pack --pack tpch_aux_parallel --mode verus --models-config pipeline/config/models.codex.yaml
+python -m accel_pipeline.run_pipeline --query 21 --workload tpch_q21_aux --engine duckdb --mode verus
+accel-pipeline-pack --pack tpch_aux_parallel --mode verus
 ```
 
 Stages (`accel_pipeline/verus/stages.py`): preflight → spec (frozen from the
@@ -269,7 +217,7 @@ files (`verus/agent.py`); `config/workloads/tpch_q21_verus_smoke.yaml` is a shor
 Use workloads with `workload_kind: aux_state` (e.g. `tpch_q14_aux`). Copy from `config/workloads/tpch_q_aux.template.yaml`.
 
 ```bash
-python -m accel_pipeline.run_pipeline --query 14 --workload tpch_q14_aux --dry-run
+python -m accel_pipeline.run_pipeline --query 14 --workload tpch_q14_aux --engine duckdb --dry-run
 ```
 
 Aux workloads:
@@ -277,9 +225,9 @@ Aux workloads:
 - Prompts: `pipeline/prompts/aux_state/` (pattern library under `shared/`)
 - Config: `pipeline/config/aux_state.yaml` (write paths, gates, speedup thresholds)
 - Analysis schema: `pipeline/schemas/aux_state_analysis.schema.json`
-- Audit measurements: `pipeline/artifacts/{tpch|sec_edgar}/q{N}/audit_result.json` (separate from `analysis.json`)
+- Audit measurements: `pipeline/artifacts/{tpch|sec_edgar}/q{N}/<engine>/audit_result.json` (separate from `analysis.json`)
 - Gates: `aux_correctness`, `aux_unit`, `aux_mutation_scenarios`, `aux_speedup_verification`, `fairness`
-- Base accelerator prerequisite: functional `ctest -R tpch_q{N}` before aux stages (auto-runs `prerequisite_workload` if missing)
+- Base accelerator prerequisite: functional `ctest -R tpch_q{N}` before aux stages (auto-runs `prerequisite_workload` if missing; skipped for an engine the base workload does not support)
 
 Tests: `cd pipeline/orchestrator && pip install -e ".[dev]" && pytest tests/test_aux_pipeline.py`
 
@@ -290,7 +238,7 @@ Setup data and DuckDB (downloads ~5GB SEC quarterly filings):
 ```bash
 export SEC_EDGAR_USER_AGENT="accelerator-codegen your-name@example.com"
 bash scripts/setup_sec_edgar.sh
-export ACCEL_SEC_EDGAR_DB=/home/akhilvb/accelerator-codegen-duckdb/sec_edgar_sf3.duckdb
+export ACCEL_SEC_EDGAR_DB=/path/to/sec_edgar_sf3.duckdb
 ```
 
 SEC.gov requires `SEC_EDGAR_USER_AGENT` with your contact email or downloads return HTTP 403.
@@ -305,7 +253,7 @@ python -m accel_pipeline.run_pipeline --query 24 --workload sec_edgar_q24 --dry-
 
 - Benchmark pack: `pipeline/config/benchmark_packs/sec_edgar.yaml`
 - Workloads: `pipeline/config/workloads/sec_edgar_q*.yaml`
-- Artifacts: `pipeline/artifacts/sec_edgar/q{N}/`
+- Artifacts: `pipeline/artifacts/sec_edgar/q{N}/duckdb/`
 - Gates: `correctness`, `baseline`, `profile`, `fairness` (no `sf10` — single scale factor)
 - Gates run automatically after each stage. **Implementation** and **each optimization iteration** require passing: `correctness` → `baseline` → `profile`. Failures abort the pipeline.
 - After gates, `optimization_feedback.md` is written for the next optimization iteration (dominant phase, gaps vs DuckDB, suggested fixes).
@@ -324,33 +272,39 @@ from-scratch**: conventional paths come from `config/engine_backend.yaml`.
 Agents must **not** read or copy other engine trees.
 
 ```bash
-python -m accel_pipeline.run_pipeline --query 0 --workload engine_postgres \
-  --models-config pipeline/config/models.codex.yaml
+python -m accel_pipeline.run_pipeline --query 0 --workload engine_postgres
 
-python -m accel_pipeline.run_pipeline --query 0 --workload engine_mysql \
-  --models-config pipeline/config/models.codex.yaml
+python -m accel_pipeline.run_pipeline --query 0 --workload engine_mysql
 
 # Single layer (dry-run)
 python -m accel_pipeline.run_pipeline --query 0 --workload engine_mysql \
   --stage impl_capture --dry-run
 ```
 
-- Stages: analysis (sketches every layer) → `impl_capture` (S1) → `impl_epochs`
+- Stages: analysis (sketches every layer) → `impl_hostctl` (`host.sh`, its own
+  prompt `impl_hostctl.md`) → `impl_capture` (S1) → `impl_epochs`
   (S2-S4) → `impl_scan` (S5, S8) → `impl_runtime` (S6) → `impl_host` (S7; skipped
-  unless `requires_in_process_host`) → architecture_audit → validation
+  unless `requires_in_process_host`) → `impl_api` (accelerator-facing `api/`) →
+  architecture_audit → validation
   (adversarial tests, then the slot gates)
 - Layer spec: `prompts/engine_backend/layers.md`
 - Each impl layer loops `engine_build` + that layer’s gate until pass
 - Architecture audit is read-only; on fail it re-runs **only the named failing
   layers** (small impl fix-up) then re-audits (up to `architecture_audit_max_rounds`)
-- Gates: `engine_capture`, `engine_epochs`, `engine_scan`, `engine_runtime`,
-  `engine_host`, `engine_adversarial`, then the backend-generic `slot_*` gates
+- Gates: `engine_hostctl`, `engine_capture`, `engine_epochs`, `engine_scan`, `engine_runtime`,
+  `engine_host`, `engine_api_conformance`, `engine_adversarial`, then the backend-generic `slot_*` gates
   (`slot_epoch_stress`, `slot_hits_under_writes`, `slot_read_after_commit`,
-  `slot_txn_edges`, `slot_restart`, `slot_differential`;
+  `slot_txn_edges`, `slot_restart`, `slot_own_writes`, `slot_ddl_events`, `slot_tsan`;
   `gates/README_runtime_gates.md`)
-- Host connection is workload `host_runtime` (not hardcoded in shared gates)
-- Workloads: `config/workloads/engine_*.yaml`
-
-## TODO
-
-See [orchestrator/accel_pipeline/TODO.md](orchestrator/accel_pipeline/TODO.md) and inline `# TODO:` in source.
+- Workloads: `config/workloads/engine_*.yaml` (`engine_.template.yaml` to start one).
+  An engine's only specific input is its **engine profile** (`engine_profile`,
+  schema `schemas/engine_profile.schema.json`): the same keys for every engine
+  (identity, packaging, host_runtime, build, process_model, capture,
+  transactions, locking, scan, entry_points, thread_knobs, oracle, hazards),
+  facts and hazards only, never a design. A leaf is a value or `{na: reason}`,
+  so a blank is a decision; a missing key fails the workload load. Each stage
+  sees the sections `engine_profile_sections` (`config/engine_backend.yaml`)
+  maps to it, hazards narrowed to the layer. `host_runtime`, packaging and the
+  CMake option come from the profile (not hardcoded in shared gates); an embedded
+  engine sets `host_runtime.kind: host_cmake` and `requires_in_process_host: false`
+  (`engine_duckdb.yaml`).

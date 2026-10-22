@@ -1,27 +1,22 @@
 # SEC EDGAR aux-state notes
 
-Use these conventions when `benchmark_name: sec_edgar` and `workload_kind: aux_state`.
+Use these conventions when `benchmark_name: sec_edgar` (`{bench}`) and `workload_kind: aux_state`.
 
 ## Module layout (SEC EDGAR)
 
 | Role | Path |
 |------|------|
-| Public aux API | `accelerators/sec_edgar/q{N}/<engine>/aux/module.hpp` |
-| Aux implementation | `accelerators/sec_edgar/q{N}/common/module.cpp` |
-| Finalize payload | `accelerators/sec_edgar/q{N}/common/finalize.cpp` |
-| Base kernel API | `accelerators/sec_edgar/q{N}/<engine>/base/query.hpp` |
-| Kernel / package | `accelerators/sec_edgar/q{N}/<engine>/base/single-threaded/` |
-| Cost model JSON | `accelerators/sec_edgar/q{N}/config/sec_edgar_q{N}_aux_cost_model.json` |
-| Cost-model location | `accelerators/sec_edgar/q{N}/cost_model.hpp` (`kSecEdgarQ{N}CostModel`; passed to the catalog entry / Runtime) |
-| Tests | `accelerators/sec_edgar/q{N}/tests/test_sec_edgar_q{N}.cpp`, `test_sec_edgar_q{N}_*.cpp` |
-| Write-freq benchmark | `accelerators/sec_edgar/q{N}/bench/bench_sec_edgar_q{N}_aux.cpp` |
+| Public aux API | `accelerators/{bench}/q{N}/<engine>/aux/module.hpp` |
+| Aux implementation | `accelerators/{bench}/q{N}/common/module.cpp` |
+| Finalize payload | `accelerators/{bench}/q{N}/common/finalize.cpp` |
+| Base kernel API | `accelerators/{bench}/q{N}/<engine>/base/query.hpp` |
+| Kernel / package | `accelerators/{bench}/q{N}/<engine>/base/single-threaded/` |
+| Cost model JSON | `accelerators/{bench}/q{N}/config/sec_edgar_q{N}_aux_cost_model.json` |
+| Cost-model location | `accelerators/{bench}/q{N}/cost_model.hpp` (passed to the registration) |
+| Tests | `accelerators/{bench}/q{N}/tests/test_sec_edgar_q{N}.cpp`, `test_sec_edgar_q{N}_*.cpp` |
+| Write-freq benchmark | `accelerators/{bench}/q{N}/bench/bench_sec_edgar_q{N}_aux.cpp` |
 
-CMake:
-
-```cmake
-accel_add_aux_state_query(BENCHMARK sec_edgar QUERY_NUM N ...)
-accel_add_aux_state_ctests(BENCHMARK sec_edgar QUERY_NUM N)
-```
+CMake: the aux state is discovered from `q{N}/<engine>/aux/finalize.cpp`. Test and bench targets are declared in `accelerators/sec_edgar/build.cmake` (`accel_add_aux_state_ctests(BENCHMARK sec_edgar QUERY_NUM N)` registers the ctests of targets named `test_sec_edgar_q{N}_*`). The root `CMakeLists.txt` and `cmake/` are never edited.
 
 ## Tables and mutations
 
@@ -44,13 +39,13 @@ Env: `ACCEL_SEC_EDGAR_DB` (not `ACCEL_TPCH_DB`).
 
 ## Read path
 
-- Base fallback: fused scan via the package's `fused_scan` hook / `RunSecEdgarQ{N}FusedPreScan`
+- Base fallback: the fused scan, where the engine's backend API offers one
 - Aux: `AuxQueryModule::CheckValidity` + `Execute` / `ExecuteFallback` via `accel_sec_edgar_q{N}_aux`
 - Correctness: **full ordered multi-row** result match (not scalar)
 
 ## Cost model
 
 - Calibrate with `calibrate_sec_edgar_q{N}_aux_cost_model` against SF3
-- Initial JSON at `accelerators/sec_edgar/q{N}/config/sec_edgar_q{N}_aux_cost_model.json`
-- `accelerators/sec_edgar/q{N}/cost_model.hpp` names that directory; pass `kSecEdgarQ{N}CostModel` as the catalog entry's `cost_model` (DuckDB) and to the Postgres `Runtime`
+- Initial JSON at `accelerators/{bench}/q{N}/config/sec_edgar_q{N}_aux_cost_model.json`
+- `accelerators/{bench}/q{N}/cost_model.hpp` names that directory; pass its location to the registration
 - Set `interference_us` using calibrated `CostModelParams.interference_*` fields in `StageMaintenance`

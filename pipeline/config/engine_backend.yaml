@@ -2,9 +2,7 @@
 # Paths may use {engine} (sanitized engine_name). Do not hardcode a host engine here.
 
 write_paths:
-  - CMakeLists.txt
-  - cmake/**
-  # one glob owns the whole backend: state/ engine/ api/ tests/ bench/
+  # one glob owns the whole backend: backend.cmake state/ engine/ api/ tests/ bench/
   - backends/{engine}/**
   - pipeline/artifacts/engines/{engine}/**
 
@@ -17,6 +15,9 @@ allowed_commands:
   - "^bash pipeline/gates/run_engine_build\\.sh$"
   - "^bash pipeline/gates/run_engine_layer\\.sh$"
   - "^bash pipeline/gates/run_engine_scan_conformance\\.sh$"
+  - "^bash pipeline/gates/run_engine_api_conformance\\.sh$"
+  - "^python3 pipeline/gates/check_api_manifest\\.py( .*)?$"
+  - "^python3 scripts/check_layer_includes\\.py( .*)?$"
   - "^bash pipeline/gates/run_engine_contract\\.sh$"
   - "^bash pipeline/gates/run_engine_adversarial\\.sh$"
   - "^bash pipeline/gates/run_engine_aux_smoke\\.sh$"
@@ -28,19 +29,32 @@ allowed_commands:
 # engine_slots.hpp); the runtime flow is substrate and frozen. Sequential
 # layers, one agent stage each; the orchestrator iterates until the layer's
 # gate passes. Analysis sketches every layer.
+# Schema and dataset (workloads/<bench>/schema.sql, ACCEL_DATASET_DIR) the backend gates load.
+dataset_benchmark: tpch
+
 implementation_layers:
+  # First: every later layer's gate reaches the engine through host.sh. A layer's `prompt`
+  # (default 02_implementation.md) is its implementation prompt; hostctl also writes the minimal
+  # backend.cmake, so engine_build (a post-gate of every layer) is real from here on.
+  - id: hostctl
+    title: Host script (host_contract.md verbs)
+    gate: engine_hostctl
+    harness: backends/{engine}/host.sh
+    cmake_target: ""
+    prompt: impl_hostctl.md
+    rules: [host_contract]
   - id: capture
     title: Capture (S1)
     gate: engine_capture
     harness: backends/{engine}/tests/test_{engine}_capture.cpp
     cmake_target: test_{engine}_capture
-    rules: [slot_capture]
+    rules: [slot_capture, commit_time_writes, ddl_events]
   - id: epochs
     title: Commit epoch, reader epoch, version floor (S2-S4)
     gate: engine_epochs
     harness: backends/{engine}/tests/test_{engine}_epochs.cpp
     cmake_target: test_{engine}_epochs
-    rules: [slot_epochs]
+    rules: [slot_epochs, abort_paths]
   - id: scan
     title: Build snapshot and chunked scans (S5, S8)
     gate: engine_scan
@@ -52,7 +66,7 @@ implementation_layers:
     gate: engine_runtime
     harness: backends/{engine}/tests/test_{engine}_runtime.cpp
     cmake_target: test_{engine}_runtime
-    rules: [slot_runtime]
+    rules: [slot_runtime, own_writes]
   - id: host
     title: Entry points and packaging (S7)
     gate: engine_host
@@ -60,13 +74,20 @@ implementation_layers:
     cmake_target: test_{engine}_host
     rules: [slot_entry, host_glue]
     skip_unless: requires_in_process_host
+  - id: api
+    title: Accelerator-facing API and its manifest
+    gate: engine_api_conformance
+    harness: backends/{engine}/api/README.md
+    cmake_target: api_conformance_{engine}
+    rules: [api_surface, api_manifest]
 
 # Default post-layer gates (engine_build + this layer). Overridden per stage.
 post_implementation_gates:
   - engine_build
 
 # Validation: every layer again, the unseen adversarial tests, then the
-# backend-generic slot gates (run_slot_gates.sh, per-engine adapters).
+# backend-generic slot gates (run_slot_gates.sh -> host.sh slot, over the backend's toy module;
+# no accelerator exists yet, so the differential slot gate belongs to the accelerator pipeline).
 post_validation_gates:
   - engine_build
   - engine_capture
@@ -74,14 +95,16 @@ post_validation_gates:
   - engine_scan
   - engine_runtime
   - engine_host
+  - engine_api_conformance
   - engine_adversarial
   - slot_epoch_stress
   - slot_hits_under_writes
   - slot_read_after_commit
   - slot_txn_edges
   - slot_restart
+  - slot_own_writes
+  - slot_ddl_events
   - slot_tsan
-  - slot_differential
 
 prompt_subdir: engine_backend
 
@@ -100,14 +123,27 @@ default_target_paths:
   adversarial_test: backends/{engine}/tests/test_{engine}_adversarial.cpp
   adversarial_test_target: test_{engine}_adversarial
 
+# The build convention is cmake/Backend.cmake: the backend's one CMake entry file
+# (template: templates/engine_backend/backend.cmake.tpl), which the root
+# CMakeLists.txt includes when the profile's build.cmake_option is ON. No shared cmake is edited.
 default_cmake:
-  collect_fn: accel_collect_{engine}_sources
-  build_flag: ACCELERATOR_CODEGEN_BUILD_{ENGINE}
+  entry: backends/{engine}/backend.cmake
 
-# S6 placement choices: where the runtime runs and how commits and reads reach it.
-placement_candidates:
-  - in_process
-  - shipped_worker
+# The engine_profile sections (schemas/engine_profile.schema.json) each stage sees. Hazards are
+# narrowed to the layer (an embedded engine, whose host layer is skipped, sees the `host` hazards at
+# runtime). `query_host` is not rendered here: the per-query harness facts belong to the accelerator
+# side (host bootstrap). `all` is every section. Layer ids also key their impl and critique stages.
+engine_profile_sections:
+  analysis: all
+  capture: [identity, process_model, capture, transactions, locking, hazards]
+  epochs: [identity, process_model, transactions, locking, capture, hazards]
+  scan: [identity, process_model, transactions, locking, scan, thread_knobs, hazards]
+  runtime: [identity, packaging, host_runtime, process_model, locking, thread_knobs, scan, hazards]
+  hostctl: [identity, packaging, host_runtime, build, process_model, scan, oracle, hazards]
+  host: [identity, packaging, host_runtime, build, process_model, entry_points, thread_knobs, hazards]
+  api: [identity, packaging, host_runtime, process_model, scan, entry_points, thread_knobs, oracle, hazards]
+  validation: [identity, process_model, capture, transactions, locking, scan, oracle, hazards]
+  architecture_audit: [identity, packaging, process_model, capture, transactions, locking, scan, thread_knobs, hazards]
 
 stage_max_turns:
   analysis: 20
@@ -120,9 +156,6 @@ allow_update_existing: true
 
 # From-scratch fairness: physically move foreign host adapters out of the workspace.
 hide_foreign_engines: true
-
-# When true, the host layer is required (in-process MODULE/extension).
-requires_in_process_host: false
 
 architecture_audit_max_rounds: 3
 # Post-stage engine_build + layer gate: on fail, re-invoke that impl layer with

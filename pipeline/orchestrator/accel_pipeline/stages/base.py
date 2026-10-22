@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from dataclasses import replace
+from pathlib import Path
 from typing import Any
 
 from accel_pipeline.backends import StageRunRequest, create_agent_backend
-from accel_pipeline.config import ModelConfig, PipelineConfig, load_workload, apply_workload_overrides
+from accel_pipeline.config import ModelConfig, PipelineConfig, load_run_workload, apply_workload_overrides
 from accel_pipeline.models import make_model_id, resolve_agent_model
 from accel_pipeline.agent_progress import begin_agent_run
 from accel_pipeline.pipeline_log import (
@@ -11,8 +13,9 @@ from accel_pipeline.pipeline_log import (
     log_stage_start,
     usage_from_metadata,
 )
-from accel_pipeline.prompts import render_prompt, save_rendered_prompt
-from accel_pipeline.tools.tool_policy import STAGE_TOOL_NAMES, stage_tool_names, tool_usage_instructions
+from accel_pipeline.prompts import render_prompt, save_rendered_prompt, with_codex_tooling
+from accel_pipeline.frozen_paths import restore as restore_frozen, snapshot as snapshot_frozen
+from accel_pipeline.playbook import append_experiment_log
 
 _UNLIMITED_STAGE_TURNS = 10_000
 
@@ -54,8 +57,12 @@ def run_agent_stage(
     dry_run: bool = False,
     analysis_revision_request: str = "",
     extra_context: dict[str, str] | None = None,
+    must_change: Path | None = None,
 ) -> Any:
-    workload = load_workload(workload_name, pipeline_config.repo_root)
+    """Run one agent stage. With `must_change`, a run that leaves every file under that
+    directory as it was is re-invoked (twice at most): agents run unattended, so a turn that
+    ends with a question or a plan instead of edits did nothing."""
+    workload = load_run_workload(pipeline_config, workload_name)
     pipeline_config = apply_workload_overrides(pipeline_config, workload)
     if not dry_run:
         # pick up primitives other workers published (no-op outside worker worktrees)
@@ -76,6 +83,7 @@ def run_agent_stage(
     )
     save_rendered_prompt(
         pipeline_config,
+        workload,
         query,
         stage,
         prompt,
@@ -86,6 +94,7 @@ def run_agent_stage(
         log_stage_complete(
             pipeline_config.repo_root,
             query,
+            workload,
             stage=stage,
             model_id="(dry-run)",
             backend="dry-run",
@@ -102,6 +111,7 @@ def run_agent_stage(
     log_stage_start(
         pipeline_config.repo_root,
         query,
+        workload,
         stage=stage,
         model_id=model_id,
         optimization_iter=optimization_iter,
@@ -120,22 +130,9 @@ def run_agent_stage(
         optimization_iter=optimization_iter,
     )
     max_turns = resolve_stage_max_turns(pipeline_config.stage_max_turns, stage)
-    instructions = prompt
-    if stage_provider not in {"cursor", "codex_exec"}:
-        instructions = f"{prompt.rstrip()}\n\n{tool_usage_instructions(stage)}"
-    elif stage_provider == "codex_exec":
-        from pathlib import Path
+    instructions = with_codex_tooling(pipeline_config, prompt)
 
-        codex_doc = pipeline_config.pipeline_root / "prompts" / "shared" / "codex_tooling.md"
-        if codex_doc.is_file() and "codex_tooling.md" not in instructions:
-            instructions = f"{prompt.rstrip()}\n\n{codex_doc.read_text(encoding='utf-8')}"
-
-    begin_agent_run(
-        stage,
-        max_turns=max_turns,
-        tools=stage_tool_names(stage),
-        prompt_chars=len(instructions),
-    )
+    begin_agent_run(stage, max_turns=max_turns, prompt_chars=len(instructions))
 
     request = StageRunRequest(
         stage=stage,
@@ -146,8 +143,32 @@ def run_agent_stage(
         agent_model=agent_model,
         max_turns=max_turns,
     )
+    frozen = snapshot_frozen(pipeline_config.repo_root)
+    before = _tree_state(must_change) if must_change else None
     result = backend.run_stage(request)
-    if result.status != "finished":
+    for _ in range(2):
+        if before is None or result.status != "finished" or _tree_state(must_change) != before:
+            break
+        print(f"[pipeline] {stage}: no file under {must_change} changed; re-invoking", flush=True)
+        request = replace(request, user_message=request.user_message + "\n\n" + _no_change_nudge(must_change))
+        result = backend.run_stage(request)
+    reverted = restore_frozen(pipeline_config.repo_root, frozen)
+    if reverted:
+        print(f"[pipeline] {stage}: reverted agent edits to frozen paths: {', '.join(reverted)}", flush=True)
+        append_experiment_log(
+            pipeline_config.repo_root,
+            query,
+            f"- {stage}: reverted agent edits to frozen pipeline/substrate paths ({', '.join(reverted)})",
+            workload=workload,
+        )
+    if result.status != "finished" and result.metadata.get("timed_out"):
+        # The agent ran out of time, not into an error: what it wrote is judged by the gates like
+        # any other round, and the round limits bound the stage.
+        print(f"[pipeline] {stage}: {result.error}; the gates judge what it produced", flush=True)
+        append_experiment_log(
+            pipeline_config.repo_root, query, f"- {stage}: {result.error} (gates judge the work)", workload=workload
+        )
+    elif result.status != "finished":
         detail = (result.error or result.status or "").strip()
         final = (result.final_text or "").strip()
         if final and final not in detail:
@@ -157,6 +178,7 @@ def run_agent_stage(
     log_stage_complete(
         pipeline_config.repo_root,
         query,
+        workload,
         stage=stage,
         model_id=model_id,
         backend=result.backend,
@@ -166,3 +188,20 @@ def run_agent_stage(
         run_id=result.run_id,
     )
     return result
+
+
+def _tree_state(root: Path) -> dict[str, tuple[int, int]]:
+    if not root.is_dir():
+        return {}
+    return {
+        str(f): (f.stat().st_mtime_ns, f.stat().st_size)
+        for f in root.rglob("*") if f.is_file()
+    }
+
+
+def _no_change_nudge(root: Path) -> str:
+    return (
+        f"Your last run ended without changing any file under `{root}`. Nobody reads a question "
+        "or approves a next step: this run is the work. Write the code now (create the files "
+        "that are missing), run the gate, and finish only when it passes."
+    )

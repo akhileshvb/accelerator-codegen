@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any
 
-from accel_pipeline.config import ModelConfig, PipelineConfig, load_workload
+from accel_pipeline.config import ModelConfig, PipelineConfig, load_run_workload
 from accel_pipeline.engine_quarantine import apply_foreign_engine_quarantine, restore_quarantine
 from accel_pipeline.gate_capture import format_reloop_failure_sections
-from accel_pipeline.host_runtime import prepare_host_sdk_payload
+from accel_pipeline.engine_host import prepare_host_sdk_payload
 from accel_pipeline.paths import query_artifacts_dir
 from accel_pipeline.stages.base import run_agent_stage
 from accel_pipeline.gates import GateFailure, GateResult, gate_failure_message
@@ -46,7 +47,9 @@ def _prepare_engine_host_sdk(
     workload: dict,
     query: int,
 ) -> None:
-    payload = prepare_host_sdk_payload(workload)
+    payload = prepare_host_sdk_payload(
+        workload, pipeline_config.repo_root, pipeline_config.build_dir
+    )
     if payload is None:
         return
     art = query_artifacts_dir(pipeline_config.repo_root, query, workload=workload)
@@ -91,7 +94,7 @@ def _user_message(
         "Primary context is the fixed substrate (aux/runtime skeleton: the flow is "
         "frozen, you implement its slots S1-S8). "
         "Treat this as from-scratch onboarding: implement only this engine's native "
-        "slot implementations using templates + SDK hints. Do not read or copy "
+        "slot implementations using templates + the engine profile. Do not read or copy "
         "any other engine tree. Follow pipeline/prompts/engine_backend/layers.md."
     )
     if layer:
@@ -107,9 +110,13 @@ def _user_message(
             f"until both return status=pass. Do not substitute host cmake or "
             f"`docker exec` of the harness for the MCP gates. "
             f"host_runtime.kind=`{(workload.get('host_runtime') or {}).get('kind') or 'host_cmake'}`. "
-            "Do not start later layers. Prior layers: reuse; smallest patch "
-            "only if a real bug/design flaw blocks this layer — then re-gate "
-            "the prior layer too."
+            "Do not implement later layers' contracts, but the wiring this "
+            "layer's contract needs (plugin or extension registration, SQL "
+            "that host.sh installs, a binding into another layer's object) is "
+            "this layer's work, wherever the file lives. Prior layers: reuse; "
+            "smallest patch only if a real bug/design flaw blocks this layer — "
+            "then re-gate the prior layer too. You run unattended: never stop "
+            "to ask for scope or permission; make the change."
         )
     if extra.strip():
         return base + "\n\n" + extra.strip()
@@ -131,13 +138,28 @@ def _layer_extra_context(workload: dict, layer: dict) -> dict[str, str]:
         "layer_cmake_target": str(layer.get("cmake_target") or ""),
         "prior_layers": "\n".join(prior) or "- (this is the first layer)",
         "host_runtime_kind": str(host.get("kind") or "host_cmake"),
-        "host_ensure_script": str(host.get("ensure_script") or ""),
-        "host_build_script": str(host.get("build_script") or ""),
         "layer_rules": ", ".join(str(r) for r in (layer.get("rules") or [])) or "(none)",
     }
 
 
 _GATE_LOG_TAIL_CHARS = 8000
+
+
+def _carried_layer_feedback(art: Path, lid: str) -> str:
+    """The feedback the previous run of this layer stopped on (a relaunch starts from it), or ""
+    when that run passed or there is none."""
+    if (art / f"layer_{lid}.passed").exists():
+        return ""
+    rounds = list(art.glob(f"layer_gate_{lid}_feedback_round*.md")) + list(
+        art.glob(f"layer_critique_{lid}_feedback_round*.md")
+    )
+    if not rounds:
+        return ""
+    last = max(rounds, key=lambda p: p.stat().st_mtime)
+    return (
+        "## Carried over: the previous run of this layer stopped on this feedback\n\n"
+        + last.read_text(encoding="utf-8")
+    )
 
 
 def format_layer_gate_feedback(
@@ -172,7 +194,7 @@ def format_layer_gate_feedback(
 
 
 def run_analysis(pipeline_config, model_config, workload_name, query, model_overrides, dry_run):
-    workload = load_workload(workload_name, pipeline_config.repo_root)
+    workload = load_run_workload(pipeline_config, workload_name)
     return run_agent_stage(
         stage="analysis",
         prompt_file="01_analysis.md",
@@ -198,10 +220,14 @@ def run_implementation_layer(
     skip_gates=False,
     extra_user_message: str = "",
 ):
-    workload = load_workload(workload_name, pipeline_config.repo_root)
+    workload = load_run_workload(pipeline_config, workload_name)
     stage = layer_stage_name(str(layer.get("id") or "layer"))
     extra_context = _layer_extra_context(workload, layer)
-    extra = extra_user_message
+    lid = str(layer.get("id") or "")
+    art = query_artifacts_dir(pipeline_config.repo_root, query, workload=workload)
+    art.mkdir(parents=True, exist_ok=True)
+    extra = "\n\n".join(x for x in (extra_user_message.strip(), _carried_layer_feedback(art, lid)) if x)
+    (art / f"layer_{lid}.passed").unlink(missing_ok=True)
     configured_rounds = int(workload.get("layer_critique_max_rounds") or 0)
     run_critique = (not dry_run) and configured_rounds > 0
     max_rounds = 1 if dry_run or not run_critique else max(1, configured_rounds)
@@ -209,13 +235,12 @@ def run_implementation_layer(
     max_gate = 1 if dry_run or skip_gates else max(1, configured_gate)
 
     result = None
-    lid = str(layer.get("id") or "")
     gate_fails = 0
     critique_round = 0
     while True:
         result = run_agent_stage(
             stage=stage,
-            prompt_file="02_implementation.md",
+            prompt_file=str(layer.get("prompt") or "02_implementation.md"),
             pipeline_config=pipeline_config,
             model_config=model_config,
             workload_name=workload_name,
@@ -276,6 +301,7 @@ def run_implementation_layer(
                     )
                 continue
         if not run_critique:
+            (art / f"layer_{lid}.passed").touch()
             return result
 
         critique_round += 1
@@ -310,6 +336,7 @@ def run_implementation_layer(
                 f"- layer critique `{lid}` round {critique_round}: PASS",
                 workload=workload,
             )
+            (art / f"layer_{lid}.passed").touch()
             return result
 
         feedback = format_layer_critique_feedback(critique, round_idx=critique_round)
@@ -327,10 +354,18 @@ def run_implementation_layer(
         )
         gate_fails = 0
         if critique_round >= max_rounds:
-            raise GateFailure(
-                f"layer critique `{lid}` still failing after {max_rounds} round(s): "
-                f"{critique.get('summary') or critique.get('feedback_for_implementation') or feedback_path.name}"
+            # The layer's gates pass; what the critique still asks moves to the architecture
+            # audit (a required fix there) instead of stopping the whole backend run.
+            (art / f"layer_{lid}.open_findings.md").write_text(feedback + "\n", encoding="utf-8")
+            append_experiment_log(
+                pipeline_config.repo_root,
+                query,
+                f"- layer `{lid}` accepted with open critique findings after {max_rounds} round(s) "
+                f"(layer_{lid}.open_findings.md, for the architecture audit)",
+                workload=workload,
             )
+            (art / f"layer_{lid}.passed").touch()
+            return result
 
 
 def run_implementation(
@@ -346,7 +381,7 @@ def run_implementation(
     only_layer_id: str | None = None,
     from_layer_id: str | None = None,
 ):
-    workload = load_workload(workload_name, pipeline_config.repo_root)
+    workload = load_run_workload(pipeline_config, workload_name)
     known = {str(layer.get("id") or "") for layer in implementation_layers(workload)}
     if from_layer_id and from_layer_id not in known:
         from_layer_id = None
@@ -380,7 +415,7 @@ def run_implementation(
 def run_validation(
     pipeline_config, model_config, workload_name, query, model_overrides, dry_run, *, skip_gates=False
 ):
-    workload = load_workload(workload_name, pipeline_config.repo_root)
+    workload = load_run_workload(pipeline_config, workload_name)
     result = run_agent_stage(
         stage="validation",
         prompt_file="03_validation.md",
@@ -403,14 +438,16 @@ def run_validation(
             "engine_scan",
             "engine_runtime",
             "engine_host",
+            "engine_api_conformance",
             "engine_adversarial",
             "slot_epoch_stress",
             "slot_hits_under_writes",
             "slot_read_after_commit",
             "slot_txn_edges",
             "slot_restart",
+            "slot_own_writes",
+            "slot_ddl_events",
             "slot_tsan",
-            "slot_differential",
         ]
     )
     run_post_stage_gates(pipeline_config, workload_name, query, gates)
@@ -428,7 +465,7 @@ def run_engine_pipeline(
     stage: str = "all",
     skip_gates: bool = False,
 ) -> None:
-    workload = load_workload(workload_name, pipeline_config.repo_root)
+    workload = load_run_workload(pipeline_config, workload_name)
     _prepare_engine_host_sdk(pipeline_config, workload, query)
     qsession = None if dry_run else apply_foreign_engine_quarantine(
         pipeline_config.repo_root, workload

@@ -1,21 +1,5 @@
 benchmark_name: sec_edgar
 query_number: 1
-engine_name: duckdb
-query_id: "1"
+engines: [duckdb]
 reference_sql_path: workloads/sec_edgar/q1.sql
 parameters: []
-output_schema:
-  - {name: stmt, type: VARCHAR}
-  - {name: rfile, type: VARCHAR}
-  - {name: cnt, type: BIGINT}
-  - {name: num_filings, type: BIGINT}
-  - {name: avg_line_num, type: DOUBLE}
-tables: [pre]
-reference_accelerators:
-  - accelerators/sec_edgar/q2/duckdb/base/single-threaded/kernel.cpp
-  - accelerators/sec_edgar/q1/duckdb/base/fused.hpp
-  - accelerators/tpch/q3/duckdb/base/single-threaded/kernel.cpp
-  - accelerators/tpch/q12/duckdb/base/single-threaded/kernel.cpp
-  - accelerators/tpch/q14/duckdb/base/single-threaded/kernel.cpp
-  - accelerators/sec_edgar/q1/duckdb/base/single-threaded/package.cpp
-  - accelerators/tpch/q3/bench/benchmark_q3.cpp

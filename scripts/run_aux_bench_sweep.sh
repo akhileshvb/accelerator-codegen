@@ -18,15 +18,15 @@ fi
 
 BENCHMARK="${ACCEL_AUX_BENCHMARK:-tpch}"
 BUILD_DIR="${ACCEL_BUILD_DIR:-${ROOT}/build-release}"
-BENCH_TARGET="${ACCEL_AUX_BENCH_TARGET:-benchmark_${BENCHMARK}_q${QUERY}_aux}"
+BENCH_TARGET="${ACCEL_AUX_BENCH_TARGET:-benchmark_duckdb_${BENCHMARK}_aux}"
 BENCH_BIN="${BUILD_DIR}/${BENCH_TARGET}"
 
 if [[ "${BENCHMARK}" == "sec_edgar" ]]; then
-  SOURCE_DB="${ACCEL_SEC_EDGAR_DB:-/home/akhilvb/accelerator-codegen-duckdb/sec_edgar_sf3.duckdb}"
+  SOURCE_DB="${ACCEL_SEC_EDGAR_DB:?set ACCEL_SEC_EDGAR_DB}"
   DB_ENV_VAR="ACCEL_SEC_EDGAR_DB"
   DB_LABEL="sec_edgar_sf3"
 else
-  SOURCE_DB="${ACCEL_TPCH_DB:-/home/akhilvb/accelerator-codegen-duckdb/tpch_sf1.duckdb}"
+  SOURCE_DB="${ACCEL_TPCH_DB:?set ACCEL_TPCH_DB}"
   DB_ENV_VAR="ACCEL_TPCH_DB"
   DB_LABEL="${ACCEL_AUX_BENCH_DB_LABEL:-$(basename "${SOURCE_DB}" .duckdb)}"
 fi
@@ -140,7 +140,7 @@ for suite in "${suite_list[@]}"; do
     else
       unset_args+=(-u ACCEL_AUX_WRITE_INTERVALS)
     fi
-    env "${unset_args[@]}" "${env_prefix[@]}" "${BENCH_BIN}"
+    env "${unset_args[@]}" "${env_prefix[@]}" "${BENCH_BIN}" --query "${QUERY}"
   }
 
   if [[ "${printed_header}" == false ]]; then

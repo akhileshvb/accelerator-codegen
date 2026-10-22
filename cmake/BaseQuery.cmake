@@ -52,12 +52,12 @@ function(accel_add_base_query)
     endif()
 
     add_executable(${_test_target} ${_test_src})
-    target_link_libraries(${_test_target} PRIVATE ${BQ_LIBRARY_TARGET} duckdb_sibling)
+    target_link_libraries(${_test_target} PRIVATE ${BQ_LIBRARY_TARGET} $<TARGET_NAME_IF_EXISTS:duckdb_sibling>)
     target_include_directories(${_test_target} PRIVATE ${BQ_TEST_ROOT})
 
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${_bench_src}")
         add_executable(${_bench_target} ${_bench_src})
-        target_link_libraries(${_bench_target} PRIVATE ${BQ_LIBRARY_TARGET} duckdb_sibling)
+        target_link_libraries(${_bench_target} PRIVATE ${BQ_LIBRARY_TARGET} $<TARGET_NAME_IF_EXISTS:duckdb_sibling>)
         target_include_directories(${_bench_target} PRIVATE ${BQ_TEST_ROOT})
     endif()
 

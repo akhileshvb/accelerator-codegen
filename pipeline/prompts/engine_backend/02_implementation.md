@@ -1,7 +1,9 @@
 # Engine backend implementation — layer `{{layer_id}}`
 
-Implement **only** **{{layer_title}}** (`{{layer_id}}`) for **{{display_name}}**
-(`{{engine_name}}`). Do **not** start a later layer. Do **not** author
+Implement **{{layer_title}}** (`{{layer_id}}`) for **{{display_name}}**
+(`{{engine_name}}`): its contract end to end, including the wiring it needs in files other
+layers own (plugin or extension registration, SQL that `host.sh` installs, a binding into
+another layer's object). Do **not** implement a later layer's contract. Do **not** author
 `test_{{engine_name}}_adversarial.cpp`.
 
 {{hard_guidelines}}
@@ -24,15 +26,35 @@ Analysis sketch: `{{artifacts_path}}/backend_analysis.json` → `layers[id={{lay
 If the sketch contradicts `layer_contracts.md` or the checklist, **follow the
 contracts**.
 
+## Engine profile (this layer's sections)
+
+Facts and hazards of the engine, not instructions; `n/a` is a declared decision.
+
+{{engine_profile}}
+Build from these facts and the contracts. The backend tree starts empty: a file you see named in
+some document but absent from the tree does not exist, and is never a reason to stop. Write what
+the layer needs. Where the analysis calls a mechanic unavailable, the layer contracts give the design
+that works without it (no pre-commit hook, no exact reader epoch, no shareable snapshot): build that.
+A layer always ships code and its harness; "blocked" is not a result.
+You run unattended: nobody answers a question, and a turn that ends asking for scope or
+permission changes nothing. A layer owns its contract, not a set of files: the wiring the
+contract needs (plugin or extension registration, SQL that `host.sh` installs, a binding into
+another layer's object) is this layer's work. Make it and keep every harness green.
+A missing SDK, header or package is not a blocker either: the backend owns its build
+environment (`host.sh up`/`build` and the image it sets up). Fetch or install what the profile's
+`identity.sdk_headers` names, or declare in a backend header the stable ABI subset the backend uses.
+A profile field given as `{na: reason}` declares that mechanic absent on this engine: it is not a requirement here. Do not fail, implement or test it; only make sure nothing depends on it.
+
 ## Required reads (before writing code)
 
-- `pipeline/prompts/engine_backend/layer_contracts.md` (section `{{layer_id}}`)
+- `pipeline/prompts/engine_backend/layer_contracts.md`: section `{{layer_id}}` and "Requirements every backend meets" (the requirements that name this layer, the registries included)
 - `pipeline/prompts/engine_backend/acceptance_checklist.md`
 - `pipeline/prompts/shared/engine_interfaces.md` ("Backend contract": slot contracts)
 - `substrate/aux/runtime/README.md`, `engine_slots.hpp`, `runtime_host.hpp`,
   `accelerator_runtime.hpp`, `columnar_batch.hpp` (and `wire.hpp`,
   `thread_budget.hpp` where the layer touches them)
 - Layer `scan`: `pipeline/prompts/engine_backend/native_scan_contract.md` (the `ScanPartitioned` surface modules call); layer `runtime`: `substrate/aux/runtime/thread_budget.hpp` (phase caps) and `AuxCostModelLookup` in `substrate/aux/core/aux_cost_model_path.hpp`
+- Layer `api`: `pipeline/prompts/engine_backend/api_contract.md` and `host_contract.md` (binding)
 - `eval/tests/test_aux_runtime.cpp` — the toy `SumModule` to copy for the harness
 - Matching stub under `pipeline/templates/engine_backend/` — keep
   `aux_state::engine::{{engine_name}}`. Do not put backend types in `core::`.
@@ -73,7 +95,7 @@ Or `request_gate` with `gate_name` `engine_build` / `{{layer_gate}}`.
 
 | When | Gate | What it does |
 |------|------|----------------|
-| After CMake / backend TUs that should link | `engine_build` | Host cmake **or** docker `ensure_script` (kind=`{{host_runtime_kind}}`) |
+| After CMake / backend TUs that should link | `engine_build` | `host.sh build` (kind=`{{host_runtime_kind}}`) |
 | After harness exists and should run | `{{layer_gate}}` | Builds **`{{layer_cmake_target}}`** and runs **`{{layer_harness}}`** |
 
 Suggested cadence:
@@ -93,12 +115,12 @@ layer. This applies to every `impl_*` stage.
 
 This workload builds **inside the container**. `request_gate` already:
 
-1. Runs `{{host_ensure_script}}` (starts/attaches the engine Docker host)
-2. Runs `{{host_build_script}}` with this layer's cmake target in the ninja-targets env
-3. `docker exec`s `{{layer_cmake_target}}` in the container
+1. Runs `backends/{{engine_name}}/host.sh up` (starts or attaches the engine host)
+2. Runs `backends/{{engine_name}}/host.sh build {{layer_cmake_target}}`
+3. Runs `backends/{{engine_name}}/host.sh run {{layer_cmake_target}}`
 
 **Do not** `cmake -B build-release` on the developer machine as the correctness bar.
-If you shell-debug, use the same ensure/build scripts; still finish via `request_gate`.
+If you shell-debug, use the same `host.sh` verbs; still finish via `request_gate`.
 
 ### Host cmake (`host_runtime.kind=host_cmake`)
 
@@ -120,13 +142,13 @@ gate calls. Official pass/fail is still `request_gate`.
 ## Templates
 
 - Harness: `pipeline/templates/engine_backend/test_engine_layer.cpp.tpl` → `{{layer_harness}}`
-- CMake: `pipeline/templates/engine_backend/cmake_layer_test.cmake.tpl`
+- CMake: `pipeline/templates/engine_backend/backend.cmake.tpl` → `{{engine_cmake_entry}}`
 - Stubs as needed: `pipeline/templates/engine_backend/` (`host`, `capture`, `scan`)
 
-Wire collect `{{engine_cmake_collect_fn}}` / flag `{{engine_cmake_build_flag}}`.
-Use `cmake_layer_test.cmake.tpl` for the harness executable (gated by the
-engine build flag). Add backend `.cpp` files through the collect function —
-do not dump an unguarded `add_executable` at the bottom of `CMakeLists.txt`.
+Write `{{engine_cmake_entry}}` to `cmake/Backend.cmake`'s interface (see
+`backend.cmake.tpl`); the root includes it when `{{engine_cmake_build_flag}}` is ON.
+List new backend `.cpp` files there; harnesses `tests/test_{{engine_name}}_<layer>.cpp`
+register themselves through its glob. Do not edit `CMakeLists.txt` or `cmake/**`.
 
 {{layer_contracts}}
 

@@ -17,14 +17,14 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
+from accel_pipeline.backends.codex_exec import ensure_codex_config
 from accel_pipeline.config import PipelineConfig
 
 
-def worker_id_for_query(query: int, workload_name: str = "") -> str:
-    if workload_name:
-        safe = re.sub(r"[^a-zA-Z0-9_.-]+", "_", workload_name.strip())
-        return safe or f"q{query}"
-    return f"q{query}"
+def worker_id_for_query(query: int, workload_name: str = "", engine: str = "") -> str:
+    """One worker per query x engine: its build dir, CODEX_HOME and worktree are keyed by this id."""
+    base = re.sub(r"[^a-zA-Z0-9_.-]+", "_", workload_name.strip()) if workload_name else ""
+    return "_".join(part for part in (base or f"q{query}", engine) if part)
 
 
 def default_build_dir_for_worker(repo_root: Path, worker_id: str) -> Path:
@@ -75,42 +75,14 @@ def prepare_codex_home(
     base = base_codex_home or (Path(repo_root) / "pipeline" / ".codex")
     dest = default_codex_home_for_worker(repo_root, worker_id)
     dest.mkdir(parents=True, exist_ok=True)
-    src_cfg = base / "config.toml"
+    src_cfg = ensure_codex_config(base / "config.toml")
     dst_cfg = dest / "config.toml"
-    if src_cfg.is_file() and not dst_cfg.exists():
+    if not dst_cfg.exists():
         try:
             dst_cfg.symlink_to(src_cfg.resolve())
         except OSError:
             shutil.copy2(src_cfg, dst_cfg)
-    for name in ("run_mcp_server.sh",):
-        src = base / name
-        dst = dest / name
-        if src.is_file() and not dst.exists():
-            try:
-                dst.symlink_to(src.resolve())
-            except OSError:
-                shutil.copy2(src, dst)
     return dest
-
-
-def resolve_duckdb_root(primary: Path | None = None) -> Path:
-    """Sibling DuckDB checkout relative to the *primary* accel repo.
-
-    Worktrees live under ``pipeline/worktrees/…``, so CMake's default
-    ``cmake/../../accelerator-codegen-duckdb`` resolve fails there. Always
-    anchor from the primary checkout (or ``ACCEL_DUCKDB_ROOT`` when set).
-    """
-    env = os.environ.get("ACCEL_DUCKDB_ROOT")
-    if env:
-        return Path(env).resolve()
-    if primary is None:
-        primary_env = os.environ.get("ACCEL_PIPELINE_PRIMARY_REPO")
-        primary = Path(primary_env).resolve() if primary_env else None
-    if primary is None:
-        from accel_pipeline.paths import find_repo_root
-
-        primary = find_repo_root().resolve()
-    return (Path(primary).resolve().parent / "accelerator-codegen-duckdb").resolve()
 
 
 def apply_worker_isolation(
@@ -124,7 +96,7 @@ def apply_worker_isolation(
     set_environ: bool = True,
 ) -> PipelineConfig:
     """Return a PipelineConfig scoped to a concurrent pack worker."""
-    wid = worker_id or worker_id_for_query(query, workload_name)
+    wid = worker_id or worker_id_for_query(query, workload_name, pipeline_config.engine_name)
     # Prefer explicit worktree / pack repo root when set.
     env_repo = os.environ.get("ACCEL_PIPELINE_REPO_ROOT")
     repo = Path(env_repo).resolve() if env_repo else Path(pipeline_config.repo_root).resolve()
@@ -172,7 +144,6 @@ def apply_worker_isolation(
         os.environ["ACCEL_PIPELINE_QUERY"] = str(query)
         os.environ["ACCEL_PIPELINE_REPO_ROOT"] = str(repo)
         os.environ.setdefault("ACCEL_PIPELINE_PRIMARY_REPO", str(primary))
-        os.environ.setdefault("ACCEL_DUCKDB_ROOT", str(resolve_duckdb_root(primary)))
         if workload_name:
             os.environ["ACCEL_PIPELINE_WORKLOAD"] = workload_name
 
@@ -251,7 +222,7 @@ def ensure_worker_build_dir(
                 flush=True,
             )
             # CMake refuses in-place -S changes while CMakeCache.txt still names
-            # the old home directory. Wipe cache only — keep DuckDB copies etc.
+            # the old home directory. Wipe cache only — keep database copies etc.
             _wipe_cmake_configure_state(bdir)
             needs_configure = True
     if not needs_configure:
@@ -261,11 +232,7 @@ def ensure_worker_build_dir(
         file=sys.stderr,
         flush=True,
     )
-    primary = Path(
-        os.environ.get("ACCEL_PIPELINE_PRIMARY_REPO") or src_root
-    ).resolve()
     cmake_env = os.environ.copy()
-    cmake_env.setdefault("ACCEL_DUCKDB_ROOT", str(resolve_duckdb_root(primary)))
     proc = subprocess.run(
         ["cmake", "-S", str(src_root), "-B", str(bdir)],
         cwd=str(src_root),

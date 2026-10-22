@@ -33,7 +33,6 @@ def test_checkpoint_save_load(tmp_path: Path):
     payload = build_semantic_worker_checkpoint(
         art,
         provider="openrouter",
-        last_response_id=None,
         optimization_iter=1,
         attempt=2,
         seeded=True,

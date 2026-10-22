@@ -49,7 +49,7 @@ inline int EnvOrInt(const char *env_var, int fallback) {
 }
 
 inline std::string DuckDbDataDir() {
-  return EnvOr("ACCEL_DUCKDB_ROOT", "/home/akhilvb/accelerator-codegen-duckdb");
+  return EnvOr("ACCEL_DUCKDB_ROOT", "");
 }
 
 // `<data dir>/<file_name>`, e.g. DataDbPath("tpch_sf20.duckdb").

@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from accel_pipeline.config import load_pipeline_config, load_workload
+from accel_pipeline.workload_facts import with_facts
 from accel_pipeline.scaffold_stubs import _build_stub_values, _type_prefix, materialize_workload_stubs
 
 
@@ -24,7 +25,7 @@ def test_build_stub_values_sec_edgar():
         "bench_target": "benchmark_sec_edgar_q1",
         "header_path": "accelerators/sec_edgar/q1/duckdb/base/query.hpp",
     }
-    values = _build_stub_values(workload, paths, 1)
+    values = _build_stub_values(with_facts(repo, workload, 1), paths, 1)
     assert values["type_prefix"] == "SecEdgarQ1"
     assert values["scan_spec_fn"] == "CreateSecEdgarQ1ScanSpec"
     assert '"stmt"' in values["output_schema_names"]
@@ -52,8 +53,15 @@ def test_materialize_workload_stubs_writes_missing_files(tmp_path):
         encoding="utf-8",
     )
 
+    (repo / "workloads" / "sec_edgar").mkdir(parents=True)
+    (repo / "workloads" / "sec_edgar" / "schema.sql").write_text("CREATE TABLE sub (adsh VARCHAR, fy INTEGER);\n", encoding="utf-8")
+    sql = repo / "workloads" / "sec_edgar" / "q1.sql"
+    sql.write_text("SELECT adsh FROM sub WHERE fy = 2022\n", encoding="utf-8")
+
     workload = {
+        "reference_sql_path": str(sql),
         "benchmark_name": "sec_edgar",
+        "engine_name": "duckdb",
         "query_number": 1,
         "artifact_namespace": "sec_edgar",
         "source_subdir": "sec_edgar/q1/base/single-threaded",
@@ -80,28 +88,3 @@ def test_materialize_workload_stubs_writes_missing_files(tmp_path):
     assert "SecEdgarQ1" in header.read_text(encoding="utf-8")
     assert "query.hpp" in result["created"][0]
 
-
-def test_log_tool_call(capsys):
-    from accel_pipeline.agent_progress import begin_agent_turn, log_agent_message, log_tool_call
-
-    begin_agent_turn("implementation", 2)
-    log_tool_call("run_command", {"command": "ctest -R smoke"})
-    captured = capsys.readouterr()
-    assert "tool_call turn=2" in captured.err
-    assert "run_command" in captured.err
-    assert "ctest" in captured.err
-
-    class Block:
-        type = "tool_use"
-        name = "read_file"
-
-    class Msg:
-        content = [Block()]
-
-    class Message:
-        type = "assistant"
-        message = Msg()
-
-    log_agent_message("implementation", Message())
-    captured = capsys.readouterr()
-    assert "agent requested read_file" in captured.err

@@ -20,7 +20,7 @@ struct {{EngineName}}ScanSpec {
 };
 
 // One chunk of projected rows in the engine's native layout (rename/widen per
-// SDK hints + analysis); valid for the duration of the callback.
+// engine profile + analysis); valid for the duration of the callback.
 struct {{EngineName}}Chunk;
 using {{EngineName}}ChunkConsumer = std::function<void(const {{EngineName}}Chunk &chunk, std::size_t partition)>;
 

@@ -1,0 +1,174 @@
+# The clean tree: what a from-scratch regeneration starts from.
+#
+#   keep       frozen substrate, plus the scaffolding the pipelines take as input
+#   generated  pipeline outputs; absent from the clean tree
+#   drop       results data and caches; absent from the clean tree and not regenerated
+#
+# Globs are repo-relative: `*` stays inside one path segment, `**` crosses
+# segments, a trailing `/` means the whole directory. A file matching several
+# classes takes the strongest: drop, then generated, then keep. Every tracked
+# file must match at least one (pipeline/orchestrator/tests/test_clean_tree.py).
+#
+# Engine-specific vs engine-neutral is decided by content: a file that includes
+# backends/ headers, drives an engine's server or plugin, or exercises a
+# per-query accelerator belongs to the engine or accelerator that it serves.
+# `skeleton/` is overlaid on the clean tree after the prune: the empty starting
+# point of the trees the pipelines grow (accelerators/prims, accelerators/prooflib).
+
+skeleton: pipeline/clean_tree/skeleton
+
+keep:
+  - substrate/**
+  - cmake/**
+  - CMakeLists.txt
+  - README.md
+  - .gitignore
+  - .env.example
+  - docs/**
+  - workloads/**
+  - accelerators/README.md
+  - pipeline/**
+  # engine-neutral eval: substrate unit tests, test-database builders, shared test support
+  - eval/tests/test_aux_runtime.cpp
+  - eval/tests/tsan_module_driver.cpp
+  - eval/tests/tpch_param_templates.hpp
+  - eval/tests/test_aux_runtime_units.cpp
+  - eval/tests/test_aux_wire.cpp
+  - eval/tests/test_core_helpers.cpp
+  - eval/tests/test_float_order_ties.cpp
+  - eval/tests/test_scratch_dir.cpp
+  - eval/tests/test_versioned_aux_store_caps.cpp
+  - eval/tests/make_sec_edgar_test_db.cpp
+  - eval/tests/make_tpch_test_db.cpp
+  - eval/tests/tpch_fuzz_writes.hpp
+  - eval/tests/test_support/db_paths.hpp
+  - eval/tests/test_support/result_compare.hpp
+  - eval/tests/test_support/benchmark_paired_timing.hpp
+  - eval/tests/test_support/interference_calibration.hpp
+  - eval/tests/test_support/toy_build_state.hpp
+  - eval/harness/float_order_ties.hpp
+  - eval/harness/slot_gates.*
+  # engine-neutral eval drivers: result plotting, comparison drivers, benchmark data and parameters
+  - eval/compare/*.py
+  - eval/compare/*.sh
+  - eval/bench/comparison/**
+  - eval/bench/driver/**
+  - eval/bench/sec_edgar/**
+  - eval/bench/tpch/*.py
+  - eval/bench/tpch/*.jsonl
+  # scripts: dataset setup, Verus builds, plotting and summaries, static checkers, drivers
+  - scripts/**
+
+generated:
+  # engine backends, including api/, tests/ and the engine-exact numeric/collation helpers
+  - backends/**
+  # per-query accelerators and their benchmark-level shared code; also prims/ and prooflib/, which are
+  # grown from the skeleton by primitive_publish / prooflib_publish
+  - accelerators/*/**
+  - pipeline/verus/prooflib_provenance.jsonl
+  - pipeline/verus/spec_audits.jsonl
+  - pipeline/verus/playbook/**
+  # engine harnesses and per-query accelerator tests, benchmarks and tools (they link backends/ or accelerators/)
+  - eval/harness/*.cmake
+  - eval/harness/cost_calibration.*
+  - eval/harness/differential.*
+  - eval/harness/tpch_rf.*
+  - eval/tests/mysql/**
+  - eval/tests/postgres/**
+  - eval/tests/parallel/**
+  - eval/tests/verus_kit/**
+  - eval/tests/test_*mysql*
+  - eval/tests/test_*postgres*
+  - eval/tests/test_aux_calibration.cpp
+  - eval/tests/test_aux_multi_connection_stress.cpp
+  - eval/tests/test_aux_read_own_writes.cpp
+  - eval/tests/test_aux_snapshot_reads.cpp
+  - eval/tests/test_cross_accel_*.cpp
+  - eval/tests/test_fallback_state_agree.cpp
+  - eval/tests/test_partitioned_build.cpp
+  - eval/tests/test_registration.cpp
+  - eval/tests/test_shared_incremental_differential.cpp
+  - eval/tests/test_shared_tpch_rf_differential.cpp
+  - eval/tests/test_slot_gates_duckdb.cpp
+  - eval/tests/test_tpch_*.cpp
+  - eval/tests/maintenance_choice_demo.cpp
+  - eval/tests/test_support/cross_accel_helpers.*
+  - eval/tests/test_support/module_runtime.hpp
+  - eval/tests/test_support/multi_connection_stress.cpp
+  - eval/tools/**
+  - eval/compare/*.cpp
+  - eval/compare/mv_defs.py
+  - eval/compare/pg_cost_models.py
+  - eval/compare/run_sql_backend.py
+  - eval/bench/aux_state/*.cpp
+  - eval/bench/mysql/**
+  - eval/bench/postgres/*.cpp
+  - eval/bench/sec_edgar/pg_mt_base.py
+  - eval/bench/sec_edgar/pg_tune_base.py
+  - eval/bench/sec_edgar/sweep/**
+  - eval/bench/tpch/single-threaded/**
+  - eval/bench/tpch/parallel/**
+  - eval/bench/tpch/stateless_matrix.cpp
+  # slot adapters are backend-owned; the README stays
+  - pipeline/gates/slot_adapters/*.sh
+  # engine-specific scripts: PostgreSQL / MySQL builds, servers, loaders, SQL, baselines, sweeps
+  - scripts/build_accel_mysql_plugin.sh
+  - scripts/build_accel_postgres_extension.sh
+  - scripts/build_base_pg.sh
+  - scripts/ensure_*.sh
+  - scripts/finish_sf3000_pg_setup.sh
+  - scripts/gen_mysql_capture_triggers.py
+  - scripts/generate_tpch_immvs.py
+  - scripts/generate_tpch_matviews.py
+  - scripts/load_tpch_*_mysql.py
+  - scripts/load_tpch_*_postgres.py
+  - scripts/mysql_*
+  - scripts/pg_base_bench.py
+  - scripts/postgres_*
+  - scripts/run_base_postgres.sh
+  - scripts/run_mysql_*
+  - scripts/run_postgres_*
+  - scripts/run_tpch_pg_*
+  - scripts/setup_accel_*
+  - scripts/setup_sf20_sql_backends.sh
+  - scripts/setup_tpch_sf20_postgres.sh
+  - scripts/setup_tpch_sf3000_postgres.sh
+  - scripts/start_accel_*
+  - scripts/tpch_pg_matview_vs_aux_bench.py
+  - scripts/perf/pg_sf20/**
+  # engine-specific scripts: drivers of the DuckDB host's built tests and benchmarks
+  - scripts/calibrate_duckdb_tpch_aux_cost_models.sh
+  - scripts/calibrate_shared_aux_cost_models.sh
+  - scripts/load_tpch_parquet.sh
+  - scripts/run_duckdb_*
+  - scripts/run_stateless_duckdb.sh
+  - scripts/run_validated_tpch_bench.sh
+  - scripts/validate_shared_duckdb_differential.sh
+
+drop:
+  # the clean-tree machinery itself: it names every generated file (that is how it prunes them),
+  # so it never ships inside a clean tree where agents would read those names
+  - pipeline/clean_tree/manifest.yaml
+  - pipeline/clean_tree/manifest.py
+  - pipeline/clean_tree/check_leakage.py
+  - pipeline/clean_tree/leakage_allowlist.yaml
+  - pipeline/clean_tree/leakage_baseline.json
+  - pipeline/orchestrator/tests/test_clean_tree.py
+  # results data and caches
+  - eval/**/results/**
+  - eval/**/results_*/**
+  - eval/**/results_*.log
+  - eval/compare/results/**
+  - eval/bench/postgres/baselines/**
+  - eval/bench/q1_verus_results/**
+  - pipeline/artifacts/**
+  - pipeline/.codex/**
+  - build-release
+  # perf tooling (experiments over the generated accelerators, not a pipeline input)
+  - scripts/run_q20_phased_sf20_baselines.sh
+  - scripts/run_q20_phased_bench.sh
+  - scripts/run_sf1_scale_audit.sh
+  - scripts/run_sf10_tpch_bench.sh
+  - scripts/run_scale_proxy_suite.sh
+  - scripts/run_parallel_scaling_matrix.sh
+  - scripts/run_parallel_22q_matrix.sh

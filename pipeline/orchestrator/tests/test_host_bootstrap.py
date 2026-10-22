@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 import json
@@ -9,7 +10,6 @@ import json
 import pytest
 
 from accel_pipeline.config import (
-    _normalize_accelerator_engine,
     load_model_config,
     load_pipeline_config,
     load_workload,
@@ -24,78 +24,60 @@ from accel_pipeline.host_bootstrap import (
     write_host_bootstrap_status,
 )
 from accel_pipeline.stages.base import resolve_stage_max_turns
-from accel_pipeline.tools.tool_policy import tool_usage_instructions
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
-def test_duckdb_does_not_need_host_bootstrap():
-    w = load_workload("tpch_q3", REPO_ROOT)
-    # tpch_q3 may pin engine_name: postgres; duckdb check uses a normalized duckdb workload.
-    w = dict(w)
-    w["engine_name"] = "duckdb"
-    w = _normalize_accelerator_engine(w)
-    assert needs_host_bootstrap(w) is False
+@pytest.mark.parametrize("engine", ["duckdb", "postgres", "mysql"])
+def test_every_engine_needs_host_bootstrap(engine):
+    assert needs_host_bootstrap(load_workload("tpch_q3_aux", REPO_ROOT, engine=engine)) is True
 
 
-def test_postgres_needs_host_bootstrap():
-    w = load_workload("tpch_q3", REPO_ROOT)
-    w["engine_name"] = "postgres"
-    w = _normalize_accelerator_engine(w)
-    assert needs_host_bootstrap(w) is True
-
-
-def test_host_bootstrap_status_roundtrip(tmp_path, monkeypatch):
-    """Never write pass markers into the real repo artifacts tree."""
-    engine = "postgres"
-
-    def _fake_dir(repo_root: Path, engine_name: str) -> Path:
-        path = tmp_path / "engines" / engine_name / "host_bootstrap"
-        path.mkdir(parents=True, exist_ok=True)
-        return path
-
-    monkeypatch.setattr(
-        "accel_pipeline.host_bootstrap.host_bootstrap_dir",
-        _fake_dir,
-    )
-    # Differential source present so passed() accepts the marker.
-    diff = tmp_path / "tests" / "aux_state" / "test_postgres_tpch_differential.cpp"
-    diff.parent.mkdir(parents=True, exist_ok=True)
-    diff.write_text("// stub\n", encoding="utf-8")
-    monkeypatch.setattr(
-        "accel_pipeline.host_bootstrap.engine_host_conventions",
-        lambda _e: {
-            "agent_builds_query_host": True,
-            "differential_source": str(diff.relative_to(tmp_path)),
-        },
-    )
-    write_host_bootstrap_status(tmp_path, engine, status="pass", reason="gate")
-    assert host_bootstrap_passed(tmp_path, engine) is True
-
-
-def test_stale_unit_marker_does_not_count_as_passed(tmp_path, monkeypatch):
+def _passing_status(tmp_path, monkeypatch, gate_data):
     def _fake_dir(repo_root: Path, engine_name: str) -> Path:
         path = tmp_path / "engines" / engine_name / "host_bootstrap"
         path.mkdir(parents=True, exist_ok=True)
         return path
 
     monkeypatch.setattr("accel_pipeline.host_bootstrap.host_bootstrap_dir", _fake_dir)
-    write_host_bootstrap_status(tmp_path, "postgres", status="pass", reason="unit")
+    write_host_bootstrap_status(tmp_path, "postgres", status="pass", extra={"gate_data": gate_data})
+
+
+def _write_differential_source(tmp_path):
+    source = tmp_path / "backends" / "postgres" / "tests" / "harness" / "test_postgres_tpch_differential.cpp"
+    source.parent.mkdir(parents=True)
+    source.write_text("// harness\n", encoding="utf-8")
+
+
+def test_passed_needs_a_green_gate_result_and_the_harness_source(tmp_path, monkeypatch):
+    _passing_status(tmp_path, monkeypatch, {"status": "pass", "smokes": [{"target": "t", "exit_code": 0}]})
+    assert host_bootstrap_passed(tmp_path, "postgres") is False  # source missing
+    _write_differential_source(tmp_path)
+    assert host_bootstrap_passed(tmp_path, "postgres") is True
+
+
+def test_a_marker_without_a_gate_result_is_not_a_pass(tmp_path, monkeypatch):
+    _passing_status(tmp_path, monkeypatch, {})
+    _write_differential_source(tmp_path)
     assert host_bootstrap_passed(tmp_path, "postgres") is False
 
 
-def test_engines_needing_bootstrap_respects_env(monkeypatch):
-    monkeypatch.setenv("ACCEL_WORKLOAD_ENGINE_NAME", "postgres")
-    needed = engines_needing_bootstrap_from_workloads(REPO_ROOT, ["tpch_q3_aux"])
-    assert isinstance(needed, list)
-    # With no real differential source, postgres should still be needed (or already listed).
-    engines = [e for e, _ in needed]
-    assert "postgres" in engines or host_bootstrap_passed(REPO_ROOT, "postgres")
+def test_engines_needing_bootstrap_lists_every_engine_once():
+    runs = [("tpch_q3_aux", "duckdb"), ("tpch_q3_aux", "postgres"), ("tpch_q1_aux", "postgres"), ("tpch_q1_aux", "mysql")]
+    needed = engines_needing_bootstrap_from_workloads(REPO_ROOT, runs)
+    assert sorted(e for e, _ in needed) == ["duckdb", "mysql", "postgres"]
+
+
+def test_host_bootstrap_fails_before_the_backend_exists(tmp_path):
+    pc = replace(load_pipeline_config(repo_root=REPO_ROOT), repo_root=tmp_path)
+    with pytest.raises(GateFailure, match="engine_backend"):
+        run_host_bootstrap(pc, load_model_config(repo_root=REPO_ROOT), engine_name="postgres",
+                           representative_workload="tpch_q1_aux", force=True)
 
 
 def test_aux_workload_merges_host_bootstrap_retry_config():
-    w = load_workload("tpch_q1_aux", REPO_ROOT)
+    w = load_workload("tpch_q1_aux", REPO_ROOT, engine="postgres")
     assert w["host_bootstrap_gate_max_rounds"] == 3
     assert w["host_bootstrap_critique_max_rounds"] == 2
     pc = load_pipeline_config(repo_root=REPO_ROOT)
@@ -105,15 +87,19 @@ def test_aux_workload_merges_host_bootstrap_retry_config():
     assert resolve_stage_max_turns(merged.stage_max_turns, "host_bootstrap") == 10_000
 
 
-def test_postgres_host_bootstrap_gate_script_exits_docker_path():
+def test_host_bootstrap_gate_script_goes_through_the_engine_host():
     text = (REPO_ROOT / "pipeline" / "gates" / "run_host_bootstrap.sh").read_text(
         encoding="utf-8"
     )
-    assert "Do not fall through from docker" in text
-    postgres_block = text.split('ENGINE_NAME}" == "postgres"')[1]
-    host_fallback = postgres_block.split("Non-postgres")[0]
-    assert "exit 0" in host_fallback
-    assert "exit 1" in text
+    assert "engine_ready" in text
+    assert "docker" not in text.lower()
+
+
+def test_host_bootstrap_gate_builds_all_five_harnesses_and_smokes_them():
+    text = (REPO_ROOT / "pipeline" / "gates" / "run_host_bootstrap.sh").read_text(encoding="utf-8")
+    for var in ("DIFF_BINARY", "MULTI_CONN_TARGET", "CROSS_ACCEL_TARGET", "HARNESS_BENCH_TARGET", "HARNESS_CALIBRATE_TARGET"):
+        assert f"${{{var}}}" in text
+    assert "--help" in text and "check_backend_query_free.py" in text
 
 
 def test_host_bootstrap_gate_feedback_includes_log_tail(tmp_path):
@@ -150,12 +136,6 @@ def test_host_bootstrap_gate_feedback_empty_log_tail_still_has_signal():
     assert "(empty)" not in text
 
 
-def test_critique_host_bootstrap_tool_usage():
-    usage = tool_usage_instructions("critique_host_bootstrap")
-    assert "Host bootstrap critique workflow" in usage
-    assert "host_bootstrap_critique.json" in usage
-
-
 def _patch_bootstrap_dirs(tmp_path, monkeypatch):
     def _fake_dir(repo_root, engine_name):
         path = tmp_path / "engines" / engine_name / "host_bootstrap"
@@ -178,8 +158,8 @@ def test_host_bootstrap_gate_fail_reinvokes(tmp_path, monkeypatch):
 
     real_load = load_workload
 
-    def fake_load(name, repo_root=None):
-        w = dict(real_load(name, repo_root))
+    def fake_load(name, repo_root=None, *, engine=""):
+        w = dict(real_load(name, repo_root, engine=engine))
         w["host_bootstrap_gate_max_rounds"] = 3
         w["host_bootstrap_critique_max_rounds"] = 2
         return w
@@ -257,8 +237,8 @@ def test_host_bootstrap_gate_exhausted_rounds_raises(tmp_path, monkeypatch):
 
     real_load = load_workload
 
-    def fake_load(name, repo_root=None):
-        w = dict(real_load(name, repo_root))
+    def fake_load(name, repo_root=None, *, engine=""):
+        w = dict(real_load(name, repo_root, engine=engine))
         w["host_bootstrap_gate_max_rounds"] = 1
         w["host_bootstrap_critique_max_rounds"] = 0
         return w
@@ -298,8 +278,8 @@ def test_host_bootstrap_critique_fail_reinvokes(tmp_path, monkeypatch):
 
     real_load = load_workload
 
-    def fake_load(name, repo_root=None):
-        w = dict(real_load(name, repo_root))
+    def fake_load(name, repo_root=None, *, engine=""):
+        w = dict(real_load(name, repo_root, engine=engine))
         w["host_bootstrap_gate_max_rounds"] = 3
         w["host_bootstrap_critique_max_rounds"] = 2
         return w
@@ -373,3 +353,73 @@ def test_host_bootstrap_critique_fail_reinvokes(tmp_path, monkeypatch):
         / "host_bootstrap"
         / "host_bootstrap_critique_feedback_round1.md"
     ).is_file()
+
+
+def _hb_write(path, engine="postgres", stage="host_bootstrap"):
+    from accel_pipeline.write_ownership import write_allowed
+
+    pc = load_pipeline_config(repo_root=REPO_ROOT)
+    w = load_workload("tpch_q1_aux", REPO_ROOT, engine=engine)
+    from accel_pipeline.config import apply_workload_overrides
+
+    merged = apply_workload_overrides(pc, w)
+    return write_allowed(REPO_ROOT, path, query=1, stage=stage, write_paths=merged.write_paths, pipeline_config=merged)
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "backends/postgres/tests/harness/test_postgres_tpch_differential.cpp",
+        "backends/postgres/bench/benchmark_postgres_tpch_aux.cpp",
+        "backends/postgres/tests/harness.cmake",
+    ],
+)
+def test_host_bootstrap_writes_its_engines_harnesses(path):
+    assert _hb_write(path)[0] is True
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "backends/postgres/engine/store.cpp",
+        "backends/postgres/api/register.hpp",
+        "backends/postgres/backend.cmake",
+        "backends/postgres/tests/test_postgres_writer.cpp",
+        "backends/mysql/tests/harness/test_mysql_tpch_differential.cpp",
+        "accelerators/tpch/q1/postgres/aux/module.cpp",
+        "substrate/aux/core/aux_types.hpp",
+    ],
+)
+def test_host_bootstrap_cannot_write_anything_else(path):
+    assert _hb_write(path)[0] is False
+
+
+def test_other_stages_still_cannot_write_a_backend_harness():
+    assert _hb_write("backends/postgres/tests/harness/x.cpp", stage="implementation")[0] is False
+
+
+def test_recorded_defects_reach_their_owner_once(tmp_path):
+    import json
+
+    from accel_pipeline import backend_requests as br
+
+    path = br.requests_path(tmp_path, "anyengine")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lines = [
+        {"scope": "harness", "helper": "transaction-safe setup"},
+        {"scope": "backend", "helper": "commit outside the engine lock"},
+        {"helper": "unscoped: both owners see it"},
+    ]
+    path.write_text("".join(json.dumps(line) + "\n" for line in lines))
+
+    assert [r["helper"] for r in br.pending(tmp_path, "anyengine", "harness")] == [
+        "transaction-safe setup", "unscoped: both owners see it"]
+    assert [r["helper"] for r in br.pending(tmp_path, "anyengine", "backend")] == [
+        "commit outside the engine lock", "unscoped: both owners see it"]
+
+    br.mark_handled(tmp_path, "anyengine", "backend")
+    assert br.pending(tmp_path, "anyengine", "backend") == []
+    assert len(br.pending(tmp_path, "anyengine", "harness")) == 2
+    with path.open("a") as f:
+        f.write(json.dumps({"scope": "backend", "helper": "a new one"}) + "\n")
+    assert [r["helper"] for r in br.pending(tmp_path, "anyengine", "backend")] == ["a new one"]

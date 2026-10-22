@@ -1,19 +1,9 @@
 benchmark_name: sec_edgar
 query_number: 4
-engine_name: duckdb
-query_id: "4"
+engines: [duckdb]
 reference_sql_path: workloads/sec_edgar/q4.sql
 parameters:   # spec: eval/bench/sec_edgar/params/q4.json (zero-arg function = defaults)
   - {name: sic_lo, type: INTEGER, default: 4000, domain: "see joint_domain in the json spec"}
   - {name: sic_hi, type: INTEGER, default: 4999, domain: "see joint_domain in the json spec"}
   - {name: stmt, type: VARCHAR, default: "EQ", domain: ["BS", "IS", "CF", "EQ", "CI"]}
   - {name: uom, type: VARCHAR, default: "USD", domain: ["USD", "shares", "pure", "CAD", "CNY", "EUR"]}
-output_schema:
-  - {name: sic, type: INTEGER}
-  - {name: tlabel, type: VARCHAR}
-  - {name: stmt, type: VARCHAR}
-  - {name: num_companies, type: BIGINT}
-  - {name: total_value, type: DOUBLE}
-  - {name: avg_value, type: DOUBLE}
-tables: [num, sub, tag, pre]
-reference_accelerators: []

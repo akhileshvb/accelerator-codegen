@@ -1,13 +1,10 @@
-# From-scratch Postgres adapter onboarding.
+# From-scratch Postgres backend onboarding.
 # Conventional paths/write_paths/cmake names come from pipeline/config/engine_backend.yaml.
-# Engine-specific SDK detail lives HERE only; shared prompts/gates stay engine-agnostic.
-#
-# Do not describe a prior in-repo adapter. The agent implements against the
-# substrate + PostgreSQL 17 server headers + these connection hints.
+# Engine-specific input is the engine_profile below (schema: pipeline/schemas/engine_profile.schema.json):
+# facts and hazards of the engine, never a design. Shared prompts/gates stay engine-agnostic.
 
 workload_kind: engine_backend
 engine_name: postgres
-display_name: Postgres
 allow_update_existing: false
 
 hide_foreign_engines: true
@@ -17,35 +14,154 @@ agent_hidden_trees:
   - accelerators/tpch
   - accelerators/sec_edgar
 
-# Server-extension packaging: host layer is required.
-requires_in_process_host: true
+engine_profile:
+  identity:
+    name: postgres
+    display_name: Postgres
+    version: "PostgreSQL 17 (postgres:17 image)"
+    sdk_headers:
+      - "server headers in the container: postgres.h, executor/spi.h, access/xact.h, commands/trigger.h, access/tableam.h, utils/numeric.h"
+    docs:
+      - "PostgreSQL 17 documentation: server programming (SPI, triggers, background workers, shared memory), GUC reference"
 
-host_runtime:
-  kind: docker
-  discovery: postgres_docker
-  ensure_script: scripts/ensure_accel_pg_test.sh
-  build_script: scripts/build_accel_postgres_extension.sh
-  ninja_targets_env: ACCEL_PG_NINJA_TARGETS
-  container_env: ACCEL_PG_CONTAINER
-  default_container: accel_pg_test
-  binary_dir: /accel-build/accel
-  env:
-    ACCEL_PG_DOCKER: "1"
-    # From-scratch: start the container only. Layer gates build via build_script;
-    # do not fail closed on missing live adapter sources / a stale MODULE .so.
-    ACCEL_PG_ENSURE_BUILD: "0"
-    # Layer gates load the test-only MODULE (gate-test UDFs); build/install it too.
-    ACCEL_PG_TEST_MODULE: "1"
+  packaging:
+    kind: server_extension
+    placement_candidates: [shipped_worker]
+    requires_in_process_host: true
+    prod_target: accelerator_codegen_pg
+    test_target: "accelerator_codegen_pg_test"
+    install_path: "/usr/lib/postgresql/17/lib/accelerator_codegen_pg.so (test module: accelerator_codegen_pg_test.so)"
+    test_only_code_rule: "Gate-test UDFs and toy bridges live in backends/postgres/tests/extension_test_*.cpp and are built only into the test module; the layer harnesses LOAD the test module. Server-only symbols belong only in a MODULE, never in a host shared library that standalone harnesses link."
 
-engine_sdk_hints:
-  - "Postgres for this pipeline is Docker container `accel_pg_test` (postgres:17). Start with `ACCEL_PG_ENSURE_BUILD=0 bash scripts/ensure_accel_pg_test.sh` (container only until the host MODULE exists). Do not install a host pacman/$HOME/opt server SDK."
-  - "Edit sources on the host (mounted in the container at `/accel-src`). Rebuild with `bash scripts/build_accel_postgres_extension.sh` (cmake/ninja inside the container)."
-  - "Connect from host: PGHOST=127.0.0.1 PGPORT=5434. Inside the container / docker exec: PGHOST=127.0.0.1 PGPORT=5432. Env: ACCEL_PG_DOCKER=1."
-  - "In-process MODULE target name: `accelerator_codegen_pg`. Installed .so path in the container: `/usr/lib/postgresql/17/lib/accelerator_codegen_pg.so`."
-  - "Gate-test UDFs and toy bridges (table setup, inspection, runtime-layer drivers) go in `backends/postgres/tests/extension_test_*.cpp` and build only into the test MODULE `accelerator_codegen_pg_test` (`/usr/lib/postgresql/17/lib/accelerator_codegen_pg_test.so`); the layer harnesses `LOAD` that module themselves. The production MODULE `accelerator_codegen_pg` holds only real entry points (no test UDFs)."
-  - "Use PostgreSQL 17 server headers (SPI, table/heap AM, triggers, xact callbacks, `_PG_init`) from the in-container SDK. Server-only symbols belong only in the MODULE — never in a host shared library that standalone harnesses link."
-  - "Shared substrate (do not regenerate): substrate/aux/{core,state,maintenance}/ and the runtime skeleton substrate/aux/runtime/ (RuntimeHost, AcceleratorRuntime, ColumnarBatch, wire, ThreadBudget). You implement its slots S1-S8 (engine_slots.hpp, engine_interfaces.md)."
-  - "Do not read or copy another engine's backends/<engine>/ tree. Do not depend on generated TPC-H/SEC query modules."
+  host_runtime:
+    kind: docker
+    ninja_targets_env: ACCEL_PG_NINJA_TARGETS
+    container_env: ACCEL_PG_CONTAINER
+    default_container: accel_pg_test
+    binary_dir: /accel-build/accel
+    connect: "From the host PGHOST=127.0.0.1 PGPORT=5434; inside the container PGHOST=127.0.0.1 PGPORT=5432. Sources are mounted at /accel-src in the container; the build runs cmake/ninja inside it."
+    env:
+      ACCEL_PG_DOCKER: "1"
+      # From-scratch: start the container only. Layer gates build via host.sh build;
+      # do not fail closed on missing live adapter sources / a stale MODULE .so.
+      ACCEL_PG_ENSURE_BUILD: "0"
+      # Layer gates load the test-only MODULE (gate-test UDFs); build/install it too.
+      ACCEL_PG_TEST_MODULE: "1"
 
-placement_candidates:
-  - shipped_worker
+  build:
+    cmake_option: ACCELERATOR_CODEGEN_BUILD_POSTGRES
+    extra_find_packages:
+      na: "the PostgreSQL server SDK is located by the backend's own Find module; no further packages"
+
+  process_model:
+    connections: processes
+    shared_memory_needed: true
+    engine_api_thread_safety: "Server APIs (SPI, catalog, memory contexts, ereport) are single-threaded per backend process and unsafe from any thread the backend did not create as its main thread; a thread that calls them crashes or corrupts memory. A process's signals are handled on its main thread."
+    calls_forbidden_off_main_thread:
+      - "SPI_*, heap/index access, palloc/MemoryContext, ereport/elog (longjmp) from a pool thread"
+      - "any server header symbol in a read thread of a worker"
+
+  capture:
+    hook_mechanism: "Statement-level AFTER triggers with transition tables (REFERENCING OLD TABLE / NEW TABLE) per tracked table and event; C trigger functions read the transition tuplestores."
+    granularity: "One trigger call per statement and event; the transition tables hold every affected row, old and new images (UPDATE exposes both)."
+    ddl_events: "TRUNCATE fires only a statement-level TRUNCATE trigger (no rows). DROP TABLE / ALTER TABLE / RENAME / CREATE OR REPLACE of a table fire no row trigger and change the relation; a relation is identified by oid, which changes when a table is rewritten or replaced by CREATE/DROP, and triggers are dropped with a dropped table."
+    abort_signal: "XactCallback XACT_EVENT_ABORT and SubXactCallback SUBXACT_EVENT_ABORT_SUB; a subtransaction's captured rows merge into the parent at SUBXACT_EVENT_COMMIT_SUB."
+    uncaptured_write_paths:
+      - "session_replication_role = replica disables ordinary triggers"
+      - "a table rewritten by ALTER TABLE ... TYPE or a REINDEX/VACUUM FULL moves tuples without statement triggers"
+      - "writes by a session in which the trigger was not yet created (a trigger created while a write is in flight is not seen by that statement)"
+
+  transactions:
+    isolation_levels: ["READ COMMITTED (default; a snapshot per statement)", "REPEATABLE READ (one snapshot per transaction)", "SERIALIZABLE"]
+    commit_hook: "XactCallback: XACT_EVENT_PRE_COMMIT (an error here still aborts the user's transaction), XACT_EVENT_COMMIT (the transaction is visible), XACT_EVENT_ABORT."
+    commit_order_source: "No public monotonic commit sequence number: visibility order is ProcArray order (xid commit); track_commit_timestamp is optional and off by default. A snapshot is (xmin, xmax, xip[]) and sees a transaction iff it is committed before the snapshot was taken."
+    own_writes_visibility: "A read inside a writing transaction sees its own uncommitted rows, in the same statement for later command ids and in the transaction."
+    snapshot_api: "GetActiveSnapshot / GetTransactionSnapshot / RegisterSnapshot; a snapshot can be exported (pg_export_snapshot) and imported by another backend in REPEATABLE READ; a snapshot has no commit number, only xmin/xmax/xip."
+    subtransactions: "SAVEPOINT and PL/pgSQL exception blocks create subtransactions; SubXactCallback reports start, commit and abort."
+
+  locking:
+    engine_locks_relevant:
+      - "TRUNCATE, DROP TABLE, most ALTER TABLE and DROP TRIGGER take ACCESS EXCLUSIVE, which conflicts with every other lock including a reader's ACCESS SHARE; a request queued behind it blocks later requests too"
+      - "a REPEATABLE READ build transaction keeps ACCESS SHARE locks on every table it scanned until it ends"
+      - "locks are released at transaction end only"
+    locks_held_during_hooks:
+      - "PRE_COMMIT callbacks run while the transaction still holds all its relation locks"
+    wait_timeout_knob: "lock_timeout, statement_timeout, deadlock_timeout (GUCs, per session)"
+
+  scan:
+    native_scan_api: "SPI cursors with typed tuple access, or table AM scans (table_beginscan / heap_getnext) with a snapshot; heap pages are read through shared buffers."
+    parallel_scan_api: "Executor parallel query and parallel workers attached to one snapshot (max_parallel_workers, parallel_leader_participation); block-range scans (TID range) over a table at one snapshot; an exported snapshot can be imported by other backends."
+    row_count_source: "pg_class.reltuples / relpages, refreshed by VACUUM and ANALYZE (can be 0 or stale for a freshly loaded table)."
+    type_quirks:
+      - "numeric is arbitrary precision (up to 131072 digits before the point), decimal columns are not fixed-width; a Datum for numeric is a pointer to a varlena, float8 is a by-value Datum (a float8 Datum passed where a Numeric pointer is expected crashes)"
+      - "varlena values can be toasted/compressed and must be detoasted before reading; text carries a collation and encoding"
+      - "date is days since 2000-01-01, not 1970-01-01; timestamp is microseconds since 2000-01-01"
+      - "an integer column and its numeric aggregate have different Datum representations (int8 vs numeric)"
+    collation_quirks:
+      - "text comparison and ORDER BY use the column's collation; only a C collation (lc_collate_is_c) compares bytewise with memcmp. Under a locale collation (en_US.utf8) order and equality differ from byte order."
+
+  entry_points:
+    mechanism: "C functions in the loaded MODULE declared with PG_FUNCTION_INFO_V1 and created by CREATE FUNCTION ... LANGUAGE C; set-returning functions return rows through the SRF protocol (value-per-call or materialize mode); the SQL that creates them is the extension script."
+    argument_passing: "Datum arguments with a null flag (PG_ARGISNULL); STRICT functions are not called for NULL arguments; types come from the declared SQL signature."
+    result_return: "Rows are returned as Datums per the declared output columns; the declared type decides the Datum representation (numeric vs float8 vs int8)."
+    registration_symbol: {na: "functions are named by CREATE FUNCTION DDL and PG_FUNCTION_INFO_V1 shims, not by a per-query registration symbol"}
+
+  thread_knobs:
+    mechanism: "Custom GUCs (DefineCustomIntVariable) set by ALTER SYSTEM / postgresql.conf / SET and reloaded on SIGHUP; a client environment variable does not reach the server process."
+    names: [accel.threads, accel.read_threads, accel.build_threads, accel.maint_threads, accel.shard_read_threads]
+    reload_semantics: "GUC changes apply to a running background worker only if the worker re-reads them on SIGHUP; environment of the server process is read at process start."
+
+  query_host:
+    dataset_env: PG_CONFIG
+    work_db_suffix: ".postgres_work"
+
+  oracle:
+    differential_db: "TPC-H database loaded into the postgres container, text columns in C collation."
+    sql_client: "psql against the server (PGHOST/PGPORT/PGUSER/PGDATABASE), from the host or inside the container."
+
+  hazards:
+    - symptom: "A statement that writes and then reads in one transaction gets state that lacks its own rows, or a rebuild/maintenance runs on other sessions' data only."
+      engine_fact: "Uncommitted rows exist only in the writing backend's own snapshot; no other process can see them until commit, so any state kept outside that backend lacks them."
+      layers: [capture, epochs, host]
+    - symptom: "State is shared between connections but a plain in-process object (static, mutex, thread pool) is empty in each connection."
+      engine_fact: "Every connection is a separate OS process (fork); memory is shared only through the server's shared-memory facilities (allocated at postmaster start, or dynamic shared memory), and a background worker is a separate process too."
+      layers: [epochs, runtime, host]
+    - symptom: "An accelerator worker started on demand cannot be found by later connections, or a restarted worker serves from stale state."
+      engine_fact: "Without shared_preload_libraries a module cannot reserve fixed shared memory at server start; dynamic background workers and dynamic shared memory are created at runtime and disappear when their process exits or on crash recovery (which restarts all workers and clears shared memory)."
+      layers: [runtime, host]
+    - symptom: "A reader whose snapshot predates the accelerator's first commit epoch is served a state that already contains later writes."
+      engine_fact: "A snapshot carries xmin/xmax/xip, not a commit number: commits made before the accelerator started tracking have no epoch, so such a snapshot cannot be placed against the commit sequence."
+      layers: [epochs]
+    - symptom: "A snapshot taken during a commit sees the commit (or misses it) inconsistently with the epoch assigned."
+      engine_fact: "Between XACT_EVENT_PRE_COMMIT and the moment the commit becomes visible in ProcArray there is a window; a snapshot taken in it sees the transaction as in progress though it is about to commit."
+      layers: [epochs]
+    - symptom: "The server aborts a statement with a lock timeout, or hangs, when DDL (TRUNCATE, DROP TRIGGER, ALTER TABLE) runs while an accelerator build is in progress."
+      engine_fact: "A build holds ACCESS SHARE locks on scanned tables for its transaction's lifetime; DDL needs ACCESS EXCLUSIVE and queues behind the build, and every later reader queues behind that DDL."
+      layers: [scan, runtime]
+    - symptom: "Thread caps set in the client environment have no effect on the server's accelerator."
+      engine_fact: "The server process reads its own environment at start; session-level tuning is done through GUCs (accel.*_threads), which the server reads through its own configuration mechanism."
+      layers: [runtime]
+    - symptom: "Ordered results or key equality differ between the engine's SQL and the accelerator for non-ASCII or mixed-case text."
+      engine_fact: "A locale collation compares text by collation rules; only the C collation compares bytes. Text columns carry a collation per column."
+      layers: [scan, host, hostctl, api]
+    - symptom: "A function returning numeric crashes the backend or prints garbage when the accelerator emits a double or integer."
+      engine_fact: "Datum representation follows the declared SQL type: numeric is a pointer to a varlena, float8 and int8 are by-value or by-reference scalars; a mismatch is undefined behaviour."
+      layers: [host, api]
+    - symptom: "A wide decimal (more than 64 bits unscaled) silently overflows in capture or scan."
+      engine_fact: "Postgres numeric has no fixed width; a column declared numeric(p,s) can hold values beyond int64 at scale s."
+      layers: [capture, scan, api]
+    - symptom: "A table that is dropped and recreated, or rewritten, keeps serving state built for the old table."
+      engine_fact: "A relation is identified by oid; DROP/CREATE gives a new oid, and triggers and the captured table identity are dropped with the old relation. TRUNCATE changes the relfilenode but keeps the oid and fires only a TRUNCATE trigger."
+      layers: [capture, runtime]
+    - symptom: "An error thrown from engine callbacks (PRE_COMMIT) is propagated as the user's transaction failure, or a callback crashes during abort."
+      engine_fact: "ereport(ERROR) longjmps; an error in the COMMIT or ABORT callbacks comes after the outcome is decided and cannot undo it (it escalates), while a PRE_COMMIT error aborts the user's transaction."
+      layers: [epochs, capture]
+    - symptom: "A pool thread that calls into the server (SPI) crashes the backend."
+      engine_fact: "Server memory contexts, error stack and catalog caches are per-process globals without locks; only the main thread may use them. Signals are delivered to arbitrary threads unless blocked."
+      layers: [scan, runtime]
+    - symptom: "A worker's reads hang or a worker lingers after the server shuts down."
+      engine_fact: "A background worker is terminated with SIGTERM; a worker blocked in a futex or condition wait without a timeout never sees it."
+      layers: [runtime, host]
+    - symptom: "The host-side shared library fails to link or load, or conflicts with the server's own symbols, once it includes server headers."
+      engine_fact: "Server headers (postgres.h and the backend headers) are only valid in code compiled into the loadable module for the server; a library that also links into client or test binaries cannot contain them."
+      layers: [host, runtime]
