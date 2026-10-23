@@ -61,7 +61,11 @@ PY
 fi
 
 # The query must register from its own directory: the engine backend names no query.
-if ! BACKEND_LOG="$(python3 "${ROOT}/scripts/check_backend_query_free.py" --engine "${ENGINE_NAME}" 2>&1)"; then
+CHECK_STARTED="$(now_us)"
+BACKEND_RC=0
+BACKEND_LOG="$(python3 "${ROOT}/scripts/check_backend_query_free.py" --engine "${ENGINE_NAME}" 2>&1)" || BACKEND_RC=$?
+record_phase checker "${CHECK_STARTED}"
+if [[ ${BACKEND_RC} -ne 0 ]]; then
   emit_result "${JSON}" aux_correctness fail \
     "per-query code in the ${ENGINE_NAME} backend: register from accelerators/${BENCHMARK_NAME}/q${QUERY}/ instead" \
     "${BACKEND_LOG}" "differential_binary=${DIFF_BINARY}"

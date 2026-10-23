@@ -2,10 +2,32 @@
 # Shared gate-context loader for aux-state gate scripts.
 # Usage: source aux_gate_common.sh; load_aux_gate_context "${ROOT}" "${QUERY}"
 
+# Wall seconds of each phase, reported by write_result as phase_timings.
+PHASE_LOG=""
+now_us() { echo "${EPOCHREALTIME/./}"; }
+
+# record_phase <name> <start_us>: add the seconds since start_us to <name>.
+record_phase() {
+	local us=$(($(now_us) - $2))
+	PHASE_LOG+="$1=$((us / 1000000)).$(printf '%03d' $((us % 1000000 / 1000)))"$'\n'
+}
+
+# time_phase <name> <command...>: run in this shell, record its seconds, keep its status.
+time_phase() {
+	local name="$1" start rc=0
+	shift
+	start="$(now_us)"
+	"$@" || rc=$?
+	record_phase "${name}" "${start}"
+	return "${rc}"
+}
+
 # Gate context only: CTX and ENGINE_NAME (gates that need no workload fields).
 load_engine_gate_context() {
 	local root="$1"
 	local query="$2"
+	local started
+	started="$(now_us)"
 	local gates_dir
 	gates_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 	CTX="$(python3 "${gates_dir}/read_gate_context.py" "${root}" "${query}")"
@@ -14,6 +36,7 @@ load_engine_gate_context() {
 	DATASET_DIR="$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('dataset_dir',''))" "${CTX}")"
 	export CTX ENGINE_NAME SCHEMA_SQL DATASET_DIR ACCEL_ENGINE_NAME="${ENGINE_NAME}"
 	setup_engine_host "${root}"
+	record_phase load_context "${started}"
 }
 
 load_aux_gate_context() {
@@ -75,10 +98,12 @@ engine_trait() {
 # sets ENGINE_FAIL and returns 1; ENGINE_LOG collects every step's output.
 engine_steps() {
 	ENGINE_LOG=""
-	local step out rc
+	local step out rc started
 	for step in "$@"; do
+		started="$(now_us)"
 		# shellcheck disable=SC2086
 		out="$(engine_host ${step} 2>&1)" && rc=0 || rc=$?
+		record_phase "host_${step%% *}" "${started}"
 		ENGINE_LOG+="[host.sh ${step}] rc=${rc}"$'\n'"${out}"$'\n'
 		if [[ ${rc} -ne 0 && ${rc} -ne 77 ]]; then
 			ENGINE_FAIL="host.sh ${step%% *} failed (exit ${rc})"
@@ -95,8 +120,10 @@ engine_ready() { engine_steps "up" "load ${SCHEMA_SQL}" "build $*"; }
 # default 900), so a hung harness fails the gate instead of stalling the run. Sets LOG, RC and,
 # on a timeout, RUN_REASON.
 engine_run() {
-	local limit="${ACCEL_GATE_RUN_TIMEOUT:-900}"
+	local limit="${ACCEL_GATE_RUN_TIMEOUT:-900}" started
+	started="$(now_us)"
 	LOG="$(timeout --kill-after=15 "${limit}" "${ENGINE_HOST}" run "$@" 2>&1)" && RC=0 || RC=$?
+	record_phase "run_${1##*/}" "${started}"
 	RUN_REASON=""
 	[[ ${RC} -ne 124 && ${RC} -ne 137 ]] ||
 		RUN_REASON="$1 did not finish within ${limit}s: it hangs (a deadlock, or a wait that never ends)"
@@ -106,11 +133,15 @@ engine_run() {
 # Writes and prints the gate result (extras: key=string, key:=json); returns 0
 # only for pass or skip.
 write_result() {
-	python3 - "$@" <<'PY'
+	PHASE_LOG="${PHASE_LOG}" python3 - "$@" <<'PY'
 import json, sys, pathlib, os
 out, gate, status, reason, log, *extra = sys.argv[1:]
+phases: dict[str, float] = {}
+for line in os.environ.get("PHASE_LOG", "").splitlines():
+    name, _, seconds = line.partition("=")
+    phases[name] = round(phases.get(name, 0.0) + float(seconds), 3)
 payload = {"gate": gate, "status": status, "reason": reason, "log_tail": log[-6000:],
-           "engine_name": os.environ.get("ENGINE_NAME", "")}
+           "engine_name": os.environ.get("ENGINE_NAME", ""), "phase_timings": phases}
 for kv in extra:
     k, _, v = kv.partition("=")
     if k.endswith(":"):

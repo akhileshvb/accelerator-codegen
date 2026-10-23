@@ -230,6 +230,7 @@ def run_gate(
         except json.JSONDecodeError:
             data = {"stdout": proc.stdout[-2000:], "stderr": proc.stderr[-2000:]}
 
+    data.setdefault("phase_timings", {})["gate_wall"] = round(duration_ms / 1000, 3)
     status = data.get("status", "pass" if proc.returncode == 0 else "fail")
     if proc.returncode != 0 and status == "pass" and not out_json.is_file():
         # A script that failed after printing an early pass line has not passed.
@@ -262,6 +263,7 @@ def run_gate(
         index=gate_index,
         count=gate_count,
         detail=detail,
+        phase_timings=data["phase_timings"],
     )
     result = GateResult(name=gate_name, status=status, data=data, path=out_json if out_json.is_file() else None)
     if gate_name == "aux_bench_sweep":
