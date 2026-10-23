@@ -52,6 +52,9 @@ def test_load_engine_mysql_workload():
     assert not any(p.startswith(("substrate", "accelerators", "workloads")) for p in w["write_paths"])
     assert "engine_capture" in w["post_validation_gates"]
     assert "engine_adversarial" in w["post_validation_gates"]
+    assert "engine_hit_contract" in w["post_validation_gates"]
+    api = next(layer for layer in w["implementation_layers"] if layer["id"] == "api")
+    assert "hit_contract" in api["rules"]
     assert "slot_epoch_stress" in w["post_validation_gates"]
     assert "slot_differential" not in w["post_validation_gates"]
     assert {"slot_own_writes", "slot_ddl_events"} <= set(w["post_validation_gates"])

@@ -20,6 +20,7 @@ from accel_pipeline.config import (
     resolve_optimization_edit_paths,
     resolve_workload_paths,
 )
+from accel_pipeline.failure import Failure, StageFailure
 from accel_pipeline.jsonio import read_json
 from accel_pipeline.kernel_hot_path_review import analyze_kernel_source
 from accel_pipeline.models import make_model_id
@@ -44,10 +45,14 @@ from accel_pipeline.optimization_context import (
     save_context_packet,
 )
 from accel_pipeline.optimization_evidence import extract_bottleneck_evidence
+from accel_pipeline.layout import query_dir
+from accel_pipeline.measurement import check_measurement
 from accel_pipeline.optimization_eval import (
+    AttemptOutcome,
     MultiSampleBenchmark,
     eval_config_from_pipeline,
     evaluate_attempt_outcome,
+    is_aux_workload,
     run_multi_sample_benchmark,
     score_metrics,
 )
@@ -226,14 +231,57 @@ def _measure_baseline(
     workload: dict[str, Any],
     query: int,
     eval_config,
-) -> MultiSampleBenchmark | None:
-    return run_multi_sample_benchmark(
+) -> MultiSampleBenchmark:
+    errors: list[str] = []
+    baseline = run_multi_sample_benchmark(
         pipeline_config,
         workload,
         query,
         samples=eval_config.quick_benchmark_samples,
         include_profile=True,
+        errors=errors,
     )
+    if baseline is None:
+        raise StageFailure(
+            Failure(
+                kind="measurement",
+                stage="optimization",
+                source="bench_baseline",
+                summary="the baseline benchmark did not produce a measurement",
+                evidence="\n".join(errors),
+                diagnosis=["the benchmark failed to build or run; nothing measured the accelerator"],
+            )
+        )
+    _sanity_gate_baseline(pipeline_config, workload, query, baseline)
+    return baseline
+
+
+def _sanity_gate_baseline(
+    pipeline_config: PipelineConfig,
+    workload: dict[str, Any],
+    query: int,
+    baseline: MultiSampleBenchmark,
+) -> None:
+    """A baseline that does not measure the accelerator would make every attempt's verdict meaningless."""
+    paths = resolve_workload_paths(pipeline_config, workload, query)
+    target = paths["aux_bench_target" if is_aux_workload(workload) else "bench_target"]
+    benchmark = str(workload.get("benchmark_name", "tpch"))
+    failures = check_measurement(
+        baseline,
+        workload=workload,
+        phase="baseline",
+        config=pipeline_config.measurement,
+        bench_binary=pipeline_config.build_dir / target,
+        query_dir=pipeline_config.repo_root / query_dir(benchmark, int(workload.get("query_number", query))),
+    )
+    if failures:
+        raise StageFailure(failures[0])
+
+
+def _raise_if_invalid_measurement(outcome: AttemptOutcome) -> None:
+    """An attempt whose benchmark measured nothing is neither accepted nor reverted."""
+    if outcome.verdict == "reject_invalid_measurement":
+        raise StageFailure(outcome.measurement_failures[0])
 
 
 def _revert_and_rebuild(
@@ -1216,7 +1264,9 @@ def run_optimization_iteration(
                 candidate_metrics=candidate.median_metrics,
                 config=eval_config,
                 correctness_ok=True,
+                measurement=pipeline_config.measurement,
             )
+            _raise_if_invalid_measurement(outcome)
             log_event(
                 pipeline_config.repo_root,
                 query,
@@ -1641,7 +1691,9 @@ def run_optimization_iteration(
             candidate_metrics=candidate.median_metrics,
             config=eval_config,
             correctness_ok=True,
+            measurement=pipeline_config.measurement,
         )
+        _raise_if_invalid_measurement(outcome)
 
         if outcome.verdict in ("reject_broken", "reject_regress"):
             _revert_and_rebuild(pipeline_config, workload, query)

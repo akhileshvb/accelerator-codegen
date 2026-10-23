@@ -303,9 +303,24 @@ struct WorkloadTimings {
   double fallback_median_us = 0.0;
   double accel_hit_rate = 0.0;
   double fallback_rate = 0.0;
+  int64_t accel_fallback_reads = 0;
+  int64_t state_builds = 0;
   double total_accel_query_us = 0.0;
   double total_accel_write_us = 0.0;
 };
+
+// What the runtime's counters say about the reads of the measured run: how many the state served,
+// how many fell back to SQL, and how often the state was built (never assumed).
+template <typename Stats>
+void RecordReadOutcome(WorkloadTimings &result, const Stats &before, const Stats &after) {
+  const auto hits = after.reads_hit - before.reads_hit;
+  const auto fallbacks = after.reads_fallback - before.reads_fallback;
+  const double reads = static_cast<double>(hits + fallbacks);
+  result.accel_hit_rate = reads > 0 ? static_cast<double>(hits) / reads : 0.0;
+  result.fallback_rate = reads > 0 ? static_cast<double>(fallbacks) / reads : 0.0;
+  result.accel_fallback_reads = static_cast<int64_t>(fallbacks);
+  result.state_builds = static_cast<int64_t>(after.builds);
+}
 
 const TpchArgVariant &PickArgVariant(const std::vector<TpchArgVariant> &arg_pool,
                                      std::size_t &arg_seq) {
@@ -322,6 +337,7 @@ WorkloadTimings RunMeasuredWorkloadWallClock(
   if (duration_sec <= 0.0) {
     return result;
   }
+  const auto stats_before = runtime.Stats();
 
   const auto start = Clock::now();
   const auto deadline =
@@ -405,8 +421,7 @@ WorkloadTimings RunMeasuredWorkloadWallClock(
   for (const auto sample : write_samples) {
     result.total_accel_write_us += sample;
   }
-  result.accel_hit_rate = 1.0;
-  result.fallback_rate = 0.0;
+  RecordReadOutcome(result, stats_before, runtime.Stats());
   result.accel_hit_median_us = hit_samples.empty() ? 0.0
                                                    : driver::Median(hit_samples);
   return result;
@@ -420,6 +435,7 @@ WorkloadTimings RunMeasuredWorkload(DuckdbRuntime &runtime,
                                     const std::vector<TpchArgVariant> &arg_pool) {
   WorkloadTimings result;
   result.num_queries = num_queries;
+  const auto stats_before = runtime.Stats();
 
   int write_seq = 0;
   std::size_t arg_seq = 0;
@@ -449,8 +465,7 @@ WorkloadTimings RunMeasuredWorkload(DuckdbRuntime &runtime,
   for (const auto sample : write_samples) {
     result.total_accel_write_us += sample;
   }
-  result.accel_hit_rate = 1.0;
-  result.fallback_rate = 0.0;
+  RecordReadOutcome(result, stats_before, runtime.Stats());
   result.accel_hit_median_us = hit_samples.empty() ? 0.0
                                                    : driver::Median(hit_samples);
   return result;
@@ -467,7 +482,7 @@ void PrintCsvHeader(std::ostream &out) {
          "total_accel_write_us,duckdb_workload_us,accel_workload_us,"
          "workload_speedup,cold_start_workload_speedup,query_only_speedup,"
          "query_only_speedup_profiler,blended_query_speedup,"
-         "cold_start_accel_workload_us,setup_full_build_ms,"
+         "cold_start_accel_workload_us,setup_full_build_ms,accel_fallback_reads,state_builds,"
       << bench_diag::kAuxStoreDiagnosticsCsvHeader << "\n";
 }
 
@@ -699,7 +714,8 @@ private:
               << workload_speedup << ',' << cold_start_workload_speedup << ','
               << query_only_speedup << ',' << query_only_speedup_profiler << ','
               << blended_query_speedup << ','
-              << cold_start_accel_workload_us << ',' << setup_full_build_ms << ',';
+              << cold_start_accel_workload_us << ',' << setup_full_build_ms << ','
+              << workload.accel_fallback_reads << ',' << workload.state_builds << ',';
     bench_diag::AppendStoreDiagnosticsCsv(std::cout, aux_state_bytes, store_diag);
     std::cout << '\n' << std::flush;
     std::cerr << "tpch_q" << query_num << "_aux_bench: wrote row"

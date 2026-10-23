@@ -434,6 +434,7 @@ def run_validation(
             "engine_host",
             "engine_api_conformance",
             "engine_adversarial",
+            "engine_hit_contract",
             "slot_epoch_stress",
             "slot_hits_under_writes",
             "slot_read_after_commit",

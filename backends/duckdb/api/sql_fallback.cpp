@@ -1,7 +1,10 @@
 // GENERATED BACKEND
 #include "backends/duckdb/api/sql_fallback.hpp"
 
+#include <atomic>
 #include <cctype>
+#include <cstdlib>
+#include <stdexcept>
 #include <vector>
 
 #include "backends/duckdb/api/decimal128.hpp"
@@ -111,7 +114,25 @@ core::AuxRow RowOf(const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
 
 } // namespace
 
+namespace {
+std::atomic<int> g_trap_override{-1}; // -1: the environment decides
+} // namespace
+
+void SetFallbackTrap(std::optional<bool> trapped) { g_trap_override = trapped ? int(*trapped) : -1; }
+
+bool FallbackTrapped() {
+  if (const int forced = g_trap_override.load(); forced >= 0) {
+    return forced != 0;
+  }
+  const char *value = std::getenv("ACCEL_FALLBACK_TRAP");
+  return value && *value && *value != '0';
+}
+
 std::string FallbackSql(const SharedQueryCatalogEntry &entry, const core::QueryArguments &arguments) {
+  if (FallbackTrapped()) {
+    throw std::runtime_error(std::string("ACCEL_FALLBACK_TRAP: fallback SQL would run for ") +
+                             (entry.accelerator_id ? entry.accelerator_id : "?"));
+  }
   // No arguments: the defaults the base query bakes in.
   const char *query = arguments.values.empty() ? entry.base_sql : entry.fallback_sql;
   if (!query) {

@@ -6,13 +6,15 @@ import os
 import statistics
 import subprocess
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from accel_pipeline.aux_bench import parse_aux_benchmark_output, summarize_sweep_rows
 from accel_pipeline.base_bench import parse_benchmark_log
-from accel_pipeline.config import PipelineConfig, resolve_workload_paths
+from accel_pipeline.config import MeasurementConfig, PipelineConfig, resolve_workload_paths
+from accel_pipeline.failure import Failure
+from accel_pipeline.measurement import check_measurement
 from accel_pipeline.optimization_signals import attach_store_diagnostics, extract_store_diagnostics
 
 
@@ -39,12 +41,13 @@ class MultiSampleBenchmark:
 
 @dataclass
 class AttemptOutcome:
-    verdict: str  # accept | keep_explore | reject_broken | reject_regress
+    verdict: str  # accept | keep_explore | reject_broken | reject_regress | reject_invalid_measurement
     improvement_pct: float
     baseline_score: float
     candidate_score: float
     diagnostic_vector: dict[str, Any]
     reason: str = ""
+    measurement_failures: list[Failure] = field(default_factory=list)
 
 
 STRUCTURAL_DIAGNOSTIC_AXES: tuple[str, ...] = (
@@ -97,8 +100,10 @@ def evaluate_attempt_outcome(
     correctness_ok: bool,
     structural_progress_threshold_pct: float = 5.0,
     severe_regress_threshold_pct: float = 10.0,
+    measurement: MeasurementConfig | None = None,
 ) -> AttemptOutcome:
-    """Multi-axis verdict: accept / keep_explore / reject_broken / reject_regress."""
+    """Multi-axis verdict: accept / keep_explore / reject_broken / reject_regress, or
+    reject_invalid_measurement when the benchmark did not measure the accelerator (the kernel is not judged)."""
     baseline_diag = extract_store_diagnostics(baseline_metrics)
     candidate_diag = extract_store_diagnostics(candidate_metrics)
     diagnostic_vector = {
@@ -128,15 +133,18 @@ def evaluate_attempt_outcome(
             reason="correctness_probe_failed",
         )
 
-    hit_rate = float(candidate_metrics.get("accel_hit_rate") or 0.0)
-    if hit_rate > 0 and hit_rate < 0.5:
+    invalid = check_measurement(
+        candidate_metrics, workload={}, phase="attempt", baseline=baseline_metrics, config=measurement
+    )
+    if invalid:
         return AttemptOutcome(
-            verdict="reject_broken",
+            verdict="reject_invalid_measurement",
             improvement_pct=improvement_pct,
             baseline_score=baseline_score,
             candidate_score=candidate_score,
             diagnostic_vector=diagnostic_vector,
-            reason=f"accel_hit_rate anomaly: {hit_rate:.3f}",
+            reason="; ".join(invalid[0].diagnosis),
+            measurement_failures=invalid,
         )
 
     if improvement_pct >= config.improvement_threshold_pct:
@@ -602,7 +610,9 @@ def run_multi_sample_benchmark(
     samples: int = 3,
     include_profile: bool = False,
     confirmation: bool = False,
+    errors: list[str] | None = None,
 ) -> MultiSampleBenchmark | None:
+    """`errors` collects the first failing sample's output (build or run), for the caller's diagnosis."""
     aux = is_aux_workload(workload)
     if aux:
         sample_count = _aux_sample_count(
@@ -625,6 +635,8 @@ def run_multi_sample_benchmark(
         if not metrics:
             if not collected:
                 _log_benchmark(f"benchmark failed: {(err or '')[-500:]}")
+                if errors is not None:
+                    errors.append(err or "")
                 return None
             continue
         collected.append(

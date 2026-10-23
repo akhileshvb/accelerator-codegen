@@ -73,6 +73,7 @@ add_executable(verus_kit_runner eval/tests/verus_kit/verus_kit_runner.cpp)
 target_link_libraries(verus_kit_runner PRIVATE accelerator_codegen duckdb_sibling)
 
 accel_add_backend_exe(duckdb test_duckdb_tpch_differential backends/duckdb/tests/harness/test_duckdb_tpch_differential.cpp)
+accel_add_backend_exe(duckdb test_duckdb_hit_contract backends/duckdb/tests/harness/test_duckdb_hit_contract.cpp)
 accel_add_backend_exe(duckdb test_shared_tpch_rf_differential eval/tests/test_shared_tpch_rf_differential.cpp)
 accel_add_backend_exe(duckdb test_fallback_state_agree eval/tests/test_fallback_state_agree.cpp)
 accel_add_backend_exe(duckdb time_fallback_read eval/tools/time_fallback_read.cpp)

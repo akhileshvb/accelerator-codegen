@@ -114,3 +114,13 @@ allowed_commands:
   - "^ninja -C build-release.*$"
 
 gates_dir: pipeline/gates
+
+# Is a benchmark measuring the accelerator? (measurement.check_measurement)
+measurement:
+  enabled: true
+  min_hit_rate: 0.5          # accel_hit_rate required at write frequency 0
+  max_fallbacks_on_hit: 0    # fallback reads tolerated at write frequency 0
+  require_state_built: true  # the bench must report a built state
+  max_cv: 0.5                # sample spread (stdev / mean) beyond which a score is noise
+  min_ref_us: 1              # reference query time plausible range
+  max_ref_s: 600

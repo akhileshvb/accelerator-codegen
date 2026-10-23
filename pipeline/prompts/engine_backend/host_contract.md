@@ -21,7 +21,7 @@ container, plugin or data layout.
 
 | verb | args | does |
 |---|---|---|
-| `info` | | print one JSON line: `{"engine", "embedded": bool, "verbs": [...], "mounts": {"ro": [abs paths], "rw": [abs paths]}, "docker": bool}`; `mounts` are the existing external checkouts/SDKs/caches the verbs need at runtime (the agents' sandbox binds them), `docker` says the verbs need the docker daemon |
+| `info` | | print one JSON line: `{"engine", "embedded": bool, "verbs": [...], "hit_contract": true, "mounts": {"ro": [abs paths], "rw": [abs paths]}, "docker": bool}`; `hit_contract` is `true` once the backend meets the hit contract below (a backend without it is skipped by that gate); `mounts` are the existing external checkouts/SDKs/caches the verbs need at runtime (the agents' sandbox binds them), `docker` says the verbs need the docker daemon |
 | `up` | | start the instance if absent (idempotent), with its empty database; write `$ACCEL_ENGINE_STATE_DIR/env` (`KEY=VALUE` lines the other verbs and harness binaries read). `build` works after `up` alone |
 | `down` | | stop the instance and remove everything it created |
 | `load` | `<schema.sql> [constraints.sql]` | create the schema and load `$ACCEL_DATASET_DIR`; idempotent (skip when already loaded from the same dataset) |
@@ -37,6 +37,29 @@ for a scenario the substrate requires (`own_writes` and `ddl_events` included).
 
 All output goes to stdout/stderr; logs longer than a screen go under
 `$ACCEL_ENGINE_STATE_DIR/logs/`.
+
+## Hit contract
+
+A benchmark that quietly measures the fallback SQL looks like a working accelerator, so every backend
+proves, through `host.sh` alone, that a read can be told apart from a fallback. The backend ships a
+harness target `test_{engine}_hit_contract` (a name the gate context may override with
+`target_paths.hit_contract_test_target`; it is built by `host.sh build` and run by `host.sh run`) that:
+
+1. registers one small fixture accelerator through the backend's registration API (the SQL entry-point
+   registrar of `api_contract.md`) on a database whose state is not built;
+2. issues the accelerator's first read: it must build the state;
+3. issues the second read: it must be a hit, with the runtime's counters showing one more hit, no more
+   fallbacks, and no fallback SQL run.
+
+`ACCEL_FALLBACK_TRAP=1` is passed through `host.sh run` (the caller's `ACCEL_*` variables already are):
+the backend turns every fallback SQL execution (the runtime's fallback, a transaction-wrote-dependency
+replacement) into an error naming the accelerator, and the harness refuses to run without it. Exit status:
+`0` pass, `1` the contract is violated, `77` the engine profile states it n/a. The gate is
+`engine_hit_contract` (`pipeline/gates/run_engine_hit_contract.sh`).
+
+Benchmarks report the same facts so `measurement.check_measurement` can tell a hit from a fallback: the
+sweep CSV carries `accel_hit_rate` (reads served from the state over all reads), `accel_fallback_reads`
+and `state_builds` (counters of the measured run, taken from the runtime's statistics, never assumed).
 
 ## API index: `backends/{engine}/api/README.md`
 

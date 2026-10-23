@@ -576,6 +576,7 @@ def build_prompt_context(
             "`best_speedup_median` — there is no fixed speedup ceiling; stop only when gates stall progress."
         ),
         "hard_guidelines": hard_guidelines,
+        "measurement_trust": _read_text(pipe / "prompts" / "shared" / "measurement_trust.md"),
         "codex_tooling": codex_tooling,
         "audit_result_json": _read_text(art / "audit_result.json", "{}"),
         "retrieval_brief": retrieval_brief,

@@ -20,6 +20,7 @@ allowed_commands:
   - "^python3 scripts/check_layer_includes\\.py( .*)?$"
   - "^bash pipeline/gates/run_engine_contract\\.sh$"
   - "^bash pipeline/gates/run_engine_adversarial\\.sh$"
+  - "^bash pipeline/gates/run_engine_hit_contract\\.sh$"
   - "^bash pipeline/gates/run_engine_aux_smoke\\.sh$"
   - "^bash pipeline/gates/run_slot_gates\\.sh$"
   - "^bash pipeline/gates/run_aux_tsan\\.sh slots( .*)?$"
@@ -79,7 +80,7 @@ implementation_layers:
     gate: engine_api_conformance
     harness: backends/{engine}/api/README.md
     cmake_target: api_conformance_{engine}
-    rules: [api_surface, api_manifest]
+    rules: [api_surface, api_manifest, hit_contract]
 
 # Default post-layer gates (engine_build + this layer). Overridden per stage.
 post_implementation_gates:
@@ -97,6 +98,7 @@ post_validation_gates:
   - engine_host
   - engine_api_conformance
   - engine_adversarial
+  - engine_hit_contract
   - slot_epoch_stress
   - slot_hits_under_writes
   - slot_read_after_commit

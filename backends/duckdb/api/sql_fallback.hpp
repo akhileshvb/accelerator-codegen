@@ -5,6 +5,7 @@
 // arguments as literals, run on the scan connection (the reader's snapshot
 // inside a ScanRedirect).
 
+#include <optional>
 #include <string>
 
 #include "backends/duckdb/api/catalog/query_catalog.hpp"
@@ -14,12 +15,18 @@ namespace accelerator_codegen::aux_state::engine {
 
 ::duckdb::Value AuxValueToDuckdb(const core::AuxValue &value);
 
+// ACCEL_FALLBACK_TRAP=1 (the hit contract, host_contract.md): a query's fallback SQL raises
+// instead of running, so a read that was meant to hit the state cannot silently fall back.
+bool FallbackTrapped();
+// Overrides the environment for this process (a harness that lets one read fall back); `std::nullopt` restores it.
+void SetFallbackTrap(std::optional<bool> trapped);
+
 // `sql` with each $n replaced by the n-th value as a parenthesized SQL literal
 // (highest n first, so $1 never matches inside $10).
 std::string WithLiterals(const std::string &sql, const ::duckdb::vector<::duckdb::Value> &values);
 
 // The SQL that answers the query for these arguments (the base query when
-// there are none), empty if the entry has none.
+// there are none), empty if the entry has none. Throws when FallbackTrapped().
 std::string FallbackSql(const SharedQueryCatalogEntry &entry, const core::QueryArguments &arguments);
 
 // False: the entry has no SQL for these arguments.
