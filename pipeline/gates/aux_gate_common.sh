@@ -2,8 +2,13 @@
 # Shared gate-context loader for aux-state gate scripts.
 # Usage: source aux_gate_common.sh; load_aux_gate_context "${ROOT}" "${QUERY}"
 
-# Wall seconds of each phase, reported by write_result as phase_timings.
+# Wall seconds of each phase, one "name=seconds" line each. The EXIT trap leaves them in
+# <gate json>.phases, which gates.run_gate folds into the result's phase_timings.
 PHASE_LOG=""
+flush_phase_log() {
+	[[ -z "${ACCEL_GATE_OUT:-}" ]] || printf '%s' "${PHASE_LOG}" >"${ACCEL_GATE_OUT%.json}.phases"
+}
+trap flush_phase_log EXIT
 now_us() { echo "${EPOCHREALTIME/./}"; }
 
 # record_phase <name> <start_us>: add the seconds since start_us to <name>.
@@ -133,15 +138,11 @@ engine_run() {
 # Writes and prints the gate result (extras: key=string, key:=json); returns 0
 # only for pass or skip.
 write_result() {
-	PHASE_LOG="${PHASE_LOG}" python3 - "$@" <<'PY'
+	python3 - "$@" <<'PY'
 import json, sys, pathlib, os
 out, gate, status, reason, log, *extra = sys.argv[1:]
-phases: dict[str, float] = {}
-for line in os.environ.get("PHASE_LOG", "").splitlines():
-    name, _, seconds = line.partition("=")
-    phases[name] = round(phases.get(name, 0.0) + float(seconds), 3)
 payload = {"gate": gate, "status": status, "reason": reason, "log_tail": log[-6000:],
-           "engine_name": os.environ.get("ENGINE_NAME", ""), "phase_timings": phases}
+           "engine_name": os.environ.get("ENGINE_NAME", "")}
 for kv in extra:
     k, _, v = kv.partition("=")
     if k.endswith(":"):

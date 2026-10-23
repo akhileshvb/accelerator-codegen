@@ -122,6 +122,20 @@ def require_gate_pass(result: GateResult, *, allow_skip: bool = False) -> None:
 GATE_TIMEOUT_S = float(os.environ.get("ACCEL_GATE_TIMEOUT", 7200))
 
 
+def read_phase_log(gate_json: Path) -> dict[str, float]:
+    """Seconds per phase from the sidecar the gate script's EXIT trap wrote (repeated phases add up)."""
+    phases: dict[str, float] = {}
+    try:
+        lines = gate_json.with_suffix(".phases").read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return phases
+    for line in lines:
+        name, _, seconds = line.partition("=")
+        if seconds:
+            phases[name] = round(phases.get(name, 0.0) + float(seconds), 3)
+    return phases
+
+
 def _run_gate_script(script: Path, query: int, cwd: Path, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
     """Run a gate script in its own process group; past GATE_TIMEOUT_S the whole group is
     killed (a hung harness and its children) and the gate fails with the reason."""
@@ -163,6 +177,7 @@ def run_gate(
     art = query_artifacts_dir(pipeline_config.repo_root, query, workload=workload)
     out_json = gates_dir_for_query(art) / f"{gate_name}.json"
     out_json.parent.mkdir(parents=True, exist_ok=True)
+    out_json.with_suffix(".phases").unlink(missing_ok=True)
     out_json.unlink(missing_ok=True)  # a gate that dies before writing never reads as its last result
 
     gate_env = os.environ.copy()
@@ -230,7 +245,9 @@ def run_gate(
         except json.JSONDecodeError:
             data = {"stdout": proc.stdout[-2000:], "stderr": proc.stderr[-2000:]}
 
-    data.setdefault("phase_timings", {})["gate_wall"] = round(duration_ms / 1000, 3)
+    data["phase_timings"] = {**read_phase_log(out_json), "gate_wall": round(duration_ms / 1000, 3)}
+    if out_json.is_file():
+        out_json.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
     status = data.get("status", "pass" if proc.returncode == 0 else "fail")
     if proc.returncode != 0 and status == "pass" and not out_json.is_file():
         # A script that failed after printing an early pass line has not passed.
