@@ -13,7 +13,7 @@ NAME="accel_pg_${ACCEL_ENGINE_INSTANCE}"
 DB="accel_${ACCEL_ENGINE_INSTANCE//[^a-zA-Z0-9]/_}"
 IMAGE="${ACCEL_PG_IMAGE:-postgres:17}"
 PASSWORD=postgres
-DUCKDB_ROOT="${ACCEL_DUCKDB_ROOT:-${ROOT}/../duckdb-dbcapture}"
+DUCKDB_ROOT="${ACCEL_DUCKDB_ROOT:-${ACCEL_PIPELINE_PRIMARY_REPO:-${ROOT}}/../duckdb-dbcapture}"
 DUCKDB_SEED="${ACCEL_DUCKDB_SEED:-}"
 
 psql_in() { docker exec -i -e PGOPTIONS="-c client_min_messages=warning" "${NAME}" psql -X -q -v ON_ERROR_STOP=1 -U postgres "$@"; }

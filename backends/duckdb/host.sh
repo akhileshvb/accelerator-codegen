@@ -12,7 +12,7 @@ STATE="${ACCEL_ENGINE_STATE_DIR}"
 DB="${STATE}/tpch.duckdb"
 ENV_FILE="${STATE}/env"
 BUILD="${ACCEL_BUILD_DIR:-${ROOT}/build-release}"
-DUCKDB_ROOT="${ACCEL_DUCKDB_ROOT:-${ROOT}/../duckdb-dbcapture}"
+DUCKDB_ROOT="${ACCEL_DUCKDB_ROOT:-${ACCEL_PIPELINE_PRIMARY_REPO:-${ROOT}}/../duckdb-dbcapture}"
 CLI="${ACCEL_DUCKDB_CLI:-${DUCKDB_ROOT}/build/release/duckdb}"
 
 duckdb_cli() { "${CLI}" "$@"; }

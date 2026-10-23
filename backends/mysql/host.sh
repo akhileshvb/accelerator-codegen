@@ -15,7 +15,7 @@ DB="accel_${ACCEL_ENGINE_INSTANCE//[^a-zA-Z0-9]/_}"
 IMAGE="${ACCEL_MYSQL_IMAGE:-mysql:8.4}"
 PASSWORD=mysql
 VARIANT="${ACCEL_MYSQL_PLUGIN_VARIANT:-prod}"
-DUCKDB_ROOT="${ACCEL_DUCKDB_ROOT:-${ROOT}/../duckdb-dbcapture}"
+DUCKDB_ROOT="${ACCEL_DUCKDB_ROOT:-${ACCEL_PIPELINE_PRIMARY_REPO:-${ROOT}}/../duckdb-dbcapture}"
 DUCKDB_SEED="${ACCEL_DUCKDB_SEED:-}"
 
 mysql_q() { docker exec -i "${NAME}" mysql -h 127.0.0.1 -P 3306 -uroot -p"${PASSWORD}" --local-infile=1 "$@" 2> >(grep -v 'Using a password' >&2); }
