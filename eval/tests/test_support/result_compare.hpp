@@ -1,10 +1,13 @@
 #pragma once
 
+#include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <initializer_list>
+#include <iterator>
 #include <optional>
 #include <iostream>
 #include <sstream>
@@ -148,6 +151,98 @@ inline std::string TieAwareOrderedMismatch(duckdb::MaterializedQueryResult &expe
                                   cells_of(expected), cells_of(actual), cells_equal, &std::cerr);
 }
 
+// The result columns of the outermost ORDER BY, when every item is a bare
+// (possibly qualified) column name with optional ASC/DESC/NULLS FIRST|LAST;
+// empty otherwise. Also the outermost literal LIMIT, else -1.
+inline std::vector<std::size_t> OrderByColumns(const std::string &sql, const duckdb::vector<std::string> &names,
+                                               long long &limit) {
+    namespace ties = accelerator_codegen::float_order_ties;
+    limit = -1;
+    const auto upper = ties::UpperAscii(sql);
+    const auto order = ties::TopLevelKeyword(upper, "ORDER");
+    if (order.empty()) return {};
+    std::size_t end = upper.size();
+    for (const auto at : ties::TopLevelKeyword(upper, "LIMIT")) {
+        if (at > order.back()) {
+            end = std::min(end, at);
+            limit = std::strtoll(upper.c_str() + at + 5, nullptr, 10);
+        }
+    }
+    std::istringstream items(upper.substr(order.back() + 5, end - order.back() - 5));
+    std::string word;
+    if (!(items >> word) || word != "BY") return {};
+    std::string rest((std::istreambuf_iterator<char>(items)), std::istreambuf_iterator<char>());
+    while (!rest.empty() && (rest.back() == ';' || std::isspace(static_cast<unsigned char>(rest.back())))) {
+        rest.pop_back();
+    }
+    std::vector<std::size_t> columns;
+    std::istringstream list(rest);
+    std::string item;
+    while (std::getline(list, item, ',')) {
+        std::istringstream tokens(item);
+        std::string name;
+        if (!(tokens >> name)) return {};
+        if (const auto dot = name.rfind('.'); dot != std::string::npos) name = name.substr(dot + 1);
+        for (std::string modifier; tokens >> modifier;) {
+            if (modifier != "ASC" && modifier != "DESC" && modifier != "NULLS" && modifier != "FIRST" &&
+                modifier != "LAST") {
+                return {};  // an expression
+            }
+        }
+        std::size_t column = names.size();
+        for (std::size_t c = 0; c < names.size(); ++c) {
+            if (ties::UpperAscii(names[c]) == name) column = c;
+        }
+        if (column == names.size()) return {};
+        columns.push_back(column);
+    }
+    return columns;
+}
+
+// A positional mismatch may be a reorder of rows whose ORDER BY keys are all
+// exactly equal (SQL leaves their order unspecified): empty when it is. Inside
+// such a run the keys must match positionally and the rows as a multiset; a run
+// cut by the LIMIT may hold different rows, so only its keys are checked.
+inline std::string ExactOrderTieMismatch(duckdb::MaterializedQueryResult &expected,
+                                         duckdb::MaterializedQueryResult &actual,
+                                         const std::string &reference_sql) {
+    long long limit = -1;
+    const auto columns = OrderByColumns(reference_sql, expected.names, limit);
+    if (columns.empty()) return "ORDER BY is not a list of result columns";
+    const auto rows = expected.RowCount();
+    const auto key = [&](duckdb::MaterializedQueryResult &result, duckdb::idx_t row) {
+        std::string out;
+        for (const auto c : columns) out += result.GetValue(c, row).ToString() + '\x1f';
+        return out;
+    };
+    const auto cells = [](duckdb::MaterializedQueryResult &result, duckdb::idx_t row) {
+        std::string out;
+        for (duckdb::idx_t c = 0; c < result.ColumnCount(); c++) out += result.GetValue(c, row).ToString() + '\x1f';
+        return out;
+    };
+    for (duckdb::idx_t first = 0; first < rows;) {
+        const auto anchor = key(expected, first);
+        auto end = first + 1;
+        while (end < rows && key(expected, end) == anchor) ++end;
+        std::vector<std::string> want;
+        std::vector<std::string> got;
+        for (auto row = first; row < end; ++row) {
+            if (key(actual, row) != anchor) return "order keys differ at row " + std::to_string(row);
+            want.push_back(cells(expected, row));
+            got.push_back(cells(actual, row));
+        }
+        const bool cut_by_limit = end == rows && limit >= 0 && static_cast<long long>(rows) == limit;
+        std::sort(want.begin(), want.end());
+        std::sort(got.begin(), got.end());
+        if (!cut_by_limit && want != got) {
+            return "rows differ in the ORDER BY tie run at rows " + std::to_string(first) + ".." +
+                   std::to_string(end - 1);
+        }
+        first = end;
+    }
+    return {};
+}
+
 inline void RequireResultsEqualOrdered(duckdb::Connection &connection,
                                        const std::string &label,
                                        const std::string &reference_sql,
@@ -174,7 +269,11 @@ inline void RequireResultsEqualOrdered(duckdb::Connection &connection,
             const std::string message = label + ": row " + std::to_string(row) + " column " + std::to_string(col) +
                                         " differs, expected=" + expected_value.ToString() +
                                         " actual=" + actual_value.ToString();
-            const auto why = TieAwareOrderedMismatch(expected_m, actual_m, reference_sql);
+            auto why = TieAwareOrderedMismatch(expected_m, actual_m, reference_sql);
+            if (!why.empty()) {
+                const auto exact = ExactOrderTieMismatch(expected_m, actual_m, reference_sql);
+                why = exact.empty() ? std::string{} : why + "; " + exact;
+            }
             Require(why.empty(), message + " (tie-aware recheck: " + why + ")");
             return;
         }
