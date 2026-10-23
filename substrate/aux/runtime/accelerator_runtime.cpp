@@ -463,6 +463,7 @@ bool AcceleratorRuntime::ApplyChange(const CommittedChange &change) {
 
 // A change that could not be maintained (state_mutex held); the caller rebuilds.
 void AcceleratorRuntime::RecordStale(const std::string &reason) {
+  core::trace::Note("accel " + id + " STALE (rebuild follows): " + reason);
   impl->stats.commits_stale++;
   impl->stats.last_stale_reason = reason;
 }

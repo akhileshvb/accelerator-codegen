@@ -274,6 +274,12 @@ void SetAction(const char *action) {
   }
 }
 
+void Note(const std::string &text) {
+  if (Enabled()) {
+    Line(text);
+  }
+}
+
 CreditScope::CreditScope(const char *phase) : active_(t_phases != nullptr), phase_(phase) {
   if (active_) {
     start_ = Clock::now();

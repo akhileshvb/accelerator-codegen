@@ -6,7 +6,8 @@
 #     trace_log  where aux_compare's stderr goes (MAINT_TRACE lines, ACCEL_AUX_TRACE_MAINT=1): <out>/tpch.log
 #     out_dir    watchdog.log (a sample every WD_INTERVAL_S) and evidence_<time>/ on a trigger
 # Triggers: a traced span (commit / refresh / engine-statement / engine-commit / precommit) open longer than
-# WD_COMMIT_LIMIT_S (default 1200), or MemAvailable below WD_MEM_LIMIT_GB (default 1000).
+# WD_COMMIT_LIMIT_S (default 1200), MemAvailable below WD_MEM_LIMIT_GB (default 1000), or an accelerator falling back to a
+# rebuild (a STALE trace line; WD_STALE_KILL=0 to only log it).
 # Knobs: WD_INTERVAL_S=120  WD_POLL_S=10 (trigger check period)  WD_PERF_S=60  WD_PERF_HZ=49  WD_KILL_GRACE_S=60  WD_KILL=1 (0: capture only)
 # Evidence needs sudo for /proc/PID/task/*/stack and perf; perf record -g, not eu-stack or gdb (those stop the process).
 set -uo pipefail
@@ -95,6 +96,9 @@ while kill -0 "$PID" 2> /dev/null; do
   avail=$(meminfo_kb MemAvailable)
   if [ -n "$avail" ] && [ "$avail" -lt "$MEM_LIMIT_KB" ]; then
     capture_evidence "MemAvailable $((avail / 1048576)) GB below $((MEM_LIMIT_KB / 1048576)) GB"; stop_run; exit 3
+  fi
+  if [ "${WD_STALE_KILL:-1}" = 1 ] && grep -aq ' STALE ' "$TRACE" 2>/dev/null; then
+    capture_evidence "an accelerator fell back to a rebuild: $(grep -a ' STALE ' "$TRACE" | head -1 | cut -d' ' -f4-)"; stop_run; exit 5
   fi
   read -r age span <<< "$(oldest_open_span)"
   if [ -n "${age:-}" ] && [ "$age" -gt "$LIMIT" ]; then

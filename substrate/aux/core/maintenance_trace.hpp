@@ -52,6 +52,8 @@ private:
 // Ends the current phase and starts `name` (a string literal); time credited meanwhile is excluded from it.
 void EnterPhase(const char *name);
 void SetAction(const char *action);
+// A one-off event line (e.g. an accelerator falling back to a rebuild).
+void Note(const std::string &text);
 
 // Times its scope as a nested phase (e.g. "reclaim") of the current phase.
 class CreditScope {
