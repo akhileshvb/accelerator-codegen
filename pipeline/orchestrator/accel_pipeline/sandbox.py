@@ -153,7 +153,7 @@ def cpp_mounts(cfg: Any) -> list[Bind]:
     binds += readonly_layer_binds(root, layers)
     for p in (cfg.build_dir, cfg.codex_home, os.environ.get("ACCEL_ENGINE_STATE_DIR")):
         if p:
-            Path(p).mkdir(parents=True, exist_ok=True)
+            Path(p).resolve().mkdir(parents=True, exist_ok=True)  # resolve: a build-* symlink may dangle
             _add(binds, "rw", p)
     for d in duckdb_roots(root, primary):
         _add(binds, "ro", d)
