@@ -12,7 +12,6 @@ queries and backends is checked after the stage (``write_ownership.check_stage``
 from __future__ import annotations
 
 import os
-import re
 import shutil
 import subprocess
 import sys
@@ -111,21 +110,13 @@ def _add(binds: list[Bind], mode: str, path: Path | str | None) -> None:
         binds.append((mode, real, real))
 
 
-def duckdb_roots(root: Path, primary: Path) -> list[Path]:
-    """The DuckDB fork checkout(s) the build compiles against (cmake/FindSiblingDuckDB.cmake)."""
-    cands = [os.environ.get("ACCEL_DUCKDB_ROOT"), primary.parent / "duckdb-dbcapture",
-             root.parent / "duckdb-dbcapture", root.parent.parent.parent.parent / "duckdb-dbcapture"]
-    seen: list[Path] = []
-    for c in cands:
-        if c and (Path(c) / "src" / "include" / "duckdb.hpp").is_file() and Path(c).resolve() not in seen:
-            seen.append(Path(c).resolve())
-    return seen[:1]
+def backend_needs(cfg: Any) -> dict[str, Any] | None:
+    """What the engine's backend says its verbs need (host.sh `info`: mounts, docker); None without a host.sh."""
+    from accel_pipeline.engine_host import host_info
 
-
-def engine_uses_docker(root: Path, engine: str) -> bool:
-    """An engine whose host.sh drives docker (its instance is a container) needs the daemon socket."""
-    host = root / "backends" / engine / "host.sh"
-    return bool(engine) and host.is_file() and re.search(r"\bdocker\b", host.read_text(errors="replace")) is not None
+    if not cfg.engine_name:
+        return None
+    return host_info(Path(cfg.repo_root), cfg.engine_name, Path(cfg.build_dir))
 
 
 def _primary(cfg: Any) -> Path:
@@ -155,12 +146,14 @@ def cpp_mounts(cfg: Any) -> list[Bind]:
         if p:
             Path(p).resolve().mkdir(parents=True, exist_ok=True)  # resolve: a build-* symlink may dangle
             _add(binds, "rw", p)
-    for d in duckdb_roots(root, primary):
-        _add(binds, "ro", d)
+    needs = backend_needs(cfg) or {}
+    for mode in ("ro", "rw"):
+        for d in (needs.get("mounts") or {}).get(mode) or []:
+            _add(binds, mode, d)
     for f in [*cfg.datasets.values(), os.environ.get("ACCEL_DATASET_DIR")]:
         if f and Path(f).exists():
             _add(binds, "ro", Path(f) if Path(f).is_dir() else Path(f).resolve().parent)
-    if cfg.engine_name and engine_uses_docker(root, cfg.engine_name):
+    if needs.get("docker"):
         _add(binds, "rw", DOCKER_SOCKET)
         if DOCKER_SOCKET.exists() and Path("/var/run").is_symlink():  # the docker CLI's default path
             binds.append(("symlink", Path("/run"), Path("/var/run")))
@@ -185,7 +178,7 @@ def cpp_selfcheck(cfg: Any, query: int) -> dict[str, Any]:
     if cfg.workload_kind == "engine_backend":
         own = root / "backends" / cfg.engine_name
     else:
-        own = root / layout.query_dir(cfg.benchmark_name or "tpch", query)
+        own = root / layout.query_dir(cfg.benchmark_name, query)
     while not own.exists() and own != root:
         own = own.parent
     tag = f".sandbox_probe_{uuid.uuid4().hex[:8]}"
@@ -197,10 +190,15 @@ def cpp_selfcheck(cfg: Any, query: int) -> dict[str, Any]:
              f'if touch "{frozen}" 2>/dev/null; then rm -f "{frozen}"; echo "WRITABLE {layout.SUBSTRATE}"; fi',
              f'touch "{own}/{tag}" 2>/dev/null && rm -f "{own}/{tag}" || echo "READONLY {own}"',
              f'touch "{build}/{tag}" 2>/dev/null && rm -f "{build}/{tag}" || echo "READONLY build dir {build}"']
-    if cfg.engine_name and cfg.workload_kind != "engine_backend":  # a new backend has no host.sh yet
-        host = f"{root}/backends/{cfg.engine_name}/host.sh"
-        lines.append(f'[ -x "{host}" ] || echo "MISSING engine host script {host}"')
-        if engine_uses_docker(root, cfg.engine_name):
+    needs = backend_needs(cfg)
+    notes = []
+    if needs is None and cfg.engine_name:  # no host.sh yet (early engine_backend layers): nothing extra mounted
+        notes.append(f"backend {cfg.engine_name} has no usable host.sh info: no backend mounts or docker socket")
+    elif needs is not None:
+        lines.append(f'[ -x "{root}/backends/{cfg.engine_name}/host.sh" ] || echo "MISSING engine host script"')
+        for mode in ("ro", "rw"):
+            lines += [f'[ -e "{d}" ] || echo "MISSING backend mount {d}"' for d in (needs.get("mounts") or {}).get(mode) or []]
+        if needs.get("docker"):
             lines.append(f'[ -S "{DOCKER_SOCKET}" ] || echo "MISSING docker socket {DOCKER_SOCKET}"')
     lines.append("true")
     proc = subprocess.run(cpp_prefix(cfg) + ["bash", "-c", "\n".join(lines)], capture_output=True, text=True,
@@ -208,4 +206,4 @@ def cpp_selfcheck(cfg: Any, query: int) -> dict[str, Any]:
     problems = [l for l in proc.stdout.splitlines() if l.strip()]
     if proc.returncode != 0:
         problems.append(f"sandbox shell failed (exit {proc.returncode}): {proc.stderr[-500:]}")
-    return {"ok": not problems, "problems": problems}
+    return {"ok": not problems, "problems": problems, "notes": notes}

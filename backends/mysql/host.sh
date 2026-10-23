@@ -43,8 +43,21 @@ free_port() {
 
 load_env() { set -a; source "${ENV_FILE}"; set +a; }
 
+# JSON array of the existing directories among the arguments (the `info` verb's mounts).
+json_dirs() {
+  local out="" d
+  for d in "$@"; do
+    [[ -n "${d}" && -d "${d}" ]] || continue
+    d="$(cd "${d}" && pwd -P)"
+    out+="${out:+, }\"${d}\""
+  done
+  printf '[%s]' "${out}"
+}
+
 cmd_info() {
-  echo '{"engine": "mysql", "embedded": false, "verbs": ["info", "up", "down", "load", "build", "sql", "run", "slot"]}'
+  # mounts: the external checkouts the verbs need at runtime (absolute, existing); docker: they need the daemon
+  printf '{"engine": "mysql", "embedded": false, "verbs": ["info", "up", "down", "load", "build", "sql", "run", "slot"], "mounts": {"ro": %s, "rw": []}, "docker": true}\n' \
+    "$(json_dirs "${DUCKDB_ROOT}" "${DUCKDB_SEED}")"
 }
 
 cmd_up() {

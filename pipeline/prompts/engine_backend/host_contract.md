@@ -21,7 +21,7 @@ container, plugin or data layout.
 
 | verb | args | does |
 |---|---|---|
-| `info` | | print one JSON object: `{"engine", "embedded": bool, "verbs": [...]}` |
+| `info` | | print one JSON line: `{"engine", "embedded": bool, "verbs": [...], "mounts": {"ro": [abs paths], "rw": [abs paths]}, "docker": bool}`; `mounts` are the existing external checkouts/SDKs/caches the verbs need at runtime (the agents' sandbox binds them), `docker` says the verbs need the docker daemon |
 | `up` | | start the instance if absent (idempotent), with its empty database; write `$ACCEL_ENGINE_STATE_DIR/env` (`KEY=VALUE` lines the other verbs and harness binaries read). `build` works after `up` alone |
 | `down` | | stop the instance and remove everything it created |
 | `load` | `<schema.sql> [constraints.sql]` | create the schema and load `$ACCEL_DATASET_DIR`; idempotent (skip when already loaded from the same dataset) |
