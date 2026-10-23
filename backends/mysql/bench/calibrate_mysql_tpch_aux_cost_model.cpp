@@ -102,7 +102,7 @@ int main(int argc, char **argv) {
     params.fallback_us = TimeUs(tools, sql, 1, 5);
 
     // Interference: this accelerator's read time while another one is busy.
-    const int peer = query_id == 1 ? 3 : 1;
+    const int peer = accel::tpch_params::InterferencePeer(query_id);
     const std::string peer_aux = ConcreteAccelSql(peer, LookupMysqlQuery("tpch", peer), true);
     QuerySQL(tools, peer_aux);
     const double solo = TimeUs(tools, aux, 1, 5);

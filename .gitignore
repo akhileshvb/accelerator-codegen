@@ -1,13 +1,14 @@
 build/
+# Verus toolchain (VERUS_BIN defaults to tools/verus/verus-x86-linux/verus)
+/tools/
+/tmp/
+# Crash and compiler dumps
+vgcore.*
+*.long-type-*.txt
 build-*/
 # build-* symlinks into scratch storage (a trailing slash only matches real directories)
 build-*
 .verus-solver-log/
-benchmarks/tpch/results/
-benchmarks/tpch/tmp/
-benchmarks/sec_edgar/.venv/
-benchmarks/sec_edgar/data/
-benchmarks/sec_edgar/duckdb/
 **/__pycache__/
 docs/
 
@@ -26,8 +27,6 @@ pipeline/.quarantine/
 pipeline/artifacts/**
 # Verus pipeline run workspaces and locks (--mode verus)
 pipeline/verus_runs/
-!pipeline/artifacts/shared/
-!pipeline/artifacts/shared/optimization_playbook.md
 
 # Local secrets (template: .env.example)
 .env

@@ -7,7 +7,7 @@
 // snapshot build) or applied twice (once in the snapshot, once replayed)
 // changes the sums. Repeats ROUNDS times.
 //
-// Usage: test_mysql_aux_build_race [query=1] [rounds=5] [writers=3] [writes_per_writer=30]
+// Usage: test_mysql_aux_build_race [query] [rounds=5] [writers=3] [writes_per_writer=30]
 // Env:   TPCH_MYSQL_DB (default accel_mysql_test)
 #include "backends/mysql/tests/harness/mysql_tpch_harness.hpp"
 
@@ -23,11 +23,11 @@ using namespace accel::mysql::tpch_harness;
 
 int main(int argc, char **argv) {
   try {
-    const int query = argc > 1 ? std::atoi(argv[1]) : 1;
+    const int query = argc > 1 ? std::atoi(argv[1]) : accel::tpch_params::kLineitemRaceQuery;
     const int rounds = argc > 2 ? std::atoi(argv[2]) : 5;
     const int writers = argc > 3 ? std::atoi(argv[3]) : 3;
     const int writes = argc > 4 ? std::atoi(argv[4]) : 30;
-    Require(query == 1, "this race test drives lineitem writes against Q1's sums");
+    Require(query == accel::tpch_params::kLineitemRaceQuery, "this race test drives lineitem writes against a lineitem-sum query");
 
     auto tools = ConnectTpch();
     if (const char *skip = std::getenv("ACCEL_RACE_SKIP_TRIGGERS"); skip && *skip == '1') {

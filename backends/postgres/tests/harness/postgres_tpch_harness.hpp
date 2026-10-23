@@ -20,6 +20,7 @@
 #include <vector>
 
 #include "backends/postgres/tests/postgres_tooling.hpp"
+#include "eval/harness/tpch_test_recipes.hpp"
 #include "backends/postgres/api/catalog/query_catalog.hpp"
 #include "tpch/common/postgres_tpch_table_ids.hpp"
 
@@ -206,61 +207,9 @@ inline void RequireOrderedMatch(const std::string &ref, const std::string &accel
   }
 }
 
-inline std::string SubstituteParams(int query_num, const std::string &sql_template) {
-  std::vector<std::string> params;
-  switch (query_num) {
-  case 1:
-    params = {"90"};
-    break;
-  case 2:
-    params = {"15", "%BRASS", "EUROPE"};
-    break;
-  case 3:
-    params = {"BUILDING", "1995-03-15", "1995-03-15"};
-    break;
-  case 4:
-    params = {"1993-07-01"};
-    break;
-  case 5:
-    params = {"ASIA", "1994-01-01"};
-    break;
-  case 6:
-    params = {"1994-01-01", "0.05", "0.07", "24"};
-    break;
-  case 14:
-    params = {"1995-09-01"};
-    break;
-  default:
-    params = {"BUILDING", "1995-03-15", "1995-03-15"};
-    break;
-  }
-  std::string out;
-  out.reserve(sql_template.size());
-  size_t pi = 0;
-  for (size_t i = 0; i < sql_template.size(); ++i) {
-    if (sql_template[i] == '?' && pi < params.size()) {
-      out += params[pi++];
-    } else {
-      out += sql_template[i];
-    }
-  }
-  return out;
-}
-
-// Q11 orders by value only: tied parts may come in any order. The
-// accelerator breaks ties by partkey; make the reference do the same.
-inline std::string TotalOrderQ11(std::string sql) {
-  const std::string from = "ORDER BY value DESC";
-  const auto pos = sql.rfind(from);
-  if (pos != std::string::npos && sql.find("ps_partkey", pos) == std::string::npos)
-    sql.insert(pos + from.size(), ", ps_partkey");
-  return sql;
-}
-
 inline std::string ConcreteBaseSql(int query_num,
                                    const PostgresSharedQueryCatalogEntry &entry) {
-  auto sql = SubstituteParams(query_num, entry.base_sql ? entry.base_sql : "");
-  return query_num == 11 ? TotalOrderQ11(std::move(sql)) : sql;
+  return tpch_params::ReferenceSql(query_num, entry.base_sql ? entry.base_sql : "");
 }
 
 inline std::string ConcreteAccelSql(int query_num,
@@ -271,7 +220,7 @@ inline std::string ConcreteAccelSql(int query_num,
                                                     : entry.accelerator_sql;
   Require(tmpl && *tmpl,
           "catalog missing accelerator/aux SQL for Q" + std::to_string(query_num));
-  return SubstituteParams(query_num, tmpl);
+  return tpch_params::AcceleratorSql(query_num, tmpl);
 }
 
 inline bool PreferAux(int /*query_num*/) {
@@ -428,94 +377,7 @@ inline void RequireQueryMatch(const Tools &tools, int query_num, bool prefer_aux
 }
 
 inline std::string InvalidatingUpdateSql(int query_num) {
-  auto LinePrice = [](const std::string &pred) {
-    return "UPDATE lineitem SET l_extendedprice = l_extendedprice + 0.01 "
-           "WHERE ctid IN (SELECT ctid FROM lineitem WHERE " +
-           pred + " ORDER BY l_orderkey, l_linenumber LIMIT 1)";
-  };
-  switch (query_num) {
-  case 1:
-    return LinePrice("l_shipdate <= DATE '1998-12-01' - INTERVAL '90' DAY");
-  case 2:
-    return "UPDATE partsupp SET ps_supplycost = ps_supplycost + 0.01 "
-           "WHERE ctid IN (SELECT ctid FROM partsupp ORDER BY ps_partkey, "
-           "ps_suppkey LIMIT 1)";
-  case 3:
-    return LinePrice(
-        "l_orderkey IN (SELECT o_orderkey FROM customer JOIN orders "
-        "ON c_custkey = o_custkey WHERE c_mktsegment = 'BUILDING' "
-        "AND o_orderdate < DATE '1995-03-15') AND l_shipdate > DATE '1995-03-15'");
-  case 4:
-    return LinePrice(
-        "l_orderkey IN (SELECT o_orderkey FROM orders "
-        "WHERE o_orderdate >= DATE '1993-07-01' AND o_orderdate < DATE '1993-10-01') "
-        "AND l_commitdate < l_receiptdate");
-  case 5:
-    return LinePrice(
-        "l_orderkey IN (SELECT o_orderkey FROM orders "
-        "WHERE o_orderdate >= DATE '1995-01-01' AND o_orderdate < DATE '1996-01-01')");
-  case 6:
-    return LinePrice(
-        "l_shipdate >= DATE '1995-01-01' AND l_shipdate < DATE '1996-01-01'");
-  case 7:
-    return LinePrice("l_shipdate BETWEEN DATE '1995-01-01' AND DATE '1996-12-31'");
-  case 8:
-    return LinePrice(
-        "l_orderkey IN (SELECT o_orderkey FROM orders "
-        "WHERE o_orderdate BETWEEN DATE '1995-01-01' AND DATE '1996-12-31')");
-  case 9:
-    return LinePrice(
-        "l_partkey IN (SELECT p_partkey FROM part WHERE p_name LIKE '%green%')");
-  case 10:
-    return LinePrice(
-        "l_returnflag = 'R' AND l_orderkey IN ("
-        "SELECT o_orderkey FROM orders WHERE o_orderdate >= DATE '1993-06-01' "
-        "AND o_orderdate < DATE '1993-09-01')");
-  case 11:
-    return "UPDATE partsupp SET ps_supplycost = ps_supplycost + 0.01 "
-           "WHERE ctid IN (SELECT ps.ctid FROM partsupp ps, supplier s, nation n "
-           "WHERE ps.ps_suppkey = s.s_suppkey AND s.s_nationkey = n.n_nationkey "
-           "AND n.n_name = 'ROMANIA' ORDER BY ps.ps_partkey, ps.ps_suppkey LIMIT 1)";
-  case 12:
-    return LinePrice(
-        "l_receiptdate >= DATE '1995-01-01' AND l_receiptdate < DATE '1996-01-01' "
-        "AND l_shipmode IN ('MAIL', 'SHIP')");
-  case 13:
-    return "UPDATE orders SET o_comment = o_comment || ' ' WHERE o_orderkey IN ("
-           "SELECT o_orderkey FROM orders ORDER BY o_orderkey LIMIT 1)";
-  case 14:
-    return LinePrice(
-        "l_shipdate >= DATE '1995-06-01' AND l_shipdate < DATE '1995-07-01'");
-  case 15:
-    return LinePrice(
-        "l_shipdate >= DATE '1994-11-01' AND l_shipdate < DATE '1995-02-01'");
-  case 16:
-    return "UPDATE supplier SET s_comment = s_comment || ' ' "
-           "WHERE s_suppkey IN (SELECT s_suppkey FROM supplier ORDER BY s_suppkey LIMIT 1)";
-  case 17:
-    return LinePrice(
-        "l_partkey IN (SELECT p_partkey FROM part WHERE p_brand = 'Brand#34' "
-        "AND p_container = 'LG CASE')");
-  case 18:
-    return LinePrice(
-        "l_orderkey IN (SELECT l_orderkey FROM lineitem GROUP BY l_orderkey "
-        "HAVING SUM(l_quantity) > 312)");
-  case 19:
-    return LinePrice(
-        "l_shipmode IN ('AIR', 'AIR REG') AND l_shipinstruct = 'DELIVER IN PERSON'");
-  case 20:
-    return LinePrice(
-        "l_shipdate >= DATE '1997-01-01' AND l_shipdate < DATE '1998-01-01'");
-  case 21:
-    return LinePrice(
-        "l_orderkey IN (SELECT o_orderkey FROM orders WHERE o_orderstatus = 'F') "
-        "AND l_receiptdate > l_commitdate");
-  case 22:
-    return "UPDATE orders SET o_orderstatus = o_orderstatus "
-           "WHERE o_orderkey IN (SELECT o_orderkey FROM orders ORDER BY o_orderkey LIMIT 1)";
-  default:
-    return LinePrice("true");
-  }
+  return tpch_params::InvalidatingUpdateSql(query_num, tpch_params::UpdateDialect::Ctid);
 }
 
 inline std::vector<int> ParseQueryList(const char *env_name, const std::vector<int> &fallback) {

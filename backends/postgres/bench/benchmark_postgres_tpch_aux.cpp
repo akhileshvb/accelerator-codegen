@@ -37,30 +37,6 @@ std::string ShellEscape(const std::string &s) {
   return out;
 }
 
-std::string Subst(const std::string &tmpl, const std::vector<std::string> &params) {
-  std::string out;
-  size_t pi = 0;
-  for (char c : tmpl) {
-    if (c == '?' && pi < params.size())
-      out += params[pi++];
-    else
-      out += c;
-  }
-  return out;
-}
-
-std::vector<std::string> ParamsFor(int q) {
-  if (q == 3)
-    return {"BUILDING", "1995-03-15", "1995-03-15"};
-  if (q == 1)
-    return {"90"};
-  if (q == 6)
-    return {"1994-01-01", "0.05", "0.07", "24"};
-  if (q == 14)
-    return {"1995-09-01"};
-  return {"BUILDING", "1995-03-15", "1995-03-15"};
-}
-
 double TimeSQLSessionMs(const Tools &tools, const std::string &load_sql,
                         const std::string &query_sql, int warmup, int iters,
                         bool write_mix) {
@@ -142,13 +118,12 @@ int main(int argc, char **argv) {
     tools.database = (db && *db) ? db : "accel_tpch_test";
 
     const auto &entry = LookupPostgresQuery("tpch", query);
-    auto params = ParamsFor(query);
-    const std::string ref = Subst(entry.base_sql ? entry.base_sql : "", params);
+    const std::string ref = entry.base_sql ? entry.base_sql : "";
     const bool use_aux = std::getenv("ACCEL_WORKLOAD_KIND") &&
                          std::string(std::getenv("ACCEL_WORKLOAD_KIND")) == "aux_state";
-    const char *accel_tmpl =
+    const char *accel_sql =
         use_aux && entry.aux_sql ? entry.aux_sql : entry.accelerator_sql;
-    const std::string accel = Subst(accel_tmpl ? accel_tmpl : "", params);
+    const std::string accel = accel_sql ? accel_sql : "";
 
     const std::string load =
         "LOAD '" +

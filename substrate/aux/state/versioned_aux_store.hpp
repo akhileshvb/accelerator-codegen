@@ -55,7 +55,7 @@ private:
 //
 // Epochs are the engine's: a snapshot epoch comes from
 // AuxEngineServices::CurrentVisibility, a commit's epoch from the store's
-// EpochProvider (see substrate/aux/core/README.md for each engine).
+// EpochProvider, which each backend supplies.
 //   * kNewestSnapshot as a reader's epoch: "no snapshot", read the newest. Epoch 0
 //     is a snapshot that sees no commit: it selects only a kAllSnapshots version.
 //   * kAllSnapshots (0) as a version's epoch: current for every snapshot

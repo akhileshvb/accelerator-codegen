@@ -18,21 +18,6 @@
  "cmake/BaseQuery.cmake": {
   "engine": 2
  },
- "docs/incremental-maintenance-audit.md": {
-  "engine": 12,
-  "path": 3,
-  "target": 1
- },
- "docs/perf-runbook.md": {
-  "engine": 16,
-  "target": 3
- },
- "docs/sf3000-duckdb-audit.md": {
-  "engine": 10,
-  "path": 2,
-  "symbol": 5,
-  "target": 11
- },
  "eval/bench/comparison/plot_gendb_bespoke_comparison.py": {
   "engine": 9
  },
@@ -174,11 +159,6 @@
  "eval/tests/tpch_param_templates.hpp": {
   "engine": 3,
   "target": 1
- },
- "pipeline/README.md": {
-  "engine": 21,
-  "path": 2,
-  "target": 3
  },
  "pipeline/catalog/aux_transformations.yaml": {
   "engine": 7,
@@ -859,11 +839,6 @@
  },
  "scripts/verus_sweep_summary.py": {
   "target": 1
- },
- "substrate/aux/core/README.md": {
-  "engine": 5,
-  "path": 1,
-  "symbol": 1
  },
  "substrate/aux/core/aux_cost_model_path.hpp": {
   "engine": 1

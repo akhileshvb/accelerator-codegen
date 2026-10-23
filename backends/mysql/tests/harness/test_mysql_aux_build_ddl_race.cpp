@@ -5,7 +5,7 @@
 // a connection that has not yet touched the table must not wait for it while
 // its siblings wait to end: every round must finish, with the right answer.
 //
-// Usage: test_mysql_aux_build_ddl_race [query=1] [rounds=5]
+// Usage: test_mysql_aux_build_ddl_race [query] [rounds=5]
 // Env:   TPCH_MYSQL_DB (default accel_mysql_test); run with the server's
 //        accelerator build threads above 1 and ACCEL_AUX_TEST_GRAIN=1.
 #include "backends/mysql/tests/harness/mysql_tpch_harness.hpp"
@@ -24,9 +24,9 @@ constexpr auto kPauseBetweenDdl = std::chrono::milliseconds(300);
 
 int main(int argc, char **argv) {
   try {
-    const int query = argc > 1 ? std::atoi(argv[1]) : 1;
+    const int query = argc > 1 ? std::atoi(argv[1]) : accel::tpch_params::kLineitemRaceQuery;
     const int rounds = argc > 2 ? std::atoi(argv[2]) : 5;
-    Require(query == 1, "this test rebuilds Q1's accelerator over lineitem");
+    Require(query == accel::tpch_params::kLineitemRaceQuery, "this test rebuilds the lineitem-sum accelerator over lineitem");
 
     auto tools = ConnectTpch();
     EnsureMutationTriggers(tools);

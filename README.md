@@ -16,9 +16,9 @@ formally verified kernel against a spec generated from the SQL.
 
 | Layer | Directory | Who writes it |
 |---|---|---|
-| Substrate: engine-agnostic aux-state core, state store, maintenance policy | `substrate/aux/{core,state,maintenance}` | people; read-only to the pipeline |
+| Substrate: engine-agnostic aux-state core, state store, maintenance policy, runtime | `substrate/aux/{core,state,maintenance,runtime}` | people; read-only to the pipeline |
 | Substrate: Verus libraries, host kit, SQL-to-Verus-spec generator | `substrate/verus/{common,store,kit,sql2verus}` | people; read-only to the pipeline |
-| Engine backends (DuckDB, PostgreSQL, MySQL): generic registry and dispatch, no query named | `backends/<engine>/{state,engine,api,tests}` | the `engine_backend` pipeline run (or people) |
+| Engine backends (DuckDB, PostgreSQL, MySQL): generic registry and dispatch, no query named | `backends/<engine>/{state,engine,api,tests}`; engine-specific eval drivers in `tests/harness`, `bench` | the `engine_backend` pipeline run (or people) |
 | Shared primitives (copy-on-write containers, SQL value semantics) and the Verus proof library | `accelerators/prims`, `accelerators/prooflib` | pipeline tools `primitive_publish`, `prooflib_publish` (additions only) |
 | Per-query accelerators | `accelerators/<bench>/q<N>/` | the query pipeline runs |
 | SQL workloads | `workloads/<bench>/{schema.sql,q<N>.sql}` | people |
@@ -32,7 +32,7 @@ they record a request (`backend_addition_record`) for an `engine_backend` run.
 
 ```
 substrate/aux/        core/ (cost model, calibration, registry), state/ (versioned store, footprint),
-                      maintenance/ (action selector), tests/
+                      maintenance/ (action selector), runtime/ (engine slots, runtime host), tests/
 substrate/verus/      common/, store/ (crate verus_substrate), kit/ (host side), sql2verus/
 backends/<engine>/    state/ engine/ api/ tests/ bench/   (api/catalog = the query registry)
 accelerators/prims/   generic data-structure primitives (README.md catalogue)
@@ -42,7 +42,7 @@ accelerators/<bench>/ common/, verus_world/, q<N>/
                       config/[verus/]  tests/  bench/
 workloads/<bench>/    schema.sql, q<N>.sql   (tpch, sec_edgar)
 eval/                 harness/ tests/ compare/ bench/
-pipeline/             see pipeline/README.md
+pipeline/             orchestrator/ config/ prompts/ gates/ templates/ verus/ clean_tree/
 scripts/              build, calibration, data-loading and layout-check scripts
 cmake/                CMake modules
 ```
@@ -101,6 +101,21 @@ TEST_DB=<tpch_test.duckdb> scripts/run_verus_kit_tests.sh <build_dir> [queries]
 python3 scripts/gen_verus_kit_params.py [--check]   # params.sql of every kit + the schema constraints
 ```
 
-See `pipeline/README.md` for the agent pipeline, `accelerators/prims/README.md` for
-the primitives catalogue, and `substrate/aux/core/README.md` for the maintenance
-and concurrency design.
+## Running the pipeline
+
+Needs Python 3.11+, the [Codex CLI](https://github.com/openai/codex) on `PATH`, and
+`OPENROUTER_API_KEY` (in the environment or in `.env`, copied from `.env.example`).
+Stages, models and presets are in `pipeline/config/models.yaml`.
+
+```bash
+cd pipeline/orchestrator && pip install -e ".[dev]"
+python -m accel_pipeline.run_pipeline --query 3 --workload tpch_q3 --engine <engine>            # one query on one engine
+python -m accel_pipeline.run_pipeline --query 21 --workload tpch_q21_aux --engine <engine> --mode verus
+python -m accel_pipeline.run_pipeline --query 0 --workload engine_<engine>                       # engine backend onboarding
+python -m accel_pipeline.run_pack --pack tpch_aux_parallel                                       # many runs, one worker each
+```
+
+`--stage <name>` runs one stage, `--resume` continues a run, `--dry-run` orchestrates
+without LLM calls. Run state goes to `pipeline/artifacts/<bench>/q<N>/<engine>/`.
+The primitives catalogue is `accelerators/prims/README.md`; the runtime contracts
+backends implement are in `substrate/aux/runtime/README.md`.

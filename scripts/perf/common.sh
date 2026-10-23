@@ -11,7 +11,7 @@ perf_setup() {
     *) TREE="$(cd "$1" && pwd)" ;;
   esac
   CORES=$2
-  [ -x "$TREE/build-release/aux_compare" ] || { echo "no $TREE/build-release/aux_compare (see docs/perf-runbook.md)" >&2; exit 1; }
+  [ -x "$TREE/build-release/aux_compare" ] || { echo "no $TREE/build-release/aux_compare; build target aux_compare" >&2; exit 1; }
   N=$(python3 -c 'import sys
 n = 0
 for part in sys.argv[1].split(","):

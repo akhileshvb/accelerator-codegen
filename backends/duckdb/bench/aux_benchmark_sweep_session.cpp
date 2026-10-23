@@ -535,10 +535,6 @@ struct BenchSession {
         }
         base_write_median_us /= static_cast<double>(base_write_samples);
       }
-    } else if (base_write_samples > 0 && query_num != 11) {
-      // Do not run RF2 deletes on the shared bench DB before Build — that would
-      // permanently remove orders. Workload accounting uses accel write cost only.
-      base_write_median_us = 0.0;
     }
 
     runtime = std::make_unique<DuckdbRuntime>(accel_connection, entry,

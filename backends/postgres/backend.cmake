@@ -130,7 +130,7 @@ _accel_pg_module_setup(accelerator_codegen_pg)
 
 # Build-scan test: the toy module through the partitioned scan, in SQL
 # (scan_test_partitioned); the workers run the production module's tasks.
-add_library(accelerator_codegen_pg_scan_test MODULE backends/postgres/tests/test_scan_module.cpp)
+add_library(accelerator_codegen_pg_scan_test MODULE backends/postgres/tests/harness/test_scan_module.cpp)
 _accel_pg_module_setup(accelerator_codegen_pg_scan_test)
 
 # Writer-side tests: the writer sources against a recording stub of the shard
