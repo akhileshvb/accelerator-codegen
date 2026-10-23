@@ -38,6 +38,27 @@ class ModelConfig:
     stage_reasoning_effort: dict[str, str] = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class RepairConfig:
+    max_code_rounds: int = 3
+    infra_retries: int = 1
+    max_replans: int = 1
+    max_orchestrator_retries: int = 1
+    load_factor: float = 1.5
+    never_quarantine: tuple[str, ...] = ("aux_correctness", "aux_unit")
+    parallel_gates: bool = True
+
+
+@dataclass(frozen=True)
+class SessionConfig:
+    continuity: bool = True
+    soft_deadline_sec: int = 5400
+    idle_timeout_sec: int = 2400
+    hard_deadline_sec: int = 14400
+    max_resumes: int = 25
+    max_context_tokens: int = 0
+
+
 @dataclass
 class PipelineConfig:
     repo_root: Path
@@ -83,8 +104,8 @@ class PipelineConfig:
     optimization_checkpoint_file: str = "optimization_worker_checkpoint.json"
     # Agent may declare OPTIMIZATION_SATURATED when stuck (no numeric floors).
     optimization_early_stop: dict[str, Any] = field(default_factory=dict)
-    crash_debug_max_rounds: int = 0
-    crash_debug_safety_cap: int = 25
+    repair: RepairConfig = field(default_factory=RepairConfig)
+    session: SessionConfig = field(default_factory=SessionConfig)
     stage_max_turns: dict[str, int] = field(default_factory=dict)
     write_paths: list[str] = field(default_factory=list)
     allowed_commands: list[str] = field(default_factory=list)
@@ -319,6 +340,31 @@ def _choice(data: dict[str, Any], key: str, allowed: tuple[str, ...], default: s
     return value
 
 
+def _repair_config(block: dict[str, Any]) -> RepairConfig:
+    defaults = RepairConfig()
+    return RepairConfig(
+        max_code_rounds=int(block.get("max_code_rounds", defaults.max_code_rounds)),
+        infra_retries=int(block.get("infra_retries", defaults.infra_retries)),
+        max_replans=int(block.get("max_replans", defaults.max_replans)),
+        max_orchestrator_retries=int(block.get("max_orchestrator_retries", defaults.max_orchestrator_retries)),
+        load_factor=float(block.get("load_factor", defaults.load_factor)),
+        never_quarantine=tuple(str(g) for g in block.get("never_quarantine", defaults.never_quarantine)),
+        parallel_gates=bool(block.get("parallel_gates", defaults.parallel_gates)),
+    )
+
+
+def _session_config(block: dict[str, Any]) -> SessionConfig:
+    defaults = SessionConfig()
+    return SessionConfig(
+        continuity=bool(block.get("continuity", defaults.continuity)),
+        soft_deadline_sec=int(block.get("soft_deadline_sec", defaults.soft_deadline_sec)),
+        idle_timeout_sec=int(block.get("idle_timeout_sec", defaults.idle_timeout_sec)),
+        hard_deadline_sec=int(block.get("hard_deadline_sec", defaults.hard_deadline_sec)),
+        max_resumes=int(block.get("max_resumes", defaults.max_resumes)),
+        max_context_tokens=int(block.get("max_context_tokens", defaults.max_context_tokens)),
+    )
+
+
 def load_pipeline_config(
     config_path: Path | None = None,
     repo_root: Path | None = None,
@@ -331,7 +377,6 @@ def load_pipeline_config(
     build_rel = data.get("build_dir", "build-release")
     gates_rel = data.get("gates_dir", "pipeline/gates")
     opt = data.get("optimization", {})
-    crash_debug = data.get("crash_debug", {})
     max_turns = dict(opt.get("max_turns") or {})
 
     datasets = {
@@ -391,8 +436,8 @@ def load_pipeline_config(
         optimization_turn_delta_max_chars=int(opt.get("turn_delta_max_chars", 4_000)),
         optimization_checkpoint_file=str(opt.get("checkpoint_file", "optimization_worker_checkpoint.json")),
         optimization_early_stop=dict(opt.get("early_stop") or {}),
-        crash_debug_max_rounds=int(crash_debug.get("max_rounds", 0)),
-        crash_debug_safety_cap=int(crash_debug.get("safety_cap", 25)),
+        repair=_repair_config(data.get("repair") or {}),
+        session=_session_config(data.get("session") or {}),
         stage_max_turns=dict(data.get("stage_max_turns", {})),
         write_paths=list(data.get("write_paths", [])),
         allowed_commands=list(data.get("allowed_commands", [])),
@@ -919,8 +964,8 @@ def _apply_optimization_block(pipeline_config: PipelineConfig, opt: dict[str, An
             if isinstance(opt.get("early_stop"), dict)
             else dict(pipeline_config.optimization_early_stop)
         ),
-        crash_debug_max_rounds=pipeline_config.crash_debug_max_rounds,
-        crash_debug_safety_cap=pipeline_config.crash_debug_safety_cap,
+        repair=pipeline_config.repair,
+        session=pipeline_config.session,
         stage_max_turns=dict(pipeline_config.stage_max_turns),
         write_paths=list(pipeline_config.write_paths),
         allowed_commands=list(pipeline_config.allowed_commands),
@@ -1040,8 +1085,8 @@ def _apply_workload_overrides(pipeline_config: PipelineConfig, workload: dict[st
         optimization_turn_delta_max_chars=pipeline_config.optimization_turn_delta_max_chars,
         optimization_checkpoint_file=pipeline_config.optimization_checkpoint_file,
         optimization_early_stop=dict(pipeline_config.optimization_early_stop),
-        crash_debug_max_rounds=pipeline_config.crash_debug_max_rounds,
-        crash_debug_safety_cap=pipeline_config.crash_debug_safety_cap,
+        repair=pipeline_config.repair,
+        session=pipeline_config.session,
         stage_max_turns=stage_max_turns,
         write_paths=list(pipeline_config.write_paths) + extra_write_paths,
         allowed_commands=list(pipeline_config.allowed_commands) + extra_allowed,

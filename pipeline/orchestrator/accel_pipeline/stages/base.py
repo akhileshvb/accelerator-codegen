@@ -6,7 +6,11 @@ from typing import Any
 
 from accel_pipeline.backends import StageRunRequest, create_agent_backend
 from accel_pipeline.config import ModelConfig, PipelineConfig, load_run_workload, apply_workload_overrides
+from accel_pipeline.failure import Failure, StageFailure
 from accel_pipeline.models import make_model_id
+from accel_pipeline.paths import query_artifacts_dir
+from accel_pipeline.session import run_in_session
+from accel_pipeline.triage import is_transient_provider_failure
 from accel_pipeline.agent_progress import begin_agent_run
 from accel_pipeline.pipeline_log import (
     log_stage_complete,
@@ -58,10 +62,15 @@ def run_agent_stage(
     analysis_revision_request: str = "",
     extra_context: dict[str, str] | None = None,
     must_change: Path | None = None,
+    session_role: str | None = None,
+    resume: bool = True,
 ) -> Any:
     """Run one agent stage. With `must_change`, a run that leaves every file under that
     directory as it was is re-invoked (twice at most): agents run unattended, so a turn that
-    ends with a question or a plan instead of edits did nothing."""
+    ends with a question or a plan instead of edits did nothing.
+
+    With a `session_role`, the stage runs in that role's codex session (`resume`: continue the
+    stored one). A run that fails raises StageFailure for the repair loop."""
     workload = load_run_workload(pipeline_config, workload_name)
     pipeline_config = apply_workload_overrides(pipeline_config, workload)
     if not dry_run:
@@ -145,13 +154,20 @@ def run_agent_stage(
     )
     frozen = snapshot_frozen(pipeline_config.repo_root)
     before = _tree_state(must_change) if must_change else None
-    result = backend.run_stage(request)
+    art = query_artifacts_dir(pipeline_config.repo_root, query, workload=workload)
+
+    def run(req: StageRunRequest) -> Any:
+        if session_role and resume:
+            return run_in_session(backend, req, pipeline_config=pipeline_config, art=art, query=query, role=session_role)
+        return backend.run_stage(req)
+
+    result = run(request)
     for _ in range(2):
         if before is None or result.status != "finished" or _tree_state(must_change) != before:
             break
         print(f"[pipeline] {stage}: no file under {must_change} changed; re-invoking", flush=True)
         request = replace(request, user_message=request.user_message + "\n\n" + _no_change_nudge(must_change))
-        result = backend.run_stage(request)
+        result = run(request)
     reverted = restore_frozen(pipeline_config.repo_root, frozen)
     if reverted:
         print(f"[pipeline] {stage}: reverted agent edits to frozen paths: {', '.join(reverted)}", flush=True)
@@ -161,20 +177,9 @@ def run_agent_stage(
             f"- {stage}: reverted agent edits to frozen pipeline/substrate paths ({', '.join(reverted)})",
             workload=workload,
         )
-    if result.status != "finished" and result.metadata.get("timed_out"):
-        # The agent ran out of time, not into an error: what it wrote is judged by the gates like
-        # any other round, and the round limits bound the stage.
-        print(f"[pipeline] {stage}: {result.error}; the gates judge what it produced", flush=True)
-        append_experiment_log(
-            pipeline_config.repo_root, query, f"- {stage}: {result.error} (gates judge the work)", workload=workload
-        )
-    elif result.status != "finished":
-        detail = (result.error or result.status or "").strip()
-        final = (result.final_text or "").strip()
-        if final and final not in detail:
-            clipped = final if len(final) <= 3000 else final[:3000] + "\n... [truncated]"
-            detail = f"{detail}\n\n--- agent output ---\n{clipped}"
-        raise RuntimeError(f"{backend.name} stage {stage} failed: {detail}")
+    failure = None if result.status == "finished" else stage_failure(stage, backend.name, result)
+    if failure is not None and failure.kind != "timeout":
+        raise StageFailure(failure)
     log_stage_complete(
         pipeline_config.repo_root,
         query,
@@ -187,7 +192,33 @@ def run_agent_stage(
         optimization_iter=optimization_iter,
         run_id=result.run_id,
     )
+    if failure is not None:
+        append_experiment_log(pipeline_config.repo_root, query, f"- {stage}: {failure.summary}", workload=workload)
+        raise StageFailure(failure)
     return result
+
+
+def stage_failure(stage: str, backend_name: str, result: Any) -> Failure:
+    """What a codex run that did not finish failed on: the deadline, a write-policy violation the
+    agent can fix, a provider flake, or something only the orchestrator can answer for."""
+    detail = (result.error or result.status or "").strip()
+    if result.metadata.get("timed_out"):
+        return Failure(
+            kind="timeout", stage=stage, source="agent", summary=detail,
+            diagnosis=["You were stopped at the deadline. State your status, checkpoint the tree "
+                       "(it must build), and continue from where you were."],
+        )
+    final = (result.final_text or "").strip()
+    if final and final not in detail:
+        clipped = final if len(final) <= 3000 else final[:3000] + "\n... [truncated]"
+        detail = f"{detail}\n\n--- agent output ---\n{clipped}"
+    summary = f"{backend_name} stage {stage} failed"
+    if result.metadata.get("write_violations"):
+        return Failure(kind="code", stage=stage, source="write_policy", summary=summary, evidence=detail)
+    if is_transient_provider_failure(detail):
+        return Failure(kind="infra", stage=stage, source="agent", summary=summary, evidence=detail,
+                       infra_reason="provider_flake")
+    return Failure(kind="orchestrator", stage=stage, source="agent", summary=summary, evidence=detail)
 
 
 def _tree_state(root: Path) -> dict[str, tuple[int, int]]:

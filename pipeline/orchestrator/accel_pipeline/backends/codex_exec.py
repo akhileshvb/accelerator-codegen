@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import signal
 import sys
 import shlex
 import shutil
@@ -11,11 +12,14 @@ import re
 import tempfile
 import threading
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from accel_pipeline import session as session_mod
 from accel_pipeline.backends.base import StageRunRequest, StageRunResult
 from accel_pipeline.config import ModelConfig, PipelineConfig
+from accel_pipeline.session import HEARTBEAT_FILE
 
 
 def _forwarded_to_mcp(key: str) -> bool:
@@ -42,6 +46,36 @@ def ensure_codex_config(path: Path) -> Path:
     tmp.write_text(text.replace("{{mcp_launcher}}", str(launcher)), encoding="utf-8")
     os.replace(tmp, path)
     return path
+
+
+@dataclass
+class _Outcome:
+    returncode: int | None
+    stdout: str
+    stderr: str
+    killed: str = ""
+
+
+def _feed(proc: subprocess.Popen, text: str) -> None:
+    try:
+        proc.stdin.write(text)
+        proc.stdin.close()
+    except (BrokenPipeError, OSError):
+        pass
+
+
+def _kill(proc: subprocess.Popen) -> None:
+    """Stop codex and everything it started (its MCP server, tools)."""
+    for sig, grace in ((signal.SIGTERM, 10), (signal.SIGKILL, 10)):
+        try:
+            os.killpg(proc.pid, sig)
+        except ProcessLookupError:
+            return
+        try:
+            proc.wait(timeout=grace)
+            return
+        except subprocess.TimeoutExpired:
+            continue
 
 
 class CodexExecBackend:
@@ -184,13 +218,9 @@ class CodexExecBackend:
         started_wall = time.time()
         codex_bin = self._resolve_codex_bin()
         config_path = self._config_path()
-        timeout = int(getattr(self._model_config, "codex_timeout_sec", 7200) or 7200)
         model = str(request.agent_model or request.model_id)
-
-        task = (
-            f"{request.instructions.rstrip()}\n\n"
-            f"## Task\n\n{request.user_message.rstrip()}\n"
-        )
+        resume = request.metadata.get("resume_session_id") or getattr(self, "resume_session_id", None)
+        task = self._task_text(request, resumed=bool(resume))
 
         env = os.environ.copy()
         env["ACCEL_PIPELINE_QUERY"] = str(self._query)
@@ -259,9 +289,8 @@ class CodexExecBackend:
                 if _forwarded_to_mcp(key):
                     mcp_env_parts.append(f'{key}="{value}"')
             mcp_env_toml = "{" + ", ".join(mcp_env_parts) + "}"
-            # resume_session_id: continue that codex session (its context kept)
-            # with this task as the next message, instead of a fresh one.
-            resume = getattr(self, "resume_session_id", None)
+            # resume: continue that codex session (its context kept) with this task as the
+            # next message, instead of a fresh one.
             head = [codex_bin, "exec", "resume"] if resume else [codex_bin, "exec"]
             cmd = head + ["--skip-git-repo-check"] + ([] if resume else ["-C", str(self._pipeline_config.repo_root)]) + [
                 "-m",
@@ -297,28 +326,7 @@ class CodexExecBackend:
             # An OS sandbox to run codex (and its MCP server) in, e.g. bwrap.
             cmd = list(getattr(self, "command_prefix", None) or []) + cmd
             try:
-                proc = subprocess.run(
-                    cmd,
-                    cwd=str(self._pipeline_config.repo_root),
-                    input=task if via_stdin else None,
-                    capture_output=True,
-                    text=True,
-                    timeout=timeout,
-                    env=env,
-                    check=False,
-                )
-            except subprocess.TimeoutExpired as exc:
-                return StageRunResult(
-                    backend=self.name,
-                    stage=request.stage,
-                    status="error",
-                    error=f"codex exec timed out after {timeout}s",
-                    final_text=(exc.stdout or "") if isinstance(exc.stdout, str) else "",
-                    # the session (to continue it) from its log: the banner went with the killed process
-                    metadata={"duration_ms": int((time.monotonic() - started) * 1000), "timed_out": True,
-                              "session_id": str(resume or "") or self._session_id(
-                                  "", env.get("CODEX_HOME"), started_wall, str(self._pipeline_config.repo_root))},
-                )
+                outcome = self._supervise(cmd, env, task if via_stdin else None, started_wall)
             except FileNotFoundError as exc:
                 return StageRunResult(
                     backend=self.name,
@@ -328,27 +336,98 @@ class CodexExecBackend:
                     metadata={"duration_ms": int((time.monotonic() - started) * 1000)},
                 )
 
-        stdout = proc.stdout or ""
-        stderr = proc.stderr or ""
+        duration_ms = int((time.monotonic() - started) * 1000)
+        session_id = str(resume or "") or self._session_id(
+            outcome.stdout + "\n" + outcome.stderr, env.get("CODEX_HOME"), started_wall, str(self._pipeline_config.repo_root))
+        if outcome.killed:
+            return StageRunResult(
+                backend=self.name,
+                stage=request.stage,
+                status="error",
+                error=outcome.killed,
+                final_text=outcome.stdout[-200_000:],
+                metadata={"duration_ms": duration_ms, "timed_out": True, "session_id": session_id},
+            )
+        stdout, stderr = outcome.stdout, outcome.stderr
         combined = stdout if stdout.strip() else stderr
-        status = "finished" if proc.returncode == 0 else "error"
-        session_id = self._session_id(stdout + "\n" + stderr, env.get("CODEX_HOME"), started_wall,
-                                      str(self._pipeline_config.repo_root))
+        status = "finished" if outcome.returncode == 0 else "error"
         return StageRunResult(
             backend=self.name,
             stage=request.stage,
             status=status,
             final_text=combined[-200_000:],
-            error="" if status == "finished" else (stderr[-8000:] or f"exit={proc.returncode}"),
+            error="" if status == "finished" else (stderr[-8000:] or f"exit={outcome.returncode}"),
             metadata={
-                "duration_ms": int((time.monotonic() - started) * 1000),
+                "duration_ms": duration_ms,
                 "provider": self.name,
-                "exit_code": proc.returncode,
+                "exit_code": outcome.returncode,
                 "model": model,
                 "config_path": str(config_path),
                 "session_id": session_id,
             },
         )
+
+    @staticmethod
+    def _task_text(request: StageRunRequest, *, resumed: bool) -> str:
+        """A fresh session gets the instructions and the task; a resumed one only the new message,
+        with the instructions once when the stage is new to the session."""
+        message = request.user_message.rstrip()
+        if resumed and not request.metadata.get("phase_change"):
+            return message + "\n"
+        header = f"## NEW PHASE: {request.stage}\n\nFrom here on follow these instructions.\n\n" if resumed else ""
+        return f"{header}{request.instructions.rstrip()}\n\n## Task\n\n{message}\n"
+
+    def codex_home(self) -> Path:
+        return self._config_path().parent
+
+    def _deadlines(self) -> tuple[float, float]:
+        """(idle timeout, hard deadline) in seconds; 0 disables. Verus steps keep codex_timeout_sec."""
+        fallback = float(getattr(self._model_config, "codex_timeout_sec", 7200) or 7200)
+        if self._stage.startswith("verus_"):
+            return 0.0, fallback
+        cfg = self._pipeline_config.session
+        return float(cfg.idle_timeout_sec), float(cfg.hard_deadline_sec or fallback)
+
+    def _supervise(self, cmd: list[str], env: dict[str, str], stdin: str | None, since: float) -> _Outcome:
+        """Run codex, killing its process group at the hard deadline or after the idle timeout (no
+        output, rollout or heartbeat activity)."""
+        idle, hard = self._deadlines()
+        poll = max(0.05, min(5.0, (hard or 100.0) / 20, (idle or 100.0) / 10))
+        beat = self._art_dir / HEARTBEAT_FILE if self._art_dir is not None else None
+        cwd = str(self._pipeline_config.repo_root)
+        with tempfile.TemporaryDirectory(prefix="accel_codex_out_") as tmp, \
+                session_mod.agent_run(self._art_dir, self._stage, self._pipeline_config):
+            out_path, err_path = Path(tmp) / "stdout", Path(tmp) / "stderr"
+            with out_path.open("w") as out, err_path.open("w") as err:
+                proc = subprocess.Popen(cmd, cwd=cwd, stdin=subprocess.PIPE if stdin is not None else subprocess.DEVNULL,
+                                        stdout=out, stderr=err, text=True, env=env, start_new_session=True)
+            if stdin is not None:
+                threading.Thread(target=_feed, args=(proc, stdin), daemon=True).start()
+            start = last_active = time.monotonic()
+            rollout: Path | None = None
+            killed = ""
+            while True:
+                try:
+                    proc.wait(timeout=poll)
+                    break
+                except subprocess.TimeoutExpired:
+                    pass
+                now = time.monotonic()
+                if rollout is None:
+                    sid = self._session_id(err_path.read_text(errors="replace"), None, since)
+                    rollout = session_mod.rollout_path(Path(env["CODEX_HOME"]), sid) if sid else None
+                touched = [p.stat().st_mtime for p in (out_path, err_path, rollout, beat) if p is not None and p.exists()]
+                if touched:
+                    last_active = max(last_active, now - (time.time() - max(touched)))
+                if hard and now - start >= hard:
+                    killed = f"codex exec hit the hard deadline ({hard:.0f}s)"
+                elif idle and now - last_active >= idle:
+                    killed = f"codex exec idle for {idle:.0f}s (no output, session or tool activity)"
+                if killed:
+                    _kill(proc)
+                    break
+            return _Outcome(proc.returncode, out_path.read_text(errors="replace"),
+                            err_path.read_text(errors="replace"), killed)
 
     @staticmethod
     def _session_id(output: str, codex_home: str | None, since: float, cwd: str = "") -> str:

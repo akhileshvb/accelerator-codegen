@@ -7,7 +7,7 @@ from accel_pipeline.base_bench import (
     write_baseline_summary,
     write_optimization_feedback,
 )
-from accel_pipeline.crash_debug import extract_crash_highlights, format_gate_failure_diagnosis
+from accel_pipeline.failure import extract_crash_highlights, failure_from_gate, render_failure
 from accel_pipeline.gates import GateResult
 
 
@@ -84,12 +84,12 @@ def test_crash_highlights_extract_sigsegv():
     assert any("Segmentation" in line for line in highlights)
 
 
-def test_format_gate_failure_diagnosis():
+def test_gate_failure_report():
     result = GateResult(
         name="correctness",
         status="fail",
         data={"exit_code": 8, "log_tail": "error: boom\nSegmentation fault"},
     )
-    text = format_gate_failure_diagnosis(result, change_kind="optimization", iteration=2)
+    text = render_failure(failure_from_gate(result, stage="optimization"))
     assert "correctness" in text
     assert "Segmentation fault" in text

@@ -5,15 +5,18 @@ import atexit
 import os
 import shutil
 import sys
+import traceback
 from pathlib import Path
 
 from accel_pipeline.workload_facts import workload_facts
 from accel_pipeline.config import apply_workload_overrides, load_model_config, load_pipeline_config, load_workload
 from accel_pipeline.engine_quarantine import apply_foreign_engine_quarantine, restore_quarantine
 from accel_pipeline.env_loader import load_repo_dotenv
-from accel_pipeline.paths import find_repo_root
+from accel_pipeline.paths import find_repo_root, query_artifacts_dir
 from accel_pipeline.prerequisites import ensure_base_accelerator_prerequisite
-from accel_pipeline.state import STAGES, advance_stage, load_or_create, state_path
+from accel_pipeline.failure import Failure
+from accel_pipeline.repair import EXIT_STOPPED, REPAIR_STATE_FILE, RepairCtx, StageStopped, stop_stage
+from accel_pipeline.state import STAGES, PipelineState, advance_stage, load_or_create, state_path
 from accel_pipeline.verus.stages import STAGES as VERUS_STAGES
 from accel_pipeline.stages import analysis, adversarial_tests, audit, implementation, optimization
 from accel_pipeline.structural_reanalysis import process_after_stage
@@ -109,7 +112,7 @@ def _maybe_process_structural_reanalysis(
     return next_idx
 
 
-def _run_stage(
+def _run_stage_once(
     stage: str,
     pipeline_config,
     model_config,
@@ -155,6 +158,53 @@ def _run_stage(
         raise ValueError(f"unknown stage: {stage}")
 
 
+def _mark_stopped(pipeline_config, workload_name: str, query: int, stage: str, reason: str) -> None:
+    path = state_path(pipeline_config.repo_root, query, workload_name, pipeline_config.engine_name)
+    if not path.is_file():
+        return
+    state = PipelineState.load(path)
+    state.stage = stage if stage in STAGES else state.stage
+    state.status = f"stopped:{reason}"
+    state.save(path)
+
+
+def _run_stage(
+    stage: str,
+    pipeline_config,
+    model_config,
+    workload_name: str,
+    query: int,
+    model_overrides: dict[str, str],
+    dry_run: bool,
+    *,
+    skip_gates: bool = False,
+    resume: bool = False,
+) -> None:
+    """One stage, with a last-resort catch: an exception nothing below handled is retried
+    (max_orchestrator_retries), then recorded as a clean stop."""
+    retries = pipeline_config.repair.max_orchestrator_retries
+    for attempt in range(retries + 1):
+        try:
+            return _run_stage_once(stage, pipeline_config, model_config, workload_name, query, model_overrides,
+                                   dry_run, skip_gates=skip_gates, resume=resume or attempt > 0)
+        except StageStopped as stopped:
+            _mark_stopped(pipeline_config, workload_name, query, stage, stopped.reason)
+            raise
+        except Exception as exc:  # noqa: BLE001
+            if dry_run:
+                raise
+            print(f"[pipeline] stage {stage} raised {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
+            if attempt < retries:
+                print(f"[pipeline] retrying stage {stage} ({attempt + 1}/{retries})", file=sys.stderr, flush=True)
+                continue
+            ctx = RepairCtx(pipeline_config, model_config, workload_name, query, stage=stage)
+            failure = Failure(kind="orchestrator", stage=stage, source="exception",
+                              summary=f"{type(exc).__name__}: {exc}", evidence=traceback.format_exc())
+            stopped = stop_stage(ctx, failure, f"orchestrator exception in {stage}")
+            _mark_stopped(pipeline_config, workload_name, query, stage, stopped.reason)
+            raise stopped from exc
+
+
 def _sandbox_preflight(pipeline_config, query: int) -> None:
     """Stop at run start when the agents' bwrap sandbox is unavailable or does not hold."""
     from accel_pipeline import sandbox
@@ -169,6 +219,18 @@ def _sandbox_preflight(pipeline_config, query: int) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    try:
+        return _main(argv)
+    except StageStopped as stopped:
+        print(f"pipeline stopped: {stopped}; fix the cause and continue with --resume", file=sys.stderr)
+        return EXIT_STOPPED
+    except Exception:  # noqa: BLE001 - a run ends with an exit code and a record, never a traceback
+        traceback.print_exc()
+        print("pipeline stopped on an orchestrator error; --resume continues", file=sys.stderr)
+        return EXIT_STOPPED
+
+
+def _main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Accelerator codegen agent pipeline")
     parser.add_argument("--query", type=int, required=True)
     parser.add_argument("--workload", type=str, default="tpch_q3")
@@ -349,6 +411,11 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
     state = load_or_create(repo_root, query, args.workload, pipeline_config.engine_name, resume=args.resume)
+    if args.resume and state.status:
+        print(f"resuming a run that {state.status}", file=sys.stderr)
+        state.status = ""
+        state.save(state_path(repo_root, query, args.workload, pipeline_config.engine_name))
+        (query_artifacts_dir(repo_root, query, workload=workload) / REPAIR_STATE_FILE).unlink(missing_ok=True)
 
     if workload.get("workload_kind") == "aux_state":
         ensure_base_accelerator_prerequisite(
@@ -388,6 +455,9 @@ def main(argv: list[str] | None = None) -> int:
             state.stage = stage
             state.save(state_path(repo_root, query, args.workload, pipeline_config.engine_name))
         _run_stage(stage, pipeline_config, model_config, args.workload, query, model_overrides, args.dry_run, skip_gates=args.skip_gates, resume=args.resume)
+        if not args.dry_run:  # a repair re-plan inside the stage counts against the same budget
+            on_disk = PipelineState.load(state_path(repo_root, query, args.workload, pipeline_config.engine_name))
+            state.structural_reanalysis_count = max(state.structural_reanalysis_count, on_disk.structural_reanalysis_count)
 
         if stage == "implementation":
             next_idx = _maybe_process_structural_reanalysis(

@@ -20,6 +20,7 @@ from accel_pipeline.config import (
     resolve_optimization_edit_paths,
     resolve_workload_paths,
 )
+from accel_pipeline.failure import Failure, StageFailure
 from accel_pipeline.jsonio import read_json
 from accel_pipeline.kernel_hot_path_review import analyze_kernel_source
 from accel_pipeline.models import make_model_id
@@ -72,7 +73,9 @@ from accel_pipeline.optimization_worker_checkpoint import load_worker_checkpoint
 from accel_pipeline.pipeline_log import log_event, log_stage_complete, log_stage_start
 from accel_pipeline.playbook import append_experiment_log
 from accel_pipeline.prompts import render_prompt, save_rendered_prompt, with_codex_tooling
+from accel_pipeline.session import MAIN, run_in_session
 from accel_pipeline.stages.base import resolve_optimization_max_turns
+from accel_pipeline.triage import is_transient_provider_failure as _is_transient_provider_failure  # noqa: F401
 
 HYPOTHESIS_COMPLETE = "HYPOTHESIS_COMPLETE"
 PATCH_COMPLETE = "HYPOTHESIS_PATCH_COMPLETE"
@@ -190,28 +193,6 @@ def _effective_consecutive_fail_stop(pipeline_config: PipelineConfig, max_attemp
     if raw <= 0:
         return max_attempts + 1
     return raw
-
-
-def _is_transient_provider_failure(reason: str | None) -> bool:
-    """True when the agent never ran (network/provider flake), not a real hyp fail."""
-    text = (reason or "").lower()
-    if not text:
-        return False
-    needles = (
-        "stream disconnected",
-        "error sending request",
-        "connection refused",
-        "cannot connect to host",
-        "timed out",
-        "timeout",
-        "temporarily unavailable",
-        "503",
-        "502",
-        "429",
-        "rate limit",
-        "reconnecting...",
-    )
-    return any(n in text for n in needles)
 
 
 def _short_failure_reason(reason: str | None, *, max_chars: int = 240) -> str:
@@ -336,6 +317,7 @@ def _run_agent_substage(
     model_overrides: dict[str, str] | None,
     optimization_iter: int,
     extra_context: dict[str, str] | None = None,
+    session_role: str | None = None,
 ) -> Any:
     workload = load_run_workload(pipeline_config, workload_name)
     pipeline_config = apply_workload_overrides(pipeline_config, workload)
@@ -385,6 +367,10 @@ def _run_agent_substage(
         agent_model=agent_model,
         max_turns=max_turns,
     )
+    if session_role:
+        art = query_artifacts_dir(pipeline_config.repo_root, query, workload=workload)
+        return run_in_session(backend, request, pipeline_config=pipeline_config, art=art, query=query,
+                              role=session_role)
     return backend.run_stage(request)
 
 
@@ -656,6 +642,7 @@ def _run_optimization_fix_agent(
         user_message=diagnosis,
         model_overrides=model_overrides,
         optimization_iter=optimization_iter,
+        session_role=MAIN,
     )
 
 
@@ -879,14 +866,14 @@ def run_optimization_iteration(
         infra = _fail_fast_infra_if_needed(
             pipeline_config, workload, query, text=preflight_out or ""
         )
-        if infra:
-            raise RuntimeError(
-                f"optimization: preflight infra fail-fast ({infra.get('infra_reason')}): "
-                f"{(preflight_out or '')[-2000:]}"
-            )
-        raise RuntimeError(
-            f"optimization: preflight build failed — fix tree or restore checkpoint:\n{(preflight_out or '')[-2000:]}"
-        )
+        raise StageFailure(Failure(
+            kind="infra" if infra else "code",
+            stage="optimization",
+            source="preflight_build",
+            summary="preflight build failed before the optimization iteration; fix the tree or restore the checkpoint",
+            evidence=(preflight_out or "")[-2000:],
+            infra_reason=infra.get("infra_reason") if infra else None,
+        ))
 
     from accel_pipeline.aux_write_freqs import ensure_attempt_write_frequencies
 
@@ -911,7 +898,12 @@ def run_optimization_iteration(
     )
     baseline = _measure_baseline(pipeline_config, workload, query, eval_config)
     if not baseline:
-        raise RuntimeError("optimization: failed to measure baseline at iteration start")
+        raise StageFailure(Failure(
+            kind="measurement",
+            stage="optimization",
+            source="bench_baseline",
+            summary="optimization: failed to measure baseline at iteration start",
+        ))
     if not load_best_valid_baseline(art):
         snapshot_best_valid_baseline_files(pipeline_config, workload, query)
         advance_best_valid_baseline(

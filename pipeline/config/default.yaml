@@ -83,11 +83,6 @@ optimization:
   episodes_per_iteration: 4
   max_turns_per_episode: 8
 
-crash_debug:
-  # 0 = keep crash-debugging within the same stage/iter until mandatory gates pass
-  max_rounds: 0
-  safety_cap: 10
-
 stage_max_turns:
   analysis: 8
   implementation: 15
@@ -114,3 +109,23 @@ allowed_commands:
   - "^ninja -C build-release.*$"
 
 gates_dir: pipeline/gates
+
+# Failures go to a bounded repair loop (accel_pipeline/repair.py) instead of ending the run: infra
+# failures are retried without spending the budget, code failures resume the agent's session.
+repair:
+  max_code_rounds: 3
+  infra_retries: 1
+  max_replans: 1
+  max_orchestrator_retries: 1
+  load_factor: 1.5          # a gate timeout under loadavg > load_factor * cores is infra
+  never_quarantine: [aux_correctness, aux_unit]
+  parallel_gates: true
+
+# One codex session per role (accel_pipeline/session.py) and the wall budgets of an agent run.
+session:
+  continuity: true
+  soft_deadline_sec: 5400    # MCP tool results start asking the agent to wrap up
+  idle_timeout_sec: 2400     # no rollout, tool or heartbeat activity: killed, then resumed
+  hard_deadline_sec: 14400
+  max_resumes: 25            # past this (or max_context_tokens > 0), a fresh session with a handoff
+  max_context_tokens: 0

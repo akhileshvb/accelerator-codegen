@@ -14,6 +14,7 @@ from accel_pipeline.crash_debug import run_post_stage_gates_with_crash_debug
 from accel_pipeline.optimization_attempt import run_optimization_iteration
 from accel_pipeline.optimization_worker import OptimizationWorker, worker_enabled
 from accel_pipeline.paths import query_artifacts_dir
+from accel_pipeline.repair import RepairCtx, run_with_repair
 from accel_pipeline.stages.gate_plan import workload_post_optimization_gates
 from accel_pipeline.playbook import append_experiment_log, merge_playbook_proposal
 
@@ -118,18 +119,26 @@ def run(
                             if best_valid_path.is_file():
                                 best_valid_path.unlink()
 
-            last_result = run_optimization_iteration(
-                pipeline_config=pipeline_config,
-                model_config=model_config,
-                workload_name=workload_name,
-                query=query,
-                optimization_iter=iteration,
-                model_overrides=model_overrides,
-                dry_run=dry_run,
-                restored=restored,
-                worker=worker,
-                deadline=deadline,
-            )
+            def iterate():
+                return run_optimization_iteration(
+                    pipeline_config=pipeline_config,
+                    model_config=model_config,
+                    workload_name=workload_name,
+                    query=query,
+                    optimization_iter=iteration,
+                    model_overrides=model_overrides,
+                    dry_run=dry_run,
+                    restored=restored,
+                    worker=worker,
+                    deadline=deadline,
+                )
+
+            if dry_run:
+                last_result = iterate()
+                continue
+            repair_ctx = RepairCtx(pipeline_config, model_config, workload_name, query, stage="optimization",
+                                   change_kind="optimization", iteration=iteration, model_overrides=model_overrides)
+            last_result = run_with_repair(repair_ctx, iterate)
             if dry_run:
                 continue
 
