@@ -25,7 +25,7 @@ _MISSING_PRODUCER = re.compile(
 _HARNESS_ERROR = re.compile(
     r"unbound variable"
     r"|Traceback \(most recent call last\):\n(?:[ \t]+.*\n)*?[ \t]+File \"[^\"]*(?:gates/[^\"]*\.py|read_gate_context\.py)\""
-    r"|host\.sh[^\n]*(?:exit(?:ed)?(?: code| status)?[ =:]+2\b|returned 2\b)",
+    r"|host\.sh[^\n]*(?:exit(?:ed)?(?: with)?(?: code| status)?[ =:]+2\b|returned 2\b)",
     re.IGNORECASE,
 )
 _TRANSIENT_PROVIDER = (
