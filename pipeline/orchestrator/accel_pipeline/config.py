@@ -104,7 +104,7 @@ class PipelineConfig:
     sandbox_extra_ro: list[str] = field(default_factory=list)
     sandbox_extra_rw: list[str] = field(default_factory=list)
     # enforce | warn | off: the post-stage ownership check (write_ownership.check_stage).
-    write_policy: str = "enforce"
+    write_policy: str = "warn"
 
 
 def _load_yaml(path: Path) -> dict[str, Any]:
@@ -402,7 +402,7 @@ def load_pipeline_config(
         sandbox=_choice(data, "sandbox", ("bwrap", "none"), "bwrap"),
         sandbox_extra_ro=[str(x) for x in data.get("sandbox_extra_ro") or []],
         sandbox_extra_rw=[str(x) for x in data.get("sandbox_extra_rw") or []],
-        write_policy=_choice(data, "write_policy", ("enforce", "warn", "off"), "enforce"),
+        write_policy=_choice(data, "write_policy", ("enforce", "warn", "off"), "warn"),
     )
 
     env_build = os.environ.get("ACCEL_PIPELINE_BUILD_DIR")

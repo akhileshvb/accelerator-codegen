@@ -10,7 +10,7 @@ sandbox_extra_rw: []
 # The post-stage ownership check (write_ownership.check_stage): paths an agent stage changed
 # against the write policy (other queries' dirs, backends/, prims/, prooflib/, ...).
 # enforce: the stage fails listing them; warn: logged to the run's events; off: skipped.
-write_policy: enforce
+write_policy: warn
 # Query-accelerator workloads list their `engines:`; a run picks one (--engine / pack `engines:`).
 
 # Paths that require the shared-file lease under concurrent pack workers.

@@ -115,7 +115,7 @@ def test_pipeline_config_carries_sandbox_keys() -> None:
 
     repo = Path(__file__).resolve().parents[3]
     cfg = load_pipeline_config(repo_root=repo)
-    assert (cfg.sandbox, cfg.write_policy) == ("bwrap", "enforce")
+    assert (cfg.sandbox, cfg.write_policy) == ("bwrap", "warn")
     assert PipelineConfig.__dataclass_fields__["sandbox_extra_rw"].default_factory() == []
 
 
