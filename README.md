@@ -87,6 +87,11 @@ python3 scripts/check_layer_includes.py         # include direction between laye
 cd pipeline/orchestrator && pytest tests/test_substrate_never_writable.py
 ```
 
+The write policy (`write_ownership.py`) is enforced on agent steps: codex runs under a bubblewrap
+sandbox (`sandbox:` in `pipeline/config/default.yaml`) that mounts `substrate/` and `workloads/`
+read-only, and after every stage the paths it changed are checked against each layer's owner
+(`write_policy: enforce | warn | off`).
+
 ## Running tests and binaries
 
 Run test and benchmark binaries from the repository root: cost-model paths

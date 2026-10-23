@@ -22,11 +22,18 @@ cannot desync wiring.
 from __future__ import annotations
 
 import fnmatch
+import hashlib
+import json
+import os
 import re
+import subprocess
+import time
 from pathlib import Path
 from typing import Any
 
 from accel_pipeline import layout
+from accel_pipeline.frozen_paths import FROZEN
+from accel_pipeline.prims_library import PROVENANCE_REL, primary_root
 from accel_pipeline.prims_library import DENY_MESSAGE as _PRIMS_DENY
 from accel_pipeline.prims_library import is_staging_path
 from accel_pipeline.shared_file_lease import is_shared_path, shared_path_globs
@@ -306,3 +313,115 @@ def shell_command_layer_write(cmd: str) -> str | None:
         "denied: substrate/ and workloads/ are read-only; prims and prooflib change only "
         f"through primitive_publish / prooflib_publish. cmd={cmd[:200]}"
     )
+
+
+# ---------------------------------------------------------------- post-stage check
+
+# Not the agents' to write by this policy but handled elsewhere (artifacts, frozen paths are
+# restored by frozen_paths, the codex home and run dirs are the pipeline's own).
+_UNCHECKED_PREFIXES = (
+    "pipeline/artifacts/", "pipeline/.codex/", "pipeline/verus_runs/", "pipeline/worktrees/",
+    "pipeline/.locks/", PROVENANCE_REL,
+    *(f if "." in f else f + "/" for f in FROZEN if f != layout.SUBSTRATE),
+)
+_HASH_LIMIT = 16 << 20
+
+
+def _signature(path: Path) -> str:
+    try:
+        if path.is_symlink():
+            return "link:" + os.readlink(path)
+        if not path.exists():
+            return "absent"
+        if path.stat().st_size > _HASH_LIMIT:
+            return f"big:{path.stat().st_size}:{path.stat().st_mtime_ns}"
+        return hashlib.sha1(path.read_bytes()).hexdigest()
+    except OSError:
+        return "unreadable"
+
+
+def tree_snapshot(repo_root: Path) -> dict[str, str] | None:
+    """{changed path: content signature} from git status; None when root is no git work tree."""
+    proc = subprocess.run(["git", "-C", str(repo_root), "status", "--porcelain", "-z", "--untracked-files=all"],
+                          capture_output=True, text=True)
+    if proc.returncode != 0:
+        return None
+    out: dict[str, str] = {}
+    entries = iter(proc.stdout.split("\0"))
+    for entry in entries:
+        if len(entry) < 4:
+            continue
+        paths = [entry[3:]]
+        if entry[0] in "RC" or entry[1] in "RC":
+            paths.append(next(entries, ""))  # the rename's origin
+        for rel in filter(None, paths):
+            out[rel] = _signature(Path(repo_root) / rel)
+    return out
+
+
+def _published_since(started_at: float, *roots: Path) -> set[str]:
+    """The prims files primitive_publish recorded at or after started_at."""
+    files: set[str] = set()
+    for root in roots:
+        try:
+            lines = (root / PROVENANCE_REL).read_text(encoding="utf-8").splitlines()
+        except OSError:
+            continue
+        for line in lines:
+            try:
+                rec = json.loads(line)
+            except ValueError:
+                continue
+            if float(rec.get("ts") or 0) >= started_at:
+                files.update(str(f) for f in rec.get("files") or [])
+    return files
+
+
+def shared_tree_run(repo_root: Path) -> bool:
+    """A concurrent pack worker on the primary checkout: other workers write the same tree."""
+    return bool(os.environ.get("ACCEL_PIPELINE_PACK_QUERIES")) and primary_root(repo_root) == Path(repo_root).resolve()
+
+
+class StageWriteCheck:
+    """Snapshot the tree before an agent stage; ``violations()`` after it lists what the stage changed
+    against the write policy: (path, rule it broke).  Exempt: what the publish tools wrote during the
+    stage, artifact and pipeline-owned dirs, and (shared-tree packs, where attribution is impossible)
+    other queries' directories."""
+
+    def __init__(self, repo_root: Path, *, query: int, stage: str, pipeline_config: Any | None = None,
+                 benchmark: str = "tpch") -> None:
+        self.repo_root = Path(repo_root)
+        self.query, self.stage, self.cfg, self.benchmark = int(query), stage, pipeline_config, benchmark
+        self.started_at = time.time()
+        self.before = tree_snapshot(self.repo_root)
+
+    def violations(self) -> list[tuple[str, str]]:
+        after = tree_snapshot(self.repo_root) if self.before is not None else None
+        if after is None:
+            return []
+        changed = sorted(r for r, sig in after.items() if self.before.get(r) != sig)
+        prims = _published_since(self.started_at, primary_root(self.repo_root), self.repo_root)
+        shared = shared_tree_run(self.repo_root)
+        write_paths = list(getattr(self.cfg, "write_paths", None) or [])
+        bench = str(getattr(self.cfg, "benchmark_name", "") or self.benchmark)
+        out: list[tuple[str, str]] = []
+        for rel in changed:
+            if rel.startswith(_UNCHECKED_PREFIXES) or os.path.basename(rel).startswith(".sandbox_probe_"):
+                continue
+            lay = layout.classify(rel)
+            if rel in prims:
+                continue
+            if shared and lay.kind == "query" and (lay.query != self.query or lay.bench != bench):
+                continue
+            ok, why = write_allowed(self.repo_root, rel, query=self.query, stage=self.stage,
+                                    write_paths=write_paths, pipeline_config=self.cfg, benchmark=self.benchmark)
+            if not ok:
+                out.append((rel, why))
+        return out
+
+
+def violation_message(stage: str, violations: list[tuple[str, str]]) -> str:
+    lines = "\n".join(f"  - {rel}: {why}" for rel, why in violations[:40])
+    more = f"\n  ... and {len(violations) - 40} more" if len(violations) > 40 else ""
+    return (f"stage {stage} wrote paths the write policy forbids; undo them (restore the files with git, "
+            f"delete new ones) and keep to the files you own:\n{lines}{more}")

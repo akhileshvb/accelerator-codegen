@@ -99,6 +99,12 @@ class PipelineConfig:
     workload_kind: str = ""
     engine_name: str = ""
     benchmark_name: str = ""
+    # bwrap | none: the OS sandbox of every C++-mode agent step (accel_pipeline.sandbox).
+    sandbox: str = "bwrap"
+    sandbox_extra_ro: list[str] = field(default_factory=list)
+    sandbox_extra_rw: list[str] = field(default_factory=list)
+    # enforce | warn | off: the post-stage ownership check (write_ownership.check_stage).
+    write_policy: str = "enforce"
 
 
 def _load_yaml(path: Path) -> dict[str, Any]:
@@ -306,6 +312,13 @@ def resolve_optimization_edit_paths(
     }
 
 
+def _choice(data: dict[str, Any], key: str, allowed: tuple[str, ...], default: str) -> str:
+    value = str(data.get(key, default))
+    if value not in allowed:
+        raise ValueError(f"{key}: {value!r} (expected one of {', '.join(allowed)})")
+    return value
+
+
 def load_pipeline_config(
     config_path: Path | None = None,
     repo_root: Path | None = None,
@@ -386,6 +399,10 @@ def load_pipeline_config(
         gates_dir=root / gates_rel,
         worker_id=str(os.environ.get("ACCEL_PIPELINE_WORKER_ID") or ""),
         shared_paths=shared_paths,
+        sandbox=_choice(data, "sandbox", ("bwrap", "none"), "bwrap"),
+        sandbox_extra_ro=[str(x) for x in data.get("sandbox_extra_ro") or []],
+        sandbox_extra_rw=[str(x) for x in data.get("sandbox_extra_rw") or []],
+        write_policy=_choice(data, "write_policy", ("enforce", "warn", "off"), "enforce"),
     )
 
     env_build = os.environ.get("ACCEL_PIPELINE_BUILD_DIR")
@@ -911,6 +928,13 @@ def _apply_optimization_block(pipeline_config: PipelineConfig, opt: dict[str, An
         worker_id=pipeline_config.worker_id,
         codex_home=pipeline_config.codex_home,
         shared_paths=list(pipeline_config.shared_paths or []),
+        workload_kind=pipeline_config.workload_kind,
+        engine_name=pipeline_config.engine_name,
+        benchmark_name=pipeline_config.benchmark_name,
+        sandbox=pipeline_config.sandbox,
+        sandbox_extra_ro=list(pipeline_config.sandbox_extra_ro),
+        sandbox_extra_rw=list(pipeline_config.sandbox_extra_rw),
+        write_policy=pipeline_config.write_policy,
     )
 
 
@@ -1025,6 +1049,13 @@ def _apply_workload_overrides(pipeline_config: PipelineConfig, workload: dict[st
         worker_id=pipeline_config.worker_id,
         codex_home=pipeline_config.codex_home,
         shared_paths=list(pipeline_config.shared_paths or []),
+        workload_kind=pipeline_config.workload_kind,
+        engine_name=pipeline_config.engine_name,
+        benchmark_name=pipeline_config.benchmark_name,
+        sandbox=pipeline_config.sandbox,
+        sandbox_extra_ro=list(pipeline_config.sandbox_extra_ro),
+        sandbox_extra_rw=list(pipeline_config.sandbox_extra_rw),
+        write_policy=pipeline_config.write_policy,
     )
     if has_opt:
         return _apply_optimization_block(merged, opt_block)

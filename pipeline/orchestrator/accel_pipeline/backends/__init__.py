@@ -43,7 +43,7 @@ def create_agent_backend(
 
     from accel_pipeline.backends.codex_exec import CodexExecBackend
 
-    return CodexExecBackend(
+    backend = CodexExecBackend(
         pipeline_config=pipeline_config,
         model_config=model_config,
         query=query,
@@ -52,6 +52,12 @@ def create_agent_backend(
         optimization_iter=optimization_iter,
         art_dir=art_dir,
     )
+    if getattr(pipeline_config, "sandbox", "none") == "bwrap":
+        from accel_pipeline import sandbox
+
+        backend.command_prefix = sandbox.cpp_prefix(pipeline_config)
+        backend.prompt_via_stdin = True  # the sandbox has its own /tmp: no task file to read back
+    return backend
 
 
 __all__ = [

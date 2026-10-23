@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import atexit
 import os
+import shutil
 import sys
 from pathlib import Path
 
@@ -154,6 +155,19 @@ def _run_stage(
         raise ValueError(f"unknown stage: {stage}")
 
 
+def _sandbox_preflight(pipeline_config, query: int) -> None:
+    """Stop at run start when the agents' bwrap sandbox is unavailable or does not hold."""
+    from accel_pipeline import sandbox
+
+    if not shutil.which("bwrap"):
+        raise SystemExit("sandbox: bwrap is selected but bubblewrap is not installed "
+                         "(install it, or set sandbox: none in pipeline/config/default.yaml)")
+    check = sandbox.cpp_selfcheck(pipeline_config, query)
+    print(f"sandbox (bwrap) selfcheck: {'ok' if check['ok'] else check['problems']}", file=sys.stderr)
+    if not check["ok"]:
+        raise SystemExit(f"agent sandbox selfcheck failed: {check['problems']}")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Accelerator codegen agent pipeline")
     parser.add_argument("--query", type=int, required=True)
@@ -252,6 +266,10 @@ def main(argv: list[str] | None = None) -> int:
 
     model_overrides = _parse_model_overrides(args.models)
 
+    mode = args.mode or str(workload.get("mode") or "cpp")
+    if mode == "cpp" and not args.dry_run and pipeline_config.sandbox == "bwrap":
+        _sandbox_preflight(pipeline_config, query)
+
     if workload.get("workload_kind") == "engine_backend":
         from accel_pipeline.stages import engine_backend as engine_backend_stage
 
@@ -284,7 +302,6 @@ def main(argv: list[str] | None = None) -> int:
     # Verus mode: same front end, then the Verus pipeline's own stages.  It
     # runs on DuckDB (in-process; no host bootstrap) and skips the C++
     # base-accelerator prerequisite: it must not see C++ accelerators.
-    mode = args.mode or str(workload.get("mode") or "cpp")
     if mode == "verus":
         from accel_pipeline.verus.run import run_verus_pipeline
 

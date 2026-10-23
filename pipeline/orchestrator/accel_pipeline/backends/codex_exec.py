@@ -148,6 +148,38 @@ class CodexExecBackend:
         ]
 
     def run_stage(self, request: StageRunRequest) -> StageRunResult:
+        """One codex step, followed by the ownership check of what it changed (cfg.write_policy)."""
+        cfg = self._pipeline_config
+        policy = str(getattr(cfg, "write_policy", "enforce"))
+        if policy == "off" or self._stage.startswith("verus_"):  # Verus steps work in a sandboxed workspace
+            return self._run_codex(request)
+        from accel_pipeline.write_ownership import StageWriteCheck, violation_message
+
+        check = StageWriteCheck(cfg.repo_root, query=self._query, stage=self._stage, pipeline_config=cfg)
+        result = self._run_codex(request)
+        bad = check.violations()
+        if not bad:
+            return result
+        result.metadata["write_violations"] = [{"path": rel, "rule": why} for rel, why in bad]
+        self._log_violations(policy, bad)
+        if policy == "enforce":
+            result.metadata.pop("timed_out", None)
+            result.status = "error"
+            result.error = "\n\n".join(filter(None, [violation_message(self._stage, bad), result.error]))
+        return result
+
+    def _log_violations(self, policy: str, bad: list[tuple[str, str]]) -> None:
+        from accel_pipeline.config import load_run_workload
+        from accel_pipeline.pipeline_log import log_event
+
+        try:
+            workload = load_run_workload(self._pipeline_config, self._workload_name) if self._workload_name else None
+        except Exception:  # logging must not fail the stage
+            workload = None
+        log_event(self._pipeline_config.repo_root, self._query, workload, "write_policy_violation",
+                  stage=self._stage, policy=policy, paths=[rel for rel, _ in bad])
+
+    def _run_codex(self, request: StageRunRequest) -> StageRunResult:
         started = time.monotonic()
         started_wall = time.time()
         codex_bin = self._resolve_codex_bin()

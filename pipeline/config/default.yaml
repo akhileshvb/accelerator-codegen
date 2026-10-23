@@ -1,4 +1,16 @@
 build_dir: build-release
+
+# The agents' OS sandbox (accel_pipeline/sandbox.py): every C++-mode codex step and its MCP
+# server see the run's tree (substrate/ and workloads/ read-only), the build and codex dirs,
+# the engine fork checkout and datasets (read-only), and the docker socket for engines whose host.sh
+# uses docker.  `none` runs codex unsandboxed.  Extra host paths, absolute:
+sandbox: bwrap
+sandbox_extra_ro: []
+sandbox_extra_rw: []
+# The post-stage ownership check (write_ownership.check_stage): paths an agent stage changed
+# against the write policy (other queries' dirs, backends/, prims/, prooflib/, ...).
+# enforce: the stage fails listing them; warn: logged to the run's events; off: skipped.
+write_policy: enforce
 # Query-accelerator workloads list their `engines:`; a run picks one (--engine / pack `engines:`).
 
 # Paths that require the shared-file lease under concurrent pack workers.

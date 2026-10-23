@@ -27,17 +27,13 @@ comes from here instead of codex's own sandbox.
 from __future__ import annotations
 
 import os
-import shutil
 import subprocess
-import sys
 from pathlib import Path
 from typing import Any
 
+from accel_pipeline import sandbox as shared
+from accel_pipeline.sandbox import HOME, READONLY_LAYERS
 from accel_pipeline.verus.context import VerusContext
-
-HOME = Path.home()
-# Repo layers mounted read-only inside the sandbox (see accel_pipeline.layout).
-READONLY_LAYERS = ("substrate", "workloads")
 
 
 def _duckdb_root(ctx: VerusContext) -> Path | None:
@@ -47,28 +43,14 @@ def _duckdb_root(ctx: VerusContext) -> Path | None:
     return None
 
 
-def _codex_package() -> list[Path]:
-    """The codex launcher and the package it resolves to."""
-    out: list[Path] = []
-    exe = shutil.which("codex")
-    if exe:
-        out.append(Path(exe))
-        out.append(Path(os.path.realpath(exe)).parent.parent)  # .../@openai/codex
-    return out
-
-
 def mounts(ctx: VerusContext) -> list[tuple[str, Path, Path]]:
     """(mode, source, destination) for every bind beyond the system ones."""
     root = ctx.root.resolve()
     binds: list[tuple[str, Path, Path]] = [("rw", root, root)]
-    # Layers no agent may write, re-bound read-only over the tree (later binds win):
-    # substrate/** (never writable) and workloads/** (the query SQL and schemas).
+    # substrate/** and workloads/** re-bound read-only over the tree (later binds win).
     # accelerators/prooflib/ stays writable: prooflib_publish runs in the MCP server,
     # inside this sandbox.
-    for layer in ctx.setting("sandbox_readonly_layers", list(READONLY_LAYERS)) or []:
-        p = root / str(layer)
-        if p.is_dir():
-            binds.append(("ro", p, p))
+    binds += shared.readonly_layer_binds(root, ctx.setting("sandbox_readonly_layers", list(READONLY_LAYERS)))
     if (duck := _duckdb_root(ctx)) is not None:
         binds.append(("ro", duck, duck))
     # the Verus binary directory (VERUS_BIN's, else the tree's tools/verus),
@@ -87,55 +69,21 @@ def mounts(ctx: VerusContext) -> list[tuple[str, Path, Path]]:
     target.mkdir(parents=True, exist_ok=True)
     if not target.is_relative_to(root):
         binds.append(("rw", target, target))
-    for p in _codex_package():
-        # the launcher stays a symlink (codex finds its native binary from its real path)
-        binds.append(("symlink", Path(os.readlink(p)), p) if p.is_symlink() else ("ro", p, p))
+    binds += shared.codex_binds()
     # databases or a python environment outside the tree
     for f in (ctx.test_db, ctx.bench_db):
         if f and Path(f).exists():
             d = Path(f).resolve().parent
             if not any(d.is_relative_to(src) for _, src, _ in binds):
                 binds.append(("ro", d, d))
-    for prefix in {Path(sys.prefix).resolve(), Path(sys.base_prefix).resolve()}:
-        if prefix.is_relative_to(HOME) and not prefix.is_relative_to(root):
-            binds.append(("ro", prefix, prefix))
-    for extra in ctx.setting("sandbox_extra_ro", []) or []:
-        p = Path(extra).resolve()
-        binds.append(("ro", p, p))
+    binds += shared.python_prefix_binds(root)
+    binds += shared.extra_binds("ro", ctx.setting("sandbox_extra_ro", []))
     return binds
 
 
 def prefix(ctx: VerusContext, cwd: Path) -> list[str]:
     """The bwrap command line that runs a command in the sandbox (append the command)."""
-    bwrap = shutil.which("bwrap")
-    if not bwrap:
-        raise RuntimeError("verus.sandbox is bwrap but bubblewrap is not installed (or set verus.sandbox: none)")
-    args = [bwrap, "--unshare-all", "--share-net", "--die-with-parent",
-            "--ro-bind", "/usr", "/usr", "--ro-bind", "/etc", "/etc"]
-    for link in ("bin", "lib", "lib64", "sbin"):
-        p = Path("/") / link
-        if p.is_symlink():
-            args += ["--symlink", os.readlink(p), str(p)]
-        elif p.is_dir():
-            args += ["--ro-bind", str(p), str(p)]
-    if Path("/opt").is_dir():
-        args += ["--ro-bind", "/opt", "/opt"]
-    args += ["--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp", "--tmpfs", "/run"]
-    # /etc/resolv.conf may point into /run (systemd-resolved)
-    resolv = Path(os.path.realpath("/etc/resolv.conf"))
-    if resolv.is_relative_to("/run") and resolv.parent.is_dir():
-        args += ["--ro-bind", str(resolv.parent), str(resolv.parent)]
-    args += ["--tmpfs", "/home"]
-    if not HOME.is_relative_to("/home"):
-        args += ["--tmpfs", str(HOME)]
-    args += ["--dir", str(HOME)]
-    for mode, src, dst in mounts(ctx):
-        if mode == "symlink":
-            args += ["--symlink", str(src), str(dst)]
-        else:
-            args += ["--bind" if mode == "rw" else "--ro-bind", str(src), str(dst)]
-    args += ["--chdir", str(cwd)]
-    return args
+    return shared.prefix(mounts(ctx), cwd, setting="verus.sandbox")
 
 
 def selfcheck(ctx: VerusContext) -> dict[str, Any]:

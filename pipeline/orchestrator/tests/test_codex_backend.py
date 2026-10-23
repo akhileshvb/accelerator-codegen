@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -148,6 +149,7 @@ def test_codex_exec_sets_codex_home(monkeypatch, tmp_path):
     from accel_pipeline.config import load_pipeline_config, load_model_config
 
     pipeline_config = load_pipeline_config(repo_root=REPO_ROOT)
+    pipeline_config = replace(pipeline_config, write_policy="off")  # the fake subprocess.run sees only codex
     model = load_model_config(REPO_ROOT / "pipeline" / "config" / "models.yaml", repo_root=REPO_ROOT)
     backend = CodexExecBackend(
         pipeline_config=pipeline_config,
@@ -259,6 +261,7 @@ def test_codex_exec_whitelists_engine_impl_mcp_tools(monkeypatch):
     from accel_pipeline.config import load_pipeline_config, load_model_config
 
     pipeline_config = load_pipeline_config(repo_root=REPO_ROOT)
+    pipeline_config = replace(pipeline_config, write_policy="off")  # the fake subprocess.run sees only codex
     model = load_model_config(REPO_ROOT / "pipeline" / "config" / "models.yaml", repo_root=REPO_ROOT)
     backend = CodexExecBackend(
         pipeline_config=pipeline_config,
