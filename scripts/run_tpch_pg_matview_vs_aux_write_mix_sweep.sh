@@ -7,7 +7,7 @@
 #
 # Prerequisites:
 #   Matviews applied (or this script applies them); extension registered.
-#   Mutation capture function present (postgres_register_tpch_all.sql).
+#   Mutation capture function present (backends/postgres/host/register.sql, installed by host.sh build).
 #
 # Usage:
 #   ACCEL_PG_ALLOW_SMALL_DB=1 TPCH_PG_DB=accel_tpch_sf1 \
@@ -77,7 +77,7 @@ docker exec -e PGPASSWORD="${PGPASSWORD}" "${NAME}" \
 
 # Ensure capture function + shared TPC-H mutation triggers exist for aux ApplyDelta.
 if ! psql -d "${DB}" -tAc "SELECT 1 FROM pg_proc WHERE proname = 'accel_aux_capture_transition'" | grep -q 1; then
-  echo "ERROR: missing accel_aux_capture_transition — run postgres_register_tpch_all.sql" >&2
+  echo "ERROR: missing accel_aux_capture_transition — run backends/postgres/host.sh build" >&2
   exit 1
 fi
 echo "=== ensure mutation triggers ===" | tee -a "${LOG}"

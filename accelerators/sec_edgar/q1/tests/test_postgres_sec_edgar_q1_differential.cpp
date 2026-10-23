@@ -147,7 +147,7 @@ void SetupScratch() {
   c.Query("CREATE EXTENSION accelerator_codegen_postgres");
   const char *src = std::getenv("ACCEL_SRC");
   const std::string root = src ? src : ".";
-  c.Query(ReadFile(root + "/scripts/postgres_accel_mutation_triggers.sql"));
+  c.Query(ReadFile(root + "/backends/postgres/host/capture_triggers.sql"));
   c.Query(
       "CREATE TABLE pre (adsh VARCHAR(20), report INTEGER, line INTEGER, stmt VARCHAR(2), inpth INTEGER, "
       "rfile VARCHAR(1), tag VARCHAR(256), version VARCHAR(20), plabel VARCHAR(1024), negating INTEGER)");

@@ -316,7 +316,7 @@ def install_module(s):
     s.run("DROP EXTENSION IF EXISTS accelerator_codegen_postgres CASCADE")
     s.run("CREATE EXTENSION accelerator_codegen_postgres")
     # Fixed SEC-EDGAR capture ids (same as the instance template): num=2 pre=3.
-    s.run("\\i %s" % os.path.join(SCRIPTS, "postgres_accel_mutation_triggers.sql"))
+    s.run("\\i %s" % os.path.join(ROOT, "backends", "postgres", "host", "capture_triggers.sql"))
     s.run("SELECT create_accel_mutation_triggers('num','accel_codegen_sec_edgar')")
     s.run("SELECT create_accel_mutation_triggers('pre','accel_codegen_sec_edgar')")
 

@@ -10,7 +10,7 @@
 // queries/q2.sql for random (fy, uom) draws including NULL and edge values.
 //
 //   test_postgres_sec_edgar_q2_differential [seed=1] [transactions=150] [keep]
-// Run from the repository root (reads scripts/postgres_accel_mutation_triggers.sql).
+// Run from the repository root (reads backends/postgres/host/capture_triggers.sql).
 #include <fstream>
 #include <memory>
 #include <random>
@@ -91,8 +91,8 @@ struct Test {
     }
     w->Exec(schema);
     w->Exec("CREATE EXTENSION accelerator_codegen_postgres");
-    std::ifstream trig("scripts/postgres_accel_mutation_triggers.sql");
-    Require(trig.good(), "scripts/postgres_accel_mutation_triggers.sql");
+    std::ifstream trig("backends/postgres/host/capture_triggers.sql");
+    Require(trig.good(), "backends/postgres/host/capture_triggers.sql");
     std::stringstream ts;
     ts << trig.rdbuf();
     w->Exec(ts.str());

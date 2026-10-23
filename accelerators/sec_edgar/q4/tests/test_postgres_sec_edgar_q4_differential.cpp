@@ -267,7 +267,7 @@ void InstallExtension(const std::string &db) {
   Run(Psql(db, "-v ON_ERROR_STOP=1 -q -c " +
                    ShellQuote("CREATE EXTENSION IF NOT EXISTS accelerator_codegen_postgres")));
   Run(Psql(db, "-v ON_ERROR_STOP=1 -q -f " +
-                   ShellQuote(std::string(ACCEL_SRC_DIR) + "/scripts/postgres_accel_mutation_triggers.sql")));
+                   ShellQuote(std::string(ACCEL_SRC_DIR) + "/backends/postgres/host/capture_triggers.sql")));
 }
 
 std::string PgSql(std::string sql) {

@@ -446,7 +446,7 @@ def drop_tpch_mutation_triggers(cur) -> None:
 
 def install_tpch_mutation_triggers(cur) -> None:
     # Shared statement-level capture (lineitem=1 … region=8).
-    sql_path = ROOT / "scripts" / "postgres_accel_mutation_triggers.sql"
+    sql_path = ROOT / "backends" / "postgres" / "host" / "capture_triggers.sql"
     cur.execute(sql_path.read_text(encoding="utf-8"))
 
 

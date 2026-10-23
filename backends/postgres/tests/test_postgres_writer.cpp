@@ -10,7 +10,7 @@
 //
 // Needs a server with the module installed (PGPORT, default 5432). It creates
 // the database wt_test afresh (so the shared registry starts empty) and reads
-// scripts/postgres_accel_mutation_triggers.sql from ACCEL_SRC (default
+// backends/postgres/host/capture_triggers.sql from ACCEL_SRC (default
 // /accel-src). Exit code: the number of failed checks.
 #include <libpq-fe.h>
 
@@ -181,7 +181,7 @@ void Setup() {
       << "CREATE TABLE t7(seen bigint);\n"
       << "CREATE PROCEDURE wt_burst(n int) LANGUAGE plpgsql AS $$ BEGIN\n"
       << "  FOR i IN 1..n LOOP INSERT INTO t1(id) VALUES (0); COMMIT; END LOOP; END $$;\n";
-  const std::string triggers_path = Env("ACCEL_SRC", "/accel-src") + "/scripts/postgres_accel_mutation_triggers.sql";
+  const std::string triggers_path = Env("ACCEL_SRC", "/accel-src") + "/backends/postgres/host/capture_triggers.sql";
   std::ifstream triggers(triggers_path);
   Check(triggers.good(), "read " + triggers_path);
   sql << triggers.rdbuf();

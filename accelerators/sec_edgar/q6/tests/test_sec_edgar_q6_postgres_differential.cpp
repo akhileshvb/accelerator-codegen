@@ -31,7 +31,7 @@
 //       Read p50 (accel vs plain SQL), build time and write overhead.
 //
 // Connection: libpq environment (PGHOST, PGPORT, PGUSER, PGPASSWORD).
-// ACCEL_Q6_TRIGGER_SQL = path of scripts/postgres_accel_mutation_triggers.sql.
+// ACCEL_Q6_TRIGGER_SQL = path of backends/postgres/host/capture_triggers.sql.
 
 #include <libpq-fe.h>
 
@@ -393,7 +393,7 @@ void ReadFileOrFail(const std::string &path, std::string &out) {
 
 void SetupSynthetic() {
   const char *trig = std::getenv("ACCEL_Q6_TRIGGER_SQL");
-  if (!trig) Fail("set ACCEL_Q6_TRIGGER_SQL=<repo>/scripts/postgres_accel_mutation_triggers.sql");
+  if (!trig) Fail("set ACCEL_Q6_TRIGGER_SQL=<repo>/backends/postgres/host/capture_triggers.sql");
   std::string trigger_sql;
   ReadFileOrFail(trig, trigger_sql);
   {

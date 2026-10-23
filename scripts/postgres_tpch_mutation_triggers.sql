@@ -1,4 +1,4 @@
-\ir postgres_accel_mutation_triggers.sql
+\ir ../backends/postgres/host/capture_triggers.sql
 
 -- One statement-level trigger set per table.
 SELECT create_accel_mutation_triggers('lineitem', 'accel_codegen_tpch');
