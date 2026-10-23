@@ -1,12 +1,6 @@
 benchmark_name: sec_edgar
 display_name: SEC-EDGAR
 artifact_namespace: sec_edgar
-header_prefix: sec_edgar_q
-function_prefix: accel_sec_edgar_q
-create_fn_prefix: CreateSecEdgarQ
-test_target_prefix: test_sec_edgar_q
-bench_target_prefix: benchmark_sec_edgar_q
-ctest_smoke_suffix: _smoke_test
 dataset_key: sec_edgar_sf3
 db_env_var: ACCEL_SEC_EDGAR_DB
 ctest_resource_lock: sec_edgar_db

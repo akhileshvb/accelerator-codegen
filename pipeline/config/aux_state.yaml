@@ -44,17 +44,6 @@ aux_bench_sweep:
   bench_base_write_samples: 3
   skip_duckdb_ref: false
 
-# Fast smoke sweep for development only (not comparable across scale factors).
-aux_bench_sweep_fast:
-  write_frequencies: [0, 10]
-  suites: lineitem_only
-  bench_warmup: 1
-  bench_queries: 5
-  bench_ref_samples: 0
-  bench_base_write_samples: 0
-  skip_duckdb_ref: true
-  bench_scan_limit: 100000
-
 # Per-attempt quick A/B: always 0% (read axis) plus randomly sampled write mixes
 # re-drawn every attempt so agents cannot hill-climb on a single write %. Within
 # one attempt, frequencies are locked for multi-sample benches. Accept/reject uses
@@ -91,7 +80,6 @@ optimization:
   skip_confirmation: true
   skip_per_attempt_correctness: true
   two_phase_hypothesis_patch: true
-  experimental_chain_cap: 3
   # Agent stops with OPTIMIZATION_SATURATED when stuck (no numeric floors).
   early_stop:
     enabled: true
@@ -161,7 +149,3 @@ max_structural_reanalysis: 2
 speedup_verification:
   min_speedup_vs_base: 2.0
   min_work_reduction_pct: 50
-  metric_preference:
-    - wall_time
-    - scanned_rows
-    - operator_time

@@ -114,8 +114,6 @@ public:
   // The engine's attribute numbers (0-based) of table.columns, by name.
   virtual std::vector<int32_t> Attnums(const std::string &table,
                                        const std::vector<std::string> &columns) = 0;
-  // `column IN (keys)` (FALSE for none); engines may override.
-  virtual std::string KeyIn(const std::string &column, const std::vector<int64_t> &keys) const;
   // A quoted identifier.
   virtual std::string Quote(const std::string &identifier) const;
 };

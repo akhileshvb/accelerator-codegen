@@ -59,7 +59,6 @@ class PipelineConfig:
     optimization_reject_threshold_pct: float = 2.0
     optimization_consecutive_fail_stop: int = 0
     optimization_quick_benchmark_samples: int = 3
-    optimization_confirmation_samples: int = 3
     optimization_context_max_chars: int = 80_000
     optimization_context_max_lines: int = 1200
     optimization_bootstrap_max_chars: int = 300_000
@@ -354,7 +353,6 @@ def load_pipeline_config(
         optimization_reject_threshold_pct=float(opt.get("reject_threshold_pct", 2.0)),
         optimization_consecutive_fail_stop=int(opt.get("consecutive_fail_stop", 0)),
         optimization_quick_benchmark_samples=int(opt.get("quick_benchmark_samples", 3)),
-        optimization_confirmation_samples=int(opt.get("confirmation_samples", 3)),
         optimization_context_max_chars=int(opt.get("context_max_chars", 80_000)),
         optimization_context_max_lines=int(opt.get("context_max_lines", 1200)),
         optimization_bootstrap_max_chars=int(opt.get("bootstrap_max_chars", 300_000)),
@@ -821,9 +819,6 @@ def _apply_optimization_block(pipeline_config: PipelineConfig, opt: dict[str, An
         optimization_quick_benchmark_samples=int(
             opt.get("quick_benchmark_samples", pipeline_config.optimization_quick_benchmark_samples)
         ),
-        optimization_confirmation_samples=int(
-            opt.get("confirmation_samples", pipeline_config.optimization_confirmation_samples)
-        ),
         optimization_context_max_chars=int(
             opt.get("context_max_chars", pipeline_config.optimization_context_max_chars)
         ),
@@ -998,7 +993,6 @@ def _apply_workload_overrides(pipeline_config: PipelineConfig, workload: dict[st
         optimization_reject_threshold_pct=pipeline_config.optimization_reject_threshold_pct,
         optimization_consecutive_fail_stop=pipeline_config.optimization_consecutive_fail_stop,
         optimization_quick_benchmark_samples=pipeline_config.optimization_quick_benchmark_samples,
-        optimization_confirmation_samples=pipeline_config.optimization_confirmation_samples,
         optimization_context_max_chars=pipeline_config.optimization_context_max_chars,
         optimization_context_max_lines=pipeline_config.optimization_context_max_lines,
         optimization_bootstrap_max_chars=pipeline_config.optimization_bootstrap_max_chars,

@@ -27,7 +27,6 @@ parallel_stages: true
 # cargo_target_dir: ...
 
 stages:
-  spec_audit_rounds: 1          # faithfulness audit of the generated spec
   reuse_spec_audit: true        # skip it when an accepted audit of the same SQL + schema + spec exists
   analysis_revisions: 2         # critic -> analysis revision rounds (analysis revises in its own session)
   adversarial_revisions: 2      # strengthen rounds when the fault self-check misses a bug

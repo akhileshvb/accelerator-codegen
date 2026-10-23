@@ -413,16 +413,6 @@ def write_optimization_feedback(
     return diagnosis
 
 
-def load_optimization_feedback_text(art: Path) -> str:
-    md_path = art / "optimization_feedback.md"
-    if md_path.is_file():
-        return md_path.read_text(encoding="utf-8")
-    json_path = art / "optimization_feedback.json"
-    if json_path.is_file():
-        return json.dumps(json.loads(json_path.read_text(encoding="utf-8")), indent=2)
-    return ""
-
-
 def load_base_optimization_state(art: Path) -> dict[str, Any]:
     path = art / "optimization_state.json"
     if not path.is_file():

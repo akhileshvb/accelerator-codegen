@@ -12,10 +12,9 @@ import fnmatch
 import json
 import os
 import time
-from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 
 DEFAULT_SHARED_PATH_GLOBS = (
     "CMakeLists.txt",
@@ -240,25 +239,6 @@ class SharedFileLease:
         return self.acquire(
             holder, timeout_sec=timeout_sec, reason=reason, paths=paths
         )
-
-
-@contextmanager
-def hold_shared_lease(
-    repo_root: Path,
-    holder: str,
-    *,
-    timeout_sec: float = 600.0,
-    reason: str = "",
-    paths: list[str] | None = None,
-) -> Iterator[LeaseInfo]:
-    lease = SharedFileLease(repo_root)
-    info = lease.acquire(
-        holder, timeout_sec=timeout_sec, reason=reason, paths=paths
-    )
-    try:
-        yield info
-    finally:
-        lease.release(holder)
 
 
 def sticky_holder() -> str | None:

@@ -7,17 +7,6 @@ from typing import Any
 from accel_pipeline.config import PipelineConfig
 from accel_pipeline.gates import run_gate
 
-ENGINE_LAYER_GATES = (
-    "engine_build",
-    "engine_capture",
-    "engine_epochs",
-    "engine_scan",
-    "engine_runtime",
-    "engine_host",
-    "engine_api_conformance",
-    "engine_adversarial",
-)
-
 
 def layer_gate_from_stage(stage: str, workload: dict[str, Any] | None = None) -> str | None:
     """Map ``impl_epochs`` to the gate of that layer in the workload. None when this is not a layer impl stage."""

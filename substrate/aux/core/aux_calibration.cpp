@@ -252,14 +252,7 @@ WriteCalibrationResult CalibrateFromWrites(const std::vector<CalibrationWrite> &
   const bool rebuild_once = once_env && std::string(once_env) == "1";
   std::vector<std::pair<std::size_t, double>> delta, partition;
   std::vector<double> all_runs;
-  // ACCEL_AUX_CALIBRATION_SKIP_WRITES="all rows,1 year": writes (by name) too
-  // large to apply on the calibration database; refresh-sized writes remain.
-  const char *skip_env = std::getenv("ACCEL_AUX_CALIBRATION_SKIP_WRITES");
-  const std::string skipped = skip_env ? std::string(",") + skip_env + "," : "";
   for (const auto &write : writes) {
-    if (skipped.find("," + write.name + ",") != std::string::npos) {
-      continue;
-    }
     WriteCalibrationSample sample;
     sample.name = write.name;
     // The sizes the module reports to the cost model (an UPDATE is two delta

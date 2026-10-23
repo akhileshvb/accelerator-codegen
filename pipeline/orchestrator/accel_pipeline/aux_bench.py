@@ -11,33 +11,12 @@ from accel_pipeline.paths import query_artifacts_dir
 from accel_pipeline.optimization_signals import STORE_DIAGNOSTIC_FIELDS, coerce_diagnostic_field
 
 
-def _artifacts_dir(repo_root: Path, query: int, workload: dict[str, Any] | None = None) -> Path:
-    return query_artifacts_dir(repo_root, query, workload=workload)
-
-
 def bench_summary_path(repo_root: Path, query: int, workload: dict[str, Any] | None = None) -> Path:
-    return _artifacts_dir(repo_root, query, workload) / "aux_bench_summary.json"
+    return query_artifacts_dir(repo_root, query, workload=workload) / "aux_bench_summary.json"
 
 
 def optimization_state_path(repo_root: Path, query: int, workload: dict[str, Any] | None = None) -> Path:
-    return _artifacts_dir(repo_root, query, workload) / "optimization_state.json"
-
-
-def sweep_results_path(
-    repo_root: Path,
-    query: int,
-    build_dir: Path | None = None,
-    *,
-    workload: dict[str, Any] | None = None,
-) -> Path:
-    suffix = "q{query}_aux_bench_sf1"
-    if workload:
-        suffix = str(workload.get("aux_bench_work_dir_suffix", suffix.format(query=query)))
-    else:
-        suffix = suffix.format(query=query)
-    if build_dir is not None:
-        return build_dir / suffix / "results.csv"
-    return repo_root / "build-release" / suffix / "results.csv"
+    return query_artifacts_dir(repo_root, query, workload=workload) / "optimization_state.json"
 
 
 def _normalize_sweep_row_keys(row: dict[str, str]) -> dict[str, str]:
@@ -448,16 +427,6 @@ def format_bench_experiment_log_line(
         f"candidate={state.get('active_candidate_id', '?')}{improved}; "
         f"{' | '.join(freq_bits)}"
     )
-
-
-def list_viable_candidate_ids(analysis: dict[str, Any]) -> list[str]:
-    search = analysis.get("state_candidate_search", {})
-    candidates = search.get("candidates", [])
-    return [
-        str(c.get("id"))
-        for c in candidates
-        if isinstance(c, dict) and c.get("viability") == "viable" and c.get("id")
-    ]
 
 
 def _normalize_bench_change_kind(change_kind: str) -> str:

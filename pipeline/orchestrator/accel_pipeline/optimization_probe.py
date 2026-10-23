@@ -2,14 +2,12 @@
 
 from __future__ import annotations
 
-import json
 import os
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
 from accel_pipeline.config import PipelineConfig, resolve_workload_paths
-from accel_pipeline.paths import query_artifacts_dir
 from accel_pipeline.optimization_smoke import _smoke_regex
 
 
@@ -75,37 +73,3 @@ def _summarize_probe_failure(output: str) -> str:
     markers = ("FAILED", "error:", "Assertion", "NULL", "mismatch", "expected")
     lines = [line.strip() for line in output.splitlines() if any(m in line for m in markers)]
     return "\n".join(lines[-12:])
-
-
-def run_optimization_probe_gate(
-    pipeline_config: PipelineConfig,
-    workload: dict,
-    query: int,
-) -> ProbeResult:
-    script = pipeline_config.repo_root / "pipeline/gates/run_aux_optimization_probe.sh"
-    if not script.is_file():
-        return run_optimization_probe(pipeline_config, workload, query)
-    proc = subprocess.run(
-        ["bash", str(script), str(query)],
-        cwd=pipeline_config.repo_root,
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=180,
-    )
-    output = (proc.stdout or "") + (proc.stderr or "")
-    gate_json = query_artifacts_dir(pipeline_config.repo_root, query, workload=workload) / "gates/aux_optimization_probe.json"
-    diff_summary = ""
-    if gate_json.is_file():
-        try:
-            payload = json.loads(gate_json.read_text(encoding="utf-8"))
-            diff_summary = str(payload.get("log_tail", ""))[-2000:]
-        except json.JSONDecodeError:
-            pass
-    paths = resolve_workload_paths(pipeline_config, workload, query)
-    return ProbeResult(
-        passed=proc.returncode == 0,
-        output=output[-4000:],
-        regex=_smoke_regex(workload, paths),
-        diff_summary=diff_summary or _summarize_probe_failure(output),
-    )

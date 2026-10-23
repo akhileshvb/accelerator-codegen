@@ -96,13 +96,3 @@ def make_model_id(
         raise ValueError(f"unsupported provider: {provider!r}")
     _require_api_key(model_config)
     return resolve_preset(stage, model_config, overrides)
-
-
-def resolve_agent_model(
-    stage: str,
-    pipeline_config: PipelineConfig,
-    model_config: ModelConfig,
-    overrides: dict[str, str] | None = None,
-) -> str:
-    """Return the model passed to the agent backend."""
-    return make_model_id(stage, pipeline_config, model_config, overrides)

@@ -104,8 +104,7 @@ public:
     // the engine/module supplies this; see aux_state_footprint.hpp).
     std::function<std::size_t(const std::shared_ptr<const void> &)> payload_bytes;
     // Destroy dropped versions on the background reclaimer thread, so a
-    // commit never pays for freeing a large old state. Default on (the
-    // process-wide ACCEL_RECLAIM_ASYNC=0 still forces inline destruction).
+    // commit never pays for freeing a large old state.
     bool async_reclaim = true;
   };
 
@@ -148,25 +147,8 @@ public:
   void Install(std::vector<core::StateImage> images, core::AcceleratorId accelerator);
   void Install(std::vector<core::StateImage> images, core::AcceleratorId accelerator,
                Epoch from_epoch);
-  // For a rebuild that may race commits (built outside any commit, from data
-  // that may or may not include an in-flight write): installs only if the
-  // store has not changed since ChangeCount() returned
-  // `expected_change_count` and no commit of `accelerator` is pending.
-  // Returns false (nothing installed) otherwise; the caller discards the build.
-  bool InstallIfUnchanged(std::vector<core::StateImage> images,
-                          const core::AcceleratorId &accelerator, uint64_t expected_change_count);
-  // Bumped by every change (commits, installs, invalidations).
-  uint64_t ChangeCount() const;
-  // True if some accelerator has no newest state, or one with an invalid
-  // partition (Execute should rebuild).
-  bool NeedsRebuild() const;
   std::size_t ValidPartitionCount() const;
   std::size_t TotalPartitionCount() const;
-  // Lock-free approximation of TotalPartitionCount (refreshed on every
-  // change), for diagnostics on the read path.
-  std::size_t TotalPartitionCountHint() const {
-    return total_partitions_hint.load(std::memory_order_relaxed);
-  }
   std::size_t TotalVersionCount() const;
   // Old versions dropped because of Options::max_version_bytes.
   uint64_t VersionsDroppedByCap() const {
@@ -176,12 +158,11 @@ public:
   // barrier that returns once every queued batch is destroyed.
   static uint64_t ReclaimedBatchCount();
   static void DrainReclaimer();
-  bool HasPendingCommit() const;
 
   // Maximum wait for a pending commit. Default kWaitForPublish (no timeout:
   // a reader waits for the publish), or ACCEL_AUX_PENDING_WAIT_US. On a
   // timeout the accelerator reads as not visible.
-  static constexpr uint64_t kWaitForPublish = ~uint64_t {0};
+  static constexpr uint64_t kWaitForPublish = core::kWaitForPublish;
   void SetPendingWaitMicros(uint64_t micros);
 
   struct Partition {
@@ -242,7 +223,6 @@ private:
   void Reclaim(std::vector<StateVersion> &&dropped,
                std::shared_ptr<const PartitionSet> extra = nullptr);
   const PartitionSet *NewestLocked(const core::AcceleratorId &accelerator) const;
-  void RefreshHintLocked();
   void InstallLocked(std::vector<core::StateImage> images, const core::AcceleratorId &accelerator,
                      Epoch from_epoch, Epoch floor, std::vector<StateVersion> &dropped);
   // nullptr if unknown. Valid while the lock is held.
@@ -259,8 +239,6 @@ private:
   std::unordered_map<core::AcceleratorId, Accelerator> accelerators;
   // Which accelerator published each partition key (for reads by partition).
   std::unordered_map<PartitionKey, core::AcceleratorId> owner;
-  uint64_t change_count = 0;
-  std::atomic<std::size_t> total_partitions_hint {0};
   std::atomic<uint64_t> versions_dropped_by_cap {0};
 };
 

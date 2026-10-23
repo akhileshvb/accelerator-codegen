@@ -15,9 +15,6 @@ class PendingFeedback:
         if text:
             self._delta = text
 
-    def has_pending(self) -> bool:
-        return bool(self._delta.strip())
-
     def peek(self) -> str:
         return self._delta
 

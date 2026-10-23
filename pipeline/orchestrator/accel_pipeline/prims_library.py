@@ -36,6 +36,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
 
+from accel_pipeline.textutil import tail_marked
+
 PRIMS_REL = "accelerators/prims"
 README_REL = f"{PRIMS_REL}/README.md"
 TESTS_REL = f"{PRIMS_REL}/tests/test_prims.cpp"
@@ -108,10 +110,6 @@ def _run(cmd: list[str], *, cwd: Path, env: dict[str, str] | None = None, timeou
     except FileNotFoundError as exc:
         return 127, str(exc)
     return proc.returncode, (proc.stdout or "") + (proc.stderr or "")
-
-
-def _tail(text: str, n: int = 6000) -> str:
-    return text if len(text) <= n else "... [truncated]\n" + text[-n:]
 
 
 @contextmanager
@@ -387,7 +385,7 @@ def _rebuild_dependents(primary: Path, changed_existing: set[str], build_dir: Pa
                         "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON"], cwd=primary, env=env, timeout=1800)
         if rc != 0 or not (build_dir / "compile_commands.json").is_file():
             return _fail("cannot configure the main build tree to rebuild dependents of a changed header; "
-                         "nothing published", log_tail=_tail(out))
+                         "nothing published", log_tail=tail_marked(out))
     targets = sorted(_targets_for_sources(build_dir, sources))
     if not targets:
         return None
@@ -395,7 +393,7 @@ def _rebuild_dependents(primary: Path, changed_existing: set[str], build_dir: Pa
     rc, out = _run(["cmake", "--build", str(build_dir), "--target", *targets, "-j", jobs, "--", "-k"],
                    cwd=primary, env=env, timeout=3600)
     if rc != 0:
-        return _fail("a dependent no longer builds; nothing published", targets=targets, log_tail=_tail(out))
+        return _fail("a dependent no longer builds; nothing published", targets=targets, log_tail=tail_marked(out))
     rc, out = _run(["ctest", "--test-dir", str(build_dir), "--show-only=json-v1"], cwd=primary, env=env, timeout=300)
     names: list[str] = []
     if rc == 0:
@@ -412,7 +410,7 @@ def _rebuild_dependents(primary: Path, changed_existing: set[str], build_dir: Pa
                        cwd=primary, env=env, timeout=3600)
         if rc != 0:
             return _fail("a dependent's unit test fails; nothing published", targets=targets, tests=names,
-                         log_tail=_tail(out))
+                         log_tail=tail_marked(out))
     return None
 
 
@@ -533,11 +531,11 @@ def primitive_publish(
                                 str(os.cpu_count() or 4)], cwd=primary, env=env)
             if rc != 0:
                 restore()
-                return _fail("test_prims does not build; nothing published", log_tail=_tail(out))
+                return _fail("test_prims does not build; nothing published", log_tail=tail_marked(out))
             rc, out = _run([str(bdir / "test_prims")], cwd=primary, env=env, timeout=1800)
             if rc != 0:
                 restore()
-                return _fail("test_prims fails; nothing published", log_tail=_tail(out))
+                return _fail("test_prims fails; nothing published", log_tail=tail_marked(out))
             if changed_existing:
                 fail = _rebuild_dependents(primary, changed_existing,
                                            Path(dependent_build_dir) if dependent_build_dir else primary / "build-release", env)

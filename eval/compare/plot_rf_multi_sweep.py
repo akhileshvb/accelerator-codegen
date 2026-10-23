@@ -10,7 +10,7 @@ counted from the RF1 files, the point writes are not counted).  Writes <out_dir>
 <out_dir>/rf_multi_per_query.png (per query, workload speedup over DuckDB under the refresh stream,
 workload.py's workload_speedup_per_query, one bar per interval) and prints both tables.
 Write-rate sweep (a <out_dir> with wps<rate>/ subdirectories, [rep<k>/]multi_<system>.json inside; an uncapped/ run is
-ignored): writes <out_dir>/wps_sweep.png and prints a table (plot_wps_sweep.py is an alias).
+ignored): writes <out_dir>/wps_sweep.png and prints a table.
 Points are medians over the repetitions (each its own parameter draw), bars their min..max.  Panels, against the
 target write load:
   1. achieved write rate (refresh commits per minute / writes per second; below the target = the writer is saturated)

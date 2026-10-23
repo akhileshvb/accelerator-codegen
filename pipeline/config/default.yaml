@@ -38,10 +38,8 @@ optimization:
   max_attempts_per_iteration: 5
   improvement_threshold_pct: 3.0
   reject_threshold_pct: 2.0
-  aux_score_metric: read_only_query_speedup
   consecutive_fail_stop: 0  # 0 = never stop early within an iteration
   quick_benchmark_samples: 1
-  confirmation_samples: 1
   context_max_chars: 80000
   context_max_lines: 1200
   bootstrap_max_chars: 300000

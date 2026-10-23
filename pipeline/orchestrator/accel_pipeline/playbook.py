@@ -10,10 +10,6 @@ PLAYBOOK_PROPOSAL_JSON = "playbook_proposal.json"
 PLAYBOOK_TECHNIQUES_JSON = "playbook_techniques.json"
 
 
-def _artifacts_dir(repo_root: Path, query: int, workload: dict | None = None) -> Path:
-    return query_artifacts_dir(repo_root, query, workload=workload)
-
-
 def _shared_playbook_path(repo_root: Path, workload: dict | None) -> Path:
     engine = str((workload or {}).get("engine_name") or "")
     return pipeline_root(repo_root) / "artifacts" / "shared" / engine / "optimization_playbook.md"
@@ -90,10 +86,10 @@ def _format_playbook_appendix(
 
 def merge_playbook_proposal(repo_root: Path, query: int, *, workload: dict | None = None) -> bool:
     """Merge structured playbook proposal JSON into per-query technique memory and shared playbook."""
-    art = _artifacts_dir(repo_root, query, workload)
+    art = query_artifacts_dir(repo_root, query, workload=workload)
     proposal_json = art / PLAYBOOK_PROPOSAL_JSON
     if not proposal_json.is_file():
-        return merge_playbook_proposal_legacy(repo_root, query, workload=workload)
+        return False
 
     try:
         payload = json.loads(proposal_json.read_text(encoding="utf-8"))
@@ -125,29 +121,10 @@ def merge_playbook_proposal(repo_root: Path, query: int, *, workload: dict | Non
     return True
 
 
-def merge_playbook_proposal_legacy(repo_root: Path, query: int, *, workload: dict | None = None) -> bool:
-    """Fallback: append legacy markdown proposal if JSON is absent."""
-    art = _artifacts_dir(repo_root, query, workload=workload)
-    proposal = art / "playbook_proposal.md"
-    if not proposal.is_file():
-        return False
-
-    playbook = _shared_playbook_path(repo_root, workload)
-    text = proposal.read_text(encoding="utf-8").strip()
-    if not text:
-        return False
-
-    header = f"\n\n## Q{query} update (legacy)\n"
-    existing = playbook.read_text(encoding="utf-8") if playbook.is_file() else ""
-    playbook.parent.mkdir(parents=True, exist_ok=True)
-    playbook.write_text(existing.rstrip() + header + text + "\n", encoding="utf-8")
-    return True
-
-
 def append_experiment_log(
     repo_root: Path, query: int, line: str, *, workload: dict | None = None
 ) -> Path:
-    path = _artifacts_dir(repo_root, query, workload) / "experiment_log.md"
+    path = query_artifacts_dir(repo_root, query, workload=workload) / "experiment_log.md"
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as f:
         f.write(line.rstrip() + "\n")

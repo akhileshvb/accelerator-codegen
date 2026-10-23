@@ -24,19 +24,12 @@ namespace {
 // large state image (hundreds of ms for a big rebuilt aggregate) must not
 // delay the writer that has already published its new version. One lazily
 // started worker releases the batches in order; the destructor drains it, so
-// nothing outlives the process. ACCEL_RECLAIM_ASYNC=0 destroys inline.
+// nothing outlives the process.
 class VersionReclaimer {
 public:
   static VersionReclaimer &Instance() {
     static VersionReclaimer instance;
     return instance;
-  }
-  static bool Enabled() {
-    static const bool enabled = [] {
-      const char *env = std::getenv("ACCEL_RECLAIM_ASYNC");
-      return !(env && env[0] == '0');
-    }();
-    return enabled;
   }
   uint64_t Reclaimed() const { return reclaimed.load(); }
   // Returns once every batch deferred so far is destroyed.
@@ -90,16 +83,6 @@ private:
   std::thread worker;
   bool stop = false;
 };
-
-// Readers wait for a pending publish (no timeout) unless
-// ACCEL_AUX_PENDING_WAIT_US bounds the wait.
-uint64_t DefaultPendingWaitMicros() {
-  const char *value = std::getenv("ACCEL_AUX_PENDING_WAIT_US");
-  if (value && *value) {
-    return std::strtoull(value, nullptr, 10);
-  }
-  return VersionedAuxStore::kWaitForPublish;
-}
 
 thread_local AuxReadScope *t_scope = nullptr;
 
@@ -167,7 +150,7 @@ AuxReadScope::~AuxReadScope() {
 AuxReadScope *AuxReadScope::Current() { return t_scope; }
 
 VersionedAuxStore::VersionedAuxStore(Options options_p)
-    : options(std::move(options_p)), pending_wait_micros(DefaultPendingWaitMicros()) {}
+    : options(std::move(options_p)), pending_wait_micros(core::PendingWaitMicrosFromEnv()) {}
 
 VersionedAuxStore::Epoch VersionedAuxStore::CurrentEpoch() const {
   // Providers are called without the store lock (they may take the engine's
@@ -205,16 +188,6 @@ std::shared_ptr<const VersionedAuxStore::PartitionSet> MakeSet(VersionedAuxStore
   return set;
 }
 } // namespace
-
-void VersionedAuxStore::RefreshHintLocked() {
-  std::size_t n = 0;
-  for (const auto &entry : accelerators) {
-    if (!entry.second.versions.empty()) {
-      n += entry.second.versions.back().partitions->map.size();
-    }
-  }
-  total_partitions_hint.store(n, std::memory_order_relaxed);
-}
 
 const core::AcceleratorId *VersionedAuxStore::OwnerOfLocked(PartitionKey key) const {
   if (options.fixed_accelerator) {
@@ -332,7 +305,6 @@ void VersionedAuxStore::AppendLocked(const core::AcceleratorId &accelerator,
   }
   versions.erase(versions.begin(), versions.begin() + static_cast<std::ptrdiff_t>(keep_from));
   EnforceVersionCapLocked(accelerator, dropped);
-  RefreshHintLocked();
 }
 
 void VersionedAuxStore::EnforceVersionCapLocked(const core::AcceleratorId &accelerator,
@@ -380,7 +352,7 @@ void VersionedAuxStore::Reclaim(std::vector<StateVersion> &&dropped,
   if (dropped.empty() && !extra) {
     return;
   }
-  if (!options.async_reclaim || !VersionReclaimer::Enabled()) {
+  if (!options.async_reclaim) {
     return; // `dropped` (and `extra`) are destroyed here, off the lock
   }
   struct Garbage {
@@ -568,7 +540,6 @@ core::ValidityResult VersionedAuxStore::CheckValidity(const core::QueryKey &key,
 void VersionedAuxStore::Invalidate(const core::InvalidationPlan &plan) {
   std::vector<std::shared_ptr<const PartitionSet>> replaced; // freed after the lock is released
   std::unique_lock<WriterPreferringSharedMutex> guard(mutex);
-  change_count++;
   // Accelerators the plan touches: every one for AllPartitions, else the
   // owners of its partitions.
   std::vector<core::AcceleratorId> names;
@@ -605,7 +576,6 @@ void VersionedAuxStore::Invalidate(const core::InvalidationPlan &plan) {
       version.partitions = MakeSet(std::move(map));
     }
   }
-  RefreshHintLocked();
 }
 
 bool VersionedAuxStore::TryPublish(const core::StagedMaintenanceOutcome &staged,
@@ -619,7 +589,6 @@ bool VersionedAuxStore::TryPublish(const core::StagedMaintenanceOutcome &staged,
   std::vector<StateVersion> dropped; // destroyed after the lock is released
   std::vector<std::shared_ptr<const PartitionSet>> replaced; // likewise
   std::unique_lock<WriterPreferringSharedMutex> guard(mutex);
-  change_count++;
   for (const auto &group : groups) {
     const auto *newest = NewestLocked(group.first);
     PartitionMap next = newest ? newest->map : PartitionMap {};
@@ -645,7 +614,6 @@ bool VersionedAuxStore::TryPublish(const core::StagedMaintenanceOutcome &staged,
           acc.versions.push_back(StateVersion {kAllSnapshots, MakeSet(std::move(map))});
         }
         owner[key] = group.first;
-        RefreshHintLocked();
         return false;
       }
       p = Partition {image->payload != nullptr, image->payload, p.partition_version + 1};
@@ -664,7 +632,6 @@ void VersionedAuxStore::BeginCommit(const core::AcceleratorId &accelerator,
                                     const core::InvalidationPlan &) {
   const Epoch from = CurrentEpoch();
   std::unique_lock<WriterPreferringSharedMutex> guard(mutex);
-  change_count++;
   auto &entry = accelerators[accelerator];
   if (entry.pending) {
     throw std::logic_error("concurrent commits on aux state of " + accelerator);
@@ -735,7 +702,6 @@ void VersionedAuxStore::FinishCommit(const core::AcceleratorId &accelerator,
   std::vector<StateVersion> dropped; // destroyed after the lock is released
   {
     std::unique_lock<WriterPreferringSharedMutex> guard(mutex);
-    change_count++;
     if (has_change) {
       auto &acc = accelerators[accelerator];
       if (acc.generation != built_generation) {
@@ -760,7 +726,6 @@ void VersionedAuxStore::FinishCommit(const core::AcceleratorId &accelerator,
 void VersionedAuxStore::AbortCommit(const core::AcceleratorId &accelerator) {
   {
     std::unique_lock<WriterPreferringSharedMutex> guard(mutex);
-    change_count++;
     auto it = accelerators.find(accelerator);
     if (it == accelerators.end() || !it->second.pending) {
       return;
@@ -785,30 +750,9 @@ void VersionedAuxStore::Install(std::vector<core::StateImage> images,
   InstallLocked(std::move(images), accelerator, from_epoch, floor, dropped);
 }
 
-bool VersionedAuxStore::InstallIfUnchanged(std::vector<core::StateImage> images,
-                                           const core::AcceleratorId &accelerator,
-                                           uint64_t expected_change_count) {
-  const Epoch epoch = CurrentEpoch();
-  const Epoch floor = CurrentFloor();
-  std::vector<StateVersion> dropped; // destroyed after the lock is released
-  std::unique_lock<WriterPreferringSharedMutex> guard(mutex);
-  auto it = accelerators.find(accelerator);
-  if (change_count != expected_change_count || (it != accelerators.end() && it->second.pending)) {
-    return false;
-  }
-  InstallLocked(std::move(images), accelerator, epoch, floor, dropped);
-  return true;
-}
-
-uint64_t VersionedAuxStore::ChangeCount() const {
-  std::shared_lock<WriterPreferringSharedMutex> guard(mutex);
-  return change_count;
-}
-
 void VersionedAuxStore::InstallLocked(std::vector<core::StateImage> images,
                                       const core::AcceleratorId &accelerator, Epoch from_epoch,
                                       Epoch floor, std::vector<StateVersion> &dropped) {
-  change_count++;
   std::map<core::AcceleratorId, PartitionMap> maps;
   for (auto &image : images) {
     const auto name = !accelerator.empty() ? accelerator : AcceleratorFor(image);
@@ -833,22 +777,6 @@ void VersionedAuxStore::InstallLocked(std::vector<core::StateImage> images,
     }
     AppendLocked(entry.first, MakeSet(std::move(entry.second)), from_epoch, floor, dropped);
   }
-}
-
-bool VersionedAuxStore::NeedsRebuild() const {
-  std::shared_lock<WriterPreferringSharedMutex> guard(mutex);
-  bool any = false;
-  for (const auto &entry : accelerators) {
-    if (entry.second.versions.empty()) {
-      continue;
-    }
-    any = true;
-    const auto &set = *entry.second.versions.back().partitions;
-    if (set.map.empty() || set.invalid_count != 0) {
-      return true;
-    }
-  }
-  return !any;
 }
 
 std::size_t VersionedAuxStore::ValidPartitionCount() const {
@@ -882,16 +810,6 @@ std::size_t VersionedAuxStore::TotalVersionCount() const {
     n += entry.second.versions.size();
   }
   return n;
-}
-
-bool VersionedAuxStore::HasPendingCommit() const {
-  std::shared_lock<WriterPreferringSharedMutex> guard(mutex);
-  for (const auto &entry : accelerators) {
-    if (entry.second.pending) {
-      return true;
-    }
-  }
-  return false;
 }
 
 void VersionedAuxStore::SetPendingWaitMicros(uint64_t micros) {

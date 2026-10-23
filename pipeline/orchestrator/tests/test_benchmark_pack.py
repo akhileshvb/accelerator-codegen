@@ -14,7 +14,6 @@ REPO_ROOT = find_repo_root()
 def test_load_sec_edgar_pack() -> None:
     pack = load_benchmark_pack("sec_edgar", REPO_ROOT)
     assert pack["benchmark_name"] == "sec_edgar"
-    assert pack["function_prefix"] == "accel_sec_edgar_q"
     assert "sf10" not in pack.get("post_optimization_gates", [])
     assert "fairness" in pack.get("post_optimization_gates", [])
     assert "snapshot_paths" in pack

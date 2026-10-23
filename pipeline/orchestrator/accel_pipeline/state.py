@@ -21,7 +21,6 @@ class PipelineState:
     session_id: str = ""
     structural_reanalysis_count: int = 0
     last_gate: dict[str, str] = field(default_factory=dict)
-    models_used: dict[str, str] = field(default_factory=dict)
 
     @classmethod
     def load(cls, path: Path) -> PipelineState:

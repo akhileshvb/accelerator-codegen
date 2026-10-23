@@ -1,13 +1,11 @@
 from __future__ import annotations
 
 import json
-import sys
 from pathlib import Path
 
 from accel_pipeline.gate_capture import (
     describe_returncode,
     enrich_failed_gate_data,
-    local_harness,
     log_tail_for_agent,
 )
 from accel_pipeline.gates import GateResult
@@ -89,17 +87,6 @@ def test_compact_gate_payload_always_has_failure_summary():
     assert compact["returncode"] == 134
     assert "SIGABRT" in compact["failure_summary"]
     assert compact["failure_summary"].strip()
-
-
-def test_local_harness_synthesizes_text_on_abort():
-    captured = local_harness(
-        [sys.executable, "-c", "import os; os.abort()"],
-        timeout=10.0,
-    )
-    assert captured.returncode != 0
-    assert captured.output.strip()
-    if "Aborted" not in captured.output and "abort" not in captured.output.lower():
-        assert "no captured stdout/stderr" in captured.output or "SIGABRT" in captured.output
 
 
 def test_run_gate_persists_enriched_fail_json(monkeypatch, tmp_path):

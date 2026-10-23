@@ -55,7 +55,6 @@ class PipelineStop(RuntimeError):
 @dataclass
 class VerusState:
     stage: str = "preflight"
-    spec_sha: str = ""
     frozen: dict[str, str] = field(default_factory=dict)
     tests_hash: str = ""
     kernel_session: str = ""  # the kernel agent's codex session (gate failures go back to it)
@@ -218,7 +217,6 @@ def spec(r: Run) -> None:
     res = actions.freeze_spec(r.ctx)
     if not res["ok"]:
         raise PipelineStop(f"sql2verus refused the query: {res['error']}")
-    r.state.spec_sha = res["sha256"]
     r.state.save(r.ctx)
     key = _spec_audit_key(r.ctx)
     reused = _reused_spec_audit(r.ctx, key) if r.ctx.setting("stages.reuse_spec_audit", True) else None

@@ -33,7 +33,6 @@ Call these **by tool name** on server `accel_pipeline`. Do **not** use `list_mcp
 | `run_correctness` / `run_multi_connection` / `run_baseline` / `run_fairness` / `request_gate` | Mid-loop gates (impl: correctness + multi-conn) |
 | `begin_ab_trial` / `run_quick_benchmark` / `end_ab_trial` | Exploratory A/B vs **best_valid_score** — **honor the signal** |
 | `request_structural_reanalysis` | Aux structural redesign escape hatch |
-| `record_optimization_trap` | Optional: add a short recurring anti-pattern to shared negative memory (advisory only) |
 | `primitive_publish` | Add a generic primitive to the shared `accelerators/prims/` library (stage files under `pipeline/prims_staging/`; additions only) |
 | `run_pipeline_command` | Allowlisted cmake/ctest only |
 

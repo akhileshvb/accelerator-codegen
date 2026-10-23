@@ -38,9 +38,6 @@ from accel_pipeline.paths import (
     query_artifacts_dir,
 )
 
-_AUX_SHARED = Path("prompts") / "aux_state" / "shared"
-
-
 def _read_text(path: Path, default: str = "") -> str:
     return path.read_text(encoding="utf-8") if path.is_file() else default
 

@@ -12,7 +12,6 @@ namespace accelerator_codegen::aux_state::core {
 // fallback stays a last resort.
 enum class AuxExecutePath : uint8_t {
   Hit,           // from the current state
-  RebuiltOnRead, // the state was (re)built by this query, then read
   Fallback,      // SQL from the tables (no usable state)
 };
 
@@ -20,7 +19,7 @@ void RecordAuxExecute(AuxExecutePath path);
 
 struct AuxExecuteCounts {
   uint64_t hit = 0;
-  uint64_t rebuilt_on_read = 0;
+  uint64_t rebuilt_on_read = 0; // never recorded; kept for the "hit= rebuilt_on_read= fallback=" format
   uint64_t fallback = 0;
 };
 AuxExecuteCounts ReadAuxExecuteCounts();
@@ -32,7 +31,6 @@ std::string FormatAuxExecuteCounts(const AuxExecuteCounts &counts);
 // (the store's lock, waiting for a pending commit, selecting the version):
 // cumulative per thread. Stores add to it; a benchmark reads the difference
 // around one query.
-void AddStoreResolveMicros(double us);
 double ThreadStoreResolveMicros();
 
 // Adds the time from construction to destruction to this thread's resolve time.

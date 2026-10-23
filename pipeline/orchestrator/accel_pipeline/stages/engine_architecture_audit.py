@@ -101,12 +101,6 @@ def failing_layer_ids(audit: dict[str, Any], workload: dict[str, Any]) -> list[s
     return [lid for lid in order if lid in mentioned]
 
 
-def earliest_failing_layer_id(audit: dict[str, Any], workload: dict[str, Any]) -> str | None:
-    """Earliest implementation layer named in audit violations, or None."""
-    ids = failing_layer_ids(audit, workload)
-    return ids[0] if ids else None
-
-
 def run_architecture_audit_agent(
     pipeline_config: PipelineConfig,
     model_config: ModelConfig,

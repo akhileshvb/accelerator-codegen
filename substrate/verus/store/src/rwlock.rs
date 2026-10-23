@@ -276,79 +276,9 @@ impl<V, Pred: RwLockPredicate<V>> InvariantPredicate<
 }
 
 struct_with_invariants!{
-    /** A verified implementation of a reader-writer lock,
-    implemented using atomics and a reference count.
-
-    When constructed, you can provide an invariant via the `Pred` parameter,
-    specifying the allowed values that can go in the lock.
-
-    Note that this specification does *not* verify the absence of dead-locks.
-
-    ### Examples
-
-    On construction of a lock, we can specify an invariant for the object that goes inside.
-    One way to do this is by providing a `spec_fn`, which implements the [`RwLockPredicate`]
-    trait.
-
-    ```rust,ignore
-    fn example1() {
-        // We can create a lock with an invariant: `v == 5 || v == 13`.
-        // Thus only 5 or 13 can be stored in the lock.
-        let lock = RwLock::<u64, spec_fn(u64) -> bool>::new(5, Ghost(|v| v == 5 || v == 13));
-
-        let (val, write_handle) = lock.acquire_write();
-        assert(val == 5 || val == 13);
-        write_handle.release_write(13);
-
-        let read_handle1 = lock.acquire_read();
-        let read_handle2 = lock.acquire_read();
-
-        // We can take multiple read handles at the same time:
-
-        let val1 = read_handle1.borrow();
-        let val2 = read_handle2.borrow();
-
-        // RwLock has a lemma that both read handles have the same value:
-
-        proof { ReadHandle::lemma_readers_match(&read_handle1, &read_handle2); }
-        assert(*val1 == *val2);
-
-        read_handle1.release_read();
-        read_handle2.release_read();
-    }
-    ```
-
-    It's often easier to implement the [`RwLockPredicate`] trait yourself. This way you can
-    have a configurable predicate without needing to work with higher-order functions.
-
-    ```rust,ignore
-    struct FixedParity {
-        pub parity: int,
-    }
-
-    impl RwLockPredicate<u64> for FixedParity {
-        open spec fn inv(self, v: u64) -> bool {
-            v % 2 == self.parity
-        }
-    }
-
-    fn example2() {
-        // Create a lock that can only store even integers
-        let lock_even = RwLock::<u64, FixedParity>::new(20, Ghost(FixedParity { parity: 0 }));
-
-        // Create a lock that can only store odd integers
-        let lock_odd = RwLock::<u64, FixedParity>::new(23, Ghost(FixedParity { parity: 1 }));
-
-        let read_handle_even = lock_even.acquire_read();
-        let val_even = *read_handle_even.borrow();
-        assert(val_even % 2 == 0);
-
-        let read_handle_odd = lock_odd.acquire_read();
-        let val_odd = *read_handle_odd.borrow();
-        assert(val_odd % 2 == 1);
-    }
-    ```
-    */
+    /// A verified reader-writer lock built on atomics and a reference count.
+    /// `Pred` (a `RwLockPredicate`, or a `spec_fn`) is the invariant on the stored value.
+    /// Does not verify the absence of deadlocks.
 
     pub struct RwLock<V, Pred: RwLockPredicate<V>> {
         cell: un::PCell<V>,

@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from accel_pipeline.layout import PROOFLIB
+from accel_pipeline.textutil import tail_marked
 from accel_pipeline.verus import params as qparams
 from accel_pipeline.verus.context import VerusContext
 
@@ -41,10 +42,6 @@ def _run(cmd: list[str], *, cwd: Path | None = None, env: dict[str, str] | None 
     except subprocess.TimeoutExpired as exc:
         out = exc.stdout if isinstance(exc.stdout, str) else ""
         return subprocess.CompletedProcess(cmd, 124, out, f"timed out after {timeout}s")
-
-
-def _tail(text: str, n: int = 6000) -> str:
-    return text if len(text) <= n else "... [truncated]\n" + text[-n:]
 
 
 @contextmanager
@@ -89,7 +86,7 @@ def sql2verus_bin(ctx: VerusContext) -> Path:
     proc = _run(["cargo", "build", "--release", "--quiet", "--manifest-path", str(t / "Cargo.toml")],
                 env={"CARGO_TARGET_DIR": str(target)}, timeout=1800)
     if proc.returncode != 0:
-        raise RuntimeError(f"sql2verus build failed:\n{_tail(proc.stderr)}")
+        raise RuntimeError(f"sql2verus build failed:\n{tail_marked(proc.stderr)}")
     return binary
 
 
@@ -112,7 +109,7 @@ def freeze_spec(ctx: VerusContext) -> dict[str, Any]:
     tmp = ctx.art / "gen" / "spec"
     proc = _sql2verus(ctx, tmp, inputs=None)
     if proc.returncode != 0:
-        return {"ok": False, "error": _tail(proc.stderr or proc.stdout)}
+        return {"ok": False, "error": tail_marked(proc.stderr or proc.stdout)}
     for dest in (ctx.crate_dir / "src", ctx.ws / "spec", ctx.ws / "crate" / "src"):
         dest.mkdir(parents=True, exist_ok=True)
         shutil.copy2(tmp / "gen_spec.rs", dest / "gen_spec.rs")
@@ -129,7 +126,7 @@ def check_inputs(ctx: VerusContext, inputs: Path | None = None) -> dict[str, Any
         shutil.rmtree(tmp)
     proc = _sql2verus(ctx, tmp, inputs=inputs)
     if proc.returncode != 0:
-        return {"ok": False, "error": _tail((proc.stderr or proc.stdout).strip(), 3000)}
+        return {"ok": False, "error": tail_marked((proc.stderr or proc.stdout).strip(), 3000)}
     return {"ok": True, "obligations": (tmp / "gen_obligations.rs").read_text(encoding="utf-8")[:20000]}
 
 
@@ -146,7 +143,7 @@ def freeze_inputs(ctx: VerusContext) -> dict[str, Any]:
         shutil.rmtree(tmp)
     proc = _sql2verus(ctx, tmp, inputs=inputs)
     if proc.returncode != 0:
-        return {"ok": False, "error": _tail(proc.stderr or proc.stdout)}
+        return {"ok": False, "error": tail_marked(proc.stderr or proc.stdout)}
     src = ctx.crate_dir / "src"
     src.mkdir(parents=True, exist_ok=True)
     ws_src = ctx.ws / "crate" / "src"
@@ -263,7 +260,7 @@ def configure_build(ctx: VerusContext) -> dict[str, Any]:
     proc = _run(["cmake", "-S", str(ctx.root), "-B", str(ctx.build_dir), "-G", "Ninja",
                  "-DCMAKE_BUILD_TYPE=Release", "-DACCEL_CODEGEN_ENGINE=duckdb", "-DACCEL_CALIBRATE_AT_BUILD=OFF",
                  f"-DACCEL_VERUS_LIB_DIR={ctx.lib_dir}"], timeout=1800)
-    return {"ok": proc.returncode == 0, "error": _tail(proc.stdout + proc.stderr, 3000)}
+    return {"ok": proc.returncode == 0, "error": tail_marked(proc.stdout + proc.stderr, 3000)}
 
 
 def _verus_env(ctx: VerusContext) -> dict[str, str]:
@@ -360,7 +357,7 @@ def update_world(ctx: VerusContext) -> dict[str, Any]:
     if not res["ok"]:
         errs = [b for b in re.split(r"\n(?=error)", out) if b.startswith("error") and not b.startswith("error: aborting")]
         res["output"] = ("the Verus world (the one store for every accelerator of the database) does not verify or "
-                         "build with this kernel:\n" + ("\n".join(errs) or _tail(out, 6000))[:8000])
+                         "build with this kernel:\n" + ("\n".join(errs) or tail_marked(out, 6000))[:8000])
     return res
 
 
@@ -375,7 +372,7 @@ def ensure_runner(ctx: VerusContext) -> dict[str, Any]:
         proc = _run(["cmake", "--build", ctx.build_dir, "--target", "verus_kit_runner", "-j",
                      str(os.cpu_count() or 8)], timeout=7200)
     if proc.returncode != 0:
-        return {"ok": False, "error": _tail(proc.stdout + proc.stderr, 4000)}
+        return {"ok": False, "error": tail_marked(proc.stdout + proc.stderr, 4000)}
     return {"ok": True}
 
 
@@ -419,7 +416,7 @@ def build_runner(ctx: VerusContext, *, proofs: bool = True, _foreign_retry: int 
         if foreign:
             errs = (f"the shared build fails in OTHER queries' files (not this kernel's), still after {retries} "
                     f"minutes of retries:\n{errs}")
-        return {"ok": False, "stage": "build", "output": _tail(errs or proc.stdout + proc.stderr, 8000)}
+        return {"ok": False, "stage": "build", "output": tail_marked(errs or proc.stdout + proc.stderr, 8000)}
     return {"ok": True, "verified": lib["verified"], "verify_seconds": lib["seconds"]}
 
 
@@ -561,7 +558,7 @@ def _runner(ctx: VerusContext, args: list[str], *, store: str = "verus_global", 
     except json.JSONDecodeError:
         data = {}
     if not data:
-        data = {"error": _tail(proc.stderr or proc.stdout or f"exit {proc.returncode}", 4000)}
+        data = {"error": tail_marked(proc.stderr or proc.stdout or f"exit {proc.returncode}", 4000)}
     data["exit"] = proc.returncode
     data.update(qparams.summary(draw))
     return data
@@ -711,9 +708,9 @@ def glue_contract(ctx: VerusContext) -> dict[str, Any]:
         exe, extra = runner_exe(ctx)
         proc = _run([exe, *args], env=runner_env(ctx, **env, **extra), timeout=1800)
         line = next((l for l in reversed(proc.stdout.splitlines()) if l.startswith("{")), "")
-        data = json.loads(line) if line else {"error": _tail(proc.stderr or proc.stdout, 3000)}
+        data = json.loads(line) if line else {"error": tail_marked(proc.stderr or proc.stdout, 3000)}
         if proc.returncode != 0 and "error" not in data:
-            data["error"] = _tail(proc.stderr or proc.stdout, 3000)
+            data["error"] = tail_marked(proc.stderr or proc.stdout, 3000)
         return data
 
     return contract.check(ctx, runner_call, lambda q: sql(ctx, q, 100000), tests_dir(ctx), db)
@@ -787,7 +784,7 @@ def cost_check(ctx: VerusContext) -> dict[str, Any]:
                 r = r2
     if not r["ok"]:
         return {"ok": False, "error": (
-            f"the SF1 cost check did not finish ({_tail(str(r.get('error', '')), 600)}): {cfg.get('ops', 20)} reads/"
+            f"the SF1 cost check did not finish ({tail_marked(str(r.get('error', '')), 600)}): {cfg.get('ops', 20)} reads/"
             f"writes on SF1 took longer than {cfg.get('timeout_sec', 420)} s, so some read or write does work in "
             "proportion to the whole state or a whole table")}
     read = float(r.get("read_speedup") or 0.0)
@@ -896,7 +893,7 @@ def _write_overhead(ctx: VerusContext, ops: int = 50, draw: qparams.Draw | None 
     try:
         mx = json.loads(p.stdout.strip().splitlines()[-1])["mixes"][0]
     except (ValueError, KeyError, IndexError):
-        return {"overhead_note": "could not measure: " + _tail(p.stderr, 500)}
+        return {"overhead_note": "could not measure: " + tail_marked(p.stderr, 500)}
     plain, accel = mx["base_us"] / ops, mx["accel_us"] / ops
     return {"plain_write_us": round(plain), "accel_write_us": round(accel),
             "overhead_us_per_write": round(accel - plain),
@@ -926,7 +923,7 @@ def _profile_phase(ctx: VerusContext, axis: str, phase: str, reps: str, mix: str
         for f in (ctl, ack):
             f.unlink(missing_ok=True)
     if rec.returncode != 0:
-        return {"ok": False, "error": _tail(rec.stderr, 2000)}
+        return {"ok": False, "error": tail_marked(rec.stderr, 2000)}
     rep = _run(["perf", "report", "-i", str(data), "--stdio", "--no-children", "--sort", "symbol",
                 "--percent-limit", "1"], timeout=600)
     hotspots = []
@@ -1052,7 +1049,7 @@ def prooflib_verify(ctx: VerusContext) -> dict[str, Any]:
     if not res["ok"]:
         blocks = [b for b in re.split(r"\n(?=error)", out) if b.startswith("error") and not b.startswith("error: aborting")]
         index = [f"- {b.splitlines()[0][:160]}" for b in blocks]
-        res["output"] = f"{len(index)} errors:\n" + "\n".join(index) + "\n\n" + _tail("\n".join(blocks) or out, 9000)
+        res["output"] = f"{len(index)} errors:\n" + "\n".join(index) + "\n\n" + tail_marked("\n".join(blocks) or out, 9000)
     return res
 
 
@@ -1085,7 +1082,7 @@ def prooflib_publish(ctx: VerusContext, note: str) -> dict[str, Any]:
                      "--extern", f"verus_common={lib_dir / 'libverus_common.rlib'}", "-L", f"dependency={lib_dir}"],
                     env=_verus_env(ctx), timeout=600)
         if proc.returncode != 0:
-            failures.append({"crate": "verus_prooflib", "output": _tail(proc.stdout + proc.stderr, 3000)})
+            failures.append({"crate": "verus_prooflib", "output": tail_marked(proc.stdout + proc.stderr, 3000)})
         # every crate that verified fully before (unchanged since) must still verify; the others
         # (kernels mid-proof) pick the additions up at their next verify
         cache = json.loads(_verified_cache(ctx).read_text()) if _verified_cache(ctx).is_file() else {}
@@ -1098,7 +1095,7 @@ def prooflib_publish(ctx: VerusContext, note: str) -> dict[str, Any]:
             out = p.stdout + p.stderr
             m = _RESULTS.findall(out)
             if p.returncode != 0 or not m or int(m[-1][1]) != 0:
-                return {"crate": crate_dir.parent.name, "output": _tail(out, 3000)}
+                return {"crate": crate_dir.parent.name, "output": tail_marked(out, 3000)}
             return None
 
         if not failures:

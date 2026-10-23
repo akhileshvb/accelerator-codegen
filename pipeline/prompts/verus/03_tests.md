@@ -31,7 +31,7 @@ database with `verus_sql`. Write in `tests/`:
   TPC-H domain (all colors, nations, ... or a wide spread).
   The pipeline appends random domain tuples to `params.sql` and adds a fresh
   random set to every differential run.
-* `txns/NNN.sql`: one write transaction per file (DuckDB SQL; statements
+* `txns/NNN.sql`: one write transaction per file (portable SQL; statements
   separated by `;`). They run **in sequence, committed**: each one runs on
   the state the previous ones left, so write each to be valid there (a
   subquery that picks a row must still find one; otherwise it yields NULL).

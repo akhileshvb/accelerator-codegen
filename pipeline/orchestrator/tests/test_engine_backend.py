@@ -371,27 +371,6 @@ def test_mysql_analysis_prompt_does_not_inject_other_engine_host():
     assert "{{layer_id}}" not in text
 
 
-def test_audit_restarts_from_earliest_failing_layer():
-    from accel_pipeline.stages.engine_architecture_audit import (
-        earliest_failing_layer_id,
-        failing_layer_ids,
-    )
-
-    w = load_workload("engine_mysql", REPO_ROOT)
-    audit = {
-        "violations": [
-            {"rule": "slot_runtime", "layer": "runtime"},
-            {"rule": "slot_capture", "layer": "capture"},
-            {"rule": "slot_runtime", "layer": "runtime"},
-        ]
-    }
-    assert failing_layer_ids(audit, w) == ["capture", "runtime"]
-    assert earliest_failing_layer_id(audit, w) == "capture"
-    assert earliest_failing_layer_id({"violations": []}, w) is None
-    assert earliest_failing_layer_id({"violations": [{"rule": "fail_closed"}]}, w) is None
-    assert failing_layer_ids({"violations": [{"rule": "fail_closed"}]}, w) == []
-
-
 def test_discover_host_sdk_reports_the_engine_host_sh(tmp_path):
     from accel_pipeline.engine_host import discover_host_sdk_json
 

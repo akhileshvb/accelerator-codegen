@@ -10,7 +10,7 @@ def test_pending_feedback_flush_clears():
     pending.push("Previous candidate rejected.")
     msg = pending.flush_into_attempt_prompt(optimization_iter=1, attempt=2)
     assert "Previous candidate rejected" in msg
-    assert not pending.has_pending()
+    assert pending.peek() == ""
 
 
 def test_format_gate_delta_reverted():

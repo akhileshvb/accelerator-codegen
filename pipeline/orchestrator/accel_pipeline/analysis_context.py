@@ -7,6 +7,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+from accel_pipeline.textutil import squeeze_truncate
+
 _STAGE_SHARED_DOCS: dict[str, list[tuple[str, str]]] = {
     "analysis": [
         ("Scale factors", "../../shared/scale_factor_contract.md"),
@@ -74,26 +76,19 @@ def compact_json(data: Any) -> str:
     return json.dumps(data, separators=(",", ":"), ensure_ascii=False)
 
 
-def _truncate_text(text: str, *, max_chars: int) -> str:
-    cleaned = " ".join(text.split())
-    if len(cleaned) <= max_chars:
-        return cleaned
-    return cleaned[: max_chars - 3] + "..."
-
-
 def _compact_scan_order(scan: Any) -> Any:
     if scan is None:
         return []
     if isinstance(scan, str):
-        return _truncate_text(scan, max_chars=240)
+        return squeeze_truncate(scan, max_chars=240)
     if isinstance(scan, list):
         return scan[:2]
     if isinstance(scan, dict):
         return [
-            f"{key}: {_truncate_text(str(value), max_chars=80)}"
+            f"{key}: {squeeze_truncate(str(value), max_chars=80)}"
             for key, value in list(scan.items())[:2]
         ]
-    return _truncate_text(str(scan), max_chars=240)
+    return squeeze_truncate(str(scan), max_chars=240)
 
 
 def _compact_string_list(values: Any, *, limit: int) -> list[Any]:
@@ -102,11 +97,11 @@ def _compact_string_list(values: Any, *, limit: int) -> list[Any]:
     compact: list[Any] = []
     for item in values[:limit]:
         if isinstance(item, str):
-            compact.append(_truncate_text(item, max_chars=160))
+            compact.append(squeeze_truncate(item, max_chars=160))
         elif isinstance(item, dict):
             compact.append(
                 {
-                    key: _truncate_text(str(value), max_chars=80)
+                    key: squeeze_truncate(str(value), max_chars=80)
                     for key, value in list(item.items())[:4]
                 }
             )
@@ -128,8 +123,8 @@ def compact_base_analysis_for_implementation(analysis: dict[str, Any]) -> str:
         else:
             file_paths.append(str(item))
     payload = {
-        "query_summary": _truncate_text(str(analysis.get("query_summary") or ""), max_chars=360),
-        "execution_strategy": _truncate_text(
+        "query_summary": squeeze_truncate(str(analysis.get("query_summary") or ""), max_chars=360),
+        "execution_strategy": squeeze_truncate(
             str(logical.get("simplest_execution_strategy") or ""), max_chars=280
         ),
         "scan_order": scan_order,

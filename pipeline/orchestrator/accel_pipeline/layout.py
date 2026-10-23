@@ -29,22 +29,12 @@ ACCELERATORS = "accelerators"
 PRIMS = f"{ACCELERATORS}/prims"
 PROOFLIB = f"{ACCELERATORS}/prooflib"
 WORKLOADS = "workloads"
-EVAL = "eval"
-
-SUBSTRATE_GLOB = f"{SUBSTRATE}/**"
-WORKLOADS_GLOB = f"{WORKLOADS}/**"
-PRIMS_GLOB = f"{PRIMS}/**"
-PROOFLIB_GLOB = f"{PROOFLIB}/**"
 
 # Directories directly under accelerators/ that are not benchmarks.
 _NON_BENCH_ACCEL_DIRS = frozenset({"prims", "prooflib"})
 
 _QUERY_DIR_RE = re.compile(r"^accelerators/([A-Za-z0-9_]+)/q(\d+)(?:/|$)")
 _BACKEND_RE = re.compile(r"^backends/([A-Za-z0-9_]+)(?:/|$)")
-
-
-def backend_dir(engine: str) -> str:
-    return f"{BACKENDS}/{engine}"
 
 
 def backend_glob(engine: str) -> str:
@@ -58,10 +48,6 @@ def harness_globs(engine: str) -> list[str]:
         f"{BACKENDS}/{engine}/bench/**",
         f"{BACKENDS}/{engine}/tests/harness.cmake",
     ]
-
-
-def bench_dir(bench: str) -> str:
-    return f"{ACCELERATORS}/{bench}"
 
 
 def query_dir(bench: str, query: int | str) -> str:
@@ -130,8 +116,3 @@ def query_of(rel: str) -> tuple[str, int] | None:
     if not m:
         return None
     return m.group(1), int(m.group(2))
-
-
-def engine_of(rel: str) -> str | None:
-    m = _BACKEND_RE.match(_norm(rel))
-    return m.group(1) if m else None

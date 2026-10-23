@@ -12,7 +12,7 @@ Per-attempt: smoke + quick bench only. Heavy gates run once per iteration, not p
 
 One hypothesis per attempt — multiple edits allowed only if all are required to test that hypothesis.
 
-Shared **negative memory** (runtime section / `record_optimization_trap`) is advisory only —
+Shared **negative memory** (runtime section) is advisory only —
 prefer current profile/scoreboard; do not treat traps as a recipe book.
 
 Agent may declare **`OPTIMIZATION_SATURATED`** when stuck after aggressive work on both

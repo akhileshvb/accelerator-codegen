@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from accel_pipeline.jsonio import read_json
 from accel_pipeline.optimization_scoreboard import (
     aggregate_custom_profile_events,
     build_scoreboard,
@@ -50,15 +51,6 @@ def parse_custom_profile_events(output: str) -> list[dict[str, Any]]:
     return events
 
 
-def _read_json(path: Path) -> dict[str, Any]:
-    if not path.is_file():
-        return {}
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
-        return {}
-
-
 def _metrics_from_best_valid(best_valid: dict[str, Any]) -> dict[str, Any]:
     metrics = dict(best_valid.get("metrics") or {})
     if best_valid.get("score") is not None and "optimization_score" not in metrics:
@@ -68,21 +60,21 @@ def _metrics_from_best_valid(best_valid: dict[str, Any]) -> dict[str, Any]:
 
 def _pick_metrics(art: Path) -> tuple[dict[str, Any], str]:
     """Prefer freshest measured aux metrics available on disk."""
-    profile = _read_json(art / "profile_summary.json")
+    profile = read_json(art / "profile_summary.json")
     if profile.get("workload_kind") == "aux_state" and (
         profile.get("store_diagnostics") or profile.get("read_only_query_speedup")
     ):
         return profile, "profile_summary.json"
 
-    best_valid = _read_json(art / "best_valid_baseline.json")
+    best_valid = read_json(art / "best_valid_baseline.json")
     if best_valid:
         return _metrics_from_best_valid(best_valid), "best_valid_baseline.json"
 
-    aux_summary = _read_json(art / "aux_bench_summary.json")
+    aux_summary = read_json(art / "aux_bench_summary.json")
     if aux_summary:
         return aux_summary, "aux_bench_summary.json"
 
-    opt_state = _read_json(art / "optimization_state.json")
+    opt_state = read_json(art / "optimization_state.json")
     best_summary = opt_state.get("best_summary") or {}
     if best_summary:
         return dict(best_summary), "optimization_state.json"
@@ -245,10 +237,10 @@ def build_aux_profile_digest(
 ) -> dict[str, Any]:
     """Compact MCP digest for aux-state optimization."""
     metrics, source = _pick_metrics(art)
-    custom = _read_json(art / "custom_profile.json")
+    custom = read_json(art / "custom_profile.json")
     custom_events = list(custom.get("events") or [])
     if not custom_events:
-        existing = _read_json(art / "profile_summary.json")
+        existing = read_json(art / "profile_summary.json")
         custom_events = list(existing.get("custom_profile_events") or [])
 
     if metrics:
@@ -267,10 +259,10 @@ def build_aux_profile_digest(
             "phase_breakdown": [],
         }
 
-    fair = _read_json(art / "aux_bench_summary.json")
-    opt_state = _read_json(art / "optimization_state.json")
-    best_valid = _read_json(art / "best_valid_baseline.json")
-    kernel_manifest = _read_json(art / "best_kernel_snapshot" / "manifest.json")
+    fair = read_json(art / "aux_bench_summary.json")
+    opt_state = read_json(art / "optimization_state.json")
+    best_valid = read_json(art / "best_valid_baseline.json")
+    kernel_manifest = read_json(art / "best_kernel_snapshot" / "manifest.json")
     board = build_scoreboard(art, is_aux=True, last_metrics=metrics or None)
     write_scoreboard(art, board)
     freshness = profile_freshness(
@@ -285,7 +277,7 @@ def build_aux_profile_digest(
         "phase_breakdown": summary.get("phase_breakdown") or [],
         "work_counters_mean": summary.get("work_counters_mean") or {},
         "residual_vs_hit_us": summary.get("residual_vs_hit_us"),
-        "baseline_summary": _read_json(art / "baseline_summary.json"),
+        "baseline_summary": read_json(art / "baseline_summary.json"),
         "store_diagnostics": summary.get("store_diagnostics") or {},
         "fair_sweep": {
             "read_only_query_speedup": fair.get("read_only_query_speedup"),
@@ -338,7 +330,7 @@ def load_aux_store_diagnostics(art: Path) -> tuple[dict[str, Any], str]:
         "baseline_summary.json",
         "bench_summary.json",
     ):
-        data = _read_json(art / name)
+        data = read_json(art / name)
         if name == "best_valid_baseline.json":
             data = _metrics_from_best_valid(data)
         elif name == "optimization_state.json":

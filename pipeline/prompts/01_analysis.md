@@ -37,7 +37,7 @@ Layout contract:
 
 Design for **faster than the baseline engine path** on the benchmark dataset (single-threaded where required). Front-load optimization opportunities for the later profile-guided loop.
 
-**Scale:** TPC-H iterates on SF1 but production targets SF20+ — plan with bind-time estimates (`scale_factor_contract.md`).
+**Scale:** TPC-H iterates on SF1 but production targets SF3000 — plan with bind-time estimates (`scale_factor_contract.md`).
 
 {{base_kernel_optimization}}
 

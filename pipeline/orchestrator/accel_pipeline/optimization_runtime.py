@@ -12,6 +12,7 @@ from accel_pipeline.base_bench import (
     load_base_optimization_state,
 )
 from accel_pipeline.config import PipelineConfig, resolve_optimization_edit_paths, resolve_workload_paths
+from accel_pipeline.jsonio import read_json
 from accel_pipeline.kernel_hot_path_review import (
     analyze_kernel_source,
     format_kernel_review_for_prompt,
@@ -29,15 +30,7 @@ RUNTIME_JSON = "optimization_runtime.json"
 AB_TRIALS_JSON = "ab_trials.json"
 EPISODE_LOG = "episode_log.jsonl"
 PLAYBOOK_TECHNIQUES_JSON = "playbook_techniques.json"
-BASE_KERNEL_OPTIMIZATION_REL = "pipeline/prompts/shared/base_kernel_optimization.md"
 OPTIMIZATION_WORKFLOW_COMPACT_REL = "pipeline/prompts/shared/optimization_workflow_compact.md"
-
-
-def load_runtime_json(art: Path) -> dict[str, Any]:
-    path = art / RUNTIME_JSON
-    if not path.is_file():
-        return {}
-    return json.loads(path.read_text(encoding="utf-8"))
 
 
 def save_runtime_json(art: Path, state: dict[str, Any]) -> None:
@@ -70,17 +63,6 @@ def save_ab_trials(art: Path, trials: list[dict[str, Any]]) -> None:
         json.dumps({"trials": trials}, indent=2),
         encoding="utf-8",
     )
-
-
-def append_episode_summary(art: Path, episode: int, summary: str) -> None:
-    path = art / EPISODE_LOG
-    payload = {
-        "ts": datetime.now(timezone.utc).isoformat(),
-        "episode": episode,
-        "summary": _compress_text(summary, max_chars=400),
-    }
-    with path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
 
 
 def load_episode_log(art: Path, *, limit: int = 8) -> list[dict[str, Any]]:
@@ -118,27 +100,11 @@ def load_optimization_workflow_compact(repo_root: Path) -> str:
     return path.read_text(encoding="utf-8").strip()
 
 
-def load_base_kernel_optimization_text(repo_root: Path) -> str:
-    path = repo_root / BASE_KERNEL_OPTIMIZATION_REL
-    if not path.is_file():
-        return ""
-    return path.read_text(encoding="utf-8").strip()
-
-
 def _compress_text(text: str, *, max_chars: int) -> str:
     cleaned = " ".join((text or "").split())
     if len(cleaned) <= max_chars:
         return cleaned
     return cleaned[: max_chars - 3] + "..."
-
-
-def _read_json(path: Path) -> dict[str, Any]:
-    if not path.is_file():
-        return {}
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
-        return {}
 
 
 def _profile_guidance(profile: dict[str, Any], diagnosis: dict[str, Any]) -> list[str]:
@@ -166,8 +132,8 @@ def build_runtime_state(
 ) -> dict[str, Any]:
     art = query_artifacts_dir(pipeline_config.repo_root, query, workload=workload)
     opt_state = load_base_optimization_state(art)
-    baseline = _read_json(art / "baseline_summary.json")
-    profile = _read_json(art / "profile_summary.json")
+    baseline = read_json(art / "baseline_summary.json")
+    profile = read_json(art / "profile_summary.json")
     _, analysis = load_query_analysis(pipeline_config.repo_root, query, workload=workload)
 
     paths = resolve_workload_paths(pipeline_config, workload, query)
@@ -191,7 +157,7 @@ def build_runtime_state(
         freshness = dict(aux_digest.get("freshness") or {})
         best_valid = load_best_valid_baseline(art)
         aux_opt = load_optimization_state(pipeline_config.repo_root, query, workload) or {}
-        fair = _read_json(art / "aux_bench_summary.json")
+        fair = read_json(art / "aux_bench_summary.json")
         best_read = float(
             best_valid.get("score")
             or (aux_opt.get("best_summary") or {}).get("read_only_query_speedup")

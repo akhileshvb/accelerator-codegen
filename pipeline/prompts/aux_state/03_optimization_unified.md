@@ -46,7 +46,7 @@ Measurements, evidence, full editable sources, and a **reference aux index** (ot
 
 ### 2. Optional: explore references
 
-Before or while designing, search the Q14/Q18/etc. aux modules for proven patterns.
+Before or while designing, check `accelerators/prims/README.md` and the optimization playbook for proven patterns.
 
 ### 3. Hypothesis JSON
 

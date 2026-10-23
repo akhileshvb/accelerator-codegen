@@ -1,6 +1,6 @@
 // Gate-test UDFs of the MySQL plugin. Built only into the test plugin variant
-// (cmake -DACCEL_MYSQL_TEST_UDFS=ON; scripts/build_accel_mysql_plugin.sh with
-// ACCEL_MYSQL_PLUGIN_VARIANT=test), never into the plugin experiments load.
+// (cmake -DACCEL_MYSQL_TEST_UDFS=ON, via backends/mysql/host.sh build),
+// never into the plugin experiments load.
 //
 // The layer harnesses in backends/mysql/tests/ call these through SQL:
 //   txn:       mysql_accel_txn_{init,capture,read,epoch,reset} — a toy accelerator

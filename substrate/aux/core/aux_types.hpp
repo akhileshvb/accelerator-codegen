@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <functional>
 #include <limits>
 #include <memory>
@@ -25,6 +26,13 @@ using TableId = uint64_t;
 using ColumnId = uint32_t;
 using PartitionId = uint64_t;
 using Version = uint64_t;
+
+// Reader wait for a pending commit: unbounded unless ACCEL_AUX_PENDING_WAIT_US bounds it.
+constexpr uint64_t kWaitForPublish = ~uint64_t {0};
+inline uint64_t PendingWaitMicrosFromEnv() {
+  const char *value = std::getenv("ACCEL_AUX_PENDING_WAIT_US");
+  return value && *value ? std::strtoull(value, nullptr, 10) : kWaitForPublish;
+}
 
 enum class MutationKind : uint8_t {
   Insert,

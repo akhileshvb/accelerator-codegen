@@ -1,6 +1,6 @@
 # PostgreSQL backend: the extension module (accelerator_codegen_pg), built
-# against the server SDK. The Docker pipeline builds it inside accel_pg_test
-# (scripts/build_accel_postgres_extension.sh). The writer-side test modules and
+# against the server SDK. The Docker pipeline builds it inside the Postgres host container
+# (backends/postgres/host.sh build). The writer-side test modules and
 # the shared-memory unit tests live here too.
 
 # Unit tests of the shared-memory transport: pure C++/Linux, no Postgres deps.
@@ -47,7 +47,7 @@ if(NOT ACCEL_PG_FOUND)
     message(FATAL_ERROR
         "ACCELERATOR_CODEGEN_BUILD_POSTGRES=ON but no orchestrator-resolved "
         "PostgreSQL server SDK was provided. For the Docker pipeline use "
-        "scripts/ensure_accel_pg_test.sh (in-container build). "
+        "backends/postgres/host.sh build (in-container build). "
         "Or export PG_CONFIG to a complete install (postgres.h + initdb).")
 endif()
 

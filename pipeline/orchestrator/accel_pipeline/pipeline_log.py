@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from accel_pipeline.paths import query_artifacts_dir
+from accel_pipeline.textutil import squeeze_truncate
 
 
 def events_path(repo_root: Path, query: int, workload: dict[str, Any] | None) -> Path:
@@ -24,13 +25,6 @@ def _append_event(
         handle.write(json.dumps(payload, sort_keys=True) + "\n")
 
 
-def _truncate_text(text: str, limit: int) -> str:
-    compact = " ".join(str(text).split())
-    if len(compact) <= limit:
-        return compact
-    return compact[: limit - 3] + "..."
-
-
 def format_candidate_summary(candidate: dict[str, Any]) -> str:
     """One-line summary of a state_candidate_search entry."""
     cid = str(candidate.get("id", "?"))
@@ -39,7 +33,7 @@ def format_candidate_summary(candidate: dict[str, Any]) -> str:
     selected = candidate.get("selected") is True
 
     if viability == "rejected":
-        reason = _truncate_text(candidate.get("rejection_reason", ""), 64)
+        reason = squeeze_truncate(candidate.get("rejection_reason", ""), 64)
         base = f"{cid} rejected {family}"
         return f"{base}: {reason}" if reason else base
 
@@ -53,7 +47,7 @@ def format_candidate_summary(candidate: dict[str, Any]) -> str:
 
     grain = candidate.get("state_grain")
     if grain:
-        parts.append(f"grain={_truncate_text(str(grain), 48)}")
+        parts.append(f"grain={squeeze_truncate(str(grain), 48)}")
 
     risk = candidate.get("read_path_bottleneck_risk")
     if risk:
@@ -66,11 +60,11 @@ def format_candidate_summary(candidate: dict[str, Any]) -> str:
             or candidate.get("read_path_scaling_variable")
         )
         if residual:
-            parts.append(f"residual={_truncate_text(str(residual), 52)}")
+            parts.append(f"residual={squeeze_truncate(str(residual), 52)}")
     else:
         regime = candidate.get("best_regime")
         if regime:
-            parts.append(_truncate_text(str(regime), 52))
+            parts.append(squeeze_truncate(str(regime), 52))
 
     return " ".join(parts)
 
@@ -89,7 +83,7 @@ def format_candidate_detail_lines(candidate: dict[str, Any], *, index: int) -> l
         if family:
             lines.append(f"    family: {family}")
         if reason:
-            lines.append(f"    rejected because: {_truncate_text(reason, 120)}")
+            lines.append(f"    rejected because: {squeeze_truncate(reason, 120)}")
         return lines
 
     family = str(candidate.get("design_family", ""))
@@ -98,9 +92,9 @@ def format_candidate_detail_lines(candidate: dict[str, Any], *, index: int) -> l
     if family:
         lines.append(f"    family: {family}")
     if org:
-        lines.append(f"    organization: {_truncate_text(org, 100)}")
+        lines.append(f"    organization: {squeeze_truncate(org, 100)}")
     if grain:
-        lines.append(f"    state grain: {_truncate_text(grain, 90)}")
+        lines.append(f"    state grain: {squeeze_truncate(grain, 90)}")
 
     eliminated = candidate.get("operators_eliminated")
     if isinstance(eliminated, list) and eliminated:
@@ -115,13 +109,13 @@ def format_candidate_detail_lines(candidate: dict[str, Any], *, index: int) -> l
         or candidate.get("residual_read_algorithm")
     )
     if read_complexity:
-        lines.append(f"    read path: {_truncate_text(str(read_complexity), 100)}")
+        lines.append(f"    read path: {squeeze_truncate(str(read_complexity), 100)}")
 
     units = candidate.get("estimated_state_units_read")
     if isinstance(units, dict):
         typical = units.get("typical")
         if typical:
-            lines.append(f"    units read (typical): {_truncate_text(str(typical), 80)}")
+            lines.append(f"    units read (typical): {squeeze_truncate(str(typical), 80)}")
 
     risk = candidate.get("read_path_bottleneck_risk")
     if risk:
@@ -130,7 +124,7 @@ def format_candidate_detail_lines(candidate: dict[str, Any], *, index: int) -> l
     if not selected:
         regime = candidate.get("best_regime")
         if regime:
-            lines.append(f"    best when: {_truncate_text(str(regime), 90)}")
+            lines.append(f"    best when: {squeeze_truncate(str(regime), 90)}")
 
     return lines
 
@@ -161,7 +155,7 @@ def log_analysis_candidates(
     print(f"[pipeline] ═══ {label}: aux-state candidates (Q{query}) ═══", file=sys.stderr)
 
     if not recommended:
-        rationale = _truncate_text(str(fitness.get("rationale", "")), 160)
+        rationale = squeeze_truncate(str(fitness.get("rationale", "")), 160)
         print(
             f"[pipeline] fitness: recommended=false confidence={fitness.get('confidence', '-')}",
             file=sys.stderr,
@@ -344,7 +338,7 @@ def log_gate_complete(
         f"status={status} duration={duration_ms}ms"
     )
     if detail:
-        line += f" — {_truncate_text(detail, 120)}"
+        line += f" — {squeeze_truncate(detail, 120)}"
     print(line, file=sys.stderr)
     if status == "fail":
         print(f"[pipeline] gate FAILED: {gate_name}", file=sys.stderr)

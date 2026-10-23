@@ -1,16 +1,8 @@
 benchmark_name: tpch
 display_name: TPC-H
 artifact_namespace: tpch
-header_prefix: tpch_q
-function_prefix: accel_tpch_q
-create_fn_prefix: CreateTpchQ
-test_target_prefix: test_tpch_q
-bench_target_prefix: benchmark_tpch_q
-ctest_smoke_suffix: _smoke_test
 dataset_key: tpch_sf1
 scale_dataset_key: tpch_sf10
-# Production benchmarking targets SF20+; pipeline does not gate on SF20 by default (see scale_factor_contract.md).
-production_scale_targets: [10, 20]
 db_env_var: ACCEL_TPCH_DB
 
 write_paths:

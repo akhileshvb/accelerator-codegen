@@ -9,7 +9,7 @@
 //     it with a file-scope MysqlUdfRegistrar.  The same dir's udf.cpp exports the
 //     UDF symbols the MySQL server resolves by name (ACCEL_MYSQL_QUERY_UDF in
 //     udf_shim.hpp), and functions.sql holds its CREATE FUNCTION statement
-//     (scripts/mysql_register_functions.sh assembles the fragments).
+//     (backends/mysql/host.sh registers the fragments).
 //   * Query catalog (catalog/mysql/query_catalog.hpp): q<N>/mysql/aux/catalog.cpp
 //     registers the query's catalog entry (MysqlQueryCatalogRegistrar).
 //

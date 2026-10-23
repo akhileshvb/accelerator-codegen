@@ -64,12 +64,8 @@ def sample_write_mix_enabled(workload: dict[str, Any]) -> bool:
 
 def lock_per_attempt_enabled(workload: dict[str, Any]) -> bool:
     cfg = _sample_cfg(workload)
-    # Prefer new key; accept legacy lock_per_iteration=False as "no lock".
     if "lock_per_attempt" in cfg:
         return bool(cfg["lock_per_attempt"])
-    if "lock_per_iteration" in cfg:
-        # Legacy: iteration lock → treat as attempt lock (caller re-samples each attempt).
-        return bool(cfg["lock_per_iteration"])
     return True
 
 
@@ -324,23 +320,6 @@ def ensure_attempt_write_frequencies(
 
 
 # Back-compat alias used by older call sites / tests.
-def ensure_iteration_write_frequencies(
-    art_dir: Path,
-    workload: dict[str, Any],
-    *,
-    optimization_iter: int,
-    attempt: int = 0,
-    rng: random.Random | None = None,
-) -> list[int]:
-    return ensure_attempt_write_frequencies(
-        art_dir,
-        workload,
-        optimization_iter=optimization_iter,
-        attempt=attempt,
-        rng=rng,
-    )
-
-
 def optimization_iter_from_env(default: int | None = None) -> int | None:
     raw = os.environ.get("ACCEL_PIPELINE_OPT_ITER")
     if raw is None or not str(raw).strip():

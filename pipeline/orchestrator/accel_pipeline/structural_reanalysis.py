@@ -167,11 +167,6 @@ def build_analysis_revision_request(request: dict[str, Any], *, rerun_number: in
     )
 
 
-def build_reanalysis_prompt_context(request: dict[str, Any], *, rerun_number: int, max_reruns: int) -> str:
-    """Backward-compatible alias."""
-    return build_analysis_revision_request(request, rerun_number=rerun_number, max_reruns=max_reruns)
-
-
 def can_rerun_analysis(structural_reanalysis_count: int, workload: dict[str, Any]) -> bool:
     return structural_reanalysis_count < max_structural_reanalysis_count(workload)
 

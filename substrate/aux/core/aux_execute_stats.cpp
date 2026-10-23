@@ -7,7 +7,7 @@
 
 namespace accelerator_codegen::aux_state::core {
 namespace {
-std::atomic<uint64_t> g_hit{0}, g_rebuilt{0}, g_fallback{0};
+std::atomic<uint64_t> g_hit{0}, g_fallback{0};
 thread_local double t_resolve_us = 0;
 
 int64_t NowNs() {
@@ -16,7 +16,6 @@ int64_t NowNs() {
 }
 } // namespace
 
-void AddStoreResolveMicros(double us) { t_resolve_us += us; }
 double ThreadStoreResolveMicros() { return t_resolve_us; }
 StoreResolveTimer::StoreResolveTimer() : start_ns_(NowNs()) {}
 StoreResolveTimer::~StoreResolveTimer() { t_resolve_us += (NowNs() - start_ns_) / 1000.0; }
@@ -26,9 +25,6 @@ void RecordAuxExecute(AuxExecutePath path) {
   case AuxExecutePath::Hit:
     g_hit++;
     break;
-  case AuxExecutePath::RebuiltOnRead:
-    g_rebuilt++;
-    break;
   case AuxExecutePath::Fallback:
     g_fallback++;
     break;
@@ -36,12 +32,11 @@ void RecordAuxExecute(AuxExecutePath path) {
 }
 
 AuxExecuteCounts ReadAuxExecuteCounts() {
-  return {g_hit.load(), g_rebuilt.load(), g_fallback.load()};
+  return {g_hit.load(), 0, g_fallback.load()};
 }
 
 void ResetAuxExecuteCounts() {
   g_hit = 0;
-  g_rebuilt = 0;
   g_fallback = 0;
 }
 

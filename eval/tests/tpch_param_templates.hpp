@@ -9,8 +9,7 @@
 //   * `ref`  is the reference SQL (TPC-H spec shape; column order and
 //            ORDER BY / LIMIT follow the catalog base_sql) with {i} slots;
 //   * `call` is the accelerator call accel_tpch_qN_aux({0}, {1}, ...), slot
-//            order = the SQL function signature in
-//            src/generated/tpch/qN/postgres/extension/functions.cpp;
+//            order = the accelerator's SQL function signature;
 //   * `types` has one char per slot: d=date s=text i=integer b=bigint n=numeric.
 //
 // Parameter classes:

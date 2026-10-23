@@ -42,26 +42,11 @@ void SetGlobalMaintenanceDecision(const MaintenanceDecisionLogEntry &entry) {
   t_thread_slot = saved;
 }
 
-void RecordCoordinatorMaintenanceUs(double us) {
-  std::lock_guard<std::mutex> guard(LogMutex());
-  LogSlot().maintenance_us = us;
-}
-
 void RecordMaintenanceSelectorDecision(const MaintenanceDecisionLogEntry &entry) {
   std::lock_guard<std::mutex> guard(LogMutex());
   auto &slot = LogSlot();
   slot = entry;
   slot.valid = true;
-}
-
-void RecordStagedMaintenanceAction(maintenance::MaintenanceAction action) {
-  std::lock_guard<std::mutex> guard(LogMutex());
-  auto &slot = LogSlot();
-  slot.staged_action = action;
-  if (!slot.valid) {
-    slot.selected = action;
-    slot.valid = true;
-  }
 }
 
 void RecordMaintenanceActualCostUs(double actual_us) {

@@ -11,7 +11,7 @@ ulimit -c 0   # a crashing child must not write a core dump to the root disk
 #   ACCEL_BATCH_VERIFY_SAMPLE  DuckDB: invalidating candidates checked one by one (default 4)
 #   PG_PARALLEL         max concurrent Postgres instances (tmpfs budget: ~11 GB each; default 4)
 #   DUCK_PARALLEL       max concurrent DuckDB copies (default 6)
-#   RESULTS_ROOT        where results-<ts> dirs go (default <repo>/benchmarks/sec_edgar/sweep/results)
+#   RESULTS_ROOT        where results-<ts> dirs go (default <repo>/eval/bench/sec_edgar/sweep/results)
 #   HOSTBUILD           DuckDB host build dir containing benchmark_shared_duckdb_write_interval
 #   DUCK_SRC            source DuckDB file (default /home/akhilvb/accelerator-codegen-duckdb/sec_edgar_sf3.duckdb)
 #   WORK_ROOT           tmpfs dir for DuckDB copies (default /tmp)

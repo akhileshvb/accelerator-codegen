@@ -6,7 +6,7 @@ from typing import Any
 
 from accel_pipeline.backends import StageRunRequest, create_agent_backend
 from accel_pipeline.config import ModelConfig, PipelineConfig, load_run_workload, apply_workload_overrides
-from accel_pipeline.models import make_model_id, resolve_agent_model
+from accel_pipeline.models import make_model_id
 from accel_pipeline.agent_progress import begin_agent_run
 from accel_pipeline.pipeline_log import (
     log_stage_complete,
@@ -107,7 +107,7 @@ def run_agent_stage(
         return {"dry_run": True, "stage": stage, "prompt_chars": len(prompt)}
 
     model_id = make_model_id(stage, pipeline_config, model_config, model_overrides)
-    agent_model = resolve_agent_model(stage, pipeline_config, model_config, model_overrides)
+    agent_model = model_id
     log_stage_start(
         pipeline_config.repo_root,
         query,

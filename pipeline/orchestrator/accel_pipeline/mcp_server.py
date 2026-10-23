@@ -9,6 +9,8 @@ import sys
 from pathlib import Path
 from typing import Any, Callable
 
+from accel_pipeline.jsonio import read_json
+
 
 def _env_int(name: str, default: int = 0) -> int:
     raw = os.environ.get(name, "")
@@ -39,15 +41,6 @@ def _build_context(args: argparse.Namespace):
     pipeline_config = apply_workload_overrides(pipeline_config, workload)
     art = query_artifacts_dir(repo_root, query, workload=workload)
     return pipeline_config, workload, workload_name, query, stage, optimization_iter, art
-
-
-def _read_json(path: Path) -> dict[str, Any]:
-    if not path.is_file():
-        return {}
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
-        return {}
 
 
 def build_mcp_tool_callables(
@@ -167,8 +160,8 @@ def build_mcp_tool_callables(
             payload["optimization_feedback_tail"] = feedback
             return json.dumps(payload, indent=2)[:50_000]
 
-        profile = _read_json(art / "profile_summary.json")
-        baseline = _read_json(art / "baseline_summary.json")
+        profile = read_json(art / "profile_summary.json")
+        baseline = read_json(art / "baseline_summary.json")
         board = build_scoreboard(art, is_aux=False, last_metrics=profile or baseline)
         write_scoreboard(art, board)
         freshness = profile_freshness(
@@ -226,33 +219,11 @@ def build_mcp_tool_callables(
                 }
             )
         for name in ("bench_summary.json", "optimization_state.json", "baseline_summary.json"):
-            data = _read_json(art / name)
+            data = read_json(art / name)
             diag = data.get("store_diagnostics") or data.get("median_metrics", {}).get("store_diagnostics")
             if diag:
                 return json.dumps({"source": name, "store_diagnostics": diag}, indent=2)
         return json.dumps({"store_diagnostics": {}, "note": "no diagnostics on disk yet"})
-
-    def record_optimization_trap(trap: str, when: str = "", evidence: str = "") -> str:
-        """Optionally record a short recurring optimization trap (advisory shared memory).
-
-        Prefer current profile/scoreboard over this list. Use sparingly for clear
-        anti-patterns only — not for every failed attempt.
-        """
-        from accel_pipeline.negative_memory import append_negative_memory
-
-        entry = append_negative_memory(
-            pipeline_config.repo_root,
-            pipeline_config.engine_name,
-            trap=trap,
-            when=when,
-            evidence=evidence,
-            query=query,
-            workload_kind=str(workload.get("workload_kind") or "") or None,
-            source="agent",
-        )
-        if entry is None:
-            return json.dumps({"recorded": False, "reason": "duplicate_or_too_short"})
-        return json.dumps({"recorded": True, "entry": entry}, indent=2)
 
     def run_pipeline_command(command: str) -> str:
         """Allowlisted cmake/ctest only (same policy as pipeline shell tools)."""
@@ -318,7 +289,6 @@ def build_mcp_tool_callables(
         "run_quick_benchmark": run_quick_benchmark,
         "end_ab_trial": end_ab_trial,
         "request_structural_reanalysis": request_structural_reanalysis,
-        "record_optimization_trap": record_optimization_trap,
         "run_pipeline_command": run_pipeline_command,
         "acquire_shared_lease": acquire_shared_lease,
         "release_shared_lease": release_shared_lease,
@@ -517,11 +487,6 @@ def main(argv: list[str] | None = None) -> int:
             alternate_candidate_ids,
             cost_model_insufficient_reason,
         )
-
-    @_tool(annotations=_rw)
-    def record_optimization_trap(trap: str, when: str = "", evidence: str = "") -> str:
-        """Optionally record a short recurring optimization trap (advisory; not authority)."""
-        return _call("record_optimization_trap", trap, when, evidence)
 
     @_tool(annotations=_rw)
     def run_pipeline_command(command: str) -> str:

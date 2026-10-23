@@ -9,7 +9,6 @@ the process exits, and always surface returncode/signal to the agent.
 from __future__ import annotations
 
 import os
-import shlex
 import subprocess
 from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
@@ -133,66 +132,3 @@ def run_command(
     )
     output = ((proc.stdout or "") + (proc.stderr or ""))
     return CapturedRun(returncode=int(proc.returncode), output=output)
-
-
-def docker_exec_harness(
-    container: str,
-    binary: str,
-    *,
-    extra_env: Mapping[str, str] | None = None,
-    timeout: float = 300.0,
-    log_path: str = "/tmp/accel_gate_harness.log",
-) -> CapturedRun:
-    """Run an in-container harness; recover output after abort() via sidecar log."""
-    quoted_bin = shlex.quote(binary)
-    quoted_log = shlex.quote(log_path)
-    script = f"""
-set +e
-rm -f {quoted_log}
-if command -v stdbuf >/dev/null 2>&1; then
-  stdbuf -o0 -e0 {quoted_bin} >{quoted_log} 2>&1
-else
-  {quoted_bin} >{quoted_log} 2>&1
-fi
-rc=$?
-if [[ ! -s {quoted_log} ]]; then
-  printf '(no captured stdout/stderr; exit=%s)\\n' "$rc" >{quoted_log}
-fi
-cat {quoted_log}
-exit $rc
-"""
-    cmd: list[str] = ["docker", "exec"]
-    for key, value in dict(extra_env or {}).items():
-        cmd.extend(["-e", f"{key}={value}"])
-    cmd.extend([container, "bash", "-lc", script])
-    captured = run_command(cmd, timeout=timeout)
-    if captured.returncode != 0 and not captured.output.strip():
-        recovered = run_command(
-            ["docker", "exec", container, "cat", log_path],
-            timeout=15.0,
-        )
-        text = recovered.output.strip()
-        if text:
-            captured = CapturedRun(returncode=captured.returncode, output=text)
-        else:
-            captured = CapturedRun(
-                returncode=captured.returncode,
-                output=f"(no captured stdout/stderr; {describe_returncode(captured.returncode)})\n",
-            )
-    return captured
-
-
-def local_harness(
-    argv: Sequence[str],
-    *,
-    cwd: str | os.PathLike[str] | None = None,
-    env: Mapping[str, str] | None = None,
-    timeout: float = 180.0,
-) -> CapturedRun:
-    captured = run_command(argv, cwd=cwd, env=env, timeout=timeout)
-    if captured.returncode != 0 and not captured.output.strip():
-        captured = CapturedRun(
-            returncode=captured.returncode,
-            output=f"(no captured stdout/stderr; {describe_returncode(captured.returncode)})\n",
-        )
-    return captured

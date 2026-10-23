@@ -14,7 +14,8 @@ export PGPORT="${PORT}"
 export PGUSER="${PGUSER:-postgres}"
 
 if ! docker ps --format '{{.Names}}' | grep -qx "${NAME}"; then
-  bash "${ROOT}/scripts/ensure_accel_pg_test.sh" || true
+  echo "[pg_ivm] container ${NAME} is not running (start it with backends/postgres/host.sh up)" >&2
+  exit 1
 fi
 
 if ! docker exec "${NAME}" bash -lc 'test -f /usr/share/postgresql/17/extension/pg_ivm.control'; then

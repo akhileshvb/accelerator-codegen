@@ -21,7 +21,6 @@ class EvalConfig:
     improvement_threshold_pct: float = 3.0
     reject_threshold_pct: float = 2.0
     quick_benchmark_samples: int = 3
-    confirmation_samples: int = 3
     aux_quick_benchmark_samples: int = 1
 
 
@@ -36,23 +35,6 @@ class MultiSampleBenchmark:
     samples: list[BenchmarkSample]
     median_score: float
     median_metrics: dict[str, Any]
-
-
-@dataclass
-class InitialScreenResult:
-    verdict: str  # "reject" | "needs_confirmation"
-    improvement_pct: float
-    baseline_median: float
-    candidate_median: float
-
-
-@dataclass
-class AcceptRejectResult:
-    accepted: bool
-    improvement_pct: float
-    baseline_median: float
-    candidate_median: float
-    reason: str = ""
 
 
 @dataclass
@@ -644,50 +626,6 @@ def run_multi_sample_benchmark(
     )
 
 
-def evaluate_initial_screen(
-    baseline_median: float,
-    candidate_median: float,
-    config: EvalConfig,
-) -> InitialScreenResult:
-    improvement_pct = improvement_ratio(baseline_median, candidate_median)
-    if improvement_pct < config.reject_threshold_pct:
-        return InitialScreenResult(
-            verdict="reject",
-            improvement_pct=improvement_pct,
-            baseline_median=baseline_median,
-            candidate_median=candidate_median,
-        )
-    return InitialScreenResult(
-        verdict="needs_confirmation",
-        improvement_pct=improvement_pct,
-        baseline_median=baseline_median,
-        candidate_median=candidate_median,
-    )
-
-
-def evaluate_confirmation(
-    baseline_median: float,
-    confirmed_median: float,
-    config: EvalConfig,
-) -> AcceptRejectResult:
-    """Terminal binary decision after confirmation run."""
-    improvement_pct = improvement_ratio(baseline_median, confirmed_median)
-    if improvement_pct >= config.improvement_threshold_pct:
-        return AcceptRejectResult(
-            accepted=True,
-            improvement_pct=improvement_pct,
-            baseline_median=baseline_median,
-            candidate_median=confirmed_median,
-        )
-    return AcceptRejectResult(
-        accepted=False,
-        improvement_pct=improvement_pct,
-        baseline_median=baseline_median,
-        candidate_median=confirmed_median,
-        reason=f"confirmation improvement {improvement_pct:.2f}% < {config.improvement_threshold_pct}%",
-    )
-
-
 def eval_config_from_pipeline(pipeline_config: PipelineConfig) -> EvalConfig:
     aux_samples = 1
     try:
@@ -708,6 +646,5 @@ def eval_config_from_pipeline(pipeline_config: PipelineConfig) -> EvalConfig:
         quick_benchmark_samples=int(
             getattr(pipeline_config, "optimization_quick_benchmark_samples", 3)
         ),
-        confirmation_samples=int(getattr(pipeline_config, "optimization_confirmation_samples", 3)),
         aux_quick_benchmark_samples=aux_samples,
     )

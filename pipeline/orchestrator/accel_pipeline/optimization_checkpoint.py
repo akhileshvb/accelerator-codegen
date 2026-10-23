@@ -199,26 +199,6 @@ def advance_best_valid_baseline(
     return copied
 
 
-def restore_best_valid_baseline(
-    pipeline_config: PipelineConfig,
-    workload: dict[str, Any],
-    query: int,
-) -> list[str]:
-    art = query_artifacts_dir(pipeline_config.repo_root, query, workload=workload)
-    baseline = load_best_valid_baseline(art)
-    restored: list[str] = []
-    for rel in baseline.get("checkpoint_files") or []:
-        source = art / "best_valid_baseline_snapshot" / rel
-        if not source.is_file():
-            continue
-        dest = pipeline_config.repo_root / rel
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source, dest)
-        restored.append(rel)
-    clear_experimental_branch(art)
-    return restored
-
-
 def snapshot_best_valid_baseline_files(
     pipeline_config: PipelineConfig,
     workload: dict[str, Any],

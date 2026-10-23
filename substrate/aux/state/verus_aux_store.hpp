@@ -10,7 +10,7 @@
 //     database at that version.
 // Both implement core::AuxStateStore, so the runtime and the engine
 // drive them the same way; the module prepares Verus-store versions itself
-// when its services' store is one (see tpch/q21/verus/store.hpp).
+// when its services' store is one.
 //
 // ACCEL_AUX_STORE=verus selects the Verus store for accelerators that have
 // one; anything else (or unset) keeps the C++ store.  An engine runtime
@@ -51,21 +51,9 @@ public:
 // Whether ACCEL_AUX_STORE asks for the Verus store.
 bool VerusAuxStoreRequested();
 
-// The Verus store of `accelerator`, or null if it has none: a Verus kit
-// accelerator's, or one a query registered below.
+// The Verus store of `accelerator`, or null if it has none (not a Verus kit accelerator).
 std::unique_ptr<VerusAuxStore> MakeVerusAuxStore(const core::AcceleratorId &accelerator,
                                                  VerusAuxStore::EpochProvider epoch,
                                                  VerusAuxStore::FloorProvider floor);
-
-// A hand-written Verus accelerator's store, registered from the query's
-// directory with a static VerusAuxStoreRegistrar.
-using VerusAuxStoreFactory = std::unique_ptr<VerusAuxStore> (*)(VerusAuxStore::EpochProvider epoch,
-                                                                VerusAuxStore::FloorProvider floor);
-void RegisterVerusAuxStore(std::string accelerator, VerusAuxStoreFactory factory);
-struct VerusAuxStoreRegistrar {
-  VerusAuxStoreRegistrar(std::string accelerator, VerusAuxStoreFactory factory) {
-    RegisterVerusAuxStore(std::move(accelerator), factory);
-  }
-};
 
 } // namespace accelerator_codegen::aux_state

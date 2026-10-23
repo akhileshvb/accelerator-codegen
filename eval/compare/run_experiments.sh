@@ -72,7 +72,7 @@ plots)
     for r in "$OUT"/writerate/wps* "$OUT"/writerate/uncapped; do
       [ -d "$r" ] && { echo "=== $(basename "$r")"; $RUN summary "$r"; }
     done | tee "$OUT/writerate/summary.txt"
-    python3 eval/compare/plot_wps_sweep.py "$OUT/writerate" | tee "$OUT/writerate/sweep_table.txt"
+    python3 eval/compare/plot_rf_multi_sweep.py "$OUT/writerate" | tee "$OUT/writerate/sweep_table.txt"
   fi
   ;;
 *) echo "mode: read | writerate | plots"; exit 2 ;;

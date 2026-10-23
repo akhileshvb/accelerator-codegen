@@ -101,26 +101,6 @@ def is_owned_path(
     return False
 
 
-def is_cross_query_path(
-    repo_root: Path,
-    path: Path | str,
-    *,
-    query: int,
-    benchmark: str | None = None,
-) -> bool:
-    """True when path lies in another query's directory (other N, or other bench)."""
-    rel = _rel(repo_root, path)
-    if rel is None:
-        return False
-    owner = layout.query_of(rel)
-    if owner is None:
-        return False
-    bench, other = owner
-    if other != int(query):
-        return True
-    return benchmark is not None and bench != benchmark
-
-
 def _run_identity(pipeline_config: Any | None) -> tuple[str, str, str]:
     """(workload_kind, engine_name, benchmark_name) of the run, '' when unknown."""
     if pipeline_config is None:

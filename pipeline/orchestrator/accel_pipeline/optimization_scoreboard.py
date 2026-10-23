@@ -7,6 +7,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from accel_pipeline.jsonio import read_json
+
 SCOREBOARD_FILE = "optimization_scoreboard.json"
 
 # Suggested phase names for agent instrumentation (not enforced).
@@ -40,15 +42,6 @@ WORK_COUNT_KEYS: tuple[str, ...] = (
 )
 
 
-def _read_json(path: Path) -> dict[str, Any]:
-    if not path.is_file():
-        return {}
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
-        return {}
-
-
 def _as_float(value: Any) -> float | None:
     if value is None or value == "":
         return None
@@ -56,13 +49,6 @@ def _as_float(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
-
-
-def _as_int(value: Any) -> int | None:
-    num = _as_float(value)
-    if num is None:
-        return None
-    return int(num)
 
 
 def primary_score_from_metrics(
@@ -266,11 +252,11 @@ def build_scoreboard(
     last_metrics: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Authoritative compare-against board for A/B and digests."""
-    best_valid = _read_json(art / "best_valid_baseline.json")
-    fair = _read_json(art / "aux_bench_summary.json") if is_aux else {}
-    profile = _read_json(art / "profile_summary.json")
-    baseline = _read_json(art / "baseline_summary.json")
-    opt_state = _read_json(art / "optimization_state.json")
+    best_valid = read_json(art / "best_valid_baseline.json")
+    fair = read_json(art / "aux_bench_summary.json") if is_aux else {}
+    profile = read_json(art / "profile_summary.json")
+    baseline = read_json(art / "baseline_summary.json")
+    opt_state = read_json(art / "optimization_state.json")
 
     best_metrics = dict(best_valid.get("metrics") or {})
     if best_valid.get("score") is not None:
@@ -347,10 +333,6 @@ def write_scoreboard(art: Path, board: dict[str, Any]) -> Path:
     }
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     return path
-
-
-def load_scoreboard(art: Path) -> dict[str, Any]:
-    return _read_json(art / SCOREBOARD_FILE)
 
 
 def custom_profiling_contract(*, is_aux: bool) -> dict[str, Any]:

@@ -50,9 +50,7 @@ private:
 void SetGlobalMaintenanceDecision(const MaintenanceDecisionLogEntry &entry);
 
 void RecordMaintenanceSelectorDecision(const MaintenanceDecisionLogEntry &entry);
-void RecordStagedMaintenanceAction(maintenance::MaintenanceAction action);
 void RecordMaintenanceActualCostUs(double actual_us);
-void RecordCoordinatorMaintenanceUs(double us);
 std::optional<MaintenanceDecisionLogEntry> LastMaintenanceDecision();
 void ClearMaintenanceDecisionLog();
 

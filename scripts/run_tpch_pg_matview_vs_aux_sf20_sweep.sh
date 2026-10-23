@@ -2,7 +2,7 @@
 # SF20 Postgres sweep: native SQL vs matview residual vs postgres aux accelerators.
 #
 # Prerequisites (once):
-#   bash scripts/setup_tpch_sf20_postgres.sh
+#   backends/postgres/host.sh up && backends/postgres/host.sh load <schema.sql>
 #
 # Usage:
 #   bash scripts/run_tpch_pg_matview_vs_aux_sf20_sweep.sh           # all 22
@@ -50,7 +50,7 @@ echo "=== TPC-H SF20 Postgres matview vs aux sweep ===" | tee -a "${LOG}"
 echo "db=${DB} queries=${QUERIES} warmup=${WARMUP} samples=${SAMPLES}" | tee -a "${LOG}"
 
 if ! psql -d "${DB}" -tAc "SELECT COUNT(*) FROM lineitem" >/tmp/accel_sf20_li_count 2>/dev/null; then
-  echo "ERROR: cannot query ${DB}.lineitem — run scripts/setup_tpch_sf20_postgres.sh first" >&2
+  echo "ERROR: cannot query ${DB}.lineitem — load SF20 with backends/postgres/host.sh load first" >&2
   exit 1
 fi
 LI_COUNT="$(tr -d '[:space:]' </tmp/accel_sf20_li_count)"

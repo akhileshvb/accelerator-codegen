@@ -1,5 +1,5 @@
 # MySQL backend: the audit/UDF plugin (accelerator_codegen_mysql), built in
-# the Docker pipeline inside accel_mysql_test (scripts/build_accel_mysql_plugin.sh).
+# the Docker pipeline inside the MySQL host container (backends/mysql/host.sh build).
 # The plugin SDK headers are optional: without them the store/aux layers and the
 # standalone harnesses still build.
 # The sibling DuckDB: harnesses and generated query code use it as the reference engine.
@@ -52,7 +52,7 @@ set(_mysql_plugin_sources
 # inspection, scan / runtime drivers that create and seed toy tables). The
 # same plugin file name and audit plugin are kept so the layer harnesses
 # load it exactly like the production plugin; only the gates build it
-# (scripts/build_accel_mysql_plugin.sh with ACCEL_MYSQL_PLUGIN_VARIANT=test).
+# (backends/mysql/host.sh build, with the test-UDF variant requested).
 if(ACCEL_MYSQL_TEST_UDFS)
     list(APPEND _mysql_plugin_sources backends/mysql/tests/mysql_bridge_test_udfs.cpp)
     message(STATUS "accel: MySQL plugin variant = test (gate-test UDFs included)")

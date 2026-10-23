@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from accel_pipeline.jsonio import read_json
 from accel_pipeline.optimization_checkpoint import load_experimental_branch
 from accel_pipeline.optimization_pending import PendingFeedback
 
@@ -33,15 +34,6 @@ def save_worker_checkpoint(art_dir: Path, payload: dict[str, Any], filename: str
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     return path
-
-
-def _read_json(path: Path) -> dict[str, Any]:
-    if not path.is_file():
-        return {}
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
-        return {}
 
 
 def _recent_hypotheses_from_attempt_log(art: Path, limit: int = 8) -> list[dict[str, Any]]:
@@ -84,9 +76,9 @@ def build_semantic_worker_checkpoint(
     episode_tool_calls: int,
     checkpoint_file: str = DEFAULT_CHECKPOINT_FILE,
 ) -> dict[str, Any]:
-    best_valid = _read_json(art_dir / "best_valid_baseline.json")
-    baseline_summary = _read_json(art_dir / "baseline_summary.json")
-    profile_summary = _read_json(art_dir / "profile_summary.json")
+    best_valid = read_json(art_dir / "best_valid_baseline.json")
+    baseline_summary = read_json(art_dir / "baseline_summary.json")
+    profile_summary = read_json(art_dir / "profile_summary.json")
     experimental = load_experimental_branch(art_dir)
 
     best_metrics = dict(best_valid.get("metrics") or {})

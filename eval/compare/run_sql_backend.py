@@ -73,9 +73,9 @@ CHUNK = 5000  # rows per multi-row INSERT / keys per IN list
 # ---------------------------------------------------------------------------------------------
 def kit_sql(q):
     """The parameterized ($n) TPC-H text of query q: the one the Verus kits and the DuckDB harness
-    use as their baseline (src/generated/tpch/qN/verus_kit/*/glue.cpp, kQuerySql)."""
-    kits = glob.glob(os.path.join(ROOT, "src", "generated", "tpch", f"q{q}", "verus_kit", "*", "glue.cpp"))
-    if not kits:  # (after the reorg: the same $n text lives in workloads/tpch/qN.sql)
+    use as their baseline (accelerators/tpch/q<N>/verus_kit/*/glue.cpp, kQuerySql)."""
+    kits = glob.glob(os.path.join(ROOT, "accelerators", "tpch", f"q{q}", "verus_kit", "*", "glue.cpp"))
+    if not kits:  # (fallback: the same $n text lives in workloads/tpch/qN.sql)
         t = open(os.path.join(ROOT, "workloads", "tpch", f"q{q}.sql")).read()
         return "\n".join(l for l in t.splitlines() if not l.lstrip().startswith("--")).strip().rstrip(";")
     f = kits[0]
@@ -192,11 +192,11 @@ class Db:
             self.cur.execute("SET SESSION sql_mode = CONCAT(@@sql_mode, ',PIPES_AS_CONCAT')")
             if accel:
                 # The test variant of the plugin also exports the engine_backend gate UDFs; measuring with it
-                # would not be measuring the production plugin (build it with scripts/build_accel_mysql_plugin.sh).
+                # would not be measuring the production plugin (build it with backends/mysql/host.sh build).
                 self.cur.execute("SELECT COUNT(*) FROM mysql.func WHERE name = 'mysql_accel_txn_init'")
                 if self.cur.fetchone()[0]:
                     sys.exit("the MySQL server has the TEST variant of accelerator_codegen_mysql installed; "
-                             "rebuild the production plugin (scripts/build_accel_mysql_plugin.sh --prod) first")
+                             "rebuild the production plugin (backends/mysql/host.sh build) first")
             if accel:  # the plugin scans this database to build / rebuild state (a process-wide setting)
                 try:
                     self.cur.execute("SELECT mysql_accel_set_scan_database(%s)", (a.db,))

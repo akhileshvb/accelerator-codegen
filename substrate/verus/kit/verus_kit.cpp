@@ -113,12 +113,6 @@ struct KitPrepared {
 };
 
 constexpr core::PartitionId kState = 0;
-constexpr uint64_t kWaitForPublish = ~uint64_t{0};
-
-uint64_t PendingWaitMicros() {
-  const char *value = std::getenv("ACCEL_AUX_PENDING_WAIT_US");
-  return value && *value ? std::strtoull(value, nullptr, 10) : kWaitForPublish;
-}
 
 // Reads the Verus store's version at `at` through `read(at, tries, &status)`.
 // A reader of a pending commit waits for the publish, or, with a bounded wait,
@@ -129,7 +123,7 @@ const void *ReadAwaitingPublish(uint64_t pending_wait_micros, core::Version at, 
   // The verified store's own "newest" is 0 (its engines' epochs are positive).
   if (at == core::kNewestVersion || Fault() == "ignore_snapshot")
     at = 0;
-  if (pending_wait_micros == kWaitForPublish)
+  if (pending_wait_micros == core::kWaitForPublish)
     return read(at, std::numeric_limits<uint64_t>::max(), &status);
   const auto deadline = std::chrono::steady_clock::now() + std::chrono::microseconds(pending_wait_micros);
   const void *state = nullptr;
@@ -144,7 +138,7 @@ class KitStore final : public VerusAuxStore {
 public:
   KitStore(const Glue &g, EpochProvider epoch_p, FloorProvider floor_p)
       : glue(g), epoch(std::move(epoch_p)), floor(std::move(floor_p)),
-        pending_wait_micros(PendingWaitMicros()), store(g.store.new_store()) {}
+        pending_wait_micros(core::PendingWaitMicrosFromEnv()), store(g.store.new_store()) {}
   ~KitStore() override { glue.store.free_store(store); }
 
   const void *Handle() const { return store; }
@@ -392,7 +386,7 @@ class WorldKitStore final : public VerusAuxStore {
 public:
   WorldKitStore(const Glue &g, const WorldKitOps &k, WorldShared &w, EpochProvider epoch_p, FloorProvider floor_p)
       : glue(g), kit(k), world(w), epoch(std::move(epoch_p)), floor(std::move(floor_p)),
-        pending_wait_micros(PendingWaitMicros()) {}
+        pending_wait_micros(core::PendingWaitMicrosFromEnv()) {}
 
   const Glue &GlueOf() const { return glue; }
 
@@ -1102,18 +1096,6 @@ core::AuxValue OutRat(int64_t num_hi, uint64_t num_lo, int64_t den_hi, uint64_t 
 core::AuxValue OutNull(core::AuxType type) { return core::AuxValue::Null(type); }
 
 // ---- host ----
-std::string Host::KeyIn(const std::string &column, const std::vector<int64_t> &keys) const {
-  if (keys.empty())
-    return "FALSE";
-  std::string sql = column + " IN (";
-  for (std::size_t i = 0; i < keys.size(); ++i) {
-    if (i)
-      sql += ',';
-    sql += std::to_string(keys[i]);
-  }
-  return sql + ")";
-}
-
 std::string Host::Quote(const std::string &identifier) const {
   std::string out = "\"";
   for (char c : identifier) {

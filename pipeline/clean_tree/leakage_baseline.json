@@ -2,9 +2,6 @@
  ".env.example": {
   "engine": 9
  },
- ".gitignore": {
-  "engine": 1
- },
  "CMakeLists.txt": {
   "engine": 10
  },
@@ -13,7 +10,7 @@
   "path": 1
  },
  "cmake/Backend.cmake": {
-  "engine": 4
+  "engine": 3
  },
  "cmake/BaseQuery.cmake": {
   "engine": 2
@@ -157,7 +154,7 @@
   "engine": 13
  },
  "eval/tests/tpch_param_templates.hpp": {
-  "engine": 3,
+  "engine": 2,
   "target": 1
  },
  "pipeline/catalog/aux_transformations.yaml": {
@@ -165,7 +162,7 @@
   "path": 7
  },
  "pipeline/config/aux_state.yaml": {
-  "engine": 4
+  "engine": 3
  },
  "pipeline/config/benchmark_packs/sec_edgar.yaml": {
   "engine": 7,
@@ -501,7 +498,7 @@
   "engine": 3
  },
  "pipeline/orchestrator/tests/test_accelerator_engine.py": {
-  "engine": 78,
+  "engine": 77,
   "engine_branch": 4,
   "path": 7,
   "symbol": 1,
@@ -541,7 +538,7 @@
   "target": 1
  },
  "pipeline/orchestrator/tests/test_engine_backend.py": {
-  "engine": 94,
+  "engine": 93,
   "path": 16,
   "target": 2
  },
@@ -651,8 +648,7 @@
   "symbol": 4
  },
  "pipeline/prompts/aux_state/shared/bench_sweep_contract.md": {
-  "engine": 1,
-  "path": 1
+  "engine": 1
  },
  "pipeline/prompts/aux_state/shared/concurrency_contract.md": {
   "path": 1
@@ -690,12 +686,6 @@
  "pipeline/prompts/shared/substrate_primitives.md": {
   "path": 1,
   "symbol": 3
- },
- "pipeline/prompts/verus/03_tests.md": {
-  "engine": 1
- },
- "pipeline/prompts/verus/contracts/scale_principles.md": {
-  "engine": 1
  },
  "pipeline/templates/engine_backend/scan.cpp.tpl": {
   "symbol": 1

@@ -93,8 +93,8 @@ accelerator keeps its advantage as data grows:
   * **partial aggregates per bucket**: keep per-bucket (e.g. per key range
     or group) partial aggregates and merge only the buckets the parameters
     select; a read that scans a slice proportional to the table (measured:
-    a read slower than the DuckDB query itself, 57 vs 52 ms at SF1; others
-    10-20x slower than a bucketed design) gives the accelerator away;
+    a read slower than the engine's own plan; others 10-20x slower
+    than a bucketed design) gives the accelerator away;
   * when the answer itself is large, a read is bounded by it: then make each
     emitted row cheap (no per-row recomputation, no re-sorting).
   Where no parameter-independent state can avoid visiting many keys per read

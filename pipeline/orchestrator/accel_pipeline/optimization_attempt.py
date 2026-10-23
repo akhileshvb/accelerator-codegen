@@ -20,8 +20,9 @@ from accel_pipeline.config import (
     resolve_optimization_edit_paths,
     resolve_workload_paths,
 )
+from accel_pipeline.jsonio import read_json
 from accel_pipeline.kernel_hot_path_review import analyze_kernel_source
-from accel_pipeline.models import make_model_id, resolve_agent_model
+from accel_pipeline.models import make_model_id
 from accel_pipeline.optimization_budget import save_attempt_state
 from accel_pipeline.optimization_bootstrap import build_optimization_bootstrap, save_optimization_bootstrap
 from accel_pipeline.optimization_checkpoint import (
@@ -149,15 +150,6 @@ def _try_honor_saturation(
         verdict="saturation_floors_not_met",
     )
     return False, detail
-
-
-def _read_json(path) -> dict[str, Any]:
-    if not path.is_file():
-        return {}
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
-        return {}
 
 
 def _parse_hypothesis_json(text: str) -> dict[str, Any] | None:
@@ -312,8 +304,8 @@ def _build_evidence(
 ) -> dict[str, Any]:
     art = query_artifacts_dir(pipeline_config.repo_root, query, workload=workload)
     opt_state = load_base_optimization_state(art)
-    baseline_summary = _read_json(art / "baseline_summary.json")
-    profile = _read_json(art / "profile_summary.json")
+    baseline_summary = read_json(art / "baseline_summary.json")
+    profile = read_json(art / "profile_summary.json")
     _, analysis = load_query_analysis(pipeline_config.repo_root, query, workload=workload)
     edit_paths = resolve_optimization_edit_paths(pipeline_config, workload, query)
     kernel_path = pipeline_config.repo_root / edit_paths["primary_cpp"]
@@ -359,7 +351,7 @@ def _run_agent_substage(
     save_rendered_prompt(pipeline_config, workload, query, stage, prompt, optimization_iter=optimization_iter)
 
     model_id = make_model_id(stage, pipeline_config, model_config, model_overrides)
-    agent_model = resolve_agent_model(stage, pipeline_config, model_config, model_overrides)
+    agent_model = model_id
     if stage == "optimization_unified":
         max_turns = resolve_optimization_max_turns(pipeline_config, "unified")
     elif stage in ("optimization_unified_hypothesis", "optimization_unified_patch"):
@@ -1238,7 +1230,6 @@ def run_optimization_iteration(
             if outcome.verdict in ("reject_broken", "reject_regress"):
                 _revert_and_rebuild(pipeline_config, workload, query)
                 consecutive_fails += 1
-                worker.metrics.auth_rejects += 1
                 worker.pending.push(
                     format_gate_delta(
                         verdict=outcome.verdict,
@@ -1327,7 +1318,6 @@ def run_optimization_iteration(
                 # Local baseline can be noisy; never ratchet best_valid downward.
                 _revert_and_rebuild(pipeline_config, workload, query)
                 consecutive_fails += 1
-                worker.metrics.auth_rejects += 1
                 worker.pending.push(
                     format_gate_delta(
                         verdict="reject_regress",
@@ -1372,7 +1362,6 @@ def run_optimization_iteration(
             consecutive_fails = 0
             baseline = candidate
             evidence = _build_evidence(pipeline_config, workload, query, baseline)
-            worker.metrics.auth_accepts += 1
             worker.pending.push(
                 format_gate_delta(
                     verdict="accept",

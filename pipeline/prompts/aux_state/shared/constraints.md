@@ -17,6 +17,6 @@ Multi-connection production path; parallelism comes only from the backend's thre
 - **Exact for any parameter value / data / key width, compact, O(touched) writes** — see `hard_guidelines.md` §4.
 - Do not alter query semantics for implementation convenience.
 - Benchmark fairness: time the full production query path, consume all results.
-- TPC-H aux: iteration on SF1; **read, build and maintenance must stay correct, incremental and fast at SF20+ and sized for SF3000** (`scale_factor_contract.md` failure classes; no SF1-only designs).
+- TPC-H aux: iteration on SF1; **read, build and maintenance must stay correct, incremental and fast at high scale and sized for SF3000** (`scale_factor_contract.md` failure classes; no SF1-only designs).
 
 See `profiling_conventions.md` and `scale_factor_contract.md`.

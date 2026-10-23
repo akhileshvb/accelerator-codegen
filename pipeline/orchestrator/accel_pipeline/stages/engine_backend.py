@@ -36,12 +36,6 @@ def layer_stage_name(layer_id: str) -> str:
     return f"impl_{layer_id}"
 
 
-def impl_stage_choices(workload: dict | None = None) -> tuple[str, ...]:
-    layers = implementation_layers(workload) if workload else []
-    names = tuple(layer_stage_name(str(layer.get("id") or "")) for layer in layers)
-    return names + ("implementation",)
-
-
 def _prepare_engine_host_sdk(
     pipeline_config: PipelineConfig,
     workload: dict,

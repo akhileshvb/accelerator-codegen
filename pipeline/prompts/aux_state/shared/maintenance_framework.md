@@ -63,7 +63,7 @@ When the selector chooses `RebuildPartition` or `RebuildAll`, maintenance **must
 
 v1: maintenance runs at commit via `StageMaintenance` outcomes; readers wait for a pending commit and read its published state. Only `InvalidateAndRebuildOnRead` defers work, to the next reader, which rebuilds rather than falls back.
 
-## Refresh-shaped writes (measured, TPC-H RF1/RF2 at SF20, 22 accelerators in one process)
+## Refresh-shaped writes (TPC-H RF1/RF2, all accelerators in one process)
 
 **Copy-on-write comes from `accelerators/prims/`.** The substrate versions each partition payload as an opaque immutable pointer; inside a payload the module must produce a new immutable version per commit that *shares* untouched structure. Build the payload from the COW primitives (the `prims/README.md` catalogue): copying one is pointer copies, a write clones only the touched chunk/shard once per version. Do not hand-roll a private sharded/chunked COW container in a module, and do not deep-copy the state per commit (`make_shared<State>(*old)` over O(rows) members). If no primitive fits the access pattern, write a generic one and publish it with `primitive_publish` (see `agent_boundary.md`), then use it.
 

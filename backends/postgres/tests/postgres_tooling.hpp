@@ -205,7 +205,7 @@ inline Tools DiscoverDocker() {
     t.error =
         "ACCEL_PG_DOCKER=1 but cannot connect to Postgres at " + t.host + ":" +
         std::to_string(t.port) +
-        " (run scripts/ensure_accel_pg_test.sh; fail closed — do not SKIP)";
+        " (run backends/postgres/host.sh up; fail closed — do not SKIP)";
     return t;
   }
   // Prefer in-container complete SDK when present (for optional local initdb).
@@ -257,7 +257,7 @@ inline Tools DiscoverTools() {
   Tools last_err;
   last_err.error =
       "PostgreSQL not available. For the Docker pipeline set ACCEL_PG_DOCKER=1 "
-      "(scripts/ensure_accel_pg_test.sh). Or provide PG_CONFIG with a complete "
+      "(backends/postgres/host.sh up). Or provide PG_CONFIG with a complete "
       "server SDK (postgres.h + initdb/postgres).";
   for (const auto &cand : candidates) {
     Tools t = TryPgConfig(cand);

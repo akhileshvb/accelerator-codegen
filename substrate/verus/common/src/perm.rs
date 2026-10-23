@@ -171,30 +171,6 @@ pub proof fn lemma_bag_eq_dedup<A>(s: Seq<A>, t: Seq<A>)
     crate::order::lemma_same_set_multiset(dedup(s), dedup(t));
 }
 
-/// EXISTS over bag-equal sequences.
-pub proof fn lemma_exists_perm<A>(s: Seq<A>, t: Seq<A>, p: spec_fn(A) -> bool, q: spec_fn(A) -> bool)
-    requires
-        bag_eq(s, t),
-        forall|a: A| #[trigger] p(a) == q(a),
-    ensures
-        (exists|i: int| 0 <= i < s.len() && #[trigger] p(s[i])) == (exists|j: int| 0 <= j < t.len() && #[trigger] q(t[j])),
-{
-    if exists|i: int| 0 <= i < s.len() && #[trigger] p(s[i]) {
-        let i = choose|i: int| 0 <= i < s.len() && #[trigger] p(s[i]);
-        assert(s.contains(s[i]));
-        lemma_bag_eq_contains(s, t, s[i]);
-        let j = choose|j: int| 0 <= j < t.len() && t[j] == s[i];
-        assert(q(t[j]));
-    }
-    if exists|j: int| 0 <= j < t.len() && #[trigger] q(t[j]) {
-        let j = choose|j: int| 0 <= j < t.len() && #[trigger] q(t[j]);
-        assert(t.contains(t[j]));
-        lemma_bag_eq_contains(s, t, t[j]);
-        let i = choose|i: int| 0 <= i < s.len() && s[i] == t[j];
-        assert(p(s[i]));
-    }
-}
-
 /// min_of is a member that is at most every member.
 pub proof fn lemma_min_of_props(s: Seq<int>)
     requires

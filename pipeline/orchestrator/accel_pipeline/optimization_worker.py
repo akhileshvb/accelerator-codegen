@@ -11,7 +11,7 @@ from typing import Any
 
 from accel_pipeline.backends import StageRunRequest, create_agent_backend
 from accel_pipeline.config import ModelConfig, PipelineConfig, apply_workload_overrides, load_run_workload
-from accel_pipeline.models import make_model_id, resolve_agent_model
+from accel_pipeline.models import make_model_id
 from accel_pipeline.optimization_pending import PendingFeedback
 from accel_pipeline.optimization_saturation import (
     OPTIMIZATION_SATURATED,
@@ -216,7 +216,7 @@ class OptimizationWorker:
 
     def run_candidate_cycle(self, user_message: str) -> CandidateCycleResult:
         model_id = make_model_id(_WORKER_STAGE, self.pipeline_config, self.model_config, self.model_overrides)
-        agent_model = resolve_agent_model(_WORKER_STAGE, self.pipeline_config, self.model_config, self.model_overrides)
+        agent_model = model_id
         max_turns = resolve_worker_max_turns(self.pipeline_config)
 
         log_event(
@@ -294,14 +294,13 @@ class OptimizationWorker:
         wall_ms = int((time.monotonic() - started) * 1000)
         tool_calls = int((result.metadata or {}).get("tool_calls", 0) or 0)
         usage = (result.metadata or {}).get("usage")
-        self.metrics.record_run(tool_calls=tool_calls, usage=usage, wall_clock_ms=wall_ms)
+        self.metrics.record_run(tool_calls=tool_calls, usage=usage)
 
         final_text = result.final_text or ""
 
         marker = "failed"
         saturated = parse_optimization_saturated(final_text)
         if result.status != "finished":
-            self.metrics.candidates_failed += 1
             cycle = CandidateCycleResult(
                 status="failed",
                 reason=result.error or result.status,
@@ -322,7 +321,6 @@ class OptimizationWorker:
                 saturation=saturated,
             )
         elif _parse_cannot_test(final_text):
-            self.metrics.candidates_cannot_test += 1
             marker = "cannot_test"
             cycle = CandidateCycleResult(
                 status="cannot_test",
@@ -332,7 +330,6 @@ class OptimizationWorker:
                 wall_clock_ms=wall_ms,
             )
         elif CANDIDATE_READY not in final_text:
-            self.metrics.candidates_failed += 1
             cycle = CandidateCycleResult(
                 status="failed",
                 reason="missing CANDIDATE_READY",
@@ -342,7 +339,6 @@ class OptimizationWorker:
                 wall_clock_ms=wall_ms,
             )
         else:
-            self.metrics.candidates_ready += 1
             marker = "ready"
             hypothesis = _parse_hypothesis_json(final_text)
             if not hypothesis:

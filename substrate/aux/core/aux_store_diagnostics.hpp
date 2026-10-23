@@ -43,8 +43,6 @@ private:
   std::size_t validity_next_ = 0, validity_us_next_ = 0, partitions_next_ = 0, bytes_next_ = 0;
 };
 
-// ACCEL_AUX_PROFILE=1 also samples the bytes read per query.
-bool AuxStoreProfilingBytesEnabled();
 // Per-read diagnostics (validity-scan timing, partitions-read samples). On by
 // default; ACCEL_AUX_DIAG=0 turns them off (concurrent/latency experiments).
 bool AuxStoreDiagnosticsEnabled();

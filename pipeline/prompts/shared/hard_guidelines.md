@@ -35,7 +35,7 @@ Use measured profile/evidence to drive changes.
 
 ### High scale factor is a first-class goal
 
-Iteration benches are often SF1 for speed, but the accelerator must still deliver **strong speedups at high scale factor** (TPC-H **SF10 / SF20+**, with keys/offsets/sums/memory sized for **SF3000**; SEC at production scale). Treat SF1 wins that blow up memory, scan all groups globally, or hardcode iteration cardinalities as **failures**. Plan with bind-time estimates and data-shape/cardinality reasoning — not SF1 profile snapshots alone.
+Iteration benches are often SF1 for speed, but the accelerator must still deliver **strong speedups at high scale factor** (TPC-H up to **SF3000**, with keys/offsets/sums/memory sized for it; SEC at production scale). Treat SF1 wins that blow up memory, scan all groups globally, or hardcode iteration cardinalities as **failures**. Plan with bind-time estimates and data-shape/cardinality reasoning — not SF1 profile snapshots alone.
 
 ### Low-level execution (base kernels and aux modules alike)
 

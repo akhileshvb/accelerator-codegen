@@ -31,7 +31,6 @@ keep:
   - eval/tests/test_aux_runtime.cpp
   - eval/tests/tsan_module_driver.cpp
   - eval/tests/tpch_param_templates.hpp
-  - eval/harness/tpch_test_recipes.hpp
   - eval/tests/test_aux_runtime_units.cpp
   - eval/tests/test_aux_wire.cpp
   - eval/tests/test_core_helpers.cpp
@@ -73,6 +72,7 @@ generated:
   - eval/harness/cost_calibration.*
   - eval/harness/differential.*
   - eval/harness/tpch_rf.*
+  - eval/harness/tpch_test_recipes.hpp
   - eval/tests/mysql/**
   - eval/tests/postgres/**
   - eval/tests/parallel/**
@@ -112,8 +112,6 @@ generated:
   # slot adapters are backend-owned; the README stays
   - pipeline/gates/slot_adapters/*.sh
   # engine-specific scripts: PostgreSQL / MySQL builds, servers, loaders, SQL, baselines, sweeps
-  - scripts/build_accel_mysql_plugin.sh
-  - scripts/build_accel_postgres_extension.sh
   - scripts/build_base_pg.sh
   - scripts/ensure_*.sh
   - scripts/finish_sf3000_pg_setup.sh
@@ -129,11 +127,6 @@ generated:
   - scripts/run_mysql_*
   - scripts/run_postgres_*
   - scripts/run_tpch_pg_*
-  - scripts/setup_accel_*
-  - scripts/setup_sf20_sql_backends.sh
-  - scripts/setup_tpch_sf20_postgres.sh
-  - scripts/setup_tpch_sf3000_postgres.sh
-  - scripts/start_accel_*
   - scripts/tpch_pg_matview_vs_aux_bench.py
   - scripts/perf/pg_sf20/**
   # engine-specific scripts: drivers of the DuckDB host's built tests and benchmarks

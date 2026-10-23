@@ -174,7 +174,7 @@ def run_agent(
 
     from accel_pipeline.backends.base import StageRunRequest
     from accel_pipeline.backends.codex_exec import CodexExecBackend
-    from accel_pipeline.models import make_model_id, resolve_agent_model, resolve_stage_provider
+    from accel_pipeline.models import make_model_id, resolve_stage_provider
     from accel_pipeline.pipeline_log import log_stage_complete, log_stage_start, usage_from_metadata
 
     provider = resolve_stage_provider(stage, model_config)
@@ -192,7 +192,7 @@ def run_agent(
     os.environ["ACCEL_VERUS_CONTEXT"] = str(ctx.save())
     os.environ["ACCEL_PIPELINE_MODE"] = "verus"
     model_id = make_model_id(stage, pipeline_config, mc, model_overrides)
-    agent_model = resolve_agent_model(stage, pipeline_config, mc, model_overrides)
+    agent_model = model_id
     log_stage_start(ctx.root, ctx.query, _events_workload(ctx), stage=stage, model_id=model_id)
     backend = CodexExecBackend(pipeline_config=ws_config, model_config=mc, query=ctx.query, stage=stage,
                                workload_name=ctx.workload_name, art_dir=ctx.art)

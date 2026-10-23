@@ -17,7 +17,7 @@
 #      i.e. Q11's FRACTION = 0.0001/SF), QUERIES (comma list, default all 22),
 #      ACCEL_PG_CONTAINER (default accel_pg_test; the module is built and installed in it),
 #      TPCH_PG_DB (default accel_tpch_test for SF1, accel_tpch_sf${SF} otherwise — the name
-#      scripts/setup_sf20_sql_backends.sh uses),
+#      backends/postgres/host.sh load creates),
 #      PGHOST/PGPORT/PGUSER/PGPASSWORD for the client (default 127.0.0.1:5434 postgres/postgres),
 #      OUT_DIR (default eval/bench/tpch/results), SKIP_BUILD=1 to reuse the installed module,
 #      BASE_SCHEMA (default public; the build drops every accel_tpch_qN* function in it, so
@@ -49,7 +49,7 @@ mkdir -p "$OUT_DIR"
 STAMP="sf${SF}_$(uname -n | cut -d. -f1)_$(date +%Y%m%d_%H%M%S)"
 
 if ! docker exec "$CONTAINER" psql -U "${PGUSER:-postgres}" -d "$DB" -Atc "SELECT count(*) FROM region" >/dev/null 2>&1; then
-  echo "database $DB not reachable in container $CONTAINER (SF${SF}: scripts/setup_sf20_sql_backends.sh postgres)" >&2
+  echo "database $DB not reachable in container $CONTAINER (SF${SF}: load it with backends/postgres/host.sh load)" >&2
   exit 1
 fi
 

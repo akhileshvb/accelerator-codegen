@@ -12,9 +12,9 @@ Goal: **beat** the engine's own reference SQL on the benchmark dataset (referenc
 
 When speedup is far below 1.0x, prioritize structural changes (scan order, filter pushdown, build-phase interning, vector fast paths) over micro-opts.
 
-## Scale factors (SF1 iteration → SF20+ production)
+## Scale factors (SF1 iteration → SF3000 production)
 
-The pipeline profiles and gates primarily on **SF1** for speed. Final TPC-H benchmarking targets **SF20 or higher**. An optimization that only works at SF1 is a regression.
+The pipeline profiles and gates primarily on **SF1** for speed. Production TPC-H targets **SF3000**. An optimization that only works at SF1 is a regression.
 
 **Before accepting a bundle, verify:**
 - Capacities come from bind-time `row_estimate` / table counts — not SF1 profile literals (`150000`, `6000000`, etc.).

@@ -45,14 +45,6 @@ def resolve_snapshot_paths(
     return [repo_root / rel for rel in rels]
 
 
-def kernel_source_paths(
-    pipeline_config: PipelineConfig,
-    workload: dict[str, Any],
-    query: int,
-) -> list[Path]:
-    return resolve_snapshot_paths(pipeline_config, workload, query)
-
-
 def snapshot_dir(art: Path) -> Path:
     return art / SNAPSHOT_DIRNAME
 

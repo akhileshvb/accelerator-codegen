@@ -71,10 +71,6 @@ void AuxStoreDiagnosticsCollector::BeginExecute() {
 void AuxStoreDiagnosticsCollector::EndExecute() {
   PushBounded(partitions_read_samples_, partitions_next_,
               static_cast<double>(current_execute_partitions_));
-  if (AuxStoreProfilingBytesEnabled()) {
-    PushBounded(state_bytes_read_samples_, bytes_next_,
-                static_cast<double>(current_execute_bytes_));
-  }
   execute_calls_++;
   current_execute_partitions_ = 0;
   current_execute_bytes_ = 0;
@@ -93,14 +89,6 @@ AuxStoreDiagnosticsSnapshot AuxStoreDiagnosticsCollector::Snapshot(
       Median(state_bytes_read_samples_));
   snapshot.execute_calls = execute_calls_;
   return snapshot;
-}
-
-bool AuxStoreProfilingBytesEnabled() {
-  static const bool enabled = [] {
-    const char *value = std::getenv("ACCEL_AUX_PROFILE");
-    return value && *value && value[0] != '0';
-  }();
-  return enabled;
 }
 
 bool AuxStoreDiagnosticsEnabled() {

@@ -10,7 +10,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CONTAINER="${ACCEL_MYSQL_CONTAINER:-accel_mysql_sf10}"
 # Refuse to measure the test variant of the plugin (it carries the gate-test UDFs).
 if [[ "$(docker exec "$CONTAINER" sh -c 'cat /usr/lib/mysql/plugin/accelerator_codegen_mysql.variant /usr/lib64/mysql/plugin/accelerator_codegen_mysql.variant 2>/dev/null' | head -1)" == "test" ]]; then
-  echo "$CONTAINER has the TEST variant of accelerator_codegen_mysql installed; rebuild with scripts/build_accel_mysql_plugin.sh --prod" >&2
+  echo "$CONTAINER has the TEST variant of accelerator_codegen_mysql installed; rebuild with backends/mysql/host.sh build" >&2
   exit 1
 fi
 QUERIES="${ACCEL_MYSQL_SWEEP_QUERIES:-$(seq 1 22)}"
