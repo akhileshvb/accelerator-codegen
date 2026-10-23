@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 from types import SimpleNamespace
 
 import pytest
@@ -194,3 +195,45 @@ def test_baseline_that_did_not_run_raises(monkeypatch, tmp_path):
     with pytest.raises(StageFailure) as raised:
         attempt._measure_baseline(SimpleNamespace(), {}, 6, SimpleNamespace(quick_benchmark_samples=1))
     assert "undefined reference" in raised.value.failure.evidence
+
+
+def test_hit_contract_gate_is_registered():
+    from accel_pipeline.gates import GATE_SCRIPTS, GATES_ALLOW_SKIP
+    from accel_pipeline.paths import find_repo_root
+
+    script = GATE_SCRIPTS["engine_hit_contract"]
+    assert (find_repo_root() / "pipeline" / "gates" / script).is_file()
+    assert "engine_hit_contract" in GATES_ALLOW_SKIP
+
+
+def test_sweep_records_measurement_ok(tmp_path, monkeypatch):
+    from accel_pipeline import kernel_snapshot
+    from accel_pipeline.aux_bench import process_aux_bench_after_gates
+
+    snapshots = []
+    monkeypatch.setattr(kernel_snapshot, "snapshot_best_kernel", lambda *a, **k: snapshots.append(k))
+
+    from accel_pipeline.paths import find_repo_root
+
+    workload = {"name": "q6", "workload_kind": "aux_state"}
+    (tmp_path / "pipeline" / "config").mkdir(parents=True)
+    shutil.copy(find_repo_root() / "pipeline" / "config" / "default.yaml", tmp_path / "pipeline" / "config")
+    for iteration, (hit_rate, ok) in enumerate(((1.0, True), (0.0, False))):
+        summary = {"composite_score": 5.0, "read_only_query_speedup": 5.0,
+                   "by_write_frequency_pct": {"0": row(0, accel_hit_rate=hit_rate)}}
+        _write_summary(tmp_path, workload, summary)
+        result = process_aux_bench_after_gates(tmp_path, 6, iteration=iteration, change_kind="bench_sweep", workload=workload)
+        assert result["summary"]["measurement_ok"] is ok
+        assert result["state"]["history"][-1]["measurement_ok"] is ok
+    assert result["state"]["best_composite_score"] == 5.0  # the invalid sweep did not set the best
+    assert len(snapshots) == 1  # ...nor became the best kernel
+    assert "fallback path" in result["summary"]["measurement_diagnosis"][0]
+
+
+def _write_summary(repo, workload, summary):
+    import json
+    from accel_pipeline.aux_bench import bench_summary_path
+
+    path = bench_summary_path(repo, 6, workload)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(summary))

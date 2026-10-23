@@ -62,7 +62,7 @@ def check_measurement(
             kind="measurement",
             stage="optimization" if phase in ("baseline", "attempt") else phase,
             source=f"bench_{phase}",
-            summary=f"{workload.get('name') or 'workload'}: the benchmark signal is not trustworthy: {diagnosis[0]}",
+            summary=f"{workload.get('name') or 'workload'}: the benchmark signal is not trustworthy",
             evidence="\n".join(_describe(p) for p in points),
             diagnosis=diagnosis,
         )
@@ -202,4 +202,5 @@ def _stale_diagnosis(bench_binary: Path | None, query_dir: Path | None) -> list[
 
 
 def _describe(point: dict[str, Any]) -> str:
-    return ", ".join(f"{k}={point[k]}" for k in _EVIDENCE_KEYS if point.get(k) not in (None, ""))
+    shown = {k: _num(point, k) for k in _EVIDENCE_KEYS}
+    return ", ".join(f"{k}={v:g}" for k, v in shown.items() if v is not None)

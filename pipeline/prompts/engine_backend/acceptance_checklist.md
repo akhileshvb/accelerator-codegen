@@ -109,6 +109,14 @@ behaviour of the finished backend under concurrency.
   header under `api/` listed, every listed symbol declared in its row's headers
   (`check_api_manifest.py`); each `api/` header compiles alone (`api_conformance_{engine}`).
 
+### `hit_contract` (layer `api`)
+
+- `host.sh info` says `"hit_contract": true`; `test_{engine}_hit_contract` exists and `host.sh build` builds it.
+- With `ACCEL_FALLBACK_TRAP=1` (which `host.sh run` passes through) any fallback SQL raises an error naming
+  the accelerator; the harness refuses to run without the variable.
+- Harness: a fixture accelerator on an unbuilt state; the first read builds it, the second is a hit with
+  the counters showing one more hit and no more fallbacks (`host_contract.md`, "Hit contract").
+
 ### `own_writes` (layer `runtime`; entries in `host`)
 
 - A read inside a transaction that wrote a table the accelerator depends on is

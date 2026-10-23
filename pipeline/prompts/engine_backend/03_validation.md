@@ -63,8 +63,8 @@ A profile field given as `{na: reason}` declares that mechanic absent on this en
 
 ## Gates the orchestrator will re-run
 
-`engine_build`, every layer gate in `layers.md`, **`engine_adversarial`**, then the
-backend-generic slot gates (`slot_epoch_stress`, `slot_hits_under_writes`,
+`engine_build`, every layer gate in `layers.md`, **`engine_adversarial`**, **`engine_hit_contract`**
+(the layer `api` hit contract: `host_contract.md`), then the backend-generic slot gates (`slot_epoch_stress`, `slot_hits_under_writes`,
 `slot_read_after_commit`, `slot_txn_edges`, `slot_restart`, `slot_own_writes`,
 `slot_ddl_events`, `slot_tsan`;
 `pipeline/gates/README_runtime_gates.md`). A slot gate failure is a backend bug:
