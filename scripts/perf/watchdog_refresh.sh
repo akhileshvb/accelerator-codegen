@@ -22,6 +22,7 @@ say() { echo "$(date +%T) $*" | tee -a "$LOG" >&2; }
 
 while [ ! -s "$PIDFILE" ]; do sleep 2; done
 PID=$(tr -d '[:space:]' < "$PIDFILE")
+say "allocator in pid $PID: $(grep -m1 -o 'libjemalloc[^ ]*' /proc/$PID/maps 2>/dev/null || echo glibc)"
 say "watching pid $PID (interval ${INTERVAL}s, span limit ${LIMIT}s, MemAvailable limit $((MEM_LIMIT_KB / 1048576)) GB)"
 
 meminfo_kb() { awk -v k="$1:" '$1 == k {print $2}' /proc/meminfo; }
@@ -30,7 +31,7 @@ sample() {
   local rss
   rss=$(awk '$1 == "VmRSS:" {print $2}' /proc/$PID/status 2>/dev/null)
   {
-    echo "== $(date +%T) rss_kb=${rss:-?} mem_available_kb=$(meminfo_kb MemAvailable) anon_huge_kb=$(meminfo_kb AnonHugePages) threads=$(ls /proc/$PID/task 2>/dev/null | wc -l)"
+    echo "== $(date +%T) rss_kb=${rss:-?} mem_available_kb=$(meminfo_kb MemAvailable) anon_huge_kb=$(meminfo_kb AnonHugePages) threads=$(ls /proc/$PID/task 2>/dev/null | wc -l) maps=$(wc -l < /proc/$PID/maps 2>/dev/null)"
     echo "thp: $(grep -E '^thp_(fault_alloc|fault_fallback|collapse_alloc|collapse_alloc_failed|split_page|zero_page_alloc|deferred_split_page) ' /proc/vmstat | tr '\n' ' ')"
     echo "wchan: $(awk 1 /proc/$PID/task/*/wchan 2>/dev/null | sort | uniq -c | sort -rn | head -8 | awk '{printf "%s=%s ", $2, $1}')"
     echo "state: $(cat /proc/$PID/task/*/stat 2>/dev/null | sed 's/^.*) \(.\) .*/\1/' | sort | uniq -c | awk '{printf "%s=%s ", $2, $1}')"
