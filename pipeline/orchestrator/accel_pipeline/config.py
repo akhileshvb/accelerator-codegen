@@ -38,6 +38,32 @@ class ModelConfig:
     stage_reasoning_effort: dict[str, str] = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class MeasurementConfig:
+    """Thresholds of measurement.check_measurement (the `measurement:` block of default.yaml)."""
+
+    enabled: bool = True
+    min_hit_rate: float = 0.5
+    max_fallbacks_on_hit: int = 0
+    require_state_built: bool = True
+    max_cv: float = 0.5
+    min_ref_us: float = 1.0
+    max_ref_s: float = 600.0
+
+    @classmethod
+    def from_dict(cls, raw: dict[str, Any] | None) -> "MeasurementConfig":
+        raw = raw or {}
+        return cls(
+            enabled=bool(raw.get("enabled", cls.enabled)),
+            min_hit_rate=float(raw.get("min_hit_rate", cls.min_hit_rate)),
+            max_fallbacks_on_hit=int(raw.get("max_fallbacks_on_hit", cls.max_fallbacks_on_hit)),
+            require_state_built=bool(raw.get("require_state_built", cls.require_state_built)),
+            max_cv=float(raw.get("max_cv", cls.max_cv)),
+            min_ref_us=float(raw.get("min_ref_us", cls.min_ref_us)),
+            max_ref_s=float(raw.get("max_ref_s", cls.max_ref_s)),
+        )
+
+
 @dataclass
 class PipelineConfig:
     repo_root: Path
@@ -105,6 +131,7 @@ class PipelineConfig:
     sandbox_extra_rw: list[str] = field(default_factory=list)
     # enforce | warn | off: the post-stage ownership check (write_ownership.check_stage).
     write_policy: str = "warn"
+    measurement: MeasurementConfig = field(default_factory=MeasurementConfig)
 
 
 def _load_yaml(path: Path) -> dict[str, Any]:
@@ -403,6 +430,7 @@ def load_pipeline_config(
         sandbox_extra_ro=[str(x) for x in data.get("sandbox_extra_ro") or []],
         sandbox_extra_rw=[str(x) for x in data.get("sandbox_extra_rw") or []],
         write_policy=_choice(data, "write_policy", ("enforce", "warn", "off"), "warn"),
+        measurement=MeasurementConfig.from_dict(data.get("measurement")),
     )
 
     env_build = os.environ.get("ACCEL_PIPELINE_BUILD_DIR")

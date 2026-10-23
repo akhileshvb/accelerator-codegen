@@ -10,6 +10,10 @@ from typing import Any
 from accel_pipeline.paths import query_artifacts_dir
 from accel_pipeline.optimization_signals import STORE_DIAGNOSTIC_FIELDS, coerce_diagnostic_field
 
+# What a bench reports so measurement.check_measurement can tell a hit from a fallback.
+MEASUREMENT_COUNTERS = ("num_queries", "accel_fallback_reads", "state_builds")
+MEASUREMENT_TIMES = ("fallback_median_us",)
+
 
 def bench_summary_path(repo_root: Path, query: int, workload: dict[str, Any] | None = None) -> Path:
     return query_artifacts_dir(repo_root, query, workload=workload) / "aux_bench_summary.json"
@@ -76,6 +80,7 @@ def _parse_sweep_reader(reader: csv.DictReader) -> list[dict[str, Any]]:
                 "total_slots",
                 "state_bytes_read_median",
                 "store_execute_calls",
+                *MEASUREMENT_COUNTERS,
             }:
                 try:
                     parsed[key] = int(float(value))
@@ -218,6 +223,12 @@ def summarize_sweep_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
                 "writes_executed": int(row.get("writes_executed", 0) or 0),
             }
         )
+        for name in (*MEASUREMENT_COUNTERS, *MEASUREMENT_TIMES):
+            if row.get(name) not in (None, ""):
+                point[name] = float(row[name])
+        for name, value in row.items():  # the reference engine's column, whichever engine it is
+            if name.endswith("ref_query_median_us") and value not in (None, ""):
+                point["ref_query_median_us"] = float(value)
         if row.get("measured_duration_sec") not in (None, ""):
             point["measured_duration_sec"] = float(row.get("measured_duration_sec", 0.0) or 0.0)
         if row.get("reader_qps") not in (None, ""):
@@ -258,12 +269,12 @@ def summarize_sweep_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
                 merged["accel_profiler_query_median_us"] = max(old_prof, new_prof)
             elif new_prof > 0:
                 merged["accel_profiler_query_median_us"] = new_prof
-            old_rate = float(existing.get("accel_hit_rate") or 0.0)
-            new_rate = float(point.get("accel_hit_rate") or 0.0)
-            if old_rate > 0 and new_rate > 0:
-                merged["accel_hit_rate"] = min(old_rate, new_rate)
-            elif new_rate > 0:
-                merged["accel_hit_rate"] = new_rate
+            merged["accel_hit_rate"] = min(
+                float(existing.get("accel_hit_rate") or 0.0), float(point.get("accel_hit_rate") or 0.0)
+            )
+            for name, worst in (("accel_fallback_reads", max), ("state_builds", min)):
+                if name in existing and name in point:
+                    merged[name] = worst(existing[name], point[name])
             for extra_key, value in point.items():
                 if extra_key not in merged or merged[extra_key] in (None, "", 0, 0.0):
                     merged[extra_key] = value
@@ -392,9 +403,10 @@ def record_sweep_in_optimization_state(
         "read_only_query_speedup": summary.get("read_only_query_speedup"),
         "read_only_cold_start_workload_speedup": summary.get("read_only_cold_start_workload_speedup"),
         "by_write_frequency_pct": summary.get("by_write_frequency_pct", {}),
+        "measurement_ok": summary.get("measurement_ok", True),
     }
     state.setdefault("history", []).append(entry)
-    if score >= float(state.get("best_composite_score", 0.0) or 0.0):
+    if summary.get("measurement_ok", True) and score >= float(state.get("best_composite_score", 0.0) or 0.0):
         state["best_composite_score"] = score
         state["best_iteration"] = iteration
         state["best_summary"] = summary
@@ -419,6 +431,8 @@ def format_bench_experiment_log_line(
     improved = ""
     if state.get("best_iteration") == iteration:
         improved = " **new best**"
+    if not summary.get("measurement_ok", True):
+        improved = f" **INVALID MEASUREMENT: {summary['measurement_diagnosis'][0]}**"
     return (
         f"- iter {iteration}: bench_sweep composite={summary.get('composite_score', 0):.3f} "
         f"(wl_min={summary.get('composite_workload_speedup', 0):.2f}x, "
@@ -494,7 +508,7 @@ def record_aux_bench_sweep_outcome(
             )
 
             read_only = float(summary.get("read_only_query_speedup") or 0.0)
-            if read_only > 0:
+            if read_only > 0 and summary.get("measurement_ok", True):
                 pipeline_config = load_pipeline_config(repo_root=repo_root)
                 art = query_artifacts_dir(repo_root, query, workload=workload)
                 if normalized_kind == "implementation" or not has_best_kernel_snapshot(art):
@@ -507,6 +521,24 @@ def record_aux_bench_sweep_outcome(
                         change_kind=normalized_kind,
                     )
     return state
+
+
+def _measurement_verdict(
+    repo_root: Path, summary: dict[str, Any], workload: dict[str, Any] | None
+) -> dict[str, Any]:
+    from accel_pipeline.config import load_pipeline_config
+    from accel_pipeline.measurement import check_measurement
+
+    failures = check_measurement(
+        summary,
+        workload=workload or {},
+        phase="gate",
+        config=load_pipeline_config(repo_root=repo_root).measurement,
+    )
+    return {
+        "measurement_ok": not failures,
+        "measurement_diagnosis": [d for f in failures for d in f.diagnosis],
+    }
 
 
 def process_aux_bench_after_gates(
@@ -523,6 +555,7 @@ def process_aux_bench_after_gates(
     if not summary_path.is_file():
         return None
     summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    summary.update(_measurement_verdict(repo_root, summary, workload))
     state = record_aux_bench_sweep_outcome(
         repo_root,
         query,
