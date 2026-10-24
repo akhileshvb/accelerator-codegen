@@ -22,8 +22,9 @@ from accel_pipeline.config import (
     sanitize_engine_name,
 )
 from accel_pipeline.gate_capture import format_reloop_failure_sections
-from accel_pipeline.gates import GateFailure, GateResult, gate_failure_message
+from accel_pipeline.gates import GateResult
 from accel_pipeline.paths import engine_artifacts_dir, pipeline_root
+from accel_pipeline.repair import StageStopped
 
 _GATE_LOG_TAIL_CHARS = 8000
 _DEFAULT_GATE_MAX_ROUNDS = 3
@@ -162,7 +163,6 @@ def run_host_bootstrap(
     force: bool = False,
 ) -> dict[str, Any]:
     """Run the host_bootstrap agent stage for one engine (idempotent unless force)."""
-    from accel_pipeline.gates import run_gate
     from accel_pipeline.stages.host_bootstrap import run as run_stage
 
     engine = sanitize_engine_name(engine_name)
@@ -175,7 +175,10 @@ def run_host_bootstrap(
         }
 
     if not (dry_run or skip_gates) and not (pipeline_config.repo_root / f"backends/{engine}/host.sh").is_file():
-        raise GateFailure(f"host_bootstrap needs the {engine} backend first: run its engine_backend workload")
+        report = host_bootstrap_dir(pipeline_config.repo_root, engine) / "stop_report.md"
+        report.write_text(f"# Stopped: the {engine} backend is missing\n\nhost_bootstrap needs the backend first: run its "
+                          "engine_backend workload, then `--resume`.\n", encoding="utf-8")
+        raise StageStopped("the engine backend is missing", report)
 
     workload = load_workload(representative_workload, pipeline_config.repo_root, engine=engine)
 
@@ -206,148 +209,105 @@ def run_host_bootstrap(
         )
         return {"engine_name": engine, "status": "pass", "skipped": False, "path": str(path)}
 
+    return _bootstrap_under_repair(
+        pipeline_config, model_config, engine, representative_workload, workload, query, model_overrides
+    )
+
+
+def _bootstrap_under_repair(
+    pipeline_config: PipelineConfig,
+    model_config: ModelConfig,
+    engine: str,
+    representative_workload: str,
+    workload: dict[str, Any],
+    query: int,
+    model_overrides: dict[str, str] | None,
+) -> dict[str, Any]:
+    """The harness agent turn, its gate (repaired in the same session on failure) and the critic
+    (one batched repair round for its findings, then a re-check); a failure the loop cannot repair
+    ends in a recorded stop, never a traceback."""
+    from accel_pipeline.failure import Failure, render_failure
+    from accel_pipeline.gates import run_gate
+    from accel_pipeline.paths import query_artifacts_dir
     from accel_pipeline.playbook import append_experiment_log
+    from accel_pipeline.repair import RepairCtx, run_with_repair
+    from accel_pipeline.stages.host_bootstrap import run as run_stage
     from accel_pipeline.stages.host_bootstrap_critique import (
         format_host_bootstrap_critique_feedback,
         load_host_bootstrap_critique,
         run_host_bootstrap_critique_agent,
     )
 
-    configured_gate = int(
-        workload.get("host_bootstrap_gate_max_rounds") or _DEFAULT_GATE_MAX_ROUNDS
-    )
-    max_gate = max(1, configured_gate)
-    configured_critique = int(
-        workload.get("host_bootstrap_critique_max_rounds") or _DEFAULT_CRITIQUE_MAX_ROUNDS
-    )
-    max_critique = max(0, configured_critique)
+    art = host_bootstrap_dir(pipeline_config.repo_root, engine)
+    ctx = RepairCtx(pipeline_config, model_config, representative_workload, query, stage="host_bootstrap",
+                    change_kind="host_bootstrap", model_overrides=model_overrides)
+    ctx.workload = workload
+    ctx.art = query_artifacts_dir(pipeline_config.repo_root, query, workload=workload)
     requests = pending_harness_requests(pipeline_config.repo_root, engine)
-    extra = (
-        f"Query runs recorded these harness defects; fix every one in the harnesses:\n\n{requests}"
+    pending = {
+        "feedback": f"Query runs recorded these harness defects; fix every one in the harnesses:\n\n{requests}"
         if requests
         else ""
-    )
-    gate_fails = 0
-    critique_round = 0
-    last_gate: GateResult | None = None
-    art = host_bootstrap_dir(pipeline_config.repo_root, engine)
+    }
+    last: dict[str, GateResult] = {}
+    rounds = {"gate": 0}
 
-    while True:
-        run_stage(
-            pipeline_config,
-            model_config,
-            representative_workload,
-            query,
-            model_overrides=model_overrides,
-            dry_run=dry_run,
-            engine_name=engine,
-            extra_user_message=extra,
-        )
-        result = run_gate(
-            pipeline_config,
-            "host_bootstrap",
-            query,
-            workload=workload,
-            raise_on_failure=False,
-            change_kind="host_bootstrap",
-            iteration=gate_fails,
-        )
-        last_gate = result
-        if result.status != "pass":
-            gate_fails += 1
-            feedback = format_host_bootstrap_gate_feedback(
-                result, round_idx=gate_fails, max_rounds=max_gate
-            )
-            feedback_path = art / f"host_bootstrap_gate_feedback_round{gate_fails}.md"
-            feedback_path.write_text(feedback + "\n", encoding="utf-8")
-            append_experiment_log(
-                pipeline_config.repo_root,
-                query,
-                f"- host_bootstrap gate FAIL attempt {gate_fails}/{max_gate} — "
-                f"re-invoking (see {feedback_path.name})",
-                workload=workload,
-            )
-            extra = feedback
-            write_host_bootstrap_status(
-                pipeline_config.repo_root,
-                engine,
-                status="fail",
-                reason=str((result.data or {}).get("reason") or ""),
-                extra={"gate_data": result.data, "attempt": gate_fails},
-            )
-            if gate_fails >= max_gate:
-                raise GateFailure(
-                    "host_bootstrap still failing after "
-                    f"{max_gate} attempt(s): {gate_failure_message(result)}"
-                )
-            continue
+    def attempt() -> Any:
+        text, pending["feedback"] = pending["feedback"], ""
+        return run_stage(pipeline_config, model_config, representative_workload, query,
+                         model_overrides=model_overrides, dry_run=False, engine_name=engine, extra_user_message=text)
 
-        if max_critique <= 0:
-            break
+    def run_gates(_names: list[str]) -> tuple[list[GateResult], GateResult | None]:
+        result = run_gate(pipeline_config, "host_bootstrap", query, workload=workload, raise_on_failure=False,
+                          change_kind="host_bootstrap", iteration=rounds["gate"])
+        last["gate"] = result
+        if result.status == "pass":
+            return [result], None
+        write_host_bootstrap_status(pipeline_config.repo_root, engine, status="fail",
+                                    reason=str((result.data or {}).get("reason") or ""),
+                                    extra={"gate_data": result.data, "attempt": rounds["gate"] + 1})
+        return [result], result
 
-        critique_round += 1
-        critique_json = art / "host_bootstrap_critique.json"
-        if critique_json.is_file():
-            critique_json.unlink()
-        append_experiment_log(
-            pipeline_config.repo_root,
-            query,
-            f"- host_bootstrap critique round {critique_round}/{max_critique}",
-            workload=workload,
-        )
-        run_host_bootstrap_critique_agent(
-            pipeline_config,
-            model_config,
-            representative_workload,
-            query,
-            model_overrides,
-            dry_run,
-            engine_name=engine,
-            round_idx=critique_round,
-        )
+    def repair(failure: Failure) -> None:
+        rounds["gate"] += 1
+        failed = last.get("gate")
+        text = (format_host_bootstrap_gate_feedback(failed, round_idx=rounds["gate"], max_rounds=ctx.max_code_rounds
+                                                    or pipeline_config.repair.max_code_rounds)
+                if failed is not None and failure.source.startswith("gate:") else render_failure(failure))
+        (art / f"host_bootstrap_gate_feedback_round{rounds['gate']}.md").write_text(text + "\n", encoding="utf-8")
+        pending["feedback"] = text
+        attempt()
+
+    ctx.repair_turn, ctx.gate_runner = repair, run_gates
+    ctx.max_code_rounds = int(workload.get("host_bootstrap_gate_max_rounds") or _DEFAULT_GATE_MAX_ROUNDS)
+    run_with_repair(ctx, attempt, gates=["host_bootstrap"])
+
+    max_critique = max(0, int(workload.get("host_bootstrap_critique_max_rounds") or _DEFAULT_CRITIQUE_MAX_ROUNDS))
+    for critique_round in range(1, max_critique + 1):
+        append_experiment_log(pipeline_config.repo_root, query,
+                              f"- host_bootstrap critique round {critique_round}/{max_critique}", workload=workload)
+        run_host_bootstrap_critique_agent(pipeline_config, model_config, representative_workload, query,
+                                          model_overrides, False, engine_name=engine, round_idx=critique_round)
         critique = load_host_bootstrap_critique(art)
-        if str(critique.get("status") or "") == "pass":
-            append_experiment_log(
-                pipeline_config.repo_root,
-                query,
-                f"- host_bootstrap critique round {critique_round}: PASS",
-                workload=workload,
-            )
+        append_experiment_log(pipeline_config.repo_root, query,
+                              f"- host_bootstrap critique round {critique_round}: {critique['status'].upper()}",
+                              workload=workload)
+        if critique["status"] != "fail":
             break
-        feedback = format_host_bootstrap_critique_feedback(
-            critique, round_idx=critique_round
-        )
-        feedback_path = art / f"host_bootstrap_critique_feedback_round{critique_round}.md"
-        feedback_path.write_text(feedback + "\n", encoding="utf-8")
-        append_experiment_log(
-            pipeline_config.repo_root,
-            query,
-            f"- host_bootstrap critique round {critique_round}: FAIL — "
-            f"re-invoking (see {feedback_path.name})",
-            workload=workload,
-        )
-        extra = feedback
-        if critique_round >= max_critique:
-            raise GateFailure(
-                "host_bootstrap critique still failing after "
-                f"{max_critique} round(s)"
-            )
+        feedback = format_host_bootstrap_critique_feedback(critique, round_idx=critique_round)
+        (art / f"host_bootstrap_critique_feedback_round{critique_round}.md").write_text(feedback + "\n", encoding="utf-8")
+        pending["feedback"] = feedback
+        run_with_repair(ctx, attempt, gates=["host_bootstrap"])
 
-    assert last_gate is not None
+    final = last["gate"]
     path = write_host_bootstrap_status(
         pipeline_config.repo_root,
         engine,
-        status=last_gate.status,
-        reason=str((last_gate.data or {}).get("reason") or ""),
-        extra={"gate_data": last_gate.data},
+        status=final.status,
+        reason=str((final.data or {}).get("reason") or ""),
+        extra={"gate_data": final.data},
     )
-    return {
-        "engine_name": engine,
-        "status": last_gate.status,
-        "skipped": False,
-        "path": str(path),
-        "gate": last_gate.data,
-    }
+    return {"engine_name": engine, "status": final.status, "skipped": False, "path": str(path), "gate": final.data}
 
 
 def ensure_host_bootstrap_for_workload(

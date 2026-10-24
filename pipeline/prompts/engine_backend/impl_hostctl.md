@@ -3,8 +3,6 @@
 Implement **only** the host script of **{{display_name}}** (`{{engine_name}}`). Do **not**
 start a later layer. Every later layer's gate reaches the engine through this script.
 
-{{hard_guidelines}}
-
 {{codex_tooling}}
 
 ## This layer

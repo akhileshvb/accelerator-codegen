@@ -7,8 +7,6 @@ From-scratch: substrate + this engine's profile +
 `pipeline/templates/engine_backend/`. Do **not** read or copy any other
 `backends/{engine}/` tree. Do not implement code here.
 
-{{hard_guidelines}}
-
 ## What implementation will do after you
 
 One Codex agent per layer in `layers.md`, in order. Each layer **must** mid-loop

@@ -11,13 +11,16 @@ option(ACCEL_AUX_CALIBRATION
 option(ACCEL_CALIBRATE_AT_BUILD
        "Run shared aux cost-model calibration during the default build (requires DBs)" OFF)
 
-# ACCEL_SANITIZE=thread instruments our targets; the sibling DuckDB stays uninstrumented.
-set(ACCEL_SANITIZE "" CACHE STRING "Sanitizer for our targets (thread)")
+# ACCEL_SANITIZE=thread|address instruments our targets (address: with UBSan); the sibling DuckDB stays uninstrumented.
+set(ACCEL_SANITIZE "" CACHE STRING "Sanitizer for our targets (thread, address)")
 if(ACCEL_SANITIZE STREQUAL "thread")
     add_compile_options(-fsanitize=thread -fno-omit-frame-pointer)
     add_link_options(-fsanitize=thread)
+elseif(ACCEL_SANITIZE STREQUAL "address")
+    add_compile_options(-fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=undefined)
+    add_link_options(-fsanitize=address,undefined)
 elseif(ACCEL_SANITIZE)
-    message(FATAL_ERROR "ACCEL_SANITIZE must be empty or 'thread'")
+    message(FATAL_ERROR "ACCEL_SANITIZE must be empty, 'thread' or 'address'")
 endif()
 
 include(CTest)

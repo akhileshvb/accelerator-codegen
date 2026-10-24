@@ -35,8 +35,9 @@ def repo(tmp_path):
     return root
 
 
-def run_gate(repo, *, contract=True, target_paths=None, **env_extra):
-    ctx = {"engine_name": "fake", "schema_sql": "schema.sql", "dataset_dir": "/data", "target_paths": target_paths or {}}
+def run_gate(repo, *, contract=True, target_paths=None, known_gaps=(), **env_extra):
+    ctx = {"engine_name": "fake", "schema_sql": "schema.sql", "dataset_dir": "/data", "target_paths": target_paths or {},
+           "known_gaps": list(known_gaps)}
     (repo / "ctx.json").write_text(json.dumps(ctx))
     out = repo / "gate.json"
     env = {
@@ -77,10 +78,17 @@ def test_exit_77_skips(repo):
     assert proc.returncode == 0 and result["status"] == "skip"
 
 
-def test_backend_without_the_contract_skips_without_building(repo):
+def test_backend_without_the_contract_fails_without_building(repo):
     proc, log, result = run_gate(repo, contract=False)
+    assert proc.returncode == 1 and result["status"] == "fail"
+    assert "required" in result["reason"] and result["owner_layer"] == "api"
+    assert log == []
+
+
+def test_a_known_gap_of_a_hand_kept_backend_skips(repo):
+    proc, log, result = run_gate(repo, contract=False, known_gaps=["engine_hit_contract"])
     assert proc.returncode == 0 and result["status"] == "skip"
-    assert "predates the hit contract" in result["reason"]
+    assert "known gap" in result["reason"]
     assert log == []
 
 

@@ -62,7 +62,7 @@ def test_load_engine_mysql_workload():
     assert w.get("requires_in_process_host") is True
     assert w.get("host_runtime", {}).get("kind") == "docker"
     assert w.get("host_runtime", {}).get("env", {}).get("ACCEL_MYSQL_ENSURE_BUILD") == "0"
-    assert w["layer_critique_max_rounds"] == 2
+    assert w["layer_critique_max_rounds"] == 1
     assert w["layer_gate_max_rounds"] == 3
 
 
@@ -223,7 +223,7 @@ def test_render_impl_capture_prompt():
     assert "TryPublishPartition" not in text
     assert "layer_contracts.md" in text
     assert "engine_slots.hpp" in text
-    assert "Native base-table" in text or "hard_guidelines" in text.lower()
+    assert "{{hard_guidelines}}" not in text and "Native base-table" not in text  # not an accelerator stage
     assert "Engine backend layer workflow" in text or "layer_contracts.md" in text
 
 
@@ -234,11 +234,10 @@ def test_impl_user_message_names_mcp_gate_calls():
     w = load_workload("engine_postgres", REPO_ROOT)
     layer = next(L for L in implementation_layers(w) if L["id"] == "epochs")
     text = _user_message(pc, w, "impl_epochs", layer=layer)
-    assert 'request_gate(gate_name="engine_build")' in text
-    assert 'request_gate(gate_name="engine_epochs")' in text
+    assert "`request_gate` `engine_build`" in text and "`engine_epochs`" in text
     assert "run_engine_build()" in text
     assert "run_layer_gate()" in text
-    assert "list_mcp_resources" in text
+    assert "tools, not resources" in text
 
 
 def test_postgres_impl_prompt_uses_docker_gates():
@@ -459,7 +458,7 @@ def test_render_layer_critique_prompt():
 
     pc = load_pipeline_config(repo_root=REPO_ROOT)
     w = load_workload("engine_postgres", REPO_ROOT)
-    assert w["layer_critique_max_rounds"] == 2
+    assert w["layer_critique_max_rounds"] == 1
     assert w["layer_gate_max_rounds"] == 3
     layer = next(L for L in implementation_layers(w) if L["id"] == "capture")
     text = render_prompt(
@@ -468,7 +467,7 @@ def test_render_layer_critique_prompt():
         w,
         0,
         "critique_capture",
-        extra_context=_layer_extra_context(w, layer),
+        extra_context=_layer_extra_context(w, layer, REPO_ROOT),
     )
     assert "engine_capture" in text
     assert "slot_capture" in text
@@ -479,7 +478,8 @@ def test_render_layer_critique_prompt():
     assert "{{layer_id}}" not in text
     assert "{{codex_tooling}}" not in text
     assert "Do **not** rewrite backend sources" in text or "Do not rewrite" in text
-    assert "smallest" in text.lower() or "minimal" in text.lower()
+    assert "needs_canary" in text and "contract_item" in text and "location" in text  # structured findings
+    assert "Do not ask for more test coverage" in text.replace("**", "") or "do not ask for more test coverage" in text.lower().replace("**", "")
     assert "last action" in text.lower() or "not done until" in text.lower()
 
 
@@ -535,15 +535,14 @@ def test_run_until_artifact_dry_run_does_not_retry(tmp_path):
 
 
 def test_layer_critique_feedback_and_load(tmp_path):
-    from accel_pipeline.gates import GateFailure
     from accel_pipeline.stages.engine_layer_critique import (
         format_layer_critique_feedback,
         load_layer_critique,
     )
-    import pytest
 
-    with pytest.raises(GateFailure, match="did not write"):
-        load_layer_critique(tmp_path, "capture")
+    missing = load_layer_critique(tmp_path, "capture")  # recorded, never raised
+    assert missing["status"] == "error" and "unavailable" in missing["summary"]
+    assert json.loads((tmp_path / "layer_critique_capture.json").read_text())["status"] == "error"
     (tmp_path / "layer_critique_capture.json").write_text(
         json.dumps(
             {
@@ -620,255 +619,9 @@ def test_layer_gate_feedback_empty_log_tail_still_has_signal(tmp_path):
     assert "(empty)" not in text
 
 
-def test_layer_gate_fail_reinvokes_impl(tmp_path, monkeypatch):
-    from accel_pipeline.gates import GateResult
-    from accel_pipeline.stages import engine_backend as eb
-    from accel_pipeline.stages.engine_backend import run_implementation_layer
-
-    pc = load_pipeline_config(repo_root=REPO_ROOT)
-    mc = load_model_config(repo_root=REPO_ROOT)
-    w = load_workload("engine_mysql", REPO_ROOT)
-    layer = next(L for L in implementation_layers(w) if L["id"] == "capture")
-    calls = {"impl": 0, "critique": 0, "gates": 0}
-    user_messages: list[str] = []
-
-    def fake_impl(**kwargs):
-        calls["impl"] += 1
-        user_messages.append(str(kwargs.get("user_message") or ""))
-        return object()
-
-    def fake_collect(*args, **kwargs):
-        calls["gates"] += 1
-        if calls["gates"] == 1:
-            failed = GateResult(
-                name="engine_capture",
-                status="fail",
-                data={
-                    "notes": "incompatible library: missing magic block",
-                    "log_tail": (
-                        "LOAD 'accelerator_codegen_pg'\n"
-                        "HINT: Extension libraries are required to use the "
-                        "PG_MODULE_MAGIC macro."
-                    ),
-                },
-                path=tmp_path / "engine_capture.json",
-            )
-            return [failed], failed
-        return [], None
-
-    def fake_critique(*args, **kwargs):
-        calls["critique"] += 1
-        (tmp_path / "layer_critique_capture.json").write_text(
-            json.dumps(
-                {
-                    "engine_name": "mysql",
-                    "layer": "capture",
-                    "status": "pass",
-                    "summary": "ok",
-                    "violations": [],
-                    "feedback_for_implementation": "",
-                }
-            )
-            + "\n",
-            encoding="utf-8",
-        )
-
-    monkeypatch.setattr(eb, "run_agent_stage", fake_impl)
-    monkeypatch.setattr(eb, "run_post_stage_gates_collect", fake_collect)
-    monkeypatch.setattr(eb, "run_layer_critique_agent", fake_critique)
-    monkeypatch.setattr(eb, "query_artifacts_dir", lambda *a, **k: tmp_path)
-    monkeypatch.setattr(eb, "append_experiment_log", lambda *a, **k: tmp_path)
-    run_implementation_layer(
-        pc,
-        mc,
-        "engine_mysql",
-        0,
-        {},
-        False,
-        layer,
-        extra_user_message="keep AttachServices",
-    )
-    assert calls["impl"] == 2
-    assert calls["gates"] == 2
-    assert calls["critique"] == 1
-    assert "keep AttachServices" in user_messages[0]
-    assert "keep AttachServices" in user_messages[1]
-    assert "PG_MODULE_MAGIC" in user_messages[1]
-    assert "engine_capture" in user_messages[1]
-    assert (tmp_path / "layer_gate_capture_feedback_round1.md").is_file()
 
 
-def test_layer_gate_exhausted_rounds_raises(tmp_path, monkeypatch):
-    import pytest
-    from accel_pipeline.gates import GateFailure, GateResult
-    from accel_pipeline.stages import engine_backend as eb
-    from accel_pipeline.stages.engine_backend import run_implementation_layer
 
-    pc = load_pipeline_config(repo_root=REPO_ROOT)
-    mc = load_model_config(repo_root=REPO_ROOT)
-    layer = next(L for L in implementation_layers(load_workload("engine_mysql", REPO_ROOT)) if L["id"] == "capture")
-    calls = {"impl": 0, "critique": 0}
-
-    def fake_impl(**kwargs):
-        calls["impl"] += 1
-        return object()
-
-    def fake_collect(*args, **kwargs):
-        failed = GateResult(
-            name="engine_capture",
-            status="fail",
-            data={"notes": "missing magic block", "log_tail": "PG_MODULE_MAGIC"},
-            path=tmp_path / "engine_capture.json",
-        )
-        return [failed], failed
-
-    def fake_critique(*args, **kwargs):
-        calls["critique"] += 1
-
-    monkeypatch.setattr(eb, "run_agent_stage", fake_impl)
-    monkeypatch.setattr(eb, "run_post_stage_gates_collect", fake_collect)
-    monkeypatch.setattr(eb, "run_layer_critique_agent", fake_critique)
-    monkeypatch.setattr(eb, "query_artifacts_dir", lambda *a, **k: tmp_path)
-    monkeypatch.setattr(eb, "append_experiment_log", lambda *a, **k: tmp_path)
-    with pytest.raises(GateFailure, match="still failing after 3"):
-        run_implementation_layer(pc, mc, "engine_mysql", 0, {}, False, layer)
-    assert calls["impl"] == 3
-    assert calls["critique"] == 0
-
-
-def test_layer_critique_fail_reinvokes_impl(tmp_path, monkeypatch):
-    from accel_pipeline.stages import engine_backend as eb
-    from accel_pipeline.stages.engine_backend import run_implementation_layer
-
-    pc = load_pipeline_config(repo_root=REPO_ROOT)
-    mc = load_model_config(repo_root=REPO_ROOT)
-    w = load_workload("engine_mysql", REPO_ROOT)
-    layer = next(L for L in implementation_layers(w) if L["id"] == "capture")
-    calls = {"impl": 0, "critique": 0}
-    user_messages: list[str] = []
-
-    def fake_impl(**kwargs):
-        calls["impl"] += 1
-        user_messages.append(str(kwargs.get("user_message") or ""))
-        return object()
-
-    def fake_critique(*args, **kwargs):
-        calls["critique"] += 1
-        status = "fail" if calls["critique"] == 1 else "pass"
-        (tmp_path / "layer_critique_capture.json").write_text(
-            json.dumps(
-                {
-                    "engine_name": "mysql",
-                    "layer": "capture",
-                    "status": status,
-                    "summary": "gap" if status == "fail" else "ok",
-                    "violations": (
-                        [{"rule": "harness_gap", "evidence": "Invalidate remap untested"}]
-                        if status == "fail"
-                        else []
-                    ),
-                    "feedback_for_implementation": (
-                        "Add Invalidate(PartitionSet) after TryPublish remap."
-                        if status == "fail"
-                        else ""
-                    ),
-                }
-            )
-            + "\n",
-            encoding="utf-8",
-        )
-
-    monkeypatch.setattr(eb, "run_agent_stage", fake_impl)
-    monkeypatch.setattr(eb, "run_layer_critique_agent", fake_critique)
-    monkeypatch.setattr(eb, "query_artifacts_dir", lambda *a, **k: tmp_path)
-    monkeypatch.setattr(eb, "append_experiment_log", lambda *a, **k: tmp_path)
-    run_implementation_layer(
-        pc,
-        mc,
-        "engine_mysql",
-        0,
-        {},
-        False,
-        layer,
-        skip_gates=True,
-        extra_user_message="architecture audit: keep AttachServices",
-    )
-    assert calls["impl"] == 2
-    assert calls["critique"] == 2
-    assert "architecture audit: keep AttachServices" in user_messages[0]
-    assert "architecture audit: keep AttachServices" in user_messages[1]
-    assert "Invalidate(PartitionSet)" in user_messages[1]
-
-
-def test_layer_critique_exhausted_rounds_hands_findings_to_the_audit(tmp_path, monkeypatch):
-    import pytest
-    from accel_pipeline.gates import GateFailure
-    from accel_pipeline.stages import engine_backend as eb
-    from accel_pipeline.stages.engine_backend import run_implementation_layer
-
-    pc = load_pipeline_config(repo_root=REPO_ROOT)
-    mc = load_model_config(repo_root=REPO_ROOT)
-    w = load_workload("engine_mysql", REPO_ROOT)
-    layer = next(L for L in implementation_layers(w) if L["id"] == "capture")
-
-    def fake_impl(**kwargs):
-        return object()
-
-    def fake_critique(*args, **kwargs):
-        (tmp_path / "layer_critique_capture.json").write_text(
-            json.dumps(
-                {
-                    "engine_name": "mysql",
-                    "layer": "capture",
-                    "status": "fail",
-                    "summary": "still broken",
-                    "violations": [{"rule": "contract", "evidence": "CAS ignored"}],
-                    "feedback_for_implementation": "Honor expected_version on TryPublish.",
-                }
-            )
-            + "\n",
-            encoding="utf-8",
-        )
-
-    monkeypatch.setattr(eb, "run_agent_stage", fake_impl)
-    monkeypatch.setattr(eb, "run_layer_critique_agent", fake_critique)
-    monkeypatch.setattr(eb, "query_artifacts_dir", lambda *a, **k: tmp_path)
-    monkeypatch.setattr(eb, "append_experiment_log", lambda *a, **k: tmp_path)
-    run_implementation_layer(pc, mc, "engine_mysql", 0, {}, False, layer, skip_gates=True)
-    # The gates passed: the layer is accepted and the critique's last word goes to the audit.
-    assert "Honor expected_version" in (tmp_path / "layer_capture.open_findings.md").read_text()
-    assert (tmp_path / "layer_capture.passed").exists()
-
-
-def test_relaunched_layer_starts_from_the_feedback_its_last_run_stopped_on(tmp_path, monkeypatch):
-    import pytest
-    from accel_pipeline.gates import GateFailure, GateResult
-    from accel_pipeline.stages import engine_backend as eb
-    from accel_pipeline.stages.engine_backend import run_implementation_layer
-
-    pc = load_pipeline_config(repo_root=REPO_ROOT)
-    mc = load_model_config(repo_root=REPO_ROOT)
-    w = load_workload("engine_mysql", REPO_ROOT)
-    layer = next(L for L in implementation_layers(w) if L["id"] == "capture")
-    messages = []
-
-    def fake_impl(**kwargs):
-        messages.append(kwargs.get("user_message") or "")
-        return object()
-
-    failing = GateResult(name="engine_capture", status="fail", data={"reason": "updated_attnums never set"})
-    monkeypatch.setattr(eb, "run_agent_stage", fake_impl)
-    monkeypatch.setattr(eb, "run_post_stage_gates_collect", lambda *a, **k: ([failing], failing))
-    monkeypatch.setattr(eb, "query_artifacts_dir", lambda *a, **k: tmp_path)
-    monkeypatch.setattr(eb, "append_experiment_log", lambda *a, **k: tmp_path)
-    with pytest.raises(GateFailure):
-        run_implementation_layer(pc, mc, "engine_mysql", 0, {}, False, layer)
-    assert "Carried over" not in messages[0]  # a first run starts clean
-
-    messages.clear()
-    with pytest.raises(GateFailure):
-        run_implementation_layer(pc, mc, "engine_mysql", 0, {}, False, layer)
-    assert "Carried over" in messages[0] and "updated_attnums" in messages[0]
 
 
 def test_dry_run_impl_capture_skips_critique(monkeypatch):

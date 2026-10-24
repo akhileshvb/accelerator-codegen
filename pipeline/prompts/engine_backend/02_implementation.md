@@ -6,8 +6,6 @@ layers own (plugin or extension registration, SQL that `host.sh` installs, a bin
 another layer's object). Do **not** implement a later layer's contract. Do **not** author
 `test_{{engine_name}}_adversarial.cpp`.
 
-{{hard_guidelines}}
-
 {{codex_tooling}}
 
 ## This layer

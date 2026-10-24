@@ -23,6 +23,7 @@ from accel_pipeline.host_bootstrap import (
     run_host_bootstrap,
     write_host_bootstrap_status,
 )
+from accel_pipeline.repair import StageStopped
 from accel_pipeline.stages.base import resolve_stage_max_turns
 
 
@@ -71,7 +72,7 @@ def test_engines_needing_bootstrap_lists_every_engine_once():
 
 def test_host_bootstrap_fails_before_the_backend_exists(tmp_path):
     pc = replace(load_pipeline_config(repo_root=REPO_ROOT), repo_root=tmp_path)
-    with pytest.raises(GateFailure, match="engine_backend"):
+    with pytest.raises(StageStopped, match="backend is missing"):
         run_host_bootstrap(pc, load_model_config(repo_root=REPO_ROOT), engine_name="postgres",
                            representative_workload="tpch_q1_aux", force=True)
 
@@ -229,7 +230,7 @@ def test_host_bootstrap_gate_fail_reinvokes(tmp_path, monkeypatch):
     assert (tmp_path / "engines" / "postgres" / "host_bootstrap" / "host_bootstrap_gate_feedback_round1.md").is_file()
 
 
-def test_host_bootstrap_gate_exhausted_rounds_raises(tmp_path, monkeypatch):
+def test_host_bootstrap_gate_exhausted_rounds_is_a_clean_stop(tmp_path, monkeypatch):
     pc = load_pipeline_config(repo_root=REPO_ROOT)
     mc = load_model_config(repo_root=REPO_ROOT)
     _patch_bootstrap_dirs(tmp_path, monkeypatch)
@@ -259,7 +260,7 @@ def test_host_bootstrap_gate_exhausted_rounds_raises(tmp_path, monkeypatch):
     monkeypatch.setattr("accel_pipeline.stages.host_bootstrap.run", fake_stage)
     monkeypatch.setattr("accel_pipeline.gates.run_gate", fake_gate)
 
-    with pytest.raises(GateFailure, match="still failing after 1"):
+    with pytest.raises(StageStopped, match="host_bootstrap"):
         run_host_bootstrap(
             pc,
             mc,
@@ -267,7 +268,7 @@ def test_host_bootstrap_gate_exhausted_rounds_raises(tmp_path, monkeypatch):
             representative_workload="tpch_q1_aux",
             force=True,
         )
-    assert calls["stage"] == 1
+    assert calls["stage"] == 2  # the first turn, one repair round (host_bootstrap_gate_max_rounds=1)
 
 
 def test_host_bootstrap_critique_fail_reinvokes(tmp_path, monkeypatch):

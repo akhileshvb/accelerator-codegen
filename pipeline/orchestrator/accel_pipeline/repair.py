@@ -53,6 +53,8 @@ class RepairCtx:
     iteration: int = 0
     model_overrides: dict[str, str] | None = None
     max_code_rounds: int | None = None
+    repair_turn: Callable[[Failure], None] | None = None  # replaces the crash-debug turn (engine flows)
+    gate_runner: Callable[[list[str]], tuple[list[GateResult], GateResult | None]] | None = None
     results: list[GateResult] = field(default_factory=list)
     workload: dict[str, Any] = field(init=False)
     art: Path = field(init=False)
@@ -169,6 +171,8 @@ def _check_gates(ctx: RepairCtx, gates: list[str], quarantined: set[str]) -> Fai
 
 
 def _run_gates(ctx: RepairCtx, names: list[str]) -> tuple[list[GateResult], GateResult | None]:
+    if ctx.gate_runner is not None:
+        return ctx.gate_runner(names)
     kwargs = {"change_kind": ctx.change_kind, "iteration": ctx.iteration}
     if ctx.pipeline_config.repair.parallel_gates:
         try:
@@ -209,10 +213,15 @@ def _quarantine(ctx: RepairCtx, gate: str, failure: Failure) -> None:
 
 def _repair_turn(ctx: RepairCtx, failure: Failure) -> None:
     """One agent turn, in the stage's own session, on the failure report."""
+    _guarded_turn(ctx, ctx.repair_turn or _crash_debug_turn(ctx), failure)
+
+
+def _crash_debug_turn(ctx: RepairCtx) -> Callable[[Failure], None]:
     from accel_pipeline.stages.base import run_agent_stage
 
     bench = str(ctx.workload.get("benchmark_name", "tpch"))
-    try:
+
+    def turn(failure: Failure) -> None:
         run_agent_stage(
             stage="crash_debug",
             prompt_file="04_crash_debug.md",
@@ -226,6 +235,15 @@ def _repair_turn(ctx: RepairCtx, failure: Failure) -> None:
             must_change=ctx.pipeline_config.repo_root / query_dir(bench, ctx.query) if failure.kind == "code" else None,
             session_role=MAIN,
         )
+
+    return turn
+
+
+def _guarded_turn(ctx: RepairCtx, turn: Callable[[Failure], None], failure: Failure) -> None:
+    try:
+        turn(failure)
+    except StageStopped:
+        raise
     except StageFailure as exc:
         ctx.log(f"the repair turn itself failed ({exc.failure.kind}: {exc.failure.summary}); "
                 "the next check judges the tree")

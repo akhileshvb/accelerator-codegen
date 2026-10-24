@@ -342,3 +342,9 @@ first, fails here and not in the first accelerator.
 
 Before that it runs `pipeline/gates/check_api_manifest.py` and
 `scripts/check_layer_includes.py`; fix their output as it names the file and line.
+
+**Canary binding.** The pipeline's own suite drives the finished backend like an accelerator
+(`pipeline/prompts/engine_backend/canary_contract.md`, `pipeline/canary/`). This layer ships its
+binding `backends/{engine}/tests/test_{engine}_canary.cpp` (template
+`canary_binding.cpp.tpl`): a pass-through, no checks of your own. The gates `engine_canary` and
+`engine_canary_asan` must pass; a failing check names its owning layer and the defect class.

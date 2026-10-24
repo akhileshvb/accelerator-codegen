@@ -92,6 +92,7 @@ def build_gate_context(
                 "requires_in_process_host": bool(workload.get("requires_in_process_host", False)),
                 "implementation_layers": list(workload.get("implementation_layers") or []),
                 "host_runtime": dict(workload.get("host_runtime") or {}),
+                "known_gaps": list(workload.get("known_gaps") or []),
             }
         )
         host_rt = dict(workload.get("host_runtime") or {})

@@ -163,7 +163,7 @@ def test_hazards_state_facts_not_fixes():
 
 def _render(workload: dict, prompt: str, stage: str, layer: dict | None = None) -> str:
     pc = load_pipeline_config(repo_root=REPO_ROOT)
-    extra = _layer_extra_context(workload, layer) if layer else None
+    extra = _layer_extra_context(workload, layer, REPO_ROOT) if layer else None
     return render_prompt(pc, prompt, workload, 0, stage, extra_context=extra)
 
 

@@ -10,8 +10,6 @@ only `pipeline/artifacts/**`. **The stage is not done until the JSON is on
 disk.** After the reads below, write the two files (heredoc `cat > …`) and
 **stop**. Do not explore later-layer sources.
 
-{{hard_guidelines}}
-
 {{codex_tooling}}
 
 ## This layer
@@ -27,84 +25,66 @@ disk.** After the reads below, write the two files (heredoc `cat > …`) and
 {{engine_profile}}
 A profile field given as `{na: reason}` declares that mechanic absent on this engine: it is not a requirement here. Do not fail, implement or test it; only make sure nothing depends on it.
 
-## Read (in order)
+## Read
 
-1. `pipeline/prompts/engine_backend/layer_contracts.md` — section `{{layer_id}}` and the "Requirements every backend meets" that name this layer
-2. `pipeline/prompts/engine_backend/acceptance_checklist.md` — this layer’s rules
-3. `pipeline/prompts/engine_backend/layers.md` — this row only
-4. Backend + harness files for **this layer only** (paths in analysis
-   `layers[id={{layer_id}}].files` and `{{layer_harness}}`)
-5. Substrate headers those files include (`engine_slots.hpp`, `runtime_host.hpp`,
-   `accelerator_runtime.hpp`, `columnar_batch.hpp` as relevant)
-6. Gate JSON if present: `{{artifacts_path}}/gates/{{layer_gate}}.json`
+The first message carries the backend digest and this layer's diff: review from them. Open a file
+only to check a concrete suspicion, and read this layer's contract section (`layer_contracts.md`,
+`{{layer_id}}`) and its checklist rules (`acceptance_checklist.md`) for what to judge against. A re-check
+round lists the findings you reported; verify only those and what their fixes touched.
 
 The pipeline's own files (`pipeline/**`: gates, prompts, contracts) are fixed for this run and the
-backend cannot change them: judge the backend and its harness under `backends/{{engine_name}}/`, never
-ask for a change to a gate or a contract. A check you think a gate lacks is not a violation.
+backend cannot change them: judge the backend under `backends/{{engine_name}}/`, never ask for a
+change to a gate or a contract.
 
-Prior layers (reuse; do not re-litigate style). If **this** layer cannot meet
-its contract because a prior layer has a real bug or design flaw, **fail** and
-tell implementation to make the smallest prior-layer patch (and keep that
-prior harness green). A later layer that already made such a minimal patch is
-not a fail.
+Prior layers (reuse; do not re-litigate style). If **this** layer cannot meet its contract because a
+prior layer has a real bug or design flaw, report it with `file:line` and the smallest patch.
 
 {{prior_layers}}
 
 {{layer_contracts}}
 
-## What to fail
+## What to report
 
-Fail if **later layers or this layer’s contract** will break even though the
-gate passed. Typical holes:
+The deterministic suites are the correctness floor: this layer's gate runs its harness, and the
+pipeline's canary suite (scan text views and NULLs, DML without rebuilds, concurrent capture,
+registration by table name, fallback snapshot and order, commit/build concurrency) drives the finished
+backend. **Do not ask for more test coverage of those.** Review for what tests cannot see:
 
-- Harness never exercises a contract path (example: capture tested from one
-  connection only, or epochs never asserted inside the pending window)
-- Runtime flow re-implemented in the backend (its own commit ordering, gap
-  handling, catch-up, build scheduling, version logic, lock or pool) instead
-  of a slot; a bypass of `RuntimeHost` / `AcceleratorRuntime`
-- Side-channel APIs the next layer will not call
-- Epoch not in visibility order, reader epoch that can be newer than the
-  snapshot or miss a visible commit, floor above an open reader (epochs layer)
-- Snapshot that blocks writers or whose epoch `b` does not bound its contents
-  (scan layer)
-- Server-only symbols in a host shared library (host / runtime)
-- A requirement of `layer_contracts.md` ("Requirements every backend meets") that this
-  layer owns and the harness never exercises (own writes, DDL on a tracked table,
-  abort and closed-connection paths, a bounded wait), or an engine call made under a
-  lock an engine callback can take (`lock_discipline`)
+- a design flaw the next layer will break on (runtime flow re-implemented in the backend instead of a
+  slot, a bypass of `RuntimeHost` / `AcceleratorRuntime`, a side channel the next layer will not call)
+- an engine hazard from the profile the code ignores (a lock held across an engine call an engine callback
+  can take, an unbounded wait, a process-wide static keyed by engine ids, a missing abort or crash path)
+- an epoch not in visibility order, a reader epoch that can be newer than its snapshot, a floor above an
+  open reader (epochs); a snapshot that blocks writers or whose epoch `b` does not bound its contents (scan)
+- server-only symbols in a host shared library (host / runtime)
 
-`violations[].rule` must be this layer’s checklist id, or one of
-`contract`, `harness_gap`, `substrate_api`.
+Every finding is one of two kinds: `code_fix` (a concrete change in the backend) or `needs_canary` (a
+check that is general and missing from the pipeline's suite: say which behaviour it must assert; it
+goes to the pipeline's maintainers and never blocks this layer).
 
-## What not to fail
+## What not to report
 
-- Style, extra comments, unused includes
-- Golden values that differ from analysis but still assert real payload fields
-- Leftover debug files (`*_mini.cpp`) that are **not** linked — put in `notes`
-- Demands that belong to a **later** layer
-- Architecture-audit extras beyond this layer’s contracts
-- A **minimal** prior-layer bugfix this impl already made so this layer can
-  meet its contract (style rewrites of prior layers still fail as `contract`)
+- Style, comments, unused includes, golden values that still assert real fields
+- Leftover debug files that are not linked (put them in `notes`)
+- Demands that belong to a later layer, or to the architecture audit
+- A minimal prior-layer bugfix this implementation made so this layer can meet its contract
 
-## Output (mandatory — last action)
+## Output (mandatory, last action)
 
-The orchestrator **fails this stage** if the JSON is missing. Chat text is not
-enough.
+The orchestrator records this stage as unavailable if the JSON is missing. Chat text is not enough.
 
 1. Write **`{{artifacts_path}}/layer_critique_{{layer_id}}.json`** conforming to
-   `pipeline/schemas/layer_critique.schema.json`.
-2. Write **`{{artifacts_path}}/layer_critique_{{layer_id}}.md`** (short).
-3. Stop. Do not keep reading.
+   `pipeline/schemas/layer_critique.schema.json`, then **`{{artifacts_path}}/layer_critique_{{layer_id}}.md`** (short).
+   Codex: `cat > {{artifacts_path}}/layer_critique_{{layer_id}}.json <<'EOF'` ... `EOF`.
+2. Stop. Do not keep reading.
 
-Codex: `cat > {{artifacts_path}}/layer_critique_{{layer_id}}.json <<'EOF'` … `EOF`.
+- `status`: `"pass"` or `"fail"`; `layer`: `"{{layer_id}}"`.
+- On `"fail"`, each `violations[]` item has `rule` (this layer's checklist id, or `contract`,
+  `substrate_api`), `severity` (`blocking` or `advisory`), `location` (`path:line`), `contract_item`
+  (the clause of `layer_contracts.md` or the checklist it violates), `expected` (the concrete behaviour
+  that must hold), `kind` (`code_fix` or `needs_canary`) and `evidence`; plus one
+  `feedback_for_implementation` that batches every blocking fix. All blocking findings go back to the
+  implementer in one round: do not hold any back.
+- On `"pass"`: `violations` `[]` (advisories may stay, `severity: advisory`), empty feedback.
 
-- `status`: `"pass"` or `"fail"`
-- `layer`: `"{{layer_id}}"`
-- On `"fail"`: `violations` + concrete `feedback_for_implementation` the
-  implementation agent can apply (paths, what to change, which harness asserts
-  to add). Do not weaken the harness to greenwash.
-- On `"pass"`: `violations` `[]`, empty `feedback_for_implementation`. `notes`
-  may still list nits.
-
-If sources for this layer are missing, **fail** (`harness_gap` / `contract`)
-and still write the JSON.
+If sources for this layer are missing, **fail** (`contract`) and still write the JSON.

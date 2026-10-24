@@ -21,6 +21,7 @@ allowed_commands:
   - "^bash pipeline/gates/run_engine_contract\\.sh$"
   - "^bash pipeline/gates/run_engine_adversarial\\.sh$"
   - "^bash pipeline/gates/run_engine_hit_contract\\.sh$"
+  - "^bash pipeline/gates/run_engine_canary\\.sh( .*)?$"
   - "^bash pipeline/gates/run_engine_aux_smoke\\.sh$"
   - "^bash pipeline/gates/run_slot_gates\\.sh$"
   - "^bash pipeline/gates/run_aux_tsan\\.sh slots( .*)?$"
@@ -81,6 +82,9 @@ implementation_layers:
     harness: backends/{engine}/api/README.md
     cmake_target: api_conformance_{engine}
     rules: [api_surface, api_manifest, hit_contract]
+    # The pipeline-owned canary suite (pipeline/canary) drives the api's surface under realistic
+    # conditions: plain build, then the address/undefined sanitizer tier.
+    extra_gates: [engine_canary, engine_canary_asan]
 
 # Default post-layer gates (engine_build + this layer). Overridden per stage.
 post_implementation_gates:
@@ -99,6 +103,9 @@ post_validation_gates:
   - engine_api_conformance
   - engine_adversarial
   - engine_hit_contract
+  - engine_canary
+  - engine_canary_asan
+  - engine_canary_tsan
   - slot_epoch_stress
   - slot_hits_under_writes
   - slot_read_after_commit
@@ -107,6 +114,23 @@ post_validation_gates:
   - slot_own_writes
   - slot_ddl_events
   - slot_tsan
+
+# Who fixes a failing validation gate: the layer whose main-session code it judges, or `validation`
+# (the session that wrote the adversarial tests). A gate's own report (`owner_layer`) wins.
+validation_gate_owners:
+  engine_adversarial: validation
+  engine_hit_contract: api
+  engine_canary: api
+  engine_canary_asan: api
+  engine_canary_tsan: api
+  slot_epoch_stress: epochs
+  slot_hits_under_writes: runtime
+  slot_read_after_commit: epochs
+  slot_txn_edges: capture
+  slot_restart: runtime
+  slot_own_writes: runtime
+  slot_ddl_events: capture
+  slot_tsan: runtime
 
 prompt_subdir: engine_backend
 
@@ -159,10 +183,14 @@ allow_update_existing: true
 # From-scratch fairness: physically move foreign host adapters out of the workspace.
 hide_foreign_engines: true
 
-architecture_audit_max_rounds: 3
-# Post-stage engine_build + layer gate: on fail, re-invoke that impl layer with
-# notes/log_tail. Count is implementation attempts (including the first). 0 = one
-# attempt then fail (no retry). Applies to every impl_* stage.
+# One audit pass over the backend digest and the layers' diffs; each owning layer's session gets its
+# violations in one batched repair round. More passes re-audit after the fixes.
+architecture_audit_max_rounds: 1
+# Repair rounds a failing gate gets in the layer's session (the repair loop); then the run stops
+# cleanly with a stop report and `--resume` continues.
 layer_gate_max_rounds: 3
-# Per-layer cheap critic after gates; 0 disables. On fail, re-run that impl layer.
-layer_critique_max_rounds: 2
+# Per-layer critic, in parallel with the gates once the build is green; 0 disables. Its blocking
+# findings go to the main session as one batched repair round, then the critic re-checks only those.
+layer_critique_max_rounds: 1
+# The main session carries every layer; past this context a fresh session starts from the backend digest.
+main_session_max_context_tokens: 250000

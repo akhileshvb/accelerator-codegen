@@ -2,8 +2,9 @@
 # The engine's hit contract (host_contract.md "Hit contract"): a fixture accelerator on a database
 # builds on its first read and answers the second as a hit that runs no fallback SQL. The backend's
 # harness `test_<engine>_hit_contract` runs through `host.sh run` with ACCEL_FALLBACK_TRAP=1 and
-# exits 0 (pass), 1 (violated) or 77 (not applicable). A backend whose `info` does not say
-# "hit_contract": true predates the contract: skip.
+# exits 0 (pass), 1 (violated) or 77 (not applicable). The contract is required: a backend whose
+# `info` does not say "hit_contract": true fails, unless its workload lists `engine_hit_contract` in
+# `known_gaps` (a hand-kept backend that predates the contract).
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 export ROOT
@@ -18,8 +19,12 @@ TARGET="$(python3 -c "import json,sys; print((json.loads(sys.argv[1]).get('targe
   "${CTX}" "test_${ENGINE_NAME}_hit_contract")"
 
 if [[ "$(engine_trait hit_contract)" != "True" ]]; then
-  emit_result "${OUT_JSON}" "${GATE}" skip "backend predates the hit contract (host.sh info has no \"hit_contract\": true)" "" \
-    "engine=${ENGINE_NAME}"
+  if python3 -c "import json,sys; sys.exit(0 if 'engine_hit_contract' in (json.loads(sys.argv[1]).get('known_gaps') or []) else 1)" "${CTX}"; then
+    emit_result "${OUT_JSON}" "${GATE}" skip "known gap: ${ENGINE_NAME} predates the hit contract (host.sh info has no \"hit_contract\": true)" "" \
+      "engine=${ENGINE_NAME}"
+  fi
+  emit_result "${OUT_JSON}" "${GATE}" fail "host.sh info does not say \"hit_contract\": true: the hit contract (host_contract.md \"Hit contract\") is required of a new backend" "" \
+    "engine=${ENGINE_NAME}" "owner_layer=api"
 fi
 if ! engine_steps "up" "load ${SCHEMA_SQL}" "build ${TARGET}"; then
   emit_result "${OUT_JSON}" "${GATE}" fail "${ENGINE_FAIL}" "${ENGINE_LOG}" "engine=${ENGINE_NAME}" "cmake_target=${TARGET}"
