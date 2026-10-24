@@ -35,9 +35,21 @@ Address every failed check and, if its alternative measured better, simulate it 
 with a measured count why yours is better. Update analysis.json, call validate_analysis, and stop."""
 
 
+VALIDATION_REPAIR_ROUNDS = 2
+VALIDATION_MESSAGE = """analysis.json does not pass the stage's validation:
+
+{error}
+
+Fix analysis.json (the rule is in the analysis prompt's Task section), call validate_analysis until it reports
+"valid", and stop."""
+
+
 def _validate(analysis_path: Path, allow_poor: bool) -> None:
     try:
         analysis = json.loads(analysis_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"aux analysis validation failed: {analysis_path} is missing or not JSON: {exc}") from exc
+    try:
         repaired, repairs = repair_aux_analysis(analysis)
         if repairs:
             analysis_path.write_text(json.dumps(repaired, indent=2), encoding="utf-8")
@@ -125,11 +137,7 @@ def run(
 
     analysis_path = analysis_artifact_path(pipeline_config.repo_root, query, workload=workload)
     allow_poor = bool(workload.get("allow_poor_fitness", False))
-    _validate(analysis_path, allow_poor)
-    for round_ in range(max(0, int(workload.get("analysis_critique_max_rounds", 1)))):
-        critique = _critique(pipeline_config, model_config, workload_name, query, analysis_path, model_overrides, round_)
-        if critique is None or not _asks_revision(critique):
-            break
+    def revise(message: str) -> None:
         run_agent_stage(
             stage="analysis",
             prompt_file="01_analysis.md",
@@ -137,11 +145,28 @@ def run(
             model_config=model_config,
             workload_name=workload_name,
             query=query,
-            user_message=REVISION_MESSAGE.format(critique=json.dumps(critique, indent=2)),
+            user_message=message,
             model_overrides=model_overrides,
             session_role=MAIN,
         )
-        _validate(analysis_path, allow_poor)
+
+    def validated() -> None:
+        """Validation failures go back to the analysis session, which can fix what it wrote."""
+        for attempt in range(VALIDATION_REPAIR_ROUNDS + 1):
+            try:
+                return _validate(analysis_path, allow_poor)
+            except RuntimeError as exc:
+                if attempt == VALIDATION_REPAIR_ROUNDS:
+                    raise
+                revise(VALIDATION_MESSAGE.format(error=exc))
+
+    validated()
+    for round_ in range(max(0, int(workload.get("analysis_critique_max_rounds", 1)))):
+        critique = _critique(pipeline_config, model_config, workload_name, query, analysis_path, model_overrides, round_)
+        if critique is None or not _asks_revision(critique):
+            break
+        revise(REVISION_MESSAGE.format(critique=json.dumps(critique, indent=2)))
+        validated()
 
     analysis = json.loads(analysis_path.read_text(encoding="utf-8"))
     ratio = analysis["correctness_facts"]["state_design"].get("read_work_ratio")
