@@ -6,8 +6,9 @@ from typing import Any, Callable
 
 from accel_pipeline.backends import StageRunRequest, create_agent_backend
 from accel_pipeline.config import ModelConfig, PipelineConfig, load_run_workload, apply_workload_overrides
-from accel_pipeline.failure import PROVIDER_FLAKE, Failure, StageFailure
+from accel_pipeline.failure import AGENT_BLOCKER, PROVIDER_FLAKE, Failure, StageFailure
 from accel_pipeline.models import make_model_id
+from accel_pipeline.no_progress import REDIRECT
 from accel_pipeline.paths import query_artifacts_dir
 from accel_pipeline.session import run_in_session
 from accel_pipeline.triage import is_transient_provider_failure
@@ -204,6 +205,13 @@ def stage_failure(stage: str, backend_name: str, result: Any) -> Failure:
     """What a codex run that did not finish failed on: the deadline, a write-policy violation the
     agent can fix, a provider flake, or something only the orchestrator can answer for."""
     detail = (result.error or result.status or "").strip()
+    stopped, evidence = result.metadata.get("stop_reason"), str(result.metadata.get("stop_detail") or "")
+    if stopped == "blocker":
+        return Failure(kind="infra", stage=stage, source="agent", infra_reason=AGENT_BLOCKER, evidence=evidence,
+                       summary="the agent reported a blocker outside its files (blocker.md)")
+    if stopped == "no_progress":
+        return Failure(kind="timeout", stage=stage, source="no_progress", summary=detail, evidence=evidence,
+                       diagnosis=[REDIRECT])
     if result.metadata.get("timed_out"):
         return Failure(
             kind="timeout", stage=stage, source="agent", summary=detail,
