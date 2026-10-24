@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import signal
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -12,6 +14,7 @@ from typing import Any
 
 from accel_pipeline.config import PipelineConfig
 from accel_pipeline.gate_context import write_gate_context
+from accel_pipeline.gate_stamps import current_stamp, record_pass
 from accel_pipeline.paths import gates_dir_for_query, query_artifacts_dir
 
 
@@ -24,6 +27,8 @@ GATE_SCRIPTS = {
     "profile": "run_profile.sh",
     "fairness": "check_fairness.sh",
     "aux_correctness": "run_aux_correctness.sh",
+    "aux_correctness_quick": "run_aux_correctness.sh",
+    "quick_check": "run_aux_quick_check.sh",
     "aux_unit": "run_aux_unit_tests.sh",
     "prims_tests": "run_prims_tests.sh",
     "aux_mutation_scenarios": "run_aux_mutation_scenarios.sh",
@@ -56,6 +61,10 @@ GATE_SCRIPTS = {
     "slot_ddl_events": "run_slot_gates.sh",
     "slot_tsan": "run_aux_tsan.sh",
 }
+
+
+# Gates that run a cheaper tier of another gate's script; each has its own result file.
+GATE_TIERS = {"aux_correctness_quick": "quick", "quick_check": "quick"}
 
 
 @dataclass
@@ -120,6 +129,7 @@ def require_gate_pass(result: GateResult, *, allow_skip: bool = False) -> None:
 
 
 GATE_TIMEOUT_S = float(os.environ.get("ACCEL_GATE_TIMEOUT", 7200))
+CANCEL_POLL_S = 1.0
 
 
 def read_phase_log(gate_json: Path) -> dict[str, float]:
@@ -136,20 +146,34 @@ def read_phase_log(gate_json: Path) -> dict[str, float]:
     return phases
 
 
-def _run_gate_script(script: Path, query: int, cwd: Path, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
-    """Run a gate script in its own process group; past GATE_TIMEOUT_S the whole group is
-    killed (a hung harness and its children) and the gate fails with the reason."""
+def _run_gate_script(
+    script: Path, query: int, cwd: Path, env: dict[str, str],
+    cancel: threading.Event | None = None, timeout_s: float | None = None,
+) -> subprocess.CompletedProcess[str]:
+    """Run a gate script in its own process group; past the timeout (GATE_TIMEOUT_S), or once `cancel` is set,
+    the whole group is killed (a hung harness and its children) and the gate fails with the reason."""
     proc = subprocess.Popen(
         ["bash", str(script), str(query)], cwd=cwd, env=env, text=True,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True,
     )
-    try:
-        out, err = proc.communicate(timeout=GATE_TIMEOUT_S)
-    except subprocess.TimeoutExpired:
+    limit = GATE_TIMEOUT_S if timeout_s is None else timeout_s
+    deadline = time.monotonic() + limit
+    while True:
+        try:
+            out, err = proc.communicate(timeout=min(CANCEL_POLL_S, max(0.0, deadline - time.monotonic())))
+            return subprocess.CompletedProcess(proc.args, proc.returncode, out, err)
+        except subprocess.TimeoutExpired:
+            cancelled = cancel is not None and cancel.is_set()
+            if not cancelled and time.monotonic() < deadline:
+                continue
         os.killpg(proc.pid, signal.SIGKILL)
         out, err = proc.communicate()
-        out += "\n" + json.dumps({"status": "fail", "reason": f"gate did not finish within {GATE_TIMEOUT_S:.0f}s"})
-    return subprocess.CompletedProcess(proc.args, proc.returncode, out, err)
+        verdict = (
+            {"status": "cancelled", "reason": "cancelled: a sibling gate failed"}
+            if cancelled
+            else {"status": "fail", "reason": f"gate did not finish within {limit:.0f}s"}
+        )
+        return subprocess.CompletedProcess(proc.args, proc.returncode, out + "\n" + json.dumps(verdict), err)
 
 
 def run_gate(
@@ -164,7 +188,16 @@ def run_gate(
     iteration: int = 0,
     gate_index: int = 0,
     gate_count: int = 0,
+    env: dict[str, str] | None = None,
+    cancel: threading.Event | None = None,
+    out_dir: Path | None = None,
+    timeout_s: float | None = None,
 ) -> GateResult:
+    """Run one gate script. `env` adds to the script's environment (gate_parallel sets a distinct
+    ACCEL_ENGINE_INSTANCE per gate); once `cancel` is set the gate is killed and reports "cancelled".
+    `out_dir` puts the result files there instead of <artifacts>/gates (background gates, so a run on
+    code that moves on never overwrites the canonical result); `timeout_s` replaces GATE_TIMEOUT_S.
+    A passing gate is recorded in gate_stamps against the code it ran on."""
     if gate_name not in GATE_SCRIPTS:
         raise ValueError(f"unknown gate: {gate_name}")
 
@@ -175,7 +208,7 @@ def run_gate(
     import os
 
     art = query_artifacts_dir(pipeline_config.repo_root, query, workload=workload)
-    out_json = gates_dir_for_query(art) / f"{gate_name}.json"
+    out_json = (out_dir or gates_dir_for_query(art)) / f"{gate_name}.json"
     out_json.parent.mkdir(parents=True, exist_ok=True)
     out_json.with_suffix(".phases").unlink(missing_ok=True)
     out_json.unlink(missing_ok=True)  # a gate that dies before writing never reads as its last result
@@ -197,6 +230,9 @@ def run_gate(
     gate_env["ACCEL_GATE_OUT"] = str(out_json)
     gate_env["ACCEL_GATE_NAME"] = gate_name
     ctx_path = write_gate_context(pipeline_config, workload, query)
+    if out_dir:
+        ctx_path = Path(shutil.copy(ctx_path, out_dir / ctx_path.name))
+        gate_env["ACCEL_GATE_OUT_DIR"] = str(out_dir)
     gate_env["ACCEL_GATE_CONTEXT"] = str(ctx_path)
     gate_env["ACCEL_AUX_BENCHMARK"] = str(workload.get("benchmark_name") or "tpch")
     gate_env["ACCEL_PIPELINE_BENCHMARK"] = gate_env["ACCEL_AUX_BENCHMARK"]
@@ -211,6 +247,15 @@ def run_gate(
     kind = str(workload.get("workload_kind") or "")
     if kind:
         gate_env["ACCEL_WORKLOAD_KIND"] = kind
+    tier = GATE_TIERS.get(gate_name)
+    if tier:
+        from accel_pipeline.quick import ensure_subset_dataset
+
+        gate_env["ACCEL_GATE_TIER"] = tier
+        subset = ensure_subset_dataset(pipeline_config, workload)
+        if subset:
+            gate_env["ACCEL_SUBSET_DATASET_DIR"] = str(subset)
+    gate_env.update(env or {})
 
     # Codex may never create the worker build dir. Once the engine has a host.sh, only its
     # `build` verb configures the dir (host_contract.md, $ACCEL_CMAKE_ARGS); a bare configure here
@@ -234,7 +279,8 @@ def run_gate(
         count=gate_count,
     )
     started = time.monotonic()
-    proc = _run_gate_script(script, query, pipeline_config.repo_root, gate_env)
+    stamp_before = current_stamp(pipeline_config, workload, query)
+    proc = _run_gate_script(script, query, pipeline_config.repo_root, gate_env, cancel, timeout_s)
     duration_ms = int((time.monotonic() - started) * 1000)
     data: dict[str, Any] = {}
     if out_json.is_file():
@@ -283,6 +329,8 @@ def run_gate(
         phase_timings=data["phase_timings"],
     )
     result = GateResult(name=gate_name, status=status, data=data, path=out_json if out_json.is_file() else None)
+    if status == "pass" and stamp_before and current_stamp(pipeline_config, workload, query) == stamp_before:
+        record_pass(pipeline_config, workload, query, gate_name, stamp_before)
     if gate_name == "aux_bench_sweep":
         from accel_pipeline.pipeline_log import log_bench_sweep_results
 

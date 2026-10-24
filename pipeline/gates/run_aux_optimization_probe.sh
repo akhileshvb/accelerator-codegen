@@ -25,7 +25,7 @@ PROBE_REGEX="${AUX_CTEST_SMOKE_REGEX}"
 if ! engine_ready "${AUX_TEST_TARGET}"; then
   emit_result "${OUT}/aux_optimization_probe.json" aux_optimization_probe fail "${ENGINE_FAIL}" "${ENGINE_LOG}" "query:=${QUERY}"
 fi
-engine_run ctest --test-dir "${ACCEL_BUILD_DIR}" --no-tests=error -R "${PROBE_REGEX}" --output-on-failure
+engine_run ctest --test-dir "${ACCEL_BUILD_DIR}" --no-tests=error -j "${ACCEL_CTEST_JOBS:-$(nproc)}" --stop-on-failure -R "${PROBE_REGEX}" --output-on-failure
 
 STATUS="pass"
 if [[ ${RC} -ne 0 ]]; then

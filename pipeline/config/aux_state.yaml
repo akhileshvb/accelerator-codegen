@@ -71,6 +71,17 @@ aux_bench_sweep_optimization:
   bench_base_write_samples: 1
   skip_duckdb_ref: false
 
+# Agent-call tier (run_quick_benchmark, run_profile): direction only, seconds per call.
+# acceptance=True uses aux_bench_sweep_optimization; the full aux_bench_sweep is for stage exit.
+aux_bench_sweep_quick:
+  write_frequencies: [0]
+  bench_warmup: 1
+  bench_queries: 5
+  bench_ref_samples: 1
+  bench_base_write_samples: 1
+  bench_timeout_sec: 120
+  skip_duckdb_ref: false
+
 optimization:
   max_iterations: 3
   max_attempts_per_iteration: 5
