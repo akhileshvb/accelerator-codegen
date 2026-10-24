@@ -23,7 +23,7 @@ def thread_values(log):
 def test_full_tier_differential_runs_at_n_then_one_thread(repo):
     proc, _, log, gj, _ = run_gate(repo, "run_aux_correctness.sh", "5", env_extra={"ACCEL_AUX_THREADS": "4"})
     assert proc.returncode == 0, proc.stdout + proc.stderr
-    assert thread_values(log) == ["4", "1"]
+    assert sorted(thread_values(log)) == ["1", "4"]  # side by side: the order is not fixed
     assert result(gj, "aux_correctness")["threads_checked"] == [4, 1]
 
 
@@ -46,6 +46,14 @@ def test_a_quick_check_that_fails_only_at_one_thread_names_it(repo):
         "ACCEL_GATE_NAME": "quick_check", "ACCEL_AUX_THREADS": "4", "FAKE_FAIL_AT_ONE_THREAD": "1"})
     assert proc.returncode == 1
     assert result(gj, "quick_check")["step"] == "differential_threads1"
+
+
+def test_a_differential_that_fails_at_n_threads_is_reported_with_the_one_thread_run_done(repo):
+    proc, _, log, gj, _ = run_gate(repo, "run_aux_correctness.sh", "5",
+                                   env_extra={"ACCEL_AUX_THREADS": "4", "FAKE_FAIL_AT_N_THREADS": "1"})
+    assert proc.returncode == 1
+    assert sorted(thread_values(log)) == ["1", "4"]
+    assert "threads=4" in result(gj, "aux_correctness")["reason"]
 
 
 def test_a_differential_that_fails_only_at_one_thread_fails_the_gate(repo):

@@ -29,6 +29,7 @@ case "${verb}" in
       printf 'WARNING: ThreadSanitizer: data race (pid=1)\n  Write of size 8 at 0x1 by thread T1:\n    #0 Add %s/module.cpp:9 (bin+0x1)\n    #1 ParallelEach /x/substrate/pool.cpp:3 (bin+0x2)\n\nSUMMARY: ThreadSanitizer: data race %s/module.cpp:9 in Add\n' "${FAKE_TSAN_REPORT}" "${FAKE_TSAN_REPORT}" > "${path}.1"
       printf 'WARNING: ThreadSanitizer: data race (pid=2)\n  Write of size 8 at 0x1 by thread T1:\n    #0 Foo /engine/src/x.cpp:9 (bin+0x1)\n\nSUMMARY: ThreadSanitizer: data race /engine/src/x.cpp:9 in Foo\n' > "${path}.2"
     fi
+    [[ -z "${FAKE_FAIL_AT_N_THREADS:-}" || "${ACCEL_AUX_THREADS:-}" == 1 || "$1" != diff_bin ]] || exit 1
     [[ -z "${FAKE_FAIL_AT_ONE_THREAD:-}" || "${ACCEL_AUX_THREADS:-}" != 1 || "$1" != diff_bin ]] || exit 1
     if [[ -n "${FAKE_SWEEP:-}" && "$1" == bench_aux ]]; then  # a sweep point: reads and builds scale with the thread budget
       t="${ACCEL_AUX_THREADS:-4}"
