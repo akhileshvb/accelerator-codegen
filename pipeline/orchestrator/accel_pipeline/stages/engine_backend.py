@@ -225,26 +225,48 @@ def layer_gates(layer: dict) -> list[str]:
     return [g for g in ("engine_build", str(layer.get("gate") or ""), *(layer.get("extra_gates") or [])) if g]
 
 
+def _agent_turns(pipeline_config, model_config, workload_name, query, model_overrides, stage, turn):
+    """A stage that is one agent turn, under the repair loop: a turn that fails (a deadline, a provider
+    error) is resumed in its session with the failure as the message; past the budget the run stops cleanly."""
+    pending = {"feedback": ""}
+
+    def attempt():
+        text, pending["feedback"] = pending["feedback"], ""
+        return turn(text)
+
+    def note(failure: Failure) -> None:
+        pending["feedback"] = render_failure(failure)
+
+    ctx = RepairCtx(pipeline_config, model_config, workload_name, query, stage=stage, model_overrides=model_overrides,
+                    repair_turn=note)
+    return run_with_repair(ctx, attempt)
+
+
 def run_analysis(pipeline_config, model_config, workload_name, query, model_overrides, dry_run):
     workload = load_run_workload(pipeline_config, workload_name)
     art = query_artifacts_dir(pipeline_config.repo_root, query, workload=workload)
     progress = Progress(art)
     if not dry_run and progress.done("analysis"):
         return None
-    result = run_agent_stage(
-        stage="analysis",
-        prompt_file="01_analysis.md",
-        pipeline_config=pipeline_config,
-        model_config=model_config,
-        workload_name=workload_name,
-        query=query,
-        user_message=_user_message(pipeline_config, workload, "analysis"),
-        model_overrides=model_overrides,
-        dry_run=dry_run,
-        session_role="analysis",
-    )
-    if not dry_run:
-        progress.mark("analysis")
+
+    def turn(feedback: str):
+        return run_agent_stage(
+            stage="analysis",
+            prompt_file="01_analysis.md",
+            pipeline_config=pipeline_config,
+            model_config=model_config,
+            workload_name=workload_name,
+            query=query,
+            user_message=_user_message(pipeline_config, workload, "analysis", extra=feedback),
+            model_overrides=model_overrides,
+            dry_run=dry_run,
+            session_role="analysis",
+        )
+
+    if dry_run:
+        return turn("")
+    result = _agent_turns(pipeline_config, model_config, workload_name, query, model_overrides, "analysis", turn)
+    progress.mark("analysis")
     return result
 
 
@@ -560,18 +582,9 @@ def run_validation(
         return validation_turn(_user_message(pipeline_config, workload, "validation"))
     result = None
     if not progress.done("validation_authored"):
-        pending = {"feedback": ""}
-
-        def attempt() -> Any:
-            text, pending["feedback"] = pending["feedback"], ""
-            return validation_turn(_user_message(pipeline_config, workload, "validation", extra=text))
-
-        def note(failure: Failure) -> None:
-            pending["feedback"] = render_failure(failure)
-
-        ctx = RepairCtx(pipeline_config, model_config, workload_name, query, stage="validation",
-                        model_overrides=model_overrides, repair_turn=note)
-        result = run_with_repair(ctx, attempt)
+        result = _agent_turns(
+            pipeline_config, model_config, workload_name, query, model_overrides, "validation",
+            lambda feedback: validation_turn(_user_message(pipeline_config, workload, "validation", extra=feedback)))
         progress.mark("validation_authored")
     if skip_gates:
         return result

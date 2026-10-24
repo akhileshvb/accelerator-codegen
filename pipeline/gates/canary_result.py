@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import json
 import re
-import subprocess
 import sys
 from pathlib import Path
 
@@ -35,21 +34,50 @@ def report_excerpt(log: str) -> str:
     return ""
 
 
+_LIBRARY_FRAME = re.compile(r"libtsan|/usr/include/|libstdc\+\+|libc\.so|<null> <null>")
+
+
+def _is_ours(report: str, ours_pattern: re.Pattern[str]) -> bool:
+    """A race is ours when, in one of its access stacks, the innermost frame outside the sanitizer and
+    the standard library is in our code: the call that raced. A stack that only passes through our
+    code on its way into the engine (the canary calling a connection) is the engine's."""
+    stack: list[str] = []
+    stacks = []
+    for line in report.splitlines():
+        if line.startswith("    #"):
+            stack.append(line)
+            continue
+        if stack:
+            stacks.append(stack)
+            stack = []
+        if line.startswith(("  Location", "  Mutex", "  Thread", "  Heap block")):
+            break
+    if stack:
+        stacks.append(stack)
+    for frames in stacks:
+        inner = next((f for f in frames if not _LIBRARY_FRAME.search(f)), "")
+        if ours_pattern.search(inner):
+            return True
+    return False
+
+
 def tsan_reports(report_dir: Path, engine: str, root: str) -> tuple[int, int, str]:
-    """(reports in our code, reports in the engine only, the first report's text)."""
+    """(races in our code, reports inside the engine only, the text of the first of ours else the first)."""
+    ours_pattern = re.compile(rf"{re.escape(root)}/(substrate|backends/{re.escape(engine)}|pipeline/canary/canary_mirror)")
     ours = engine_only = 0
-    first = ""
-    pattern = f"{root}/(substrate|backends/{engine}|pipeline/canary)/"
-    awk = Path(__file__).with_name("tsan_classify.awk")
+    first_ours = first = ""
     for path in sorted(report_dir.glob("tsan.*")):
-        counts = subprocess.run(["awk", "-v", f"pat={pattern}", "-f", str(awk), str(path)],
-                                capture_output=True, text=True).stdout.split()
-        if len(counts) == 2:
-            ours += int(counts[0])
-            engine_only += int(counts[1])
-        if not first:
-            first = "\n".join(path.read_text(errors="replace").splitlines()[:EXCERPT_LINES])
-    return ours, engine_only, first
+        for report in re.split(r"(?=^WARNING: ThreadSanitizer)", path.read_text(errors="replace"), flags=re.MULTILINE):
+            if not report.startswith("WARNING: ThreadSanitizer"):
+                continue
+            text = "\n".join(report.splitlines()[:EXCERPT_LINES])
+            first = first or text
+            if _is_ours(report, ours_pattern):
+                ours += 1
+                first_ours = first_ours or text
+            else:
+                engine_only += 1
+    return ours, engine_only, first_ours or first
 
 
 def main() -> int:

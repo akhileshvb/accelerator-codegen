@@ -33,7 +33,7 @@ FAIL_LINE = ('{"check": "dml_incremental_hits", "owner_layer": "capture", "statu
              '"defect_class": "a write forcing a rebuild", "detail": "builds 1 -> 2"}')
 ASAN = """==1==ERROR: AddressSanitizer: stack-use-after-return on address 0x1
 READ of size 3 at 0x1 thread T0
-    #0 0x1 in accelerator_codegen::BuildRow::TextView /repo/backends/fake/api/scan.hpp:99
+    #0 0x1 in accelerator_codegen::TextAccessor::TextView /repo/backends/fake/api/scan.hpp:99
 """
 
 
@@ -137,3 +137,26 @@ def test_quick_layer_stops_at_the_first_failing_phase(repo):
 def test_quick_layer_without_a_target_points_at_the_layer_gate(repo):
     proc, _, result = run(repo, "run_engine_quick.sh", "engine_quick", layers=LAYERS, ACCEL_QUICK_LAYER="hostctl")
     assert proc.returncode == 1 and "run_layer_gate" in result["reason"]
+
+
+def _report(*frames, kind="data race"):
+    lines = [f"WARNING: ThreadSanitizer: {kind} (pid=1)", "  Write of size 8 at 0x1 by thread T1:"]
+    lines += [f"    #{i} {frame}" for i, frame in enumerate(frames)]
+    lines += ["", "  Location is global 'x' of size 24 at 0x1", ""]
+    return "\n".join(lines)
+
+
+def test_tsan_races_are_ours_by_the_innermost_non_library_frame(tmp_path):
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("canary_result", GATES / "canary_result.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    backend_race = _report("std::vector::push_back /usr/include/c++/16/bits/stl_vector.h:1 (a.so+0x1)",
+                           "fake::Host::OnMutation /repo/backends/fake/api/host.cpp:416 (a.so+0x2)",
+                           "main /repo/pipeline/canary/canary_engine.hpp:33 (t+0x3)")
+    engine_noise = _report("pthread_mutex_trylock <null> (libtsan.so.2+0x1)", "je_tcache_arena_associate <null> (libengine.so+0x2)",
+                           "Session::Exec /repo/pipeline/canary/canary_engine.hpp:33 (t+0x3)", kind="double lock of a mutex")
+    (tmp_path / "tsan.1").write_text(backend_race + "\n" + engine_noise)
+    ours, engine_only, text = module.tsan_reports(tmp_path, "fake", "/repo")
+    assert (ours, engine_only) == (1, 1) and "OnMutation" in text

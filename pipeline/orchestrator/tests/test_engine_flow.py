@@ -302,3 +302,21 @@ def test_skip_gates_runs_the_turn_alone(world):
     world.run_layer("capture", skip_gates=True)
     assert world.gate_calls == [] and world.critic_calls == []
     assert Progress(world.art).layer_passed("capture")
+
+
+def test_analysis_that_fails_is_resumed_then_marked_done_and_skipped_on_a_relaunch(world):
+    outcomes = [StageFailure(Failure(kind="timeout", stage="analysis", source="agent", summary="deadline")), None]
+    real = world._agent
+
+    def flaky(**kw):
+        outcome = outcomes.pop(0)
+        result = real(**kw)
+        if outcome:
+            raise outcome
+        return result
+
+    world.monkeypatch.setattr(eb, "run_agent_stage", flaky)
+    eb.run_analysis(world.pc, world.mc, "engine_toydb", 0, {}, False)
+    assert [role for _, role, _ in world.agent] == ["analysis", "analysis"] and "deadline" in world.agent[1][2]
+    eb.run_analysis(world.pc, world.mc, "engine_toydb", 0, {}, False)
+    assert len(world.agent) == 2  # done: not run again
