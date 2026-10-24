@@ -23,13 +23,15 @@ from accel_pipeline import write_cost
 from accel_pipeline.config import PipelineConfig
 from accel_pipeline.failure import Failure, render_failure
 from accel_pipeline.gate_stamps import current_stamp
-from accel_pipeline.gates import GATE_TIMEOUT_S, run_gate
+from accel_pipeline.gates import run_gate
 from accel_pipeline.layout import query_dir, workload_schema_sql
 from accel_pipeline.paths import gates_dir_for_query, query_artifacts_dir
 from accel_pipeline.test_suite import suite_path
 from accel_pipeline.workload_facts import scratch_connection
 
 QUICK_GATE = "quick_check"
+# What kills one differential run inside a gate (aux_gate_common.sh engine_run): the budget the projection must fit.
+GATE_RUN_TIMEOUT_S = float(os.environ.get("ACCEL_GATE_RUN_TIMEOUT", 900))
 ADMISSION_FILE = f"{QUICK_GATE}.admitted"
 PROJECTION_LINES = 5  # the costliest write kinds a passing check reports
 SUBSET_MAX_SOURCE_GB = float(os.environ.get("ACCEL_SUBSET_MAX_SOURCE_GB", 30))
@@ -156,7 +158,7 @@ def _project_write_cost(pipeline_config: PipelineConfig, workload: dict[str, Any
     return write_cost.project(
         reports, profiles=ts.txn_profiles(suite), dependent=ts.dependent_tables(art),
         scale=write_cost.table_scale(full if full.is_dir() else None, subset), probes_full=probes,
-        budget_s=GATE_TIMEOUT_S * pipeline_config.quick_tier.write_cost_budget_share)
+        budget_s=GATE_RUN_TIMEOUT_S * pipeline_config.quick_tier.write_cost_budget_share)
 
 
 def _sanitizer_evidence(data: dict[str, Any]) -> str:

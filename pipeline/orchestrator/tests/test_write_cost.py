@@ -132,7 +132,7 @@ class ReportingGate(Gate):
 def check(config, monkeypatch, write_ms, timeout=30.0):
     reports = [report(write_ms=write_ms, build_s=0.05)] * 2
     workload, sub = stage_suite(config, 40, 10_000, [])  # 250x the subset
-    monkeypatch.setattr(quick, "GATE_TIMEOUT_S", timeout / config.quick_tier.write_cost_budget_share)
+    monkeypatch.setattr(quick, "GATE_RUN_TIMEOUT_S", timeout / config.quick_tier.write_cost_budget_share)
     gate = ReportingGate(monkeypatch, config, workload, reports)
     monkeypatch.setattr(quick, "ensure_subset_dataset", lambda *a: sub)
     return quick.run_quick_check(config, workload, 6), gate
