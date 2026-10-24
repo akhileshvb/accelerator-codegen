@@ -109,6 +109,7 @@ BAD = {
     "no manifest": (dict(manifest=None), "suite.yaml"),
     "no domain": (dict(domain=None), "domain.yaml"),
     "a domain of the wrong width": (dict(domain=edited(DOMAIN, ["params"], DOMAIN["params"][:1])), "one `params` entry per query parameter"),
+    "a derived parameter without a date source": (dict(domain=edited(DOMAIN, ["params", 1], {"name": "d", "type": "derived", "from": "seg", "add_months": 1})), "cannot draw tuples"),
     "a domain type that does not exist": (dict(domain=edited(DOMAIN, ["params", 0, "type"], "uuid")), "needs a name and a type"),
     "a domain without its range": (dict(domain=edited(DOMAIN, ["params", 1], {"name": "d", "type": "date", "min": "1992-01-01"})), "`max` missing"),
     "domain names that are not the workload's": (dict(domain=edited(DOMAIN, ["params", 0, "name"], "other")), "must be the workload's"),
@@ -137,6 +138,10 @@ def test_each_validation_rule_fails_a_crafted_bad_suite(tmp_path, name):
     kwargs, expected = BAD[name]
     found = problems(write_suite(tmp_path, **kwargs))
     assert any(expected in p for p in found), found
+
+
+def test_a_stateful_suite_needs_the_analysis_tables_to_check_coverage(tmp_path):
+    assert any("no dependent tables" in p for p in problems(write_suite(tmp_path), dependent_tables=[]))
 
 
 def test_waivers_with_a_reason_stand_in_for_missing_writes(tmp_path):

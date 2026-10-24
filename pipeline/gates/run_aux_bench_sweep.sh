@@ -121,6 +121,7 @@ for ((repeat = 1; repeat <= REPEATS; repeat++)); do
   for suite in "${SUITE_LIST[@]}"; do
     export "ACCEL_Q${QUERY}_BENCH_SUITE=${suite}"
     for pct in "${FREQ_LIST[@]}"; do
+      export ACCEL_AUX_WRITE_FREQUENCIES="${pct// /}"   # the harness runs the frequencies of this variable: one point per call
       engine_run "${BENCH_TARGET}" --query "${QUERY}" "${pct// /}"
       printf '%s\n' "${LOG}" >> "${SWEEP_LOG}"
       [[ ${RC} -eq 0 ]] || SWEEP_RC=${RC}

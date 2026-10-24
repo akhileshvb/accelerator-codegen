@@ -635,9 +635,6 @@
   "engine": 6,
   "symbol": 2
  },
- "pipeline/prompts/aux_state/01b_adversarial_tests.md": {
-  "symbol": 1
- },
  "pipeline/prompts/aux_state/03_optimization_unified.md": {
   "path": 2
  },

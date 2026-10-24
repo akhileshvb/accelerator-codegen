@@ -19,7 +19,7 @@ Write-frequency / write-interval points must exercise **query-specific maintenan
 
 ## Sweep protocol
 
-The `aux_bench_sweep` gate calls the bench once per point, for each suite (`lineitem_only` by default), each run on a fresh DB copy. The write frequencies are drawn on every run from the query's frozen `write_mix.yaml` (0% always, then its sampled range; seed recorded in the gate result) and the sweep repeats `test_suite.bench_repeats` times with fresh draws: the bench takes whatever percent it is given, and its score is the median over the repeats with [min-max]. Without a suite, `ACCEL_AUX_WRITE_FREQUENCIES` (0, 1, 10, 50) is the fixed list.
+The `aux_bench_sweep` gate calls the bench once per point, for each suite (`lineitem_only` by default), each run on a fresh DB copy. The write frequencies are drawn on every run from the query's frozen `write_mix.yaml` (0% always, then its sampled range; seed recorded in the gate result) and the sweep repeats `test_suite.bench_repeats` times with fresh draws: each call is one point (the percent is its argument and `ACCEL_AUX_WRITE_FREQUENCIES`), and the score is the median over the repeats with [min-max]. Without a suite, `ACCEL_AUX_WRITE_FREQUENCIES` (0, 1, 10, 50) is the fixed list.
 
 ### Env vars (read in benchmark)
 

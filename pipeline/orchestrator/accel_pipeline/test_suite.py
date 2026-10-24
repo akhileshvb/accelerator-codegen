@@ -272,11 +272,15 @@ def validate_static(suite: Path, *, query_sql: str, param_names: list[str], depe
                              for t in draw_tuples(domain, 3, 1) if len(split_tuple(t)) != want]
         except ValueError as exc:
             problems.append(str(exc))
+        except (KeyError, TypeError, AttributeError) as exc:
+            problems.append(f"{DOMAIN} cannot draw tuples ({type(exc).__name__}: {exc}); a derived parameter needs a date source")
         problems += _check_edges(manifest, len(tuples))
     if not isinstance(manifest.get("rationale"), str) or not manifest["rationale"].strip():
         problems.append(f"{MANIFEST}: rationale string required")
     if not aux:
         return problems
+    if not dependent_tables:
+        problems.append("the analysis lists no dependent tables: write coverage cannot be checked")
     return problems + _validate_writes(suite, manifest, dependent_tables)
 
 
