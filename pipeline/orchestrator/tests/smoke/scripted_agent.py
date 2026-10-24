@@ -6,7 +6,8 @@ banner); per stage it writes known-good artifacts instead of calling a model:
 
     analysis      the fixture analysis
     test_suite    the fixture suite
-    implementation, with the reference accelerator's files (never the frozen suite)
+    implementation, with the reference accelerator's files (never the frozen suite), after one ask_advisor call
+                  (a fork of its session answers with a fixed line)
     optimization  declares saturation
     audit         a passing audit
     critique      a passing critique
@@ -97,6 +98,7 @@ def call_tool(name: str, arguments: dict) -> dict:
     return asyncio.run(call())
 
 
+SCRIPTED_ADVICE = "scripted advice: the copied implementation is the plan"
 HEADER_FIELDS = ("PURPOSE", "KEY SPACE", "COMPLEXITY", "MEMORY", "COW/THREADS", "USE WHEN")
 
 
@@ -192,6 +194,9 @@ def implementation() -> str:
             shutil.copyfile(entry, query_dir() / entry.name)
     copy_benchmark_common(query_dir())
     call_tool("discover_host_sdk", {})
+    advice = call_tool("ask_advisor", {"question": "scripted agent: a second opinion on the copied implementation?"})
+    if SCRIPTED_ADVICE not in advice.get("text", ""):
+        raise SystemExit(f"ask_advisor gave no advice: {json.dumps(advice)[:2000]}")
     publish_primitives(query_dir())
     return "implementation copied from the reference"
 
@@ -244,6 +249,11 @@ def main() -> int:
         (home / "sessions").mkdir(parents=True, exist_ok=True)
         (home / "sessions" / f"rollout-scripted-{sid}.jsonl").touch()
     print(f"session id: {sid}", file=sys.stderr)
+    if args[:2] == ["exec", "fork"]:  # the advisor forking the agent's session
+        with open(ENV["ACCEL_SMOKE_CALLS"], "a", encoding="utf-8") as log:
+            log.write(json.dumps({"stage": "advisor", "forked": True}) + "\n")
+        print(SCRIPTED_ADVICE)
+        return 0
     with open(ENV["ACCEL_SMOKE_CALLS"], "a", encoding="utf-8") as log:
         log.write(json.dumps({"stage": STAGE, "resumed": resumed}) + "\n")
     fn = script_for(STAGE)

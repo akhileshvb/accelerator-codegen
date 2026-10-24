@@ -333,6 +333,19 @@ def build_mcp_tool_callables(
         write_blocker(art, summary, evidence)
         return "Blocker recorded. Stop now; the orchestrator takes over. Do not continue working."
 
+    def ask_advisor(question: str) -> str:
+        """A stronger model reads this conversation and answers once (see the MCP tool's description)."""
+        from accel_pipeline import advisor
+
+        cfg = pipeline_config.advisor
+        if advisor.scope(stage) not in ("implementation", "optimization") or cfg.max_consults_per_stage <= 0:
+            return "No advice: the advisor is not available in this stage."
+        left = cfg.max_consults_per_stage - advisor.consults_used(art, stage)
+        if left <= 0:
+            return f"No advice: advisor limit reached ({cfg.max_consults_per_stage} consults in this stage)."
+        advice = advisor.ask(art, question, min(cfg.timeout_sec + 30, 560))
+        return f"{advice}\n\n[advisor consults left in this stage: {max(left - 1, 0)}]"
+
     def validate_analysis() -> str:
         """Check analysis.json as the analysis stage will when the turn ends."""
         from accel_pipeline.paths import analysis_artifact_path
@@ -362,6 +375,7 @@ def build_mcp_tool_callables(
 
     return {
         "report_blocker": report_blocker,
+        "ask_advisor": ask_advisor,
         "validate_analysis": validate_analysis,
         "update_analysis": update_analysis,
         "request_gate": request_gate,
@@ -652,6 +666,15 @@ def main(argv: list[str] | None = None) -> int:
     def discover_host_sdk() -> str:
         """Describe this engine's host.sh verbs and how to connect."""
         return _call("discover_host_sdk")
+
+    @_tool(annotations=_rw)
+    def ask_advisor(question: str) -> str:
+        """Ask a stronger model for a second opinion. It reads your whole conversation and the files on disk
+        (it cannot edit them), diagnoses the root cause and returns concrete next steps, in a few minutes.
+        Use it when stuck on one failure for more than ~10 minutes, or before declaring that part of the
+        analysed plan cannot be built. question: what you are stuck on and what you have tried. A few consults
+        per stage."""
+        return _call("ask_advisor", question)
 
     @_tool(annotations=_ro)
     def validate_analysis() -> str:
