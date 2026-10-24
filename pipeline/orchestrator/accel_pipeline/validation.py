@@ -218,13 +218,17 @@ def _validate_read_work_ratio(state_design: dict[str, Any]) -> None:
     if typical >= MIN_TYPICAL_READ_WORK_RATIO:
         return
     unmet = str(ratio.get("unmet_justification", "")).strip()
-    if len(unmet) < 40:
+    families = [f for f in ratio.get("families_evaluated") or []
+                if isinstance(f, dict) and str(f.get("family", "")).strip()
+                and _positive_number(f.get("typical_ratio")) is not None]
+    if len(unmet) < 40 or len(families) < 3:
         raise AuxAnalysisValidationError(
             f"design target unmet: {where}.typical is {typical:g}, below the required "
             f"{MIN_TYPICAL_READ_WORK_RATIO:g}x. Revise the design in this stage (finer partitioning by the "
             "predicate's columns, pre-aggregation at a coarser grain with output-sensitive refinement, a "
             "data-derived bound that tightens with the parameter) or select a candidate that meets it; if no "
-            "candidate can, set unmet_justification (at least 40 characters) naming why for each candidate"
+            "candidate can, set unmet_justification (at least 40 characters) and families_evaluated (at least "
+            "three families from the prompt's list, each with family, a numeric typical_ratio and why_short)"
         )
 
 

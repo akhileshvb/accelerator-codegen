@@ -218,6 +218,12 @@ class TestAuxAnalysisValidation:
         ratio = analysis["correctness_facts"]["state_design"]["read_work_ratio"]
         ratio["typical"] = 1.5
         ratio["unmet_justification"] = "every candidate must visit the full qualifying range because the output is that large"
+        with pytest.raises(AuxAnalysisValidationError, match="families_evaluated"):
+            validate_aux_analysis(analysis)
+        ratio["families_evaluated"] = [
+            {"family": f, "typical_ratio": 1.5, "why_short": "output-sized"}
+            for f in ("partition by predicate columns", "coarser pre-aggregation", "bound-ordered top-k")
+        ]
         validate_aux_analysis(analysis)
 
     def test_rejects_missing_read_work_ratio(self):
