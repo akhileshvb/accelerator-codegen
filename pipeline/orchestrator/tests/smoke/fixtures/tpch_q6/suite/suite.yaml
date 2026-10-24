@@ -1,0 +1,14 @@
+# Smoke-test suite of the scripted agent (data of the smoke test, not a model's work).
+version: 1
+query: 6
+rationale: >
+  Q6 is a stateless scalar sum over lineitem for a shipdate window, a discount band and a quantity cap; the
+  tuples vary the discount and quantity around the benchmark's values.
+edge_coverage:
+  in_spec: [1, 2, 3]
+  off_spec: [4, 5]
+  null_param: "n/a: the smoke suite carries no NULL parameter (the real suites do)"
+  empty_result: "n/a: a scalar aggregate always returns one row"
+  limit_ties: "n/a: the query has no ORDER BY and no LIMIT"
+  extreme_values: [6]
+  large_keys: "n/a: no parameter is a key"
