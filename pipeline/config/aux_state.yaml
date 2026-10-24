@@ -162,8 +162,9 @@ host_bootstrap_critique_max_rounds: 2
 
 optimization_max_turns_per_episode: 0
 
-# Independent critic rounds on the analysis (each may send it back for one revision); 0 disables.
-analysis_critique_max_rounds: 1
+# Independent critic rounds on the analysis (each may send it back for one revision; the next round
+# re-checks that revision); 0 disables.
+analysis_critique_max_rounds: 2
 
 # Max times analysis may re-run after implementation/optimization finds a structural bottleneck.
 max_structural_reanalysis: 2
