@@ -16,7 +16,7 @@ from accel_pipeline.build_stamp import build_lock, code_stamp
 from accel_pipeline.config import QuickTierConfig
 from accel_pipeline.gate_stamps import current_stamp, passed_at_current_stamp, record_pass
 
-WORKLOAD = {"workload_kind": "aux_state", "benchmark_name": "tpch", "engine_name": "eng"}
+WORKLOAD = {"workload_kind": "aux_state", "benchmark_name": "demo", "engine_name": "eng"}
 GIT = ["git", "-c", "user.name=t", "-c", "user.email=t@t"]
 
 
@@ -24,8 +24,8 @@ GIT = ["git", "-c", "user.name=t", "-c", "user.email=t@t"]
 def config(tmp_path):
     root = tmp_path / "repo"
     for q in (5, 6):
-        (root / "accelerators" / "tpch" / f"q{q}").mkdir(parents=True)
-        (root / "accelerators" / "tpch" / f"q{q}" / "module.cpp").write_text("// v1\n")
+        (root / "accelerators" / "demo" / f"q{q}").mkdir(parents=True)
+        (root / "accelerators" / "demo" / f"q{q}" / "module.cpp").write_text("// v1\n")
     (root / "pipeline" / "artifacts").mkdir(parents=True)
     (root / ".gitignore").write_text("pipeline/artifacts/\n")
     subprocess.run(["git", "init", "-q"], cwd=root, check=True)
@@ -42,16 +42,16 @@ def write(config, rel, text):
 
 def test_the_stamp_follows_the_query_and_shared_files_only(config):
     root = config.repo_root
-    base = code_stamp(root, query_dir="accelerators/tpch/q5")
-    write(config, "accelerators/tpch/q6/module.cpp", "// other query\n")
+    base = code_stamp(root, query_dir="accelerators/demo/q5")
+    write(config, "accelerators/demo/q6/module.cpp", "// other query\n")
     write(config, "pipeline/gates/x.sh", "# pipeline code\n")
     write(config, "pipeline/artifacts/tpch/q5/note.json", "{}")
-    assert code_stamp(root, query_dir="accelerators/tpch/q5") == base
-    write(config, "accelerators/tpch/q5/module.cpp", "// v2\n")
-    own = code_stamp(root, query_dir="accelerators/tpch/q5")
+    assert code_stamp(root, query_dir="accelerators/demo/q5") == base
+    write(config, "accelerators/demo/q5/module.cpp", "// v2\n")
+    own = code_stamp(root, query_dir="accelerators/demo/q5")
     assert own != base
     write(config, "substrate/shared.hpp", "// shared\n")
-    assert code_stamp(root, query_dir="accelerators/tpch/q5") != own
+    assert code_stamp(root, query_dir="accelerators/demo/q5") != own
 
 
 def test_the_stamp_follows_content_not_timestamps(config):
@@ -65,10 +65,10 @@ def test_the_stamp_follows_content_not_timestamps(config):
 
 def test_extras_and_deleted_files_change_the_stamp(config):
     root = config.repo_root
-    base = code_stamp(root, query_dir="accelerators/tpch/q5")
-    assert code_stamp(root, query_dir="accelerators/tpch/q5", extra=["target"]) != base
-    (root / "accelerators" / "tpch" / "q5" / "module.cpp").unlink()
-    assert code_stamp(root, query_dir="accelerators/tpch/q5") != base
+    base = code_stamp(root, query_dir="accelerators/demo/q5")
+    assert code_stamp(root, query_dir="accelerators/demo/q5", extra=["target"]) != base
+    (root / "accelerators" / "demo" / "q5" / "module.cpp").unlink()
+    assert code_stamp(root, query_dir="accelerators/demo/q5") != base
 
 
 def test_outside_a_git_checkout_there_is_no_stamp(tmp_path):
@@ -79,7 +79,7 @@ def test_a_gate_passes_at_the_stamp_it_was_recorded_for(config):
     record_pass(config, WORKLOAD, 5, "aux_unit", current_stamp(config, WORKLOAD, 5))
     assert passed_at_current_stamp(config, WORKLOAD, 5, "aux_unit")
     assert not passed_at_current_stamp(config, WORKLOAD, 5, "aux_correctness")
-    write(config, "accelerators/tpch/q5/module.cpp", "// v2\n")
+    write(config, "accelerators/demo/q5/module.cpp", "// v2\n")
     assert not passed_at_current_stamp(config, WORKLOAD, 5, "aux_unit")
 
 
@@ -132,7 +132,7 @@ def test_a_background_pass_on_the_current_code_is_reused(config):
 
 def test_a_stale_background_stamp_triggers_a_rerun(config):
     finished(config, "aux_correctness")
-    write(config, "accelerators/tpch/q5/module.cpp", "// edited after the gate ran\n")
+    write(config, "accelerators/demo/q5/module.cpp", "// edited after the gate ran\n")
     assert reusable_background_result(config, WORKLOAD, 5, "aux_correctness") is None
     assert background_status(config, WORKLOAD, 5, "aux_correctness")["stale"] is True
 

@@ -22,7 +22,8 @@ def test_a_missing_sidecar_is_no_phases(tmp_path):
 def run_with_fake_script(monkeypatch, status, rc):
     repo = Path(__file__).resolve().parents[3]
     pc = load_pipeline_config(repo_root=repo)
-    workload = load_workload("engine_mysql", repo)
+    profile = sorted((repo / "pipeline" / "config" / "workloads").glob("engine_[a-z]*.yaml"))[0]
+    workload = load_workload(profile.stem, repo)
 
     def fake_script(script, query, cwd, env):
         out = Path(env["ACCEL_GATE_OUT"])

@@ -110,7 +110,7 @@ def test_quick_benchmark_env_base_filters_single_seed():
 
 
 def test_quick_tier_env_is_the_cheap_read_only_sweep():
-    paths = {"db_env_var": "TPCH_SF1_DB", "dataset_db": "/d.duckdb", "aux_bench_suites": "lineitem_only"}
+    paths = {"db_env_var": "TPCH_SF1_DB", "dataset_db": "/d.db", "aux_bench_suites": "lineitem_only"}
     workload = {
         "workload_kind": "aux_state",
         "aux_bench_sweep_optimization": {"write_frequencies": [0], "bench_warmup": 3, "quick_bench_queries": 10,
@@ -127,7 +127,7 @@ def test_quick_tier_env_is_the_cheap_read_only_sweep():
 
 
 def test_quick_tier_defaults_apply_without_a_config_block():
-    paths = {"db_env_var": "TPCH_SF1_DB", "dataset_db": "/d.duckdb"}
+    paths = {"db_env_var": "TPCH_SF1_DB", "dataset_db": "/d.db"}
     env = _quick_benchmark_env(paths, query=6, workload={"workload_kind": "aux_state"}, include_profile=False,
                                acceptance=False)
     assert env["ACCEL_BENCH_QUERIES"] == "5" and env["ACCEL_AUX_WRITE_FREQUENCIES"] == "0"
