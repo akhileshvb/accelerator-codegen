@@ -79,6 +79,18 @@ scripts/build_verus_world.sh <bench>                                            
 Output goes to `build-verus/` (`ACCEL_VERUS_LIB_DIR`); CMake links each kit
 whose library exists.
 
+## Concurrent pipelines
+
+Pipelines that run at once on one host (a pack, or separate trees) share it through the `concurrency:` block of
+`pipeline/config/default.yaml`. Each run claims one of `workers` disjoint CPU sets (a host-wide flock slot) and
+pins itself to it, so its agent, builds (`ACCEL_BUILD_JOBS`, `ACCEL_CTEST_JOBS`, `CMAKE_BUILD_PARALLEL_LEVEL`),
+gates and engine instances stay inside it. Benchmarks (the bench, baseline, profile, sf10 and calibration gates,
+`run_quick_benchmark` at the acceptance tier) queue first come first served for the host-wide measurement lease
+and run on the reserved measurement CPUs, which no worker uses; the quick tier runs without the lease and says
+when the host is loaded. Locks live in `/dev/shm/accel-pipeline-<uid>` (`ACCEL_HOST_LOCK_DIR`), so they span every
+tree on the host, and they are flocks: a crashed holder releases them. `ACCEL_CONCURRENT_WORKERS` and
+`ACCEL_MEASURE_CORES` override the config; `ACCEL_MEASURE_LEASE=0` turns the lease off.
+
 ## Layout checks
 
 ```bash

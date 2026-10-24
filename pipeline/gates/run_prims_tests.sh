@@ -40,7 +40,7 @@ step "workload words in prims/" python3 "${ROOT}/scripts/check_backend_query_fre
 step "prims changed or removed existing lines" python3 "${HERE}/check_prims_additions.py" "${ROOT}"
 step "configure test_prims" cmake -S "${ROOT}/pipeline/gates/prims_test" -B "${BUILD}" \
   -DPRIMS_REPO_ROOT="${ROOT}" -DCMAKE_BUILD_TYPE=Release
-step "build test_prims" cmake --build "${BUILD}" --target test_prims -j "$(nproc)"
+step "build test_prims" cmake --build "${BUILD}" --target test_prims -j "${ACCEL_BUILD_JOBS:-$(nproc)}"
 step "run test_prims" "${BUILD}/test_prims"
 
 PRIMS_LOG="${LOG}" PRIMS_STATUS="${STATUS}" PRIMS_REASON="${REASON}" PRIMS_OUT="${OUT}" \

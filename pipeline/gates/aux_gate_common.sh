@@ -53,8 +53,9 @@ load_aux_gate_context() {
 	export GATE_OUT
 }
 
-# Point the gate at its engine's host.sh. One instance per run and engine, so
-# parallel runs never collide. Sets ENGINE_HOST; exports the host contract env.
+# Point the gate at its engine's host.sh. One instance per worker and engine (ACCEL_INSTANCE_TAG is
+# unique on the host), its state under the worker's build dir, so parallel runs never collide.
+# Sets ENGINE_HOST; exports the host contract env.
 # ACCEL_GATE_TIER=quick with ACCEL_SUBSET_DATASET_DIR set loads that small dataset into
 # its own instance (<instance>-quick), so the full instance stays loaded and warm.
 setup_engine_host() {
@@ -66,9 +67,9 @@ setup_engine_host() {
 	fi
 	ENGINE_HOST="${root}/backends/${ENGINE_NAME}/host.sh"
 	[[ -z "${tier_suffix}" || -z "${ACCEL_ENGINE_STATE_DIR:-}" ]] || ACCEL_ENGINE_STATE_DIR+="${tier_suffix}"
-	export ACCEL_ENGINE_INSTANCE="${ACCEL_ENGINE_INSTANCE:-${ACCEL_PIPELINE_WORKER_ID:-w0}-${ENGINE_NAME}${tier_suffix}}"
-	export ACCEL_ENGINE_STATE_DIR="${ACCEL_ENGINE_STATE_DIR:-/flash1/$(id -un)/engine_state/${ACCEL_ENGINE_INSTANCE}}"
+	export ACCEL_ENGINE_INSTANCE="${ACCEL_ENGINE_INSTANCE:-${ACCEL_INSTANCE_TAG:-${ACCEL_PIPELINE_WORKER_ID:-w0}}-${ENGINE_NAME}${tier_suffix}}"
 	export ACCEL_BUILD_DIR="${ACCEL_PIPELINE_BUILD_DIR:-${ACCEL_BUILD_DIR:-${root}/build-release}}"
+	export ACCEL_ENGINE_STATE_DIR="${ACCEL_ENGINE_STATE_DIR:-${ACCEL_BUILD_DIR}/engine_state/${ACCEL_ENGINE_INSTANCE}}"
 	export ACCEL_DATASET_DIR="${ACCEL_DATASET_DIR:-${DATASET_DIR:-}}"
 	# How the build dir is configured (host_contract.md): the root CMake's backend switch
 	# (cmake/Backend.cmake: ACCELERATOR_CODEGEN_BUILD_<ENGINE>) and this engine's query sources.
@@ -137,11 +138,25 @@ engine_ready() {
 # Run a built target through host.sh with a time limit (ACCEL_GATE_RUN_TIMEOUT seconds,
 # default 900), so a hung harness fails the gate instead of stalling the run. Sets LOG, RC and,
 # on a timeout, RUN_REASON.
-engine_run() {
-	local limit="${ACCEL_GATE_RUN_TIMEOUT:-900}" started
+engine_run() { _engine_run "" "$@"; }
+
+# engine_run for a benchmark: queues for the host-wide measurement lease (outside the time limit), runs
+# pinned to the measurement CPUs, and records the queueing as the phase measurement_lease_wait.
+engine_measure() { _engine_run "${ACCEL_GATE_NAME:-${GATE_QUERY:-gate}}" "$@"; }
+
+_engine_run() {
+	local lease="$1" limit="${ACCEL_GATE_RUN_TIMEOUT:-900}" started waited wrap=()
+	shift
 	started="$(now_us)"
-	LOG="$(timeout --kill-after=15 "${limit}" "${ENGINE_HOST}" run "$@" 2>&1)" && RC=0 || RC=$?
+	[[ -z "${lease}" ]] ||
+		wrap=(env "PYTHONPATH=${GATE_ROOT}/pipeline/orchestrator:${PYTHONPATH:-}" python3 -m accel_pipeline.measurement_lease
+			--holder "${ACCEL_INSTANCE_TAG:-${ACCEL_PIPELINE_WORKER_ID:-w0}}" --reason "${lease}" --)
+	LOG="$("${wrap[@]}" timeout --kill-after=15 "${limit}" "${ENGINE_HOST}" run "$@" 2>&1)" && RC=0 || RC=$?
 	record_phase "run_${1##*/}" "${started}"
+	if [[ -n "${lease}" ]]; then
+		waited="$(sed -n 's/.*waited \([0-9.]*\) s for the measurement lease.*/\1/p' <<<"${LOG}" | head -n1)"
+		[[ -z "${waited}" ]] || PHASE_LOG+="measurement_lease_wait=${waited}"$'\n'
+	fi
 	RUN_REASON=""
 	[[ ${RC} -ne 124 && ${RC} -ne 137 ]] ||
 		RUN_REASON="$1 did not finish within ${limit}s: it hangs (a deadlock, or a wait that never ends)"

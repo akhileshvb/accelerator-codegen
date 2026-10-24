@@ -13,9 +13,11 @@ from pathlib import Path
 from typing import Any
 
 from accel_pipeline.config import PipelineConfig
+from accel_pipeline.engine_host import instance_tag
 from accel_pipeline.gate_context import write_gate_context
 from accel_pipeline.gate_stamps import current_stamp, record_pass
 from accel_pipeline.paths import gates_dir_for_query, query_artifacts_dir
+from accel_pipeline.session import HEARTBEAT_FILE
 
 
 GATE_SCRIPTS = {
@@ -234,6 +236,8 @@ def run_gate(
     gate_env["ACCEL_BUILD_DIR"] = build_dir
     if pipeline_config.worker_id:
         gate_env["ACCEL_PIPELINE_WORKER_ID"] = pipeline_config.worker_id
+    gate_env["ACCEL_INSTANCE_TAG"] = instance_tag(pipeline_config.worker_id, pipeline_config.build_dir)
+    gate_env["ACCEL_HEARTBEAT_FILE"] = str(art / HEARTBEAT_FILE)  # queueing for the measurement lease beats it
     # Engine gates (and others that honor these) need explicit paths — writing
     # _gate_context.json alone is not enough; scripts read ACCEL_GATE_*.
     gate_env["ACCEL_GATE_OUT"] = str(out_json)

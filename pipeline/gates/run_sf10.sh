@@ -26,7 +26,7 @@ mkdir -p "${ACCEL_ENGINE_STATE_DIR}"
 if ! engine_ready "${BENCH_TARGET}"; then
   emit_result "${JSON}" sf10 skip "benchmark target not built: ${ENGINE_FAIL}" "${ENGINE_LOG}" "query:=${QUERY}"
 fi
-engine_run "${BENCH_TARGET}" "${QUERY}"
+engine_measure "${BENCH_TARGET}" "${QUERY}"
 STATUS=pass
 [[ ${RC} -eq 0 ]] || STATUS=fail
 emit_result "${JSON}" sf10 "${STATUS}" "" "${ENGINE_LOG}${LOG}" "query:=${QUERY}" "exit_code:=${RC}"

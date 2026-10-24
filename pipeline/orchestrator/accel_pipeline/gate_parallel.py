@@ -16,6 +16,8 @@ from dataclasses import dataclass
 from typing import Any, Literal, Sequence
 
 from accel_pipeline.config import PipelineConfig
+from accel_pipeline.core_budget import jobs_per_gate
+from accel_pipeline.engine_host import instance_tag
 from accel_pipeline.gate_stamps import reusable_gate_result
 from accel_pipeline.gates import GATES_ALLOW_SKIP, GateResult, run_gate
 from accel_pipeline.pipeline_log import log_gate_batch_start
@@ -51,10 +53,16 @@ def _cancelled(name: str, culprit: str) -> GateResult:
     return GateResult(name=name, status="cancelled", data={"status": "cancelled", "reason": f"not run: {culprit} failed"})
 
 
-def _instance_env(workload: dict[str, Any], worker_id: str, name: str) -> dict[str, str]:
-    """A distinct engine instance (and state dir, when the caller pinned one) for a gate that runs beside others."""
+def _instance_env(workload: dict[str, Any], tag: str, name: str, jobs: int) -> dict[str, str]:
+    """A distinct engine instance (and state dir, when the caller pinned one) for a gate that runs beside
+    others, and its share of the worker's build/ctest jobs."""
     engine = str(workload.get("engine_name") or "engine")
-    env = {"ACCEL_ENGINE_INSTANCE": f"{worker_id or 'w0'}-{engine}-{name}"}
+    env = {
+        "ACCEL_ENGINE_INSTANCE": f"{tag}-{engine}-{name}",
+        "ACCEL_BUILD_JOBS": str(jobs),
+        "ACCEL_CTEST_JOBS": str(jobs),
+        "CMAKE_BUILD_PARALLEL_LEVEL": str(jobs),
+    }
     if os.environ.get("ACCEL_ENGINE_STATE_DIR"):
         env["ACCEL_ENGINE_STATE_DIR"] = f"{os.environ['ACCEL_ENGINE_STATE_DIR']}-{name}"
     return env
@@ -88,6 +96,8 @@ def run_gates_parallel(
     limit = jobs if jobs is not None else pipeline_config.quick_tier.gate_jobs
     cancel = threading.Event()
     failed: list[str] = []
+    tag = instance_tag(pipeline_config.worker_id, pipeline_config.build_dir)
+    parallel_width = [1]
     log_gate_batch_start(query, wanted, change_kind=change_kind, iteration=iteration)
 
     def run_one(name: str, *, isolated: bool) -> GateResult:
@@ -99,7 +109,7 @@ def run_gates_parallel(
         result = run_gate(
             pipeline_config, name, query, workload,
             change_kind=change_kind, iteration=iteration, gate_index=wanted.index(name) + 1, gate_count=len(wanted),
-            env=_instance_env(workload, pipeline_config.worker_id, name) if isolated else None,
+            env=_instance_env(workload, tag, name, jobs_per_gate(parallel_width[0])) if isolated else None,
             cancel=cancel,
         )
         if fail_fast and not _ok(result) and result.status != "cancelled" and not cancel.is_set():
@@ -110,7 +120,8 @@ def run_gates_parallel(
     results: dict[str, GateResult] = {}
     for mode, batch in plan:
         if mode == "parallel" and len(batch) > 1:
-            with ThreadPoolExecutor(max_workers=limit or len(batch)) as pool:
+            parallel_width[0] = min(limit or len(batch), len(batch), len(os.sched_getaffinity(0)))
+            with ThreadPoolExecutor(max_workers=parallel_width[0]) as pool:
                 futures = {name: pool.submit(run_one, name, isolated=True) for name in batch}
             results.update({name: future.result() for name, future in futures.items()})
         else:

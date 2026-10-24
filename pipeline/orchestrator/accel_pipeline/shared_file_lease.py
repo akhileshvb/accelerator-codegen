@@ -11,10 +11,13 @@ import atexit
 import fnmatch
 import json
 import os
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+from accel_pipeline.host_lock import FairLock, LockTimeout
 
 DEFAULT_SHARED_PATH_GLOBS = (
     "CMakeLists.txt",
@@ -35,7 +38,8 @@ DEFAULT_SHARED_PATH_GLOBS = (
 )
 
 _LOCK_DIRNAME = ".locks"
-_LOCK_FILENAME = "shared_tree.lock"
+_LOCK_NAME = "shared_tree"
+DEFAULT_WAIT_SEC = 300.0
 _META_FILENAME = "shared_tree_lease.json"
 
 # Process-local sticky holder (auto-acquired on shared writes).
@@ -48,10 +52,6 @@ def locks_dir(repo_root: Path) -> Path:
     path = Path(repo_root) / "pipeline" / _LOCK_DIRNAME
     path.mkdir(parents=True, exist_ok=True)
     return path
-
-
-def lock_path(repo_root: Path) -> Path:
-    return locks_dir(repo_root) / _LOCK_FILENAME
 
 
 def meta_path(repo_root: Path) -> Path:
@@ -124,19 +124,12 @@ class LeaseInfo:
 
 
 class SharedFileLease:
-    """fcntl flock around shared tree edits/builds."""
+    """flock around shared tree edits/builds; waiters are served in arrival order, with a bound."""
 
     def __init__(self, repo_root: Path) -> None:
         self.repo_root = Path(repo_root).resolve()
         self._fp = None
-
-    def _open_lock(self):
-        import fcntl
-
-        path = lock_path(self.repo_root)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        fp = path.open("a+", encoding="utf-8")
-        return fp, fcntl
+        self._lock = FairLock(locks_dir(self.repo_root), _LOCK_NAME)
 
     def read_meta(self) -> LeaseInfo | None:
         path = meta_path(self.repo_root)
@@ -157,66 +150,48 @@ class SharedFileLease:
             path.unlink(missing_ok=True)
 
     def holder(self) -> str | None:
+        """The current holder; None when free (a crashed holder's leftover metadata does not count)."""
         info = self.read_meta()
-        return info.holder if info else None
+        return info.holder if info and self._lock.is_held() else None
+
+    def _busy_message(self, waited: float) -> str:
+        info = self.read_meta()
+        who = (
+            f"held by {info.holder!r} for {time.time() - info.acquired_at:.0f}s ({info.reason or 'no reason'})"
+            if info else "held by another worker"
+        )
+        return (
+            f"shared-file lease not acquired within {waited:.0f}s: {who}, {self._lock.queue_depth()} waiting; "
+            "work that does not edit shared files, then retry"
+        )
 
     def acquire(
         self,
         holder: str,
         *,
-        timeout_sec: float = 600.0,
-        poll_sec: float = 0.25,
+        timeout_sec: float = DEFAULT_WAIT_SEC,
+        poll_sec: float = 0.1,
         reason: str = "",
         paths: list[str] | None = None,
     ) -> LeaseInfo:
-        import fcntl
+        def on_wait(waited: float, ahead: int) -> None:
+            print(f"[pipeline] {holder}: waiting {waited:.0f}s for the shared-file lease ({ahead} ahead)", file=sys.stderr, flush=True)
 
-        deadline = time.monotonic() + max(0.0, float(timeout_sec))
-        last_holder = None
-        while True:
-            fp, _ = self._open_lock()
-            try:
-                fcntl.flock(fp.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError:
-                fp.close()
-                meta = self.read_meta()
-                last_holder = meta.holder if meta else "?"
-                if time.monotonic() >= deadline:
-                    raise TimeoutError(
-                        f"shared-file lease timed out after {timeout_sec}s "
-                        f"(held by {last_holder!r})"
-                    )
-                time.sleep(poll_sec)
-                continue
-
-            # Non-blocking lock acquired — keep fp open for the lease lifetime.
-            self._fp = fp
-            info = LeaseInfo(
-                holder=holder,
-                acquired_at=time.time(),
-                pid=os.getpid(),
-                reason=reason,
-                paths=list(paths or []),
-            )
-            self._write_meta(info)
-            return info
+        try:
+            self._fp = self._lock.acquire(timeout_sec=max(0.0, float(timeout_sec)), poll_sec=poll_sec, on_wait=on_wait)
+        except LockTimeout:
+            raise TimeoutError(self._busy_message(timeout_sec)) from None
+        info = LeaseInfo(holder=holder, acquired_at=time.time(), pid=os.getpid(), reason=reason, paths=list(paths or []))
+        self._write_meta(info)
+        return info
 
     def release(self, holder: str | None = None) -> bool:
-        import fcntl
-
         meta = self.read_meta()
         if holder is not None and meta is not None and meta.holder != holder:
             return False
         self._clear_meta()
         if self._fp is not None:
-            try:
-                fcntl.flock(self._fp.fileno(), fcntl.LOCK_UN)
-            except OSError:
-                pass
-            try:
-                self._fp.close()
-            except OSError:
-                pass
+            self._fp.close()
             self._fp = None
         return True
 
@@ -224,7 +199,7 @@ class SharedFileLease:
         self,
         holder: str,
         *,
-        timeout_sec: float = 600.0,
+        timeout_sec: float = DEFAULT_WAIT_SEC,
         reason: str = "",
         paths: list[str] | None = None,
     ) -> LeaseInfo:
@@ -254,7 +229,7 @@ def ensure_sticky_lease_for_write(
     *,
     holder: str | None = None,
     path: str | Path | None = None,
-    timeout_sec: float = 600.0,
+    timeout_sec: float = DEFAULT_WAIT_SEC,
     globs: list[str] | None = None,
 ) -> LeaseInfo | None:
     """If ``path`` is shared, acquire (or keep) a process-sticky lease.

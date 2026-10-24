@@ -26,7 +26,7 @@ ALL_LOG="${ENGINE_LOG}"
 FINAL_RC=0
 for pct in 0 10; do
   [[ "${pct}" == 10 && "${WORKLOAD_KIND}" != "aux_state" ]] && break
-  engine_run "${BENCH_TARGET}" "${QUERY}" "${pct}"
+  engine_measure "${BENCH_TARGET}" "${QUERY}" "${pct}"
   ALL_LOG="${ALL_LOG}"$'\n'"${LOG}"
   [[ ${RC} -eq 0 ]] || FINAL_RC=${RC}
 done

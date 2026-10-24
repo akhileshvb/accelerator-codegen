@@ -261,7 +261,7 @@ def build_mcp_tool_callables(
         """Allowlisted cmake/ctest only (same policy as pipeline shell tools)."""
         return run_command(command)
 
-    def acquire_shared_lease(reason: str = "", timeout_sec: float = 600.0) -> str:
+    def acquire_shared_lease(reason: str = "", timeout_sec: float = 300.0) -> str:
         """Hold shared-file lease before editing catalog/CMake/shared registration files."""
         from accel_pipeline.shared_file_lease import (
             ensure_sticky_lease_for_write,
@@ -273,7 +273,7 @@ def build_mcp_tool_callables(
             pipeline_config.repo_root,
             holder=holder,
             path=None,
-            timeout_sec=float(timeout_sec),
+            timeout_sec=min(float(timeout_sec), pipeline_config.concurrency.shared_lease_wait_sec),
         )
         return json.dumps(
             {
@@ -551,7 +551,7 @@ def main(argv: list[str] | None = None) -> int:
         return _call("run_pipeline_command", command)
 
     @_tool(annotations=_rw)
-    def acquire_shared_lease(reason: str = "", timeout_sec: float = 600.0) -> str:
+    def acquire_shared_lease(reason: str = "", timeout_sec: float = 300.0) -> str:
         """Hold shared-file lease before editing catalog/CMake/shared registration files."""
         return _call("acquire_shared_lease", reason, timeout_sec)
 

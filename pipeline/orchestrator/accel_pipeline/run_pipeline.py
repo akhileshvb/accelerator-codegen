@@ -312,11 +312,17 @@ def _main(argv: list[str] | None = None) -> int:
         )
         print(f"worker isolation: {isolation_summary(pipeline_config)}", file=sys.stderr)
     repo_root = Path(pipeline_config.repo_root)
+    if not args.dry_run:
+        from accel_pipeline.core_budget import activate, format_cpus
+
+        budget = activate(pipeline_config.concurrency)
+        print(f"core budget: cpus={format_cpus(budget.cpus)} measure={format_cpus(budget.measure) or '-'} slot={budget.slot}", file=sys.stderr)
     if pipeline_config.engine_name:
         # The host-contract environment the gates use, so the agents' own host.sh calls
         # (forwarded to their tools as ACCEL_*) configure and reach the same build and instance.
-        from accel_pipeline.engine_host import instance_env
+        from accel_pipeline.engine_host import instance_env, instance_tag
 
+        os.environ["ACCEL_INSTANCE_TAG"] = instance_tag(pipeline_config.worker_id, Path(pipeline_config.build_dir))
         for key, value in instance_env(repo_root, pipeline_config.engine_name, Path(pipeline_config.build_dir)).items():
             os.environ.setdefault(key, value)
     model_config = load_model_config(args.models_config, repo_root=primary_root)

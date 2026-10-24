@@ -32,10 +32,10 @@ if ! engine_ready "${BENCH_BASE}" "${BENCH_AUX}"; then
     "benchmark binaries missing; build benchmarks first (${ENGINE_FAIL})" "${ENGINE_LOG}" "query:=${QUERY}"
 fi
 
-engine_run "${BENCH_BASE}"
+engine_measure "${BENCH_BASE}"
 BASE_LOG="${LOG}"
 BASE_RC=${RC}
-engine_run "${BENCH_AUX}"
+engine_measure "${BENCH_AUX}"
 AUX_LOG="${LOG}"
 AUX_RC=${RC}
 

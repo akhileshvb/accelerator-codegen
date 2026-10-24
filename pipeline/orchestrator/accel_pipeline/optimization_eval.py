@@ -10,6 +10,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from accel_pipeline.core_budget import build_jobs
+from accel_pipeline.measurement_lease import run_measured
 from accel_pipeline.aux_bench import parse_aux_benchmark_output, summarize_sweep_rows
 from accel_pipeline.base_bench import parse_benchmark_log
 from accel_pipeline.config import MeasurementConfig, PipelineConfig, resolve_workload_paths
@@ -377,7 +379,7 @@ def _build_benchmark(
     target = _benchmark_target(paths, workload)
     _log_benchmark(f"building benchmark target {target}")
     build = subprocess.run(
-        ["cmake", "--build", str(pipeline_config.build_dir), "--target", target, "-j", "4"],
+        ["cmake", "--build", str(pipeline_config.build_dir), "--target", target, "-j", str(build_jobs())],
         cwd=pipeline_config.repo_root,
         capture_output=True,
         text=True,
@@ -482,8 +484,9 @@ def _run_aux_sweep_once(
     outputs: list[str] = []
     for pct in freqs:
         try:
-            proc = subprocess.run(
+            proc = run_measured(
                 [bin_path, "--query", str(query), str(pct)],
+                reason="optimization benchmark",
                 cwd=repo,
                 capture_output=True,
                 text=True,
@@ -528,8 +531,9 @@ def _run_base_once(
     include_profile: bool,
 ) -> tuple[dict[str, Any] | None, str]:
     env = _base_benchmark_env(paths, query=query, include_profile=include_profile)
-    proc = subprocess.run(
+    proc = run_measured(
         [bin_path],
+        reason="optimization benchmark",
         cwd=repo,
         capture_output=True,
         text=True,
