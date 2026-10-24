@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-
 from accel_pipeline.config import load_pipeline_config, load_workload
 from accel_pipeline.optimization_runtime import (
     build_runtime_state,
