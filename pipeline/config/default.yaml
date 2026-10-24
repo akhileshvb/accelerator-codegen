@@ -128,7 +128,7 @@ repair:
   max_replans: 1
   max_orchestrator_retries: 1
   load_factor: 1.5          # a gate timeout under loadavg > load_factor * cores is infra
-  never_quarantine: [aux_correctness, aux_unit]
+  never_quarantine: [aux_correctness, aux_unit, test_suite_validate]   # a suite that cannot be validated stops the stage; it is never frozen unvalidated
   provider_retries: 3       # provider/network flakes: their own budget (not infra_retries), with a growing wait
   provider_backoff_sec: [30, 90, 270]
 
