@@ -12,6 +12,12 @@ Audit **Q{{query_number}}** (`{{aux_function_name}}`).
 
 Full analysis: `{{full_analysis_path}}`
 
+## What you are given
+
+The user message carries a deterministic **query digest** (file map with roles, public entry points, the chosen design, the experiment log, open findings) and the **cumulative diff since implementation began**. Review from those; open a file only where they leave a question open, rather than re-reading the whole directory.
+
+Your findings are acted on: anything you list under `scale_review.generality_failures`, `scale_review.cow_findings`, a failed `scale_review.large_scale` class, `fairness_review.issues` with `cheating_suspected: true`, or `correctness_ok: false` is sent to the implementer as one batched repair round, and you are then asked to re-check only those findings. List a problem there only if it is a real blocker; put the rest under `risks`.
+
 ## Task
 
 Hard gates after this stage verify **correctness** and run a **fair SF1 bench sweep**. Your job is analysis + a short written audit — not brittle micro-gates.

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 
+from accel_pipeline.audit_digest import record_implementation_base
 from accel_pipeline.aux_bench import initialize_optimization_state, process_aux_bench_after_gates
 from accel_pipeline.base_bench import process_base_bench_after_gates
 from accel_pipeline.config import ModelConfig, PipelineConfig, load_run_workload, resolve_workload_paths
@@ -110,6 +111,8 @@ def run(
 
     if dry_run:
         return implement()
+    record_implementation_base(
+        pipeline_config.repo_root, query_artifacts_dir(pipeline_config.repo_root, query, workload=workload))
     repair_ctx = RepairCtx(pipeline_config, model_config, workload_name, query, stage="implementation",
                            change_kind="implementation", model_overrides=model_overrides)
     if skip_gates:

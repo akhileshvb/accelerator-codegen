@@ -10,6 +10,8 @@ Experiment log (tail): see `{{artifacts_path}}/experiment_log.md`
 
 Gate summaries on disk: `{{artifacts_path}}/gates/` — read `baseline.json`, `profile.json`, `fairness.json` on demand.
 
+The user message carries a deterministic query digest (file map with roles, public entry points, the experiment log, open findings) and the cumulative diff since implementation began: review from those and open a file only where they leave a question open.
+
 ## Task
 
 1. Review kernel, package, tests, benchmark for fairness violations (targeted `rg` / `sed -n` reads preferred over full kernel reads).

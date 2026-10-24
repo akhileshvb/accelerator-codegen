@@ -129,7 +129,7 @@ def run_with_repair(ctx: RepairCtx, attempt: Callable[[], T], *, gates: list[str
             code_left -= 1
             ctx.log(f"{failure.kind} failure in {failure.source}; round {code_rounds - code_left}/{code_rounds}, "
                     "resuming the agent's session")
-            _repair_turn(ctx, failure)
+            repair_turn(ctx, failure)
             continue
         if not rolled_back:
             rolled_back = True
@@ -218,11 +218,14 @@ def _quarantine(ctx: RepairCtx, gate: str, failure: Failure) -> None:
             "not rerun in this batch")
 
 
-def _repair_turn(ctx: RepairCtx, failure: Failure) -> None:
-    """One agent turn, in the stage's own session, on the failure report; a provider flake re-runs it."""
+def repair_turn(ctx: RepairCtx, failure: Failure, *, must_change: bool | None = None) -> None:
+    """One agent turn, in the stage's own session, on the failure report; a provider flake re-runs it.
+    must_change: the turn has to edit the query's files (default: when the failure is a code failure)."""
     from accel_pipeline.stages.base import run_agent_stage
 
     bench = str(ctx.workload.get("benchmark_name", "tpch"))
+    if must_change is None:
+        must_change = failure.kind == "code"
     retries = ctx.pipeline_config.repair.provider_retries
     for flake in range(1, retries + 2):
         try:
@@ -236,7 +239,7 @@ def _repair_turn(ctx: RepairCtx, failure: Failure) -> None:
                 user_message=render_failure(failure),
                 model_overrides=ctx.model_overrides,
                 optimization_iter=ctx.iteration,
-                must_change=ctx.pipeline_config.repo_root / query_dir(bench, ctx.query) if failure.kind == "code" else None,
+                must_change=ctx.pipeline_config.repo_root / query_dir(bench, ctx.query) if must_change else None,
                 session_role=MAIN,
             )
             return

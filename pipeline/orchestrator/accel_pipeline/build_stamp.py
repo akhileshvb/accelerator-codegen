@@ -24,13 +24,13 @@ _BUILD_OR_VCS_DIR = re.compile(r"^(\.git(/|$)|build(-[^/]*)?/)")
 _QUERY_DIR = re.compile(r"^accelerators/[A-Za-z0-9_]+/q\d+/")
 
 
-def _git(repo_root: Path, *args: str) -> bytes:
+def git(repo_root: Path, *args: str) -> bytes:
     return subprocess.run(["git", *args], cwd=repo_root, capture_output=True, check=True).stdout
 
 
-def _uncommitted_files(repo_root: Path) -> list[str]:
+def uncommitted_files(repo_root: Path) -> list[str]:
     """Paths git reports as modified, added, deleted or untracked (renames count both ends)."""
-    entries = _git(repo_root, "status", "--porcelain=v1", "-z", "-uall").decode("utf-8", "replace").split("\0")
+    entries = git(repo_root, "status", "--porcelain=v1", "-z", "-uall").decode("utf-8", "replace").split("\0")
     paths: list[str] = []
     entries_iter = iter(entry for entry in entries if entry)
     for entry in entries_iter:
@@ -40,7 +40,7 @@ def _uncommitted_files(repo_root: Path) -> list[str]:
     return sorted(set(path for path in paths if path))
 
 
-def _relevant(path: str, query_dir: str) -> bool:
+def is_relevant(path: str, query_dir: str) -> bool:
     """Whether `path` can change this query's build or behaviour: everything but pipeline code, scripts,
     docs, build output and the other queries' directories (accelerators, prims, backends, substrate,
     cmake and the shared accelerators/<bench>/common are all relevant)."""
@@ -53,12 +53,12 @@ def code_stamp(repo_root: Path, *, query_dir: str = "", extra: Sequence[str] = (
     """Digest of HEAD plus the relevant uncommitted files for `query_dir` (repo-relative), mixed with `extra`.
     "" when the tree is not a git checkout: no stamp matches anything."""
     try:
-        digest = hashlib.sha256(_git(repo_root, "rev-parse", "HEAD"))
-        changed = _uncommitted_files(repo_root)
+        digest = hashlib.sha256(git(repo_root, "rev-parse", "HEAD"))
+        changed = uncommitted_files(repo_root)
     except (OSError, subprocess.CalledProcessError):
         return ""
     for path in changed:
-        if not _relevant(path, query_dir):
+        if not is_relevant(path, query_dir):
             continue
         file = repo_root / path
         content = hashlib.sha256(file.read_bytes()).hexdigest() if file.is_file() else "deleted"
