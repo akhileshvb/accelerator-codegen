@@ -12,10 +12,11 @@ import json
 import re
 import shutil
 from pathlib import Path
-from typing import Any
 
 _SOURCE_SUFFIXES = {".hpp", ".cpp", ".h", ".c", ".cc", ".cmake", ".sh", ".py", ".sql", ".md", ".tpl"}
-_COMMENT = re.compile(r"^\s*(?://+|#+|/\*+|\*)\s*(.*?)\s*(?:\*/)?$")
+_C_COMMENT = re.compile(r"^\s*(?://+|/\*+|\*)\s*(.*?)\s*(?:\*/)?$")
+_HASH_COMMENT = re.compile(r"^\s*#+\s*(.*?)\s*$")
+_C_SUFFIXES = {".hpp", ".cpp", ".h", ".c", ".cc", ".tpl"}
 _DIR_ROLES = {"api": "accelerator-facing api", "engine": "engine internals", "state": "backend state",
               "tests": "layer harness or test", "bench": "benchmark driver", "host": "host helper"}
 _LOG_TAIL_LINES = 25
@@ -33,8 +34,9 @@ def _sources(root: Path) -> list[Path]:
 def _role(path: Path, root: Path) -> str:
     """The first comment line of the file; else what its directory is for."""
     try:
+        comment = _C_COMMENT if path.suffix in _C_SUFFIXES else _HASH_COMMENT
         for line in path.read_text(encoding="utf-8", errors="replace").splitlines()[:12]:
-            match = _COMMENT.match(line)
+            match = comment.match(line)
             if match and len(match.group(1)) > 8 and not match.group(1).startswith(("GENERATED", "SCAFFOLDING", "!/")):
                 return match.group(1)[:110]
     except OSError:

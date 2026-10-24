@@ -5,8 +5,8 @@ routed to the owning layer, clean stops, and relaunch from the markers."""
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
@@ -21,8 +21,8 @@ from accel_pipeline.session import SessionStore, run_in_session
 from accel_pipeline.stages import engine_backend as eb
 from accel_pipeline.stages.engine_progress import Progress
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
-LAYERS = ["hostctl", "capture", "epochs", "scan", "runtime", "api"]  # `host` is skipped without an in-process host
+REAL_PIPELINE = Path(__file__).resolve().parents[2]
+FIXTURES = Path(__file__).parent / "fixtures"
 
 
 class FakeBackend:
@@ -48,9 +48,13 @@ class World:
     def __init__(self, tmp_path, monkeypatch, **workload):
         self.art = tmp_path / "art"
         self.art.mkdir()
-        self.pc = load_pipeline_config(repo_root=REPO_ROOT)
-        self.mc = load_model_config(repo_root=REPO_ROOT)
-        self.workload = load_workload("engine_mysql", REPO_ROOT)
+        repo = tmp_path / "repo"
+        for sub in ("config", "schemas", "prompts", "templates"):
+            shutil.copytree(REAL_PIPELINE / sub, repo / "pipeline" / sub)
+        shutil.copy(FIXTURES / "engine_toydb.yaml", repo / "pipeline" / "config" / "workloads")
+        self.pc = load_pipeline_config(repo_root=repo)
+        self.mc = load_model_config(repo_root=REAL_PIPELINE.parents[0])
+        self.workload = load_workload("engine_toydb", repo)
         self.workload.update(workload)
         self.backend = FakeBackend(tmp_path / "home")
         self.agent = []  # (stage, role, message)
@@ -88,7 +92,7 @@ class World:
         for name in names:
             if self.gates and self.gates[0] == name:
                 self.gates.pop(0)
-                failed = GateResult(name, "fail", {"log_tail": f"{name} assertion failed in backends/mysql/engine/x.cpp"})
+                failed = GateResult(name, "fail", {"log_tail": f"{name} assertion failed in backends/toydb/engine/x.cpp"})
                 return results + [failed], failed
             results.append(GateResult(name, "pass", {}))
         return results, None
@@ -103,7 +107,7 @@ class World:
         return next(l for l in eb.implementation_layers(self.workload) if l["id"] == lid)
 
     def run_layer(self, lid, **kw):
-        return eb.run_implementation_layer(self.pc, self.mc, "engine_mysql", 0, {}, False, self.layer(lid), **kw)
+        return eb.run_implementation_layer(self.pc, self.mc, "engine_toydb", 0, {}, False, self.layer(lid), **kw)
 
     def sessions(self):
         return {req.stage: (sid, resumed) for req, sid, resumed in self.backend.requests}
@@ -171,7 +175,7 @@ def test_a_relaunch_continues_from_the_feedback_the_stop_left(world):
 def test_finished_layers_are_not_redone_on_a_relaunch(world):
     world.run_layer("hostctl")
     world.agent.clear()
-    eb.run_implementation(world.pc, world.mc, "engine_mysql", 0, {}, False)
+    eb.run_implementation(world.pc, world.mc, "engine_toydb", 0, {}, False)
     assert [stage for stage, _, _ in world.agent][0] == "impl_capture"
     assert all(stage != "impl_hostctl" for stage, _, _ in world.agent)
 
@@ -180,9 +184,9 @@ def test_the_critic_starts_when_the_build_is_green_and_its_findings_come_back_as
     world.critic_script = [
         {"status": "fail", "summary": "s", "feedback_for_implementation": "batch",
          "violations": [
-             {"rule": "contract", "severity": "blocking", "kind": "code_fix", "location": "backends/mysql/a.cpp:10",
+             {"rule": "contract", "severity": "blocking", "kind": "code_fix", "location": "backends/toydb/a.cpp:10",
               "contract_item": "lock discipline", "expected": "no engine call under the lock", "evidence": "e1"},
-             {"rule": "contract", "severity": "blocking", "kind": "code_fix", "location": "backends/mysql/b.cpp:20",
+             {"rule": "contract", "severity": "blocking", "kind": "code_fix", "location": "backends/toydb/b.cpp:20",
               "contract_item": "bounded waits", "expected": "the wait fails at its bound", "evidence": "e2"},
              {"rule": "harness_gap", "severity": "blocking", "kind": "needs_canary", "contract_item": "ddl events",
               "expected": "a replaced table is never answered stale", "evidence": "e3"}]},
@@ -235,7 +239,7 @@ def test_the_audit_sends_each_owning_layer_its_violations_in_one_round(world):
     world.monkeypatch.setattr(audit_mod, "query_artifacts_dir", lambda *a, **k: world.art)
     world.monkeypatch.setattr(audit_mod, "append_experiment_log", lambda *a, **k: None)
     world.monkeypatch.setattr(audit_mod, "load_run_workload", lambda cfg, name: world.workload)
-    eb._audit(world.pc, world.mc, "engine_mysql", 0, {}, False)
+    eb._audit(world.pc, world.mc, "engine_toydb", 0, {}, False)
     stages = [stage for stage, _, _ in world.agent]
     assert audited == [1]  # one audit pass
     assert stages == ["impl_capture", "impl_scan", "impl_api"]  # per layer, in order; unnamed -> the last layer
@@ -248,7 +252,7 @@ def test_the_audit_sends_each_owning_layer_its_violations_in_one_round(world):
 def test_validation_failure_goes_to_the_owning_layer_then_the_gate_reruns(world):
     world.workload["post_validation_gates"] = ["engine_build", "slot_txn_edges", "slot_tsan"]
     world.gates = ["slot_txn_edges"]
-    eb.run_validation(world.pc, world.mc, "engine_mysql", 0, {}, False)
+    eb.run_validation(world.pc, world.mc, "engine_toydb", 0, {}, False)
     stages = [(stage, role) for stage, role, _ in world.agent]
     assert stages == [("validation", "validation"), ("impl_capture", "main")]  # slot_txn_edges is owned by capture
     assert "slot_txn_edges assertion failed" in world.agent[1][2]
@@ -271,7 +275,7 @@ def test_a_validation_that_cannot_be_repaired_stops_cleanly(world):
     world.workload["post_validation_gates"] = ["slot_txn_edges"]
     world.gates = ["slot_txn_edges"] * 50
     with pytest.raises(StageStopped):
-        eb.run_validation(world.pc, world.mc, "engine_mysql", 0, {}, False)
+        eb.run_validation(world.pc, world.mc, "engine_toydb", 0, {}, False)
     assert not Progress(world.art).gate_passed("slot_txn_edges")
 
 

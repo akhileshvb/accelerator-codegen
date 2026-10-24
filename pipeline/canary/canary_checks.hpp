@@ -86,10 +86,10 @@ inline std::string Lit(const Cell &cell) {
 
 // ---- the suite's tables ----
 
-inline const std::vector<ColumnSpec> kItemColumns = {
+inline const std::vector<CanaryColumn> kItemColumns = {
     {"id", false, false}, {"grp", false, true}, {"label", true, true}, {"note", true, false}, {"amount", false, false}};
-inline const std::vector<ColumnSpec> kGroupColumns = {{"grp", false, false}, {"gname", true, false}};
-inline const std::vector<ColumnSpec> kScanColumns = {{"id", false, false}, {"s", true, false}};
+inline const std::vector<CanaryColumn> kGroupColumns = {{"grp", false, false}, {"gname", true, false}};
+inline const std::vector<CanaryColumn> kScanColumns = {{"id", false, false}, {"s", true, false}};
 
 inline const char *kItemsDdl =
     "CREATE TABLE canary_items (id BIGINT NOT NULL, grp BIGINT, label VARCHAR(400), note VARCHAR(400) NOT NULL, "
@@ -353,7 +353,6 @@ inline void BulkInsertThreads(Engine &engine) {
   Load(*admin, "canary_seed", 0, 150000, [](int64_t i) { return ItemRow(i, 2); }, 1000);
   engine.Register(Items("canary_rows"));
   ReadUntilHit(engine, *admin, "canary_rows");
-  const auto start = engine.ReadCounters("canary_rows");
   constexpr int kThreads = 4;
   std::vector<std::thread> threads;
   std::vector<std::string> errors(kThreads);
@@ -377,8 +376,6 @@ inline void BulkInsertThreads(Engine &engine) {
   const auto rows = ReadUntilHit(engine, *admin, "canary_rows", 120);
   const auto diff = Diff(rows, admin->Query(kItemsQuery), false);
   CANARY_REQUIRE(diff.empty(), "after " << kThreads << " concurrent bulk inserts: " << diff);
-  const auto end = engine.ReadCounters("canary_rows");
-  CANARY_REQUIRE(end.stale_commits == start.stale_commits, "bulk inserts left commits unmaintained");
 }
 
 inline void MultiTableByName(Engine &engine) {

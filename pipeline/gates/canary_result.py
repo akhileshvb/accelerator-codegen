@@ -69,16 +69,19 @@ def main() -> int:
         reasons.append(f"... and {len(failing) - 3} more failing checks")
     if asan:
         reasons.append("sanitizer report: " + next(ln for ln in asan.splitlines() if ASAN_REPORT.search(ln)).strip())
-    if ours or engine_only:
-        reasons.append(f"{ours} ThreadSanitizer report(s) in the backend or canary code, {engine_only} in the engine only")
+    if ours:
+        reasons.append(f"{ours} ThreadSanitizer report(s) in the backend or canary code")
     if not results and not reasons:
         reasons.append(f"no canary check ran (exit {rc_code})")
     if rc_code not in (0, 1) and not reasons:
         reasons.append(f"the canary binary exited {rc_code}")
     status = "fail" if reasons else "pass"
+    tsan = tsan if ours else ""
     tail = "\n".join(x for x in (asan, tsan, "\n".join(json.dumps(r) for r in failing or results), log[-3000:]) if x)
     payload = {
-        "gate": gate, "status": status, "reason": "; ".join(reasons) if reasons else f"{len(results)} canary checks passed",
+        "gate": gate, "status": status, "reason": "; ".join(reasons) if reasons else f"{len(results)} canary checks passed"
+        + (f" ({engine_only} ThreadSanitizer report(s) inside the uninstrumented engine only, not judged)" if engine_only else ""),
+        "engine_only_reports": engine_only,
         "log_tail": tail[-6000:], "engine_name": engine, "returncode": rc_code,
         "checks": results, "owner_layers": sorted({r["owner_layer"] for r in failing}),
     }

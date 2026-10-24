@@ -33,7 +33,7 @@ public:
   void Exec(const std::string &sql) { Query(sql); }
 };
 
-struct ColumnSpec {
+struct CanaryColumn {
   std::string name;
   bool is_text = false; // else BIGINT
   bool nullable = false;
@@ -53,7 +53,7 @@ public:
 using BatchSink = std::function<void(std::size_t partition, const ScanBatch &)>;
 // ScanPartitioned of the backend: `partitions` ways, inside the build snapshot of `services`.
 using ScanFn = std::function<void(const core::AuxEngineServices &services, const std::string &table,
-                                  const std::vector<ColumnSpec> &columns, std::size_t partitions,
+                                  const std::vector<CanaryColumn> &columns, std::size_t partitions,
                                   const BatchSink &sink)>;
 
 struct Counters {

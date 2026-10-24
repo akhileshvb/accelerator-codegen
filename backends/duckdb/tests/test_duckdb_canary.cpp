@@ -125,7 +125,7 @@ public:
     engine::RegisterSharedQuery(entry);
 
     const auto scan_fn = [](const core::AuxEngineServices &services, const std::string &table,
-                            const std::vector<canary::ColumnSpec> &columns, std::size_t partitions,
+                            const std::vector<canary::CanaryColumn> &columns, std::size_t partitions,
                             const canary::BatchSink &sink, ::duckdb::Connection &connection) {
       std::vector<scan::BuildColumn> specs;
       for (const auto &column : columns) {
@@ -145,7 +145,7 @@ public:
         tables.emplace_back(spec.tables[i], static_cast<core::TableId>(i));
       }
       auto module = spec.make_module([scan_fn, &connection](const core::AuxEngineServices &services, const std::string &table,
-                                                            const std::vector<canary::ColumnSpec> &columns,
+                                                            const std::vector<canary::CanaryColumn> &columns,
                                                             std::size_t partitions, const canary::BatchSink &sink) {
         scan_fn(services, table, columns, partitions, sink, connection);
       });

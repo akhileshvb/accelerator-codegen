@@ -21,7 +21,7 @@ container, plugin or data layout.
 
 | verb | args | does |
 |---|---|---|
-| `info` | | print one JSON line: `{"engine", "embedded": bool, "verbs": [...], "hit_contract": true, "mounts": {"ro": [abs paths], "rw": [abs paths]}, "docker": bool}`; `hit_contract` is `true` once the backend meets the hit contract below (a backend without it is skipped by that gate); `mounts` are the existing external checkouts/SDKs/caches the verbs need at runtime (the agents' sandbox binds them), `docker` says the verbs need the docker daemon |
+| `info` | | print one JSON line: `{"engine", "embedded": bool, "verbs": [...], "hit_contract": true, "mounts": {"ro": [abs paths], "rw": [abs paths]}, "docker": bool}`; `hit_contract` is `true` once the backend meets the hit contract below (required: a backend without it fails the `engine_hit_contract` gate); `mounts` are the existing external checkouts/SDKs/caches the verbs need at runtime (the agents' sandbox binds them), `docker` says the verbs need the docker daemon |
 | `up` | | start the instance if absent (idempotent), with its empty database; write `$ACCEL_ENGINE_STATE_DIR/env` (`KEY=VALUE` lines the other verbs and harness binaries read). `build` works after `up` alone |
 | `down` | | stop the instance and remove everything it created |
 | `load` | `<schema.sql> [constraints.sql]` | create the schema and load `$ACCEL_DATASET_DIR`; idempotent (skip when already loaded from the same dataset) |
@@ -56,6 +56,8 @@ the backend turns every fallback SQL execution (the runtime's fallback, a transa
 replacement) into an error naming the accelerator, and the harness refuses to run without it. Exit status:
 `0` pass, `1` the contract is violated, `77` the engine profile states it n/a. The gate is
 `engine_hit_contract` (`pipeline/gates/run_engine_hit_contract.sh`).
+
+The same contract is exercised from outside by the pipeline's canary suite (`canary_contract.md`), and the host_bootstrap gate runs each bench once with reads hitting and once with every read forced to the fallback (`ACCEL_AUX_FORCE_FALLBACK=1`): the two must report different `accel_hit_rate`.
 
 Benchmarks report the same facts so `measurement.check_measurement` can tell a hit from a fallback: the
 sweep CSV carries `accel_hit_rate` (reads served from the state over all reads), `accel_fallback_reads`

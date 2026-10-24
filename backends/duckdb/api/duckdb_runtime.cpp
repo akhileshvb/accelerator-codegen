@@ -179,8 +179,18 @@ void DuckdbRuntime::Build(bool register_active) {
 }
 
 void DuckdbRuntime::EnsureBuilt() {
-  if (!accelerator_.runtime->IsSynced()) {
+  if (accelerator_.runtime->IsSynced()) {
+    return;
+  }
+  // A build invalidated while it ran is abandoned, not a fault: the read that asked answers from SQL
+  // and the next read builds again. Any other failure surfaces.
+  const auto abandoned = accelerator_.runtime->Stats().builds_abandoned;
+  try {
     accelerator_.runtime->BuildNow();
+  } catch (...) {
+    if (accelerator_.runtime->Stats().builds_abandoned == abandoned) {
+      throw;
+    }
   }
 }
 

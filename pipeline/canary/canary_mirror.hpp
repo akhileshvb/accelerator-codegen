@@ -12,14 +12,14 @@
 
 namespace accelerator_codegen::canary {
 
-struct RowLess {
+struct RowOrder {
   bool operator()(const Row &a, const Row &b) const { return a < b; }
 };
-using RowSet = std::multiset<Row, RowLess>;
+using RowSet = std::multiset<Row, RowOrder>;
 
 struct TableShape {
   std::string table;
-  std::vector<ColumnSpec> columns;
+  std::vector<CanaryColumn> columns;
   std::vector<int> output; // columns of the answer, in order; empty: all
 };
 
@@ -30,7 +30,7 @@ struct MirrorOptions {
   bool tagged = false;        // the answer's first column is the table's position
 };
 
-inline Cell ToCell(const core::AuxValue &value, const ColumnSpec &column) {
+inline Cell ToCell(const core::AuxValue &value, const CanaryColumn &column) {
   if (value.is_null) {
     return std::monostate{};
   }
@@ -143,6 +143,18 @@ public:
       core::FinishRebuildAll(outcome);
       return outcome;
     }
+    // The runtime's maintenance policy decides, as for any accelerator: a small change to a state
+    // this size is applied; the table row counts it is given are the engine's (TableRows).
+    std::size_t changed_rows = 0;
+    for (const auto &entry : ops.by_table) {
+      changed_rows += entry.second.size();
+    }
+    const auto decision = services.ChooseMaintenance(core::MaintenanceRequest::IncrementalPartitionedNoPartitionRebuild(
+        changed_rows, ops.by_table.size(), services.ExpectedQueriesBeforeNextWrite()));
+    if (decision.action != core::MaintenanceAction::ApplyDelta) {
+      core::FinishRebuildAll(outcome, decision);
+      return outcome;
+    }
     const auto current = services.StateStore().Read(services.CurrentVisibility());
     for (const auto &[table, list] : ops.by_table) {
       const auto *image = FindImage(current, table);
@@ -228,7 +240,7 @@ private:
     return nullptr;
   }
 
-  static core::AuxValue ToValue(const Cell &cell, const ColumnSpec &column) {
+  static core::AuxValue ToValue(const Cell &cell, const CanaryColumn &column) {
     const auto type = column.is_text ? core::AuxType::String : core::AuxType::Int64;
     if (std::holds_alternative<std::monostate>(cell)) {
       return core::AuxValue::Null(type);

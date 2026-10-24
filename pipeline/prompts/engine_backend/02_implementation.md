@@ -43,19 +43,24 @@ environment (`host.sh up`/`build` and the image it sets up). Fetch or install wh
 `identity.sdk_headers` names, or declare in a backend header the stable ABI subset the backend uses.
 A profile field given as `{na: reason}` declares that mechanic absent on this engine: it is not a requirement here. Do not fail, implement or test it; only make sure nothing depends on it.
 
-## Required reads (before writing code)
+## Reads
 
-- `pipeline/prompts/engine_backend/layer_contracts.md`: section `{{layer_id}}` and "Requirements every backend meets" (the requirements that name this layer, the registries included)
-- `pipeline/prompts/engine_backend/acceptance_checklist.md`
-- `pipeline/prompts/shared/engine_interfaces.md` ("Backend contract": slot contracts)
-- `substrate/aux/runtime/README.md`, `engine_slots.hpp`, `runtime_host.hpp`,
-  `accelerator_runtime.hpp`, `columnar_batch.hpp` (and `wire.hpp`,
-  `thread_budget.hpp` where the layer touches them)
-- Layer `scan`: `pipeline/prompts/engine_backend/native_scan_contract.md` (the `ScanPartitioned` surface modules call); layer `runtime`: `substrate/aux/runtime/thread_budget.hpp` (phase caps) and `AuxCostModelLookup` in `substrate/aux/core/aux_cost_model_path.hpp`
-- Layer `api`: `pipeline/prompts/engine_backend/api_contract.md` and `host_contract.md` (binding)
-- `eval/tests/test_aux_runtime.cpp` — the toy `SumModule` to copy for the harness
-- Matching stub under `pipeline/templates/engine_backend/` — keep
-  `aux_state::engine::{{engine_name}}`. Do not put backend types in `core::`.
+The first message carries a digest of what the backend already has (files, api symbols, open findings):
+do not survey the tree, open a file only to change it or match its signatures. The contract of this layer
+and the cross-layer requirements that name it are in "Layer contracts" below (the full file,
+`pipeline/prompts/engine_backend/layer_contracts.md`, is there for the other layers' sections). Read:
+
+- the rules this layer owns in `pipeline/prompts/engine_backend/acceptance_checklist.md`: `{{layer_rules}}` (not the whole file)
+- `substrate/aux/runtime/README.md` and `engine_slots.hpp`; `runtime_host.hpp`, `accelerator_runtime.hpp`,
+  `columnar_batch.hpp` (and `wire.hpp`, `thread_budget.hpp`) only where the layer touches them;
+  `pipeline/prompts/shared/engine_interfaces.md` ("Backend contract") for the slots you implement
+- Layer `scan`: `native_scan_contract.md` (the `ScanPartitioned` surface modules call, text-view lifetime);
+  layer `runtime`: `substrate/aux/runtime/thread_budget.hpp` (phase caps) and `AuxCostModelLookup` in
+  `substrate/aux/core/aux_cost_model_path.hpp`; layer `api`: `api_contract.md`, `host_contract.md` and
+  `canary_contract.md` (binding)
+- `eval/tests/test_aux_runtime.cpp`, the toy `SumModule`, when you write the harness
+- the matching stub under `pipeline/templates/engine_backend/`; keep `aux_state::engine::{{engine_name}}`.
+  Do not put backend types in `core::`.
 
 You implement **slots only**. The runtime flow (commit order, gaps, catch-up,
 builds, versions, thread pool) is substrate: never re-implement or work around it.
@@ -86,8 +91,10 @@ Do **not** implement the whole layer and then hope. After each small increment
 `accel_pipeline`. These are **tools**, not resources — do **not**
 `list_mcp_resources`. Preferred calls (zero-arg):
 
+- `quick_layer()` → seconds: incremental build of `{{layer_cmake_target}}`, ONE run of the harness, and (once
+  the canary binding exists) the canary checks this layer owns. Call it after every edit; it is not a gate of record
 - `run_engine_build()` → official `engine_build`
-- `run_layer_gate()` → official `{{layer_gate}}` for this `impl_*` stage
+- `run_layer_gate()` → official `{{layer_gate}}` for this `impl_*` stage (repeats the harness to catch races)
 
 Or `request_gate` with `gate_name` `engine_build` / `{{layer_gate}}`.
 
@@ -148,6 +155,8 @@ Write `{{engine_cmake_entry}}` to `cmake/Backend.cmake`'s interface (see
 List new backend `.cpp` files there; harnesses `tests/test_{{engine_name}}_<layer>.cpp`
 register themselves through its glob. Do not edit `CMakeLists.txt` or `cmake/**`.
 
+## Layer contracts
+
 {{layer_contracts}}
 
 ## Invariants
@@ -158,7 +167,7 @@ register themselves through its glob. Do not edit `CMakeLists.txt` or `cmake/**`
 4. Toy module only — no generated query accelerators.
 5. Fail closed if the SDK/host cannot start.
 
-After this layer’s gates pass, a **separate cheap critique agent** reviews the
-backend + harness against `layer_contracts.md`. A green gate is not done if
-the critic finds an untested contract path. You will be re-invoked with its
-feedback — do not greenwash the harness.
+After this layer's build is green, a **separate read-only critic** reviews the layer's diff for design
+flaws and engine hazards, in parallel with your gates. Its blocking findings come back to you in this
+session in one batch (each with `file:line`, the contract clause and the behaviour expected): fix them all,
+keep every harness green, and do not greenwash a harness.
