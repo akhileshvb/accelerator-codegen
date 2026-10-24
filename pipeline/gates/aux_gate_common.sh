@@ -118,7 +118,8 @@ build_stamp() {
 # from the same stamp in this instance and the build dir is configured (ACCEL_BUILD_STAMP_CACHE=0
 # turns the cache off).
 engine_ready() {
-	local started stamp="" stamp_file="${ACCEL_ENGINE_STATE_DIR}/build_stamps/$(printf '%s' "$*" | sha1sum | cut -c1-16)"
+	local started stamp="" stamp_file
+	stamp_file="${ACCEL_ENGINE_STATE_DIR}/build_stamps/$(printf '%s' "$*" | sha1sum | cut -c1-16)"
 	if [[ "${ACCEL_BUILD_STAMP_CACHE:-1}" != 0 ]]; then
 		started="$(now_us)"
 		stamp="$(build_stamp "$@")" || stamp=""
