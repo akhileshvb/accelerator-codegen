@@ -251,7 +251,7 @@ def test_a_frozen_suite_cannot_be_edited_and_a_change_request_is_the_way(tmp_pat
 
 def test_old_pipeline_states_resume_at_the_renamed_stage(tmp_path):
     path = tmp_path / "pipeline_state.json"
-    path.write_text(json.dumps({"query": 3, "workload": "w", "engine": "duckdb", "stage": "adversarial_tests"}))
+    path.write_text(json.dumps({"query": 3, "workload": "w", "engine": "fake", "stage": "adversarial_tests"}))
     assert PipelineState.load(path).stage == "test_suite" and "adversarial_tests" not in STAGES
     assert STAGES.index("test_suite") == STAGES.index("analysis") + 1 == STAGES.index("implementation") - 1
 
