@@ -10,7 +10,7 @@ Your hypothesis patch failed **build** or **quick smoke correctness** (`ctest -R
 
 1. Read the assertion or compile error in the log tail.
 2. Patch the smallest set of editable files (`module.hpp`, `module.cpp`, `finalize.cpp`, tests, cost model).
-3. Rebuild (`cmake --build {{build_dir}} --target test_tpch_q{{query_number}}_aux`, plus the bench target if needed) and run the `ctest` command from the report, or use `quick_check`.
+3. Rebuild (`cmake --build {{build_dir}} --target {{test_target}}_aux`, plus the bench target if needed) and run the `ctest` command from the report, or use `quick_check`.
 4. When the reproduce passes, end your turn.
 
 {{constraints}}

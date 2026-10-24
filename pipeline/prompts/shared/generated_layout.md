@@ -47,12 +47,12 @@ The runtime flow (ordering, catch-up, builds, version management, thread pools) 
 Everything a query run owns is under one directory, so one glob covers it:
 
 ```
-accelerators/{tpch|sec_edgar}/q{N}/
+accelerators/<bench>/q{N}/
   layout.hpp                 # the query's state layout (slot ids), shared by its engines
   cost_model.hpp             # the query's AuxCostModelLocation (config directory and file stem)
   {engine}/
     base/
-      query.hpp              # bind/kernel API (symbol prefix still tpch_qN / sec_edgar_qN)
+      query.hpp              # bind/kernel API (symbol prefix still <bench>_qN)
       fused.hpp              # optional fused-scan API (host-dependent)
       single-threaded/       # kernel.cpp, package.cpp, fused_scan.cpp
       single-threaded/register.cpp   # where the engine registers base kernels per query
@@ -149,10 +149,10 @@ Prefer peers under the **same** `{engine}/` tree when present (read-only: other 
 
 | Pattern | Read first |
 |---------|------------|
-| Base kernel | `accelerators/tpch/q*/{engine}/base/single-threaded/kernel.cpp` |
+| Base kernel | `accelerators/<bench>/q*/{engine}/base/single-threaded/kernel.cpp` |
 | Fused scan | a peer's `fused_scan.cpp`, `base/fused.hpp` and `package.cpp` when present for that host |
 | Registration | a peer's registrar file(s) (table above) |
-| Aux module | `accelerators/tpch/q*/{engine}/aux/module.cpp` |
+| Aux module | `accelerators/<bench>/q*/{engine}/aux/module.cpp` |
 | Process-boundary encoding | `substrate/aux/runtime/wire.hpp` (only for a shipped-worker placement) |
 
 See also `pipeline/prompts/shared/engine_interfaces.md`.

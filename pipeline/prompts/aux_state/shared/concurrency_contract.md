@@ -48,7 +48,7 @@ Read `maintenance_framework.md` and `engine_interfaces.md` for substrate APIs. T
 |------|----------------|
 | `aux_cross_accel` | Cross-accelerator correctness + isolation tests |
 | `aux_multi_connection` | Multi-connection OLAP stress |
-| `aux_cost_model_calibrate` | Calibrate `accelerators/tpch/q{N}/config/q{N}_aux_cost_model.json` including `interference_*` |
+| `aux_cost_model_calibrate` | Calibrate `accelerators/<bench>/q{N}/config/q{N}_aux_cost_model.json` including `interference_*` |
 | `aux_bench_sweep` | Write-frequency sweep (0/1/10/50%) — primary optimization signal |
 
 ## Analysis output

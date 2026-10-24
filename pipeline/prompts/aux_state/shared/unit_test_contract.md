@@ -20,6 +20,6 @@ Large-scale checks (magnitude databases, 1-vs-N thread comparison, decision-log 
 ## What `aux_correctness` checks
 
 1. **Module test** - ctest `^<bench>_q<N>_aux_smoke_test$` (above), on the benchmark test-database fixture.
-2. **SF1 differential** - base-engine reference SQL vs aux execute for the catalog seed binding. The differential target is the engine's own (`host.sh info`, `host.sh run`; `query_host_bootstrap.md`).
+2. **Iteration-scale differential** - base-engine reference SQL vs aux execute for the catalog seed binding. The differential target is the engine's own (`host.sh info`, `host.sh run`; `query_host_bootstrap.md`).
 
 Both must pass. Smoke-only success is not enough.

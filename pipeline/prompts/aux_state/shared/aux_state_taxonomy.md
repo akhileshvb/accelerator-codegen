@@ -24,7 +24,7 @@ Examples: daily revenue totals, counts by status, sums by region.
 
 **Risk:** A query may still merge many partitions. Flat partitioned state can replace a large table scan with a smaller but still linear state scan.
 
-**TPC-H-like fits:** Q1, Q6, Q12, Q14.
+**Typical shapes:** a fixed-grain aggregate or date-window scan over one large table.
 
 **Maps to `design_family`:** `flat_partitioned_sufficient_summaries`.
 
@@ -254,7 +254,7 @@ partition/group → ordered top candidates
 
 **Common solutions:** Extra slack, full ordered indexes, or hierarchical top-k summaries.
 
-**TPC-H-like fits:** Q3, Q10, Q18.
+**Typical shapes:** top-K ranking of joined aggregates, per-group maxima.
 
 ---
 
@@ -272,7 +272,7 @@ Maintain only rows capable of entering a final result, based on bounds or precom
 
 ## 16. Per-entity derived state
 
-Maintain one derived record per logical entity (e.g. order → revenue; customer → returned-order revenue).
+Maintain one derived record per logical entity (e.g. account → total spend; user → count of flagged events).
 
 **Best for:** Queries that aggregate many fact rows into entity-level values; repeated grouping or ranking over entities; entity cardinality much smaller than fact-table cardinality.
 
@@ -316,7 +316,7 @@ entity_key → matching_related_row_count
 
 **Tradeoff:** More complex for multiple correlated conditions; updates may need old and new predicate classification.
 
-**TPC-H-like fits:** Q21 and parts of other existence-heavy queries.
+**Typical shapes:** existence-heavy queries (EXISTS / NOT EXISTS over a large table).
 
 ---
 

@@ -7,7 +7,7 @@ You run under **Codex** with native edit/search/shell tools **plus** accelerator
 Concurrent pack workers use **per-query git worktrees** and private build dirs.
 
 - **Edit only this query's owned files** (listed in the task). Never create/modify/delete another `qN` aux/module/test/cost-model — not even to "fix" a peer compile error.
-- Peer compile noise is not your bug under worktree isolation. Do **not** `git restore` / `cp` / Python-rewrite foreign `accelerators/tpch/q*/**`.
+- Peer compile noise is not your bug under worktree isolation. Do **not** `git restore` / `cp` / Python-rewrite foreign `accelerators/<bench>/q*/**`.
 - Always build/test against **this worker's build dir** (`build-release-<worker_id>` / `$ACCEL_PIPELINE_BUILD_DIR`). Never use shared `build-release/`.
 - Broad grepping/editing of other pack queries is not OK.
 
@@ -63,7 +63,7 @@ For **implementation**, do **not** finish until the acceptance gates pass (keep 
 
 ### Query / aux accelerators
 
-1. Build the smoke or unit target for this query (and the engine's `differential_binary` for TPC-H aux).
+1. Build the smoke or unit target for this query (and the engine's `differential_binary` for aux).
 2. Once `quick_check` passes, call **`run_correctness`** (maps to `aux_correctness` for stateful, else `correctness`); `request_gate(..., background=True)` if you have more to do meanwhile.
 3. On fail: read `failure_summary`, fix implementation / registration, get `quick_check` green again, then re-run the gate until `status=pass`.
 4. For **aux-state**, also call MCP **`run_multi_connection`** (or `request_gate` with `aux_multi_connection`). On fail (often missing TF / shared allowlist wiring), **register the query everywhere** peer queries are registered, rebuild, retry until pass.

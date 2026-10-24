@@ -29,7 +29,7 @@ Pipeline files (`pipeline/`, `substrate/`, `backends/` gates and prompts, `cmake
 
 {{optimization_edit_paths}}
 
-The sources are bootstrapped in the user message with line numbers; do not re-read them. Search reference modules with `rg` (`accelerators/tpch/q*/<engine>/aux/`) and `sed -n`. Retrieved precedents are non-binding.
+The sources are bootstrapped in the user message with line numbers; do not re-read them. Search reference modules with `rg` (`accelerators/<bench>/q*/<engine>/aux/`) and `sed -n`. Retrieved precedents are non-binding.
 
 ## Flow
 

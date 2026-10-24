@@ -39,7 +39,7 @@ Set `interference_us` on each `ActionCandidate` using calibrated fields from `Co
 - `interference_invalidate_per_query_us`
 - `interference_query_slowdown_factor`
 
-Coefficients live in `accelerators/tpch/q{N}/config/q{N}_aux_cost_model.json` and are **calibrated** by the `aux_cost_model_calibrate` gate (multi-connection readers + writers + rebuild-under-load). Populate `interference_us` in `StageMaintenance` when building candidates passed to `services.ChooseMaintenance`.
+Coefficients live in `accelerators/<bench>/q{N}/config/q{N}_aux_cost_model.json` and are **calibrated** by the `aux_cost_model_calibrate` gate (multi-connection readers + writers + rebuild-under-load). Populate `interference_us` in `StageMaintenance` when building candidates passed to `services.ChooseMaintenance`.
 
 ## Action selection
 
@@ -50,8 +50,8 @@ Coefficients live in `accelerators/tpch/q{N}/config/q{N}_aux_cost_model.json` an
 - Legal actions for each mutation batch (delta vs rebuild vs invalidate)
 - Feature counts passed into `MaintenanceRequest` (rows touched, partitions touched, fanout)
 - Cost estimates using `CostModelParams` loaded from per-query JSON
-- Initial JSON at `accelerators/tpch/q{{query_number}}/config/q{{query_number}}_aux_cost_model.json`
-- `accelerators/tpch/q{{query_number}}/cost_model.hpp` names that directory (`AuxCostModelLocation`); every engine's registration passes it (no hard-coded JSON path); the substrate picks the `_<engine>` / `_sf<N>` variant
+- Initial JSON at `accelerators/<bench>/q{N}/config/q{N}_aux_cost_model.json`
+- `accelerators/<bench>/q{N}/cost_model.hpp` names that directory (`AuxCostModelLocation`); every engine's registration passes it (no hard-coded JSON path); the substrate picks the `_<engine>` / `_sf<N>` variant
 
 The framework only compares totals; cost equations are per-accelerator.
 
@@ -63,18 +63,18 @@ When the selector chooses `RebuildPartition` or `RebuildAll`, maintenance **must
 
 v1: maintenance runs at commit via `StageMaintenance` outcomes; readers wait for a pending commit and read its published state. Only `InvalidateAndRebuildOnRead` defers work, to the next reader, which rebuilds rather than falls back.
 
-## Refresh-shaped writes (TPC-H RF1/RF2, all accelerators in one process)
+## Refresh-shaped writes (bulk refreshes, all accelerators in one process)
 
 **Copy-on-write comes from `accelerators/prims/`** (`cow_primitives.md`): the substrate versions each partition payload as an opaque immutable pointer, and a commit produces a new version that shares untouched structure.
 
-An RF inserts or deletes ~0.1% of orders (+ their lineitems) with keys spread
+A refresh inserts or deletes a small fraction of a large table (and the matching rows of related tables) with keys spread
 uniformly over the whole key space, so it touches nearly every partition,
 shard, chunk and page. Maintenance is synchronous at commit; design and
 calibrate for this shape, not only for narrow-range point writes.
 
 - **COW unit = O(changed rows).** A unit that is cloned whole on first touch
-  costs the whole state per RF (measured: ~4M part records copied per RF, ~3 s;
-  ~13k order shards of ~1.8k orders, ~2.3 s; whole 1024-entry chunks). Make
+  costs the whole state per refresh (measured: millions of records copied per refresh, seconds;
+  thousands of shards cloned whole; whole 1024-entry chunks). Make
   the copy cost per touched unit proportional to the rows changed in it:
   `shared_ptr`'d records/entries (a slot copy is pointer copies), small
   chunks, persistent maps with small leaves, or a hot/cold split (immutable
@@ -82,20 +82,20 @@ calibrate for this shape, not only for narrow-range point writes.
   unit so each unit is copied once per commit.
 - **Never rebuild a touched unit's index on append.** Index the new tail in a
   small delta and merge lazily/amortized (a shard's token index re-merged per
-  new comment cost seconds per RF).
+  new comment cost seconds per refresh).
 - **No hard-coded size guard that forces a full rebuild** outside the cost
   model (e.g. `kMaxOverlayWeight = 400000` caused a 35 s `RebuildAll` every ~3
-  RFs, invisible to the policy). Bound overlays by incremental compaction
+  refreshes, invisible to the policy). Bound overlays by incremental compaction
   proportional to recent changes; any rebuild must be a priced candidate.
 - **Do not re-read base tables for touched keys if the delta suffices.**
   Keep what maintenance needs (per-key sums+counts, multisets) in the state.
   If a rescan is unavoidable, make it one set-oriented query (one semi-join),
-  not chunked IN-lists per key (3.5M rows per RF: ~50 s chunked, 5.6 s as one
+  not chunked IN-lists per key (3.5M rows per refresh: ~50 s chunked, 5.6 s as one
   semi-join).
 - **Cost scales with delta size plus a small per-commit constant.** Calibrate
   and validate cost models on bulk inserts/deletes spread over keys. Fitting
   on tiny UPDATEs gave 5.6 ms/row and made the policy pick `RebuildAll` (5.4
-  s) over `ApplyDelta` (52 ms) for an RF-sized delta.
+  s) over `ApplyDelta` (52 ms) for a refresh-sized delta.
 - **Always go through `services.ChooseMaintenance`** so decisions and costs
   are logged; do not hard-wire the action.
 - **Parallelize independent per-partition and per-key maintenance** with
