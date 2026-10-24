@@ -134,19 +134,22 @@ engine_ready() {
 	[[ -z "${stamp}" ]] || { mkdir -p "${stamp_file%/*}" && printf '%s' "${stamp}" >"${stamp_file}"; }
 }
 
-# The built binaries of the ctest tests matching a regex (and not an optional exclude regex), one per line: a
-# gate that runs `ctest` must build them first, and a configured build dir is what lists them.
+# The build-dir binaries run by the ctest tests matching a regex (and not an optional exclude regex), one per
+# line; a test that runs a tool (cmake -P) has none. A gate that runs `ctest` builds them first, and only a
+# configured build dir lists the tests.
 ctest_targets() {
 	local pattern="$1" exclude="${2:-}" args=()
 	[[ -z "${exclude}" ]] || args=(-E "${exclude}")
 	ctest --test-dir "${ACCEL_BUILD_DIR}" -N -R "${pattern}" "${args[@]}" --show-only=json-v1 2>/dev/null |
-		python3 -c "
+		BUILD="${ACCEL_BUILD_DIR}" python3 -c "
 import json, os, sys
 try:
     tests = json.load(sys.stdin).get('tests', [])
 except ValueError:
     tests = []
-print('\\n'.join(sorted({os.path.basename(t['command'][0]) for t in tests if t.get('command')})))
+build = os.path.realpath(os.environ['BUILD'])
+print('\\n'.join(sorted({os.path.basename(t['command'][0]) for t in tests
+                         if t.get('command') and os.path.realpath(t['command'][0]).startswith(build + os.sep)})))
 " || true
 }
 
