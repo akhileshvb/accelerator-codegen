@@ -32,7 +32,8 @@ REVISION_MESSAGE = """An independent critic reviewed your analysis and asks for 
 {critique}
 
 Address every failed check and, if its alternative measured better, simulate it yourself and adopt it or show
-with a measured count why yours is better. Update analysis.json, call validate_analysis, and stop."""
+with a measured count why yours is better. Edit only what the critique touches with update_analysis (JSON Patch
+operations on analysis.json; it validates after applying) rather than regenerating the file, then stop."""
 
 
 VALIDATION_REPAIR_ROUNDS = 2
@@ -40,8 +41,8 @@ VALIDATION_MESSAGE = """analysis.json does not pass the stage's validation:
 
 {error}
 
-Fix analysis.json (the rule is in the analysis prompt's Task section), call validate_analysis until it reports
-"valid", and stop."""
+Fix what it names with update_analysis (JSON Patch operations on analysis.json; it validates after applying)
+until it reports "valid", and stop. The rule is in the analysis prompt's Task section."""
 
 
 def _validate(analysis_path: Path, allow_poor: bool) -> None:

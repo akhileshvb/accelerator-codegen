@@ -259,3 +259,18 @@ def test_the_mcp_validate_analysis_tool_reports_the_stage_check(tmp_path):
 
     tools = build_mcp_tool_callables(_config(tmp_path), {}, "w", 1, "analysis", 0, tmp_path)
     assert tools["validate_analysis"]().startswith("invalid: analysis file not found")
+
+
+def test_the_mcp_update_analysis_tool_patches_then_validates(tmp_path, monkeypatch):
+    import json
+
+    from accel_pipeline.mcp_server import build_mcp_tool_callables
+
+    target = tmp_path / "analysis.json"
+    target.write_text(json.dumps({"x": {"y": 1}}))
+    monkeypatch.setattr("accel_pipeline.paths.analysis_artifact_path", lambda *a, **k: target)
+    tools = build_mcp_tool_callables(_config(tmp_path), {}, "w", 1, "analysis", 0, tmp_path)
+    out = tools["update_analysis"]([{"op": "replace", "path": "/x/y", "value": 2}])
+    assert out.startswith("applied 1 operation(s); validation: invalid") and json.loads(target.read_text()) == {"x": {"y": 2}}
+    assert tools["update_analysis"]([{"op": "remove", "path": "/nope"}]).startswith("not applied")
+    assert json.loads(target.read_text()) == {"x": {"y": 2}}
