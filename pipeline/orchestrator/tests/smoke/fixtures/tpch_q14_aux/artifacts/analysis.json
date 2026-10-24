@@ -1,0 +1,297 @@
+{
+  "accelerator_id": "tpch_q14_aux",
+  "base_function_name": "tpch_q14",
+  "aux_function_name": "tpch_q14_aux",
+  "fitness_assessment": {
+    "recommended": true,
+    "confidence": "high",
+    "scope": "per_query",
+    "partition_key_source": "grouping_attribute",
+    "incidental_reuse": null,
+    "signals_for": [
+      "The base path repeatedly scans a large fact table, probes the part dimension, and computes the same additive statistics for a narrow date interval.",
+      "Daily sufficient statistics make the read bounded to at most the days in one calendar month, independently of lineitem cardinality.",
+      "Lineitem deltas touch one part/day dependency entry and one day summary; dimension deltas touch only the changed part's stored day dependencies.",
+      "A SQL fallback remains available for missing, stale, unsupported-schema, or transaction-blocked state."
+    ],
+    "signals_against": [
+      "The reverse dependency summary adds one compact entry per distinct partkey/shipdate pair and dimension updates can fan out across all dates for that partkey.",
+      "Part-type LIKE semantics and duplicate dimension keys must be represented exactly rather than assuming TPC-H key uniqueness."
+    ],
+    "rationale": "A maintained join-derived intermediate removes the repeated lineitem scan, join, and row-level aggregation without caching the final ratio. Exact day grain supports arbitrary DATE bindings, while reverse per-key/day sums let dimension changes update only dependent summaries."
+  },
+  "primitives_used": [],
+  "primitives_proposed": [
+    {
+      "name": "CowPagedBPlusTree",
+      "description": "A generic ordered key/value index with logarithmic point updates and bounded range iteration. Immutable published roots share packed pages; a writer clones only pages on modified search paths, and bulk operations coalesce page writes.",
+      "api_sketch": "CowPagedBPlusTree<Key, Value, Compare> tree; tree.Find(key); tree.InsertOrAssign(key, value); tree.Erase(key); tree.ForEachRange(lower, upper, callback); tree.ApplyBatch(sorted_deltas); tree.MergeAssociative(partials). Keys and values are caller-defined typed objects; page sizes and capacities derive from estimates, not fixed key widths.",
+      "closest_existing": "None; accelerators/prims/README.md has an empty catalogue.",
+      "why_not_closest": "The query needs ordered composite-key dependency ranges and day-key point/range access with page-level COW; no catalogued primitive currently provides ordered range iteration, associative merge, and touched-path cloning."
+    },
+    {
+      "name": "CowPagedHashMap",
+      "description": "A generic sparse hash map for signed or structured keys, using a COW directory and independently cloned packed pages so updates do not copy a whole shard. It supports batched probes, insert, erase, and immutable concurrent reads.",
+      "api_sketch": "CowPagedHashMap<Key, Value, Hash, Equal> map; map.Find(key); map.FindBatch(keys, output); map.InsertOrAssign(key, value); map.Erase(key); map.ApplyBatch(deltas); map.Fork(); map.Publish(). Key and offset widths remain native 64-bit or wider typed values.",
+      "closest_existing": "None; accelerators/prims/README.md has an empty catalogue.",
+      "why_not_closest": "No catalogued sparse COW key/value map exists; the dimension multiplicity lookup must handle negative, sparse, and shifted 64-bit part keys without dense max-key allocation or whole-shard cloning."
+    }
+  ],
+  "state_candidate_search": {
+    "hints_adopted": {
+      "dependent_tables": ["lineitem", "part"],
+      "date_partitioning": "Use actual signed 64-bit shipdate-day keys, independent of the binding; retain the join-key reverse dependency needed to maintain the derived join aggregates.",
+      "maintenance": "Use delta maintenance with touched-part fan-out rather than invalidating all state on dimension changes."
+    },
+    "hints_rejected": {
+      "monthly_shipdate": "A monthly-only partition is not exact for arbitrary start_date values and would require a potentially large raw-row edge residual. Exact daily aggregates make every valid month interval a bounded set of day lookups.",
+      "PartitionKeyFromStartDate": "The binding is a read range, not a stable state partition key; binding-specific partitions would not support arbitrary values without enumeration or rebuild."
+    },
+    "fewer_than_three_explanation": null,
+    "candidates": [
+      {
+        "id": "daily_join_sufficient_stats_reverse_dependencies",
+        "design_family": "compact_join_intermediate",
+        "viability": "viable",
+        "selected": true,
+        "state_grain": "Global exact daily sufficient statistics plus a reverse dependency aggregate at (partkey, shipdate-day) grain.",
+        "output_grain": "One scalar SQL aggregate row, finalized from two exact sums.",
+        "physical_organization": "A sparse signed-day map stores {promo_sum,total_sum}; a sparse dimension map stores {total_match_count,promo_match_count} per partkey; a packed COW ordered index keyed by the full typed pair (partkey:int64, day:int64) stores raw lineitem amount sums for dimension-change fan-out. No key is bit-packed.",
+        "state_payload": "For each day, exact 128-bit promo and total sums at the SQL expression scale. For each partkey, exact 64-bit total and promo dimension-row multiplicities. For each (partkey, day), exact 128-bit sum of non-NULL lineitem extendedprice*(1-discount), regardless of whether the part currently exists; this permits later dimension inserts and type changes to be applied exactly.",
+        "composition_rule": "For each matching part row, add amount to total and, when DuckDB's exact LIKE evaluation is true, to promo. Thus each fact contribution is weighted by total and promo match multiplicities respectively. Combine daily sum pairs by exact integer addition, then use DuckDB decimal arithmetic/division semantics for 100.00 * promo_sum / total_sum.",
+        "operators_eliminated": ["lineitem date-filter scan", "partkey join probe for every qualifying fact row", "row-level CASE/LIKE evaluation on every query", "per-query SUM aggregation"],
+        "residual_read_algorithm": "Evaluate start_date + INTERVAL '1' MONTH with DuckDB date helpers; for a finite non-NULL start, visit only day keys in the exact half-open interval and combine their two sums. Return the engine-correct NULL aggregate when no denominator exists, then finalize through exact DuckDB decimal helpers.",
+        "estimated_state_units_read": {
+          "typical": "At most the number of calendar days in one month (normally 28-31) daily entries, independent of lineitem rows; a missing day contributes zero.",
+          "worst_case": "At most 31 daily probes for finite DATE month arithmetic; exceptional/non-finite or unrepresentable endpoints take SQL fallback rather than an unbounded scan."
+        },
+        "read_path_bottleneck_risk": "low",
+        "read_path_scaling_variable": "The number of calendar days in the requested month interval, bounded by the date interval semantics rather than table cardinality or history.",
+        "parameter_scaling_argument": "No parameter values are enumerated or precomputed; each DATE binds to exact engine-computed bounds and the daily map performs one probe per included day. NULL returns the aggregate NULL result, and endpoint arithmetic errors/non-finite cases are delegated to SQL to preserve exact engine behavior.",
+        "asymptotic_read_complexity": "O(W) day lookups and exact additions, where W is the interval day count and is bounded for one calendar month; independent of N lineitem rows.",
+        "practical_read_complexity": "A few dozen cache-friendly sparse-key probes and two 128-bit accumulations per day, followed by one exact decimal finalization.",
+        "point_update_complexity": "Lineitem point insert/delete/update: O(log G) touched ordered-index pages plus O(1) dimension and daily-summary lookups; a part-row delta: O(log P + D_k log G), where D_k is that key's distinct stored shipdate count.",
+        "batch_update_complexity": "O(R log G + U log P + F log G) for R lineitem changes, U part changes, and F distinct dependent part/day entries visited; batch and clone each COW page once, with work proportional to touched rows/pages and dependency fan-out.",
+        "storage_complexity": "O(D + P + G), where D is distinct dates, P distinct partkeys, and G distinct (partkey,day) pairs. Estimate about 32 bytes per dependency payload before packed-page overhead, about 24-32 bytes per dimension key, and about 32 bytes per daily summary; at SF3000 G<=2e10 implies a conservative payload upper bound near 0.65 TB plus indexes, within the 8 TB design target and far below storing full rows.",
+        "mutation_fanout": "A lineitem row delta changes at most one composite dependency and one daily aggregate. A part row delta changes multiplicity for one partkey and applies its changed eligibility to each stored day aggregate for that key; fan-out follows affected dependent data, not the whole lineitem table.",
+        "rebuild_locality": "Rebuild only touched date/state partitions or the full image only when the calibrated cost model chooses it; initial build streams native lineitem and part scans into mergeable partial aggregates.",
+        "parameter_binding_behavior": "All finite DATE inputs use exact [start,start+one-month) daily probes; NULL yields SQL's single aggregate row with NULL result; no value-domain assumption. SQL handles exceptional date arithmetic exactly.",
+        "history_growth_behavior": "State grows with distinct daily and part/day groups, not with parameter bindings; sparse signed 64-bit keys and estimate-sized pages avoid full-domain scans or dense allocation.",
+        "best_regime": "Repeated reads of arbitrary one-month windows over very large lineitem, including SF3000, with enough reads to amortize a compact reverse dependency index and ordinary incremental refreshes."
+      },
+      {
+        "id": "daily_join_summaries_with_prefix_tree",
+        "design_family": "tree_or_index_aggregate_organization",
+        "viability": "viable",
+        "selected": false,
+        "state_grain": "Daily exact join-derived sufficient statistics, additionally composed into a COW range aggregate tree.",
+        "output_grain": "One scalar SQL aggregate row.",
+        "physical_organization": "A sparse date-keyed COW range tree stores associative {promo_sum,total_sum} pairs; reverse (partkey,day) aggregates and dimension multiplicities support exact delta maintenance.",
+        "state_payload": "128-bit exact daily numerator/denominator pairs, tree nodes containing their exact pairwise sums, per-part dimension multiplicities, and per-part/day amount sums.",
+        "composition_rule": "Combine canonical tree nodes for [start,end) with exact pairwise addition, then finalize with DuckDB decimal semantics.",
+        "operators_eliminated": ["lineitem scan", "fact-to-part join", "row-level LIKE/CASE", "per-query aggregate"],
+        "residual_read_algorithm": "Use the ordered tree to cover exact date bounds with canonical nodes and combine their sufficient statistics.",
+        "estimated_state_units_read": {"typical": "O(log D) tree nodes, where D is the number of populated dates.", "worst_case": "O(log D) canonical nodes for an arbitrary finite range."},
+        "read_path_bottleneck_risk": "low",
+        "read_path_scaling_variable": "Tree height over populated dates, logarithmic in date history.",
+        "parameter_scaling_argument": "Exact arbitrary DATE bounds are handled by ordered-key range decomposition; NULL and date arithmetic edge cases follow engine semantics.",
+        "asymptotic_read_complexity": "O(log D) canonical aggregate nodes.",
+        "practical_read_complexity": "Several tree-page probes and exact 128-bit merges; potentially fewer data probes than the selected bounded day loop but additional pointer/page work.",
+        "point_update_complexity": "O(log D) summary-tree path plus selected-design dependency updates.",
+        "batch_update_complexity": "O(R log D + F log G) for row changes and dependency fan-out, with touched paths coalesced per batch.",
+        "storage_complexity": "O(D + P + G) with additional O(D) range-tree internal summaries.",
+        "mutation_fanout": "Same fact and dimension dependency fan-out as the selected design, plus changed-day tree paths.",
+        "rebuild_locality": "Rebuild touched day leaves and their ancestors, or use a calibrated larger rebuild action.",
+        "parameter_binding_behavior": "Exact ordered range lookup for every finite DATE; NULL returns NULL and exceptional endpoint arithmetic uses SQL fallback.",
+        "history_growth_behavior": "O(log D) query depth as history grows; sparse keyed tree has no fixed day domain.",
+        "best_regime": "Very long date ranges or substantially broader parameter windows where reducing even a few dozen day probes offsets the extra tree memory and update paths."
+      },
+      {
+        "id": "date_ordered_covering_fact_projection",
+        "design_family": "narrow_prefiltered_subset",
+        "viability": "viable",
+        "selected": false,
+        "state_grain": "One compact join-ready projection row per relevant non-NULL lineitem, ordered by shipdate, plus a partkey eligibility/multiplicity map.",
+        "output_grain": "One scalar SQL aggregate row.",
+        "physical_organization": "Sparse ordered date index over columnar records {day:int64, partkey:int64, exact amount}; separate sparse map stores dimension multiplicities and exact LIKE classification counts.",
+        "state_payload": "Per-fact key/date and exact amount, plus total and promo dimension match counts per partkey; no final query result is stored.",
+        "composition_rule": "Range-scan only projected facts in the requested interval, multiply each amount by current dimension multiplicities, and accumulate exact numerator and denominator.",
+        "operators_eliminated": ["full lineitem table scan", "re-reading unrelated lineitem columns", "part table scan"],
+        "residual_read_algorithm": "Seek to start_date, scan projected facts up to the exact exclusive end, probe partkey eligibility and accumulate exact values.",
+        "estimated_state_units_read": {"typical": "The compact lineitem records in the selected month plus batched partkey probes.", "worst_case": "All projected fact records if the requested interval spans all stored dates, though the template's one-month interval remains bounded in calendar time."},
+        "read_path_bottleneck_risk": "medium",
+        "read_path_scaling_variable": "Number of lineitem records selected by the month, approximately lineitem cardinality times date selectivity.",
+        "parameter_scaling_argument": "Exact arbitrary DATE values seek into the ordered key; NULL yields an empty-input aggregate and exceptional date arithmetic delegates to SQL.",
+        "asymptotic_read_complexity": "O(log N + R_w), where R_w is the number of projected fact rows within the month.",
+        "practical_read_complexity": "A much narrower scan than base tables, but still visits and probes every matching fact row on every invocation.",
+        "point_update_complexity": "O(log N) for fact insert/delete and O(1) for dimension count updates; updates remove old and add new projection records.",
+        "batch_update_complexity": "O(R log N + U) for R fact changes and U dimension changes, with range-index pages coalesced per commit.",
+        "storage_complexity": "O(N) compact projected rows, with larger per-fact storage than the selected aggregated dependency representation.",
+        "mutation_fanout": "Fact mutations touch their projected records; dimension mutations update only eligibility counts and do not visit facts.",
+        "rebuild_locality": "Date-index pages containing changed rows; initial build uses native scans and ordered merge.",
+        "parameter_binding_behavior": "All finite DATEs use exact ordered seeks and bounds, NULL follows SQL aggregate semantics, and date arithmetic exceptions use SQL fallback.",
+        "history_growth_behavior": "Projection storage grows linearly with lineitem rows; query work grows with selected lineitem rows rather than only date buckets.",
+        "best_regime": "Write-heavy workloads with frequent part-type changes and modest selected-window row counts, where avoiding dimension fan-out matters more than eliminating per-fact read work."
+      },
+      {
+        "id": "monthly_only_summaries",
+        "design_family": "flat_partitioned_sufficient_summaries",
+        "viability": "rejected",
+        "selected": false,
+        "rejection_reason": "A month-only summary cannot exactly answer an arbitrary start_date month interval: starts can split both endpoint months, and no bounded exact residual exists without adding finer-grain state. Adding daily summaries collapses this into the selected daily design.",
+        "state_grain": "Calendar month aggregates only.",
+        "output_grain": "One scalar SQL aggregate row.",
+        "physical_organization": "Sparse month-keyed summary map.",
+        "state_payload": "Monthly 128-bit promo and total sums.",
+        "composition_rule": "Add complete monthly summaries.",
+        "operators_eliminated": ["full base scans for aligned months"],
+        "residual_read_algorithm": "No exact bounded algorithm for arbitrary start_date without additional finer-grain state.",
+        "estimated_state_units_read": {"typical": "One month for aligned bindings.", "worst_case": "Incorrect at non-aligned bounds absent a raw-row residual."},
+        "read_path_bottleneck_risk": "high",
+        "read_path_scaling_variable": "Would depend on endpoint residual row counts if made exact with raw rows.",
+        "parameter_scaling_argument": "Does not meet exact arbitrary DATE parameter contract.",
+        "asymptotic_read_complexity": "O(1) only for aligned parameters; otherwise no exact summary-only plan.",
+        "practical_read_complexity": "Fast only for a restricted binding domain, which is forbidden.",
+        "point_update_complexity": "O(1) per mapped monthly bucket.",
+        "batch_update_complexity": "O(R) aggregation into touched month buckets.",
+        "storage_complexity": "O(number of months).",
+        "mutation_fanout": "Dimension changes still require dependency-aware adjustment or rebuild.",
+        "rebuild_locality": "Month-local only, but does not repair the parameter correctness gap.",
+        "parameter_binding_behavior": "Would require rejecting or enumerating off-boundary dates; therefore not acceptable.",
+        "history_growth_behavior": "Small state, but the compactness does not compensate for incorrect/incomplete parameter handling.",
+        "best_regime": "None under the general DATE contract; rejected."
+      }
+    ]
+  },
+  "correctness_facts": {
+    "dependent_tables": [
+      {"name": "lineitem", "watched_columns": ["l_partkey", "l_extendedprice", "l_discount", "l_shipdate"], "role": "Fact amounts and shipdate grain; retain per-part/day raw aggregates for dimension maintenance."},
+      {"name": "part", "watched_columns": ["p_partkey", "p_type"], "role": "Join multiplicity and exact PROMO LIKE classification."}
+    ],
+    "partitioning": {
+      "strategy": "Sparse exact shipdate-day summaries with a reverse dependency index by partkey and day.",
+      "key_function": "Identity on DuckDB DATE day value represented as signed 64-bit; composite dependency key is the typed pair (partkey, day), not a narrowed or hashed partition id.",
+      "key_source": "grouping_attribute",
+      "mutation_to_partition_mapping": "A lineitem insert/delete/update maps old and new shipdate values to their exact day keys and updates that row's partkey/day dependency. A part insert/delete/update maps its old/new partkey to the stored per-day sums for that key and adjusts only affected day summaries."
+    },
+    "state_design": {
+      "selected_candidate_id": "daily_join_sufficient_stats_reverse_dependencies",
+      "chosen_representation": "Daily exact join-derived sufficient statistics plus a reverse (partkey,day) aggregate index and per-part dimension multiplicities, all published as immutable COW pages.",
+      "state_grain": "One global summary per populated shipdate day, one dimension-count record per partkey, and one raw amount sum per distinct (partkey,shipdate day).",
+      "output_grain": "One row with the SQL result expression; no parameter-bound answer is stored.",
+      "physical_organization": "Sparse day-key map for daily aggregate pairs, sparse partkey map for dimension multiplicities, and packed COW ordered tree keyed by the full int64 pair for reverse day-range iteration. Values are columnar/packed, not per-row heap objects.",
+      "composition_rule": "The fact-to-part join is folded into multiplicity-weighted exact daily sums. For each day, total_sum = sum(amount * matching_part_count) and promo_sum = sum(amount * promo_matching_part_count), ignoring NULL amount in SUM and applying the fixed LIKE predicate through DuckDB semantics.",
+      "is_full_result_cache": false,
+      "negligible_speedup_risk": "low",
+      "work_eliminated_on_fast_path": "Eliminates scanning qualifying base fact rows, probing the dimension for each fact, evaluating row-level CASE/LIKE, and aggregating all matched rows on every call.",
+      "operators_claimed_eliminated": ["lineitem scan/filter", "part join", "row-wise CASE and LIKE", "global SUM aggregation"],
+      "residual_read_algorithm": "Use DuckDB's exact DATE-plus-interval helper to derive the exclusive endpoint. Read and combine daily summaries only for days in [start,end), at most a calendar month; finalize the exact decimal ratio using DuckDB numeric helpers. A NULL parameter yields the engine's empty-input aggregate result.",
+      "read_path_remaining_work": "At most 31 sparse day lookups, 128-bit additions, and exact decimal multiplication/division/formatting for the single output row.",
+      "read_path_bottleneck_risk": "low",
+      "read_path_scaling_variable": "Only the bounded number of days in the one-month interval; neither total rows nor history cardinality is scanned.",
+      "estimated_state_units_read": {"typical": "At most 28-31 day records, often fewer when dates are absent.", "worst_case": "31 day records for any ordinary finite one-month interval."},
+      "parameter_scaling_argument": "No parameter precomputation or domain enumeration. Exact engine date arithmetic handles all DATE values; NULL short-circuits to SQL aggregate NULL; exceptional endpoint operations use the standard SQL fallback.",
+      "alternatives_considered": [
+        "A date range tree over daily summaries reduces reads to O(log D) nodes, but adds one range-tree path update per changed day; the selected direct loop is already bounded to roughly a month.",
+        "A date-ordered covering projection avoids dimension fan-out on writes, but reads and probes every selected fact row and therefore retains cardinality-dependent work.",
+        "Monthly-only sufficient statistics are rejected because arbitrary dates require exact endpoint residuals; daily summaries remove that residual without scanning facts."
+      ],
+      "correctness_argument": "Maintain raw amount sums per partkey/day independently of current dimension presence, plus exact dimension total/promo multiplicities. Fact deltas update dependency and global contributions using current multiplicities; dimension deltas reweight only that key's dependency sums. This reproduces duplicate join-key multiplicity, NULL behavior, arbitrary keys, and arbitrary date bounds exactly.",
+      "speedup_argument": "The SQL base path performs work proportional to scanned/selected lineitems and join probes; the fast path combines a fixed small number of exact daily summaries, so its dominant read work no longer grows with SF3000 fact rows."
+    },
+    "state_payload": {
+      "daily_summary": "Sparse day key -> two overflow-checked signed 128-bit exact scaled sums (promo and total).",
+      "dimension_multiplicity": "Sparse signed 64-bit partkey -> 64-bit total matching part-row count and 64-bit matching PROMO count; counts checked for overflow.",
+      "reverse_dependency": "Ordered sparse typed (partkey:int64, day:int64) -> signed 128-bit exact sum of non-NULL fact amounts; retain even for partkeys with no current part match.",
+      "amount_scale": "Use widened integer-scaled decimal arithmetic at DuckDB's expression scale; all products and aggregate sums use 128-bit exact arithmetic with checked overflow, never double.",
+      "capacity": "Estimate and reserve from bind-time row estimates/table statistics and observed distinct groups; all keys, ids, offsets, counts, and heap byte lengths are 64-bit or wider."
+    },
+    "legal_deltas": [
+      "Lineitem insert: aggregate its exact non-NULL amount into (partkey,day) and update global day numerator/denominator using current dimension multiplicities.",
+      "Lineitem delete: apply the exact inverse contribution to the dependency and daily summaries.",
+      "Lineitem update: apply old-row inverse then new-row contribution, including changes to partkey, price, discount, shipdate, or NULL status.",
+      "Part insert/delete: adjust total/promo multiplicities for the key and reweight each stored per-day amount for that key, including keys previously absent from part.",
+      "Part update: remove old key/type multiplicity and add new key/type multiplicity; exact LIKE helper decides promo count, with fan-out only over affected key/day groups."
+    ],
+    "mutation_coverage": [
+      {"table": "lineitem", "mutation": "insert", "behavior": "supported_delta", "notes": "Use l_partkey, l_extendedprice, l_discount, and l_shipdate. Preserve dependency aggregates even for keys not yet present in part; NULL join key/date or NULL amount follows SQL join/filter/SUM behavior."},
+      {"table": "lineitem", "mutation": "update", "behavior": "supported_delta", "notes": "Apply inverse old values and forward new values for all watched columns; update both old and new day/key locations as needed."},
+      {"table": "lineitem", "mutation": "delete", "behavior": "supported_delta", "notes": "Subtract exact old contribution from the dependency and current daily sums; erase empty dependency/day entries."},
+      {"table": "part", "mutation": "insert", "behavior": "supported_delta", "notes": "Increment total multiplicity and, when exact DuckDB LIKE evaluates true, promo multiplicity; reweight only stored days for the key. Duplicate p_partkey rows are counted exactly."},
+      {"table": "part", "mutation": "update", "behavior": "supported_delta", "notes": "Reverse old p_partkey/p_type multiplicity and apply new values, handling key changes and NULL p_type; duplicates remain represented by counts."},
+      {"table": "part", "mutation": "delete", "behavior": "supported_delta", "notes": "Decrement exact multiplicities and reweight the key's dependent day aggregates; remove the dimension key record only when both counts reach zero."}
+    ],
+    "fallback_conditions": [
+      "State is absent, stale, invalidated by relevant DDL/table replacement, or cannot be read at the caller's snapshot: execute the original SQL through the runtime fallback.",
+      "The transaction has uncommitted writes to either dependent table, or its snapshot is not represented by the published image: use SQL so own writes and snapshot semantics remain exact.",
+      "DuckDB date-plus-interval endpoint evaluation raises or produces a non-finite/unrepresentable endpoint not safely enumerable as a finite interval: delegate to SQL to preserve exact result or error semantics.",
+      "A mutation batch lacks required old/new watched-column values or exposes an unsupported physical value representation: decline incremental publication and safely rebuild/invalidate through the cost model; reads use SQL until valid.",
+      "If exact decimal intermediate arithmetic or a stored 128-bit sum would overflow its checked representation, do not wrap or narrow; use SQL fallback or fail identically to DuckDB's own checked arithmetic.",
+      "Arbitrary and unseen part keys, negative keys, duplicate join keys, NULL values, and off-range finite dates are not fallback conditions: sparse maps, multiplicity counts, and engine helpers answer them exactly."
+    ],
+    "maintenance_actions_used": ["NoOp for irrelevant changes", "ApplyDelta for supported lineitem and part mutations", "RebuildPartition for a priced affected-day rebuild", "RebuildAll only when selected by the calibrated cost model"],
+    "cross_accelerator_concurrency": {
+      "irrelevant_mutation_handling": "Only changes to watched columns affect this state; unrelated columns produce NoOp with no epoch bump, stale mark, staged image, or pending change. Mutations on relevant columns are mapped through their old/new key and day dependencies.",
+      "read_path_bounds": "A hit reads only the exact daily keys in the caller's one-month interval; it never iterates all dates, all partkeys, or all dependency groups.",
+      "maintenance_on_irrelevant_writes": "NoOp: no state clone, invalidation, epoch advance, or publication.",
+      "fallback_conditions_under_concurrent_writes": [
+        "If a reader's snapshot predates or is blocked from a required published epoch, use SQL at the reader's snapshot.",
+        "If transaction-local writes affect either dependency table, use the engine scan/SQL path so own uncommitted rows are included.",
+        "If a relevant writer cannot atomically publish its COW state for the commit epoch, retain old immutable state for old readers and fall back for incompatible snapshots; never expose a partial pair of table updates."
+      ]
+    },
+    "scale_plan": {
+      "read_parallelism": "The hit reads at most roughly 31 daily records and emits one row, so it is output/bounded-work dominated and remains one slice; all days are summed deterministically in exact 128-bit arithmetic. It does not parallelize over total dates or groups.",
+      "build_parallelism": "Build the part multiplicity map with PartitionedBuild partials and associative integer-count merges, then scan native lineitem row groups with PartitionedBuild partials that aggregate date and (partkey,day) keys. Merge partial maps by exact addition and move pages into the final COW images; derive capacities from bind-time row estimates/statistics, never SF1 constants.",
+      "maintenance_parallelism": "After serial engine mutation extraction/snapshot lookups, group and coalesce deltas by key/day, then ParallelEach/ParallelReduce over independent changed lineitem groups and independent affected partkeys under the maintenance WorkerCount cap. Merge exact integer contributions deterministically and clone each touched page once; small batches remain inline below the substrate grain.",
+      "failure_classes": [
+        {"class": "Sums overflow 64 bits", "handling": "Store, multiply, delta, merge, and emit using checked 128-bit scaled integer accumulators with widening before products; use DuckDB exact decimal finalization and never use double."},
+        {"class": "Keys, ids, offsets or counts exceed 32 bits", "handling": "Use signed 64-bit DATE/part keys and 64-bit ids, counts, indices, offsets, and heap sizes; checked arithmetic prevents wraparound."},
+        {"class": "Arrays or tables sized by the maximum key, or dense ranges over a sparse key space", "handling": "Use sparse COW maps/ordered indexes sized by observed distinct entries and estimates; support negative and far keys without max-key arrays or narrowing."},
+        {"class": "Fixed shard, slot or partition counts", "handling": "Derive page and build-partial counts from bind-time row estimates, DataScaleRows(), and WorkerCount; coalesce batch writes by touched pages and do not encode a fixed key-domain cap."},
+        {"class": "A hard-coded cap that forces RebuildAll or a flatten outside the cost model", "handling": "Use ApplyDelta or rebuild choices only through ChooseMaintenance with calibrated_scale_rows, honest changed rows/affected days, and measured rebuild costs; no row-count guard forces a global rebuild."},
+        {"class": "Overlays, tombstones or delta logs that only grow", "handling": "Apply inserts/deletes directly to COW pages and erase zero-count groups; compact touched pages as part of priced maintenance so repeated changes return to fresh-build size."},
+        {"class": "Per-commit work or COW clones proportional to total state rather than touched keys", "handling": "Keep immutable packed pages and clone only touched paths/pages; batch/coalesce deltas; dimension fan-out follows that key's stored day groups and never rescans base tables."},
+        {"class": "Serial per-row work dominating at large refresh or build sizes", "handling": "Partition native scans via PartitionedBuild and split grouped maintenance over ParallelEach/ParallelReduce using phase WorkerCount; merge associative exact-integer partials identically at any thread cap."},
+        {"class": "Transient memory peaks", "handling": "Stream native vectors into small per-partition partials and the final structures, merge by moving, size commit buffers from delta rows, and retain only touched COW pages plus pinned reader versions."},
+        {"class": "Node-based maps, per-row strings, scans of all slots or groups", "handling": "Use published packed-page COW primitives with no stored strings; query only exact daily keys and dimension maintenance only the changed key's reverse range."}
+      ]
+    }
+  },
+  "performance_hypotheses": {
+    "base_path_cost_decomposition": {
+      "dominant_scans": ["Native lineitem scan with shipdate predicate; even with row-group pruning, work scales with scanned lineitem storage and selected rows.", "Part dimension scan/build or lookup structure for the join; p_type is needed for every matching key."],
+      "dominant_joins": ["Equality join l_partkey=p_partkey, with probes per qualifying lineitem and SQL join multiplicity for duplicate part keys."],
+      "aggregation_grouping_work": "One global aggregate, but every qualifying joined row evaluates CASE/LIKE and computes the exact price-discount product before contributing to two SUMs.",
+      "sorting_topk_work": "None; no ORDER BY, grouping output, or top-k.",
+      "parameter_dependent_work": "Compute the exclusive end using DATE + one-month interval and evaluate the shipdate range; parameter changes only which date interval is selected.",
+      "work_repeated_across_invocations": ["Read/filter lineitem rows and decode required columns", "Probe the part join and evaluate PROMO classification", "Multiply exact decimal values and accumulate numerator/denominator"],
+      "cardinality_scaling": "Base scan/join/aggregate scale approximately with lineitem rows and qualifying join output; selected state's read scales with at most a month of day keys. State build scales with base rows and distinct (partkey,day) groups.",
+      "parameter_range_scaling": "Base query work scales with rows in the requested month (and possibly row groups scanned); selected read work scales only with the bounded number of calendar days in that month.",
+      "output_cardinality_scaling": "Output is always one aggregate row; base work is not output-bound, while selected residual finalization is constant-size.",
+      "work_remaining_after_aux_replacement": ["Compute exact date bounds and perform bounded daily-key lookups", "Add two 128-bit sufficient statistics and finalize SQL decimal division/NULL behavior", "Runtime validity/snapshot checks and full SQL fallback only when required"]
+    },
+    "maintenance_fanout": "Lineitem changes touch one part/day dependency and one day summary per old/new row. Part changes visit the distinct dates stored for the affected key; cost follows changed dimension rows and dependent groups, not total facts.",
+    "likely_maintenance_actions": ["ApplyDelta for routine row inserts, updates, and deletes", "NoOp for irrelevant watched-table changes", "Priced RebuildPartition for a large concentrated affected-day set", "Priced RebuildAll for a broad refresh only when calibrated cost comparison selects it"],
+    "initial_cost_model": "Start with ApplyDelta = fixed commit overhead + per changed row + per distinct touched page/dependency, RebuildPartition = per affected day plus rows read from retained dependency state, and RebuildAll = streamed native scan cost. Calibrate from refresh-shaped batches at multiple spreads and record calibrated_scale_rows; do not assume SF1 cardinalities or read/write mix.",
+    "eligibility_rules": "Use aux only when the image is valid for the read snapshot, required state partitions are present, and parameter endpoint semantics are safely handled; otherwise invoke original SQL. Do not reject arbitrary values or duplicate keys that the state represents exactly.",
+    "speedup_plan": "Replace repeated fact scan, join, predicate, and aggregate with <=31 daily summary reads. Keep outputs and decimal semantics engine-identical; choose updates/rebuilds from measured maintenance costs and verify hit/fallback counters.",
+    "low_level_execution_plan": {
+      "read_loop": "Probe sparse day keys in the exact interval and sum pairs; this loop is short enough for one slice. Use SIMD AVX-512/AVX2 with scalar fallback for blockwise day-key comparisons/selection when batched probing, while accumulating 128-bit values in exact scalar lanes if the compiler lacks a safe vector path.",
+      "build_loop": "Read native DuckDB DataChunks/vectors only, filter date/null masks branch-free, widen decimal operands before exact multiplication, batch partkey probes and prefetch irregular map pages, then fuse dependency grouping and summary accumulation. Use AVX-512/AVX2 with scalar reference fallback and verify vector results across NULLs and block boundaries.",
+      "maintenance_loop": "After engine callback extraction, coalesce old/new row deltas by typed keys, evaluate promo classification using DuckDB's exact LIKE helper, apply signed integer contributions without branches where masks permit, prefetch batched COW-tree paths, and parallelize independent key groups under the maintenance thread cap.",
+      "layout_and_prefetch": "Packed cache-conscious COW pages with key and value columns separated where useful; no node-per-entry map or per-row strings. Prefetch batched dimension/hash or ordered-index paths before consuming probes; reserve partials from bind-time estimates and avoid whole-table/transient copies.",
+      "vector_width_and_fallback": "Compile-time AVX-512 or AVX2 paths using native lane width for filtering/probing, with a scalar exact reference path; retain 128-bit exact arithmetic and never narrow lanes to 32-bit keys or 64-bit sums."
+    }
+  },
+  "files_to_create": [
+    {"path": "accelerators/tpch/q14/duckdb/aux/module.hpp", "role": "Public aux module API and typed state declarations."},
+    {"path": "accelerators/tpch/q14/duckdb/aux/module.cpp", "role": "Native DuckDB scans, parallel build, exact daily read, and incremental COW maintenance."},
+    {"path": "accelerators/tpch/q14/duckdb/aux/finalize.hpp", "role": "Finalize declarations and query registration surface if required by local module convention."},
+    {"path": "accelerators/tpch/q14/duckdb/aux/finalize.cpp", "role": "Register the Q14 stateful query and finalize exact decimal result rows."},
+    {"path": "accelerators/tpch/q14/layout.hpp", "role": "Typed sparse day, part multiplicity, and part/day dependency key/value layout."},
+    {"path": "accelerators/tpch/q14/config/q14_aux_cost_model_duckdb.json", "role": "DuckDB-specific calibrated maintenance and eligibility costs with calibrated_scale_rows."},
+    {"path": "accelerators/tpch/q14/bench/benchmark_q14_aux.cpp", "role": "Full-path read and write-frequency benchmark with all results consumed."},
+    {"path": "accelerators/tpch/q14/bench/calibrate_q14_aux_cost_model.cpp", "role": "Thin wrapper around the shared refresh-shaped calibration helper."}
+  ]
+}

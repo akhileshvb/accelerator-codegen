@@ -1,0 +1,4 @@
+{
+  "environment": {"ACCEL_DUCKDB_ROOT": "/home/akhilvb/duckdb-dbcapture"},
+  "base_sources": ["backends/{engine}", "eval/harness", "eval/tests/test_support"]
+}

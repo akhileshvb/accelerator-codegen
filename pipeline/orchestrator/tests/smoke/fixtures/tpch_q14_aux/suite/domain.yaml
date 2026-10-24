@@ -1,0 +1,16 @@
+# The domain every run draws fresh random tuples from (accel_pipeline.test_suite.draw_tuples):
+# 20 tuples in the full tier, 4 in quick, 12 in the stage's validation.
+# $1 is the query's only real parameter; $2 is the end date it derives (type: derived), so every draw
+# keeps $2 = $1 + 1 month the way DuckDB's `DATE + INTERVAL '1' month` does (the day clamped to the
+# target month's last day, e.g. 1995-01-31 -> 1995-02-28).
+#
+# The range is strictly wider than the benchmark generator's own set (first of a month, 1993-01 ..
+# 1997-12): it reaches the first and last data days (1992-01-02, 1998-12-01), the mid-month days, the
+# month ends, the leap days and the months that hold no lineitem at all (empty / NULL answer), so a
+# kernel keyed to any fixed start date or to a month-aligned window fails. The extreme DATEs
+# (0001-01-01, 9999-11-30) stay in params.sql instead, where a derived end date is written by hand:
+# a random draw must keep its own derived end date representable too.
+version: 1
+params:
+  - {name: start_date, type: date, min: 1991-01-01, max: 1999-12-31}
+  - {name: end_date,   type: derived, from: start_date, add_months: 1}

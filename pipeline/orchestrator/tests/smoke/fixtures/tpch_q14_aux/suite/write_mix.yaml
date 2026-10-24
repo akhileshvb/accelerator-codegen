@@ -1,0 +1,20 @@
+# The write frequency the benchmarks sample from on every run (accel_pipeline.test_suite.
+# draw_write_frequencies: 0% is always added). 1-60% spans the range an accelerator has to stay fast
+# across: from a nearly read-only stream (a few refreshes per thousand reads) to a write-heavy stream
+# where more than half the operations maintain the state. The range is wider than the pipeline default
+# and than the sweep's fixed 1/10/50 points, so a kernel tuned to one write frequency is caught.
+#
+# kinds: the relative weights of the write kinds as this application makes them. The TPC-H refresh
+# function delivers and withdraws order chunks in bulk (bulk_insert / bulk_delete dominate), with the
+# smaller point corrections of a live workload on both dependent tables; sequences, key moves and the
+# aborted transaction are maintenance-semantics tests, not application write kinds, so they carry no
+# weight here (their kinds are declared in suite.yaml and exercised by the differential, not the mix).
+version: 1
+frequency_pct: {min: 1, max: 60, samples: 3, distribution: log}
+kinds:
+  bulk_insert: 4
+  bulk_delete: 3
+  bulk_update: 1
+  point_update: 4
+  point_insert: 3
+  point_delete: 2
