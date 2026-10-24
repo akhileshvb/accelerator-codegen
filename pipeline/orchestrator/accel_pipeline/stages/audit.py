@@ -16,7 +16,7 @@ from accel_pipeline.failure import Failure
 from accel_pipeline.jsonio import read_json
 from accel_pipeline.layout import query_dir
 from accel_pipeline.playbook import append_experiment_log
-from accel_pipeline.repair import RepairCtx, repair_turn, run_with_repair
+from accel_pipeline.repair import RepairCtx, repair_turn, run_with_repair, stop_stage
 from accel_pipeline.session import READONLY
 from accel_pipeline.stages.base import run_agent_stage
 from accel_pipeline.stages.gate_plan import workload_post_audit_gates
@@ -72,7 +72,8 @@ def _audit_result(ctx: RepairCtx) -> dict:
 
 def _fix_blocking_findings(ctx: RepairCtx, audit_turn) -> None:
     """The audit's blocking findings go to the implementation session as one batched repair round; the
-    audit session then re-checks only those findings. What is still blocking is recorded, not looped on."""
+    audit session then re-checks only those findings. What is still blocking is recorded, not looped on;
+    an open correctness or fairness finding stops the stage."""
     findings = blocking_findings(_audit_result(ctx))
     if not findings:
         return
@@ -101,6 +102,11 @@ def _fix_blocking_findings(ctx: RepairCtx, audit_turn) -> None:
                           encoding="utf-8")
         append_experiment_log(repo_root, ctx.query, f"- audit: {len(remaining)} findings still open (see {report.name})",
                               workload=ctx.workload)
+        fatal = [f for f in remaining if f.startswith(("the audit's verdict is correctness_ok=false", "fairness:"))]
+        if fatal:
+            raise stop_stage(ctx, Failure(kind="code", stage="audit", source="audit_findings",
+                                          summary="correctness or fairness findings survived the repair round",
+                                          evidence=numbered(fatal)), "audit correctness/fairness findings open")
     else:
         report.unlink(missing_ok=True)
         ctx.log("the re-check cleared every blocking finding")

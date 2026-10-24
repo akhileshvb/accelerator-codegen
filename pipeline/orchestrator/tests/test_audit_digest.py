@@ -15,6 +15,7 @@ from accel_pipeline.audit_digest import (
 )
 from accel_pipeline.config import QuickTierConfig
 from accel_pipeline.failure import Failure
+from accel_pipeline.repair import StageStopped
 from accel_pipeline.stages import audit as audit_stage
 
 GIT = ["git", "-c", "user.name=t", "-c", "user.email=t@t"]
@@ -183,13 +184,26 @@ def test_blocking_findings_go_to_the_main_session_in_one_round_then_the_audit_re
     assert not (stage_ctx.art / "audit_open_findings.md").exists()
 
 
+GENERALITY_ONLY = {"correctness_ok": True, "scale_review": {"generality_failures": ["dates: Feb 29"]}}
+
+
 def test_findings_that_survive_the_recheck_are_recorded_not_looped_on(stage_ctx, monkeypatch):
-    rnd = Round(stage_ctx, [BLOCKED])
+    rnd = Round(stage_ctx, [GENERALITY_ONLY])
     (stage_ctx.art / "audit_result.json").write_text(json.dumps(BLOCKED))
     monkeypatch.setattr(audit_stage, "repair_turn", rnd.repair)
     audit_stage._fix_blocking_findings(stage_ctx, rnd.audit_turn)
     assert len(rnd.repairs) == 1 and len(rnd.audit_messages) == 1
     assert "dates: Feb 29" in (stage_ctx.art / "audit_open_findings.md").read_text()
+
+
+def test_a_surviving_correctness_finding_stops_the_stage(stage_ctx, monkeypatch):
+    stage_ctx.stage, stage_ctx.change_kind, stage_ctx.iteration = "audit", "", 0
+    rnd = Round(stage_ctx, [BLOCKED])
+    (stage_ctx.art / "audit_result.json").write_text(json.dumps(BLOCKED))
+    monkeypatch.setattr(audit_stage, "repair_turn", rnd.repair)
+    with pytest.raises(StageStopped):
+        audit_stage._fix_blocking_findings(stage_ctx, rnd.audit_turn)
+    assert "correctness_ok=false" in (stage_ctx.art / "stop_report.md").read_text()
 
 
 def test_a_clean_audit_has_no_repair_round(stage_ctx, monkeypatch):
