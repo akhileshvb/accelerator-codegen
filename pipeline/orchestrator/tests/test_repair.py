@@ -14,7 +14,7 @@ FAKE_CODEX = Path(__file__).parent / "fixtures" / "fake_codex.sh"
 PASS = ([GateResult("aux_correctness", "pass", {})], None)
 
 
-def gate_fail(name="aux_correctness", text="Segmentation fault in accelerators/tpch/q3/aux.cpp"):
+def gate_fail(name="aux_correctness", text="Segmentation fault in accelerators/toybench/q3/aux.cpp"):
     result = GateResult(name, "fail", {"log_tail": text, "returncode": 1})
     return [result], result
 
@@ -28,7 +28,7 @@ class World:
             tpch_db_sf1=tmp_path, tpch_db_sf10=tmp_path, codex_home=tmp_path / "home", sandbox="none",
             write_policy="off", repair=RepairConfig(**repair),
         )
-        monkeypatch.setattr(repair_mod, "load_run_workload", lambda cfg, name: {"benchmark_name": "tpch"})
+        monkeypatch.setattr(repair_mod, "load_run_workload", lambda cfg, name: {"benchmark_name": "toybench"})
         self.gate_script, self.gate_calls, self.agent_messages, self.events = [], [], [], []
         monkeypatch.setattr(repair_mod, "_run_gates", self._run_gates)
         monkeypatch.setattr(repair_mod, "_rollback", lambda ctx: self.events.append("rollback"))
@@ -75,7 +75,7 @@ def test_exhaustion_rolls_back_replans_then_stops_cleanly(world):
     report = Path(stopped.value.report)
     assert report.name == "stop_report.md" and "Segmentation fault" in report.read_text()
     assert "--resume" in report.read_text()
-    log = (world.tmp / "pipeline/artifacts/tpch/q3/experiment_log.md").read_text()
+    log = (world.tmp / "pipeline/artifacts/toybench/q3/experiment_log.md").read_text()
     assert "rolling back" in log and "stopping" in log
 
 
@@ -106,7 +106,7 @@ def test_a_second_infra_failure_quarantines_the_gate(tmp_path, monkeypatch):
     world.gate_script = [gate_fail("aux_correctness", infra)] * 2
     run_with_repair(world.ctx(), lambda: None, gates=["aux_correctness", "aux_bench_sweep"])
     assert world.gate_calls[-1] == ["aux_bench_sweep"]
-    quarantine = json.loads((tmp_path / "pipeline/artifacts/tpch/q3/quarantine.json").read_text())
+    quarantine = json.loads((tmp_path / "pipeline/artifacts/toybench/q3/quarantine.json").read_text())
     assert quarantine[0]["gate"] == "aux_correctness" and quarantine[0]["infra_reason"] == "harness_error"
     assert world.agent_messages == []
 
@@ -154,7 +154,7 @@ def test_an_unknown_exception_is_retried_once_then_stops(world):
     with pytest.raises(StageStopped, match="orchestrator failure"):
         run_with_repair(world.ctx(), attempt)
     assert world.agent_messages == [] and world.events == []
-    assert "Traceback" in (world.tmp / "pipeline/artifacts/tpch/q3/stop_report.md").read_text()
+    assert "Traceback" in (world.tmp / "pipeline/artifacts/toybench/q3/stop_report.md").read_text()
 
 
 def test_a_provider_flake_reruns_the_attempt_not_the_gates(world):
@@ -204,20 +204,20 @@ def _stage_world(tmp_path, monkeypatch, mode="ok"):
 
     world = World(tmp_path, monkeypatch)
     monkeypatch.undo()  # World's stubs are for the unit tests; re-stub what this one needs
-    monkeypatch.setattr(repair_mod, "load_run_workload", lambda cfg, name: {"benchmark_name": "tpch"})
+    monkeypatch.setattr(repair_mod, "load_run_workload", lambda cfg, name: {"benchmark_name": "toybench"})
     monkeypatch.setattr(repair_mod, "_run_gates", world._run_gates)
     monkeypatch.setattr(repair_mod, "_rollback", lambda ctx: None)
     monkeypatch.setattr(repair_mod, "_replan", lambda ctx, failure: False)
     monkeypatch.setattr("accel_pipeline.infra_fail_fast.handle_infra_failure", lambda *a, **k: None)
     monkeypatch.setenv("FAKE_CODEX_MODE", mode)
     monkeypatch.setenv("FAKE_CODEX_DIR", str(tmp_path))
-    (tmp_path / "accelerators/tpch/q3").mkdir(parents=True)
-    monkeypatch.setenv("FAKE_CODEX_TOUCH", str(tmp_path / "accelerators/tpch/q3/aux.cpp"))
+    (tmp_path / "accelerators/toybench/q3").mkdir(parents=True)
+    monkeypatch.setenv("FAKE_CODEX_TOUCH", str(tmp_path / "accelerators/toybench/q3/aux.cpp"))
     models_cfg = ModelConfig(api_key_env="K", presets={}, stages={}, codex_bin=str(FAKE_CODEX))
     backend = CodexExecBackend(pipeline_config=world.config, model_config=models_cfg, query=3, stage="x",
                                art_dir=tmp_path / "art")
     for name, value in {
-        "load_run_workload": lambda cfg, name: {"benchmark_name": "tpch"},
+        "load_run_workload": lambda cfg, name: {"benchmark_name": "toybench"},
         "apply_workload_overrides": lambda cfg, workload: cfg,
         "render_prompt": lambda *a, **k: "INSTRUCTIONS",
         "save_rendered_prompt": lambda *a, **k: None,
@@ -257,7 +257,7 @@ def test_a_failing_gate_is_repaired_over_two_rounds_in_one_session(tmp_path, mon
     assert "exec resume" not in args[0] and all("exec resume" in a for a in args[1:])
     sid = "11111111-2222-3333-4444-555555555555"
     assert all(sid in a for a in args[1:])
-    assert json.loads((tmp_path / "pipeline/artifacts/tpch/q3/sessions.json").read_text()) == {"3": {"main": sid}}
+    assert json.loads((tmp_path / "pipeline/artifacts/toybench/q3/sessions.json").read_text()) == {"3": {"main": sid}}
     prompts = (tmp_path / "prompts.log").read_text()
     assert prompts.count("INSTRUCTIONS") == 2  # implementation once, then the repair phase's once
     assert prompts.count("## code failure in implementation") == 2
@@ -270,7 +270,7 @@ def test_exhausted_repair_stops_cleanly_without_an_exception_from_the_stage(tmp_
     with pytest.raises(StageStopped):
         run_with_repair(ctx, _implement(world), gates=["aux_correctness"])
     assert len((tmp_path / "args.log").read_text().splitlines()) == 4  # implementation + 3 rounds
-    assert (tmp_path / "pipeline/artifacts/tpch/q3/stop_report.md").is_file()
+    assert (tmp_path / "pipeline/artifacts/toybench/q3/stop_report.md").is_file()
 
 
 def test_a_killed_agent_is_resumed_not_restarted(tmp_path, monkeypatch):

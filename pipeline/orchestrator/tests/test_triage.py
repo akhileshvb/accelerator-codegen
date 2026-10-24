@@ -4,7 +4,7 @@ import pytest
 
 from accel_pipeline import triage
 
-WORKLOAD = {"benchmark_name": "tpch", "query_number": 3}
+WORKLOAD = {"benchmark_name": "toybench", "query_number": 3}
 
 TSAN = """WARNING: ThreadSanitizer: data race (pid=1)
   Write of size 8 at 0x1 by thread T1:
@@ -12,7 +12,7 @@ TSAN = """WARNING: ThreadSanitizer: data race (pid=1)
     #1 run /engine/src/pool.cc:90 (libengine.so+0x2)
 SUMMARY: ThreadSanitizer: data race /engine/src/pool.cc:88 in do_work
 """
-TSAN_OURS = TSAN.replace("/engine/src/pool.cc:88 (libengine", "/repo/accelerators/tpch/q3/aux.cpp:88 (libengine", 1)
+TSAN_OURS = TSAN.replace("/engine/src/pool.cc:88 (libengine", "/repo/accelerators/toybench/q3/aux.cpp:88 (libengine", 1)
 
 
 @pytest.fixture
@@ -56,7 +56,7 @@ def test_harness_errors(text, repo):
 
 
 def test_python_traceback_outside_the_harness_is_code(repo):
-    text = "Traceback (most recent call last):\n  File \"/r/accelerators/tpch/q3/check.py\", line 3\nValueError"
+    text = "Traceback (most recent call last):\n  File \"/r/accelerators/toybench/q3/check.py\", line 3\nValueError"
     assert classify(text, repo) == ("code", None)
 
 
@@ -74,7 +74,7 @@ def test_shared_tree_failures_are_infra(repo):
 
 
 def test_plain_test_failure_is_code(repo):
-    assert classify("Segmentation fault in accelerators/tpch/q3/aux.cpp\n1 test failed", repo) == ("code", None)
+    assert classify("Segmentation fault in accelerators/toybench/q3/aux.cpp\n1 test failed", repo) == ("code", None)
 
 
 def test_transient_provider_failure():
