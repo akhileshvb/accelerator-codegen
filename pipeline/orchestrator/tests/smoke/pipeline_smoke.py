@@ -8,7 +8,7 @@ repair round or a stop means the pipeline's own plumbing is broken. Everything b
 orchestrator, the MCP tooling, the gates, the builds, host.sh, the sandboxes, the freezing, the stamps and the
 measurement lease.
 
-    scripts/pipeline_smoke.sh --workload <fixtures/NAME> --engine <fixtures/engines/NAME> [--rev HEAD] [--work DIR]
+    pipeline_smoke.sh --workload <fixtures/NAME> --engine <fixtures/engines/NAME> [--rev HEAD] [--work DIR]
 
 Exit status 0: the run passed; 1: a stage, gate or assertion failed (reported with the log tail); 2: the
 environment cannot run it.

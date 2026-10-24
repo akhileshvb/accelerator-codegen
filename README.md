@@ -147,13 +147,16 @@ backends implement are in `substrate/aux/runtime/README.md`.
 Run the pipeline smoke test. It makes a fresh clean tree, runs `--stage all` for one query inside the real
 sandbox with a scripted agent instead of a model (no model calls; `OPENROUTER_API_KEY` must be unset), and fails
 on any stage that did not complete, any announced gate that did not pass, or any repair round or stop: with
-known-good artifacts, those mean the pipeline's own plumbing is broken. It prints a per-stage timing table.
+known-good artifacts, those mean the pipeline's own plumbing is broken. It prints a per-stage timing table
+(about ten minutes, mostly the gates' builds and benchmarks).
 
 ```bash
-scripts/pipeline_smoke.sh --workload tpch_q14_aux --engine duckdb      # ~10 minutes, dominated by the builds
-ACCEL_RUN_PIPELINE_SMOKE=1 pytest pipeline/orchestrator/tests/test_pipeline_smoke.py   # the same, as a test (opt in)
+cd scripts && ./pipeline_smoke.sh --workload <workload> --engine <engine>
+ACCEL_RUN_PIPELINE_SMOKE=1 pytest -m pipeline_smoke pipeline/orchestrator/tests   # the same, as a test (opt in)
 ```
 
-A workload or engine is added as data: `pipeline/orchestrator/tests/smoke/fixtures/<workload>/` (analysis,
-suite, `fixture.json`) and `fixtures/engines/<engine>.json`. The known-good accelerator is taken from
-`--reference-rev` (default: the revision under test). The smoke test is not part of clean trees.
+A workload or engine is added as fixture data next to the smoke driver (analysis output, a test suite, the machine
+inputs of the run); the known-good accelerator is taken from `--reference-rev` (default: the revision under test).
+`ACCEL_HOST_LOCK_DIR` should name the lock directory of the real runs, so the smoke run's benchmarks queue behind
+theirs; `ACCEL_MEASURE_SLOTS` below the number of measurement cores gives the benchmarks several threads, which
+exercises the one-thread point of the bench. The smoke test is not part of clean trees.
