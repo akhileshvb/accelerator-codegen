@@ -362,3 +362,28 @@ def test_quick_first_fails_the_batch_before_the_heavy_gates(tmp_path, monkeypatc
     assert failed.name == "quick_check" and "projected" in failed.data["reason"] and heavy == []
     repair_mod._run_gates(ctx, ["aux_correctness"])
     assert heavy == [["aux_correctness"]]
+
+
+def _blocked():
+    from accel_pipeline.failure import AGENT_BLOCKER, Failure, StageFailure
+
+    raise StageFailure(Failure(kind="infra", stage="implementation", source="agent", summary="the gate looks stuck",
+                               infra_reason=AGENT_BLOCKER))
+
+
+def test_a_blocker_from_the_stage_turn_runs_the_gates_once_and_passes_on_them(world):
+    run_with_repair(world.ctx(), _blocked, gates=["aux_correctness"])
+    assert world.gate_calls == [["aux_correctness"]] and world.agent_messages == []
+
+
+def test_a_blocker_the_gates_confirm_stops_the_stage(world):
+    world.gate_script = [gate_fail()]
+    with pytest.raises(StageStopped) as stopped:
+        run_with_repair(world.ctx(), _blocked, gates=["aux_correctness"])
+    assert "agent-reported blocker persists" in Path(stopped.value.report).read_text()
+
+
+def test_a_blocker_without_gates_stops_at_once(world):
+    with pytest.raises(StageStopped):
+        run_with_repair(world.ctx(), _blocked)
+    assert world.gate_calls == []

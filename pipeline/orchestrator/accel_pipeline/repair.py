@@ -103,7 +103,11 @@ def run_with_repair(ctx: RepairCtx, attempt: Callable[[], T], *, gates: list[str
         _record(ctx, failure)
         if blocker is not None:
             raise stop_stage(ctx, _persisting(blocker, failure), f"agent-reported blocker persists: {blocker.summary}")
-        if failure.infra_reason == AGENT_BLOCKER:  # from the stage itself: there is no check to re-run
+        if failure.infra_reason == AGENT_BLOCKER:
+            if gates and from_attempt:  # the stage's own checks decide whether the obstacle is real
+                blocker = failure
+                ctx.log(f"the agent reported a blocker ({failure.summary}); running the stage's gates once")
+                continue
             raise stop_stage(ctx, failure, failure.summary)
         if failure.infra_reason == PROVIDER_FLAKE:
             flakes += 1
