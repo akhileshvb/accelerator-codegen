@@ -277,9 +277,9 @@ def test_agent_scratch_is_writable_and_invisible_to_gates_and_audit(tmp_path):
     from accel_pipeline.build_stamp import is_relevant
     from accel_pipeline.write_ownership import is_owned_path
 
-    assert is_owned_path(tmp_path, "accelerators/tpch/q3/scratch/bench.cpp", query=3)
-    assert is_owned_path(tmp_path, "accelerators/tpch/q3/tests/agent_stress.cpp", query=3)
-    assert not is_owned_path(tmp_path, "accelerators/tpch/q4/scratch/bench.cpp", query=3)
-    query_dir = "accelerators/tpch/q3"
-    assert not is_relevant("accelerators/tpch/q3/scratch/bench.cpp", query_dir)
-    assert is_relevant("accelerators/tpch/q3/duckdb/aux/module.cpp", query_dir)
+    assert is_owned_path(tmp_path, "accelerators/toybench/q3/scratch/bench.cpp", query=3, benchmark="toybench")
+    assert is_owned_path(tmp_path, "accelerators/toybench/q3/tests/agent_stress.cpp", query=3, benchmark="toybench")
+    assert not is_owned_path(tmp_path, "accelerators/toybench/q4/scratch/bench.cpp", query=3, benchmark="toybench")
+    query_dir = "accelerators/toybench/q3"
+    assert not is_relevant("accelerators/toybench/q3/scratch/bench.cpp", query_dir)
+    assert is_relevant("accelerators/toybench/q3/toydb/aux/module.cpp", query_dir)

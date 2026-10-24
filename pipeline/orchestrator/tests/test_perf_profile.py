@@ -42,7 +42,7 @@ FAKE_PERF = textwrap.dedent(
         print("# Overhead  Shared Object  Symbol")
         print("    60.00%  libaccelerator_codegen.so  [.] accelerator_codegen::aux_state::query::ScanState(int)")
         print("    15.00%  libaccelerator_codegen.so  [.] accelerator_codegen::aux_state::core::DecodeBlock()")
-        print("    20.00%  libduckdb.so  [.] duckdb::Execute()")
+        print("    20.00%  libtoydb.so  [.] toydb::Execute()")
         print("     5.00%  libc.so.6  [.] 0x00000000000a73e4")
     elif verb == "annotate":
         print("  0.10 :   401000:   vpaddq (%rdi),%ymm0,%ymm0")
@@ -82,7 +82,7 @@ def test_parse_report_folds_into_buckets_and_functions():
         "    40.00%  libaccelerator_codegen.so  [.] ns::query::ScanState(int)\n"
         "    20.00%  libaccelerator_codegen.so  [.] std::sort<ns::query::Entry*>()\n"
         "    15.00%  libaccelerator_codegen.so  [.] ns::core::DecodeBlock()\n"
-        "    10.00%  libduckdb.so  [.] duckdb::Execute()\n"
+        "    10.00%  libtoydb.so  [.] toydb::Execute()\n"
         "     5.00%  benchmark_x_aux  [.] ns::query::Compose()\n"
     )
     parsed = pp.parse_report(text)
