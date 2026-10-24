@@ -6,6 +6,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+from accel_pipeline.core_budget import build_jobs
 from accel_pipeline.config import PipelineConfig, resolve_optimization_edit_paths, resolve_workload_paths
 from accel_pipeline.paths import query_artifacts_dir
 from accel_pipeline.playbook import append_experiment_log
@@ -134,7 +135,7 @@ def rebuild_workload_targets(pipeline_config: PipelineConfig, workload: dict[str
     else:
         targets = [paths["test_target"], paths["bench_target"], "accelerator_codegen"]
     targets = [t for t in targets if t]
-    cmd = ["cmake", "--build", str(pipeline_config.build_dir), "--target", *targets, "-j", "4"]
+    cmd = ["cmake", "--build", str(pipeline_config.build_dir), "--target", *targets, "-j", str(build_jobs())]
     result = subprocess.run(
         cmd,
         cwd=pipeline_config.repo_root,

@@ -8,6 +8,7 @@ import subprocess
 from pathlib import Path
 from typing import Any, Mapping
 
+from accel_pipeline import measurement_lease
 from accel_pipeline.layout import query_dir
 
 _TEXT_KEYS = ("log_tail", "stderr", "stdout", "notes", "reason")
@@ -17,6 +18,8 @@ _STACK_FRAME = re.compile(r"^\s*#\d+ .*? (?:in )?\S*?(/\S+?\.(?:c|cc|cpp|cxx|h|h
 _RACY = re.compile(r"failed on run (\d+) after passing (\d+) times")
 _TIMEOUT = re.compile(r"did not finish within|timed out after")
 _TIMEOUT_RC = frozenset({124, 137})
+_LEASE_BUSY = measurement_lease.BUSY
+_QUEUED_SEC = 5.0  # a wait for the measurement lease this long means other benchmarks were running
 _MISSING_PRODUCER = re.compile(
     r"(?:analysis\.json|adversarial_write_scenarios\.json)[^\n]*(?:not found|missing|no such file)"
     r"|(?:not found|missing|no such file)[^\n]*(?:analysis\.json|adversarial_write_scenarios\.json)"
@@ -93,13 +96,21 @@ def _engine_internal_sanitizer(text: str, workload: Mapping[str, Any], query: in
     return not any(rel in frame for frame in frames for rel in ours)
 
 
-def _loaded(repo_root: Path | None, load_factor: float) -> bool:
-    """The machine is oversubscribed, or another worker holds the shared-tree lease."""
+def _queued_for_lease(text: str) -> bool:
+    waited = measurement_lease.waited_seconds(text)
+    return waited is not None and waited >= _QUEUED_SEC
+
+
+def _loaded(repo_root: Path | None, load_factor: float, text: str = "") -> bool:
+    """The machine is oversubscribed, the failing run queued for the measurement lease, or another
+    worker holds the measurement lease or the shared-tree lease."""
     try:
         if os.getloadavg()[0] > load_factor * (os.cpu_count() or 1):
             return True
     except OSError:
         pass
+    if _queued_for_lease(text) or measurement_lease.held_by_other(os.environ.get("ACCEL_INSTANCE_TAG", "")):
+        return True
     if repo_root is None:
         return False
     from accel_pipeline.shared_file_lease import SharedFileLease, worker_id_from_env
@@ -132,6 +143,8 @@ def classify(
         return "infra", shared
     if _engine_internal_sanitizer(text, workload, query, repo_root):
         return "infra", "engine_internal_sanitizer"
-    if (_TIMEOUT.search(text) or _returncode(data) in _TIMEOUT_RC) and _loaded(repo_root, load_factor):
+    if _LEASE_BUSY.search(text):
+        return "infra", "measurement_lease_busy"
+    if (_TIMEOUT.search(text) or _returncode(data) in _TIMEOUT_RC) and _loaded(repo_root, load_factor, text):
         return "infra", "timeout_under_load"
     return "code", None

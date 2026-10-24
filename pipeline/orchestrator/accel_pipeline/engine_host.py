@@ -6,8 +6,10 @@ names an engine; its facts come from the profile's ``host_runtime``.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import re
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -20,9 +22,16 @@ def host_script(repo_root: Path, engine: str) -> Path:
     return repo_root / HOST_SCRIPT.format(engine=engine)
 
 
+def instance_tag(worker_id: str, build_dir: Path) -> str:
+    """A worker's engine-instance prefix, unique on the host: its id plus a digest of its build dir, so
+    workers of different trees (same query, same engine) never share an instance, container or port."""
+    digest = hashlib.sha1(str(Path(build_dir).resolve()).encode()).hexdigest()[:6]
+    return f"{re.sub(r'[^A-Za-z0-9_.-]', '_', worker_id or 'w0')}-{digest}"
+
+
 def instance_env(repo_root: Path, engine: str, build_dir: Path) -> dict[str, str]:
     """The caller-set variables of the contract; the environment wins over these defaults."""
-    instance = os.environ.get("ACCEL_ENGINE_INSTANCE") or f"accel_{engine}"
+    instance = os.environ.get("ACCEL_ENGINE_INSTANCE") or f"{os.environ.get('ACCEL_INSTANCE_TAG') or 'accel'}-{engine}"
     return {
         "ACCEL_ENGINE_INSTANCE": instance,
         "ACCEL_ENGINE_STATE_DIR": os.environ.get("ACCEL_ENGINE_STATE_DIR")

@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import re
 import subprocess
 import sys
 import time
@@ -16,6 +15,7 @@ from typing import Any
 
 import yaml
 
+from accel_pipeline.engine_host import instance_tag
 from accel_pipeline.env_loader import load_repo_dotenv
 from accel_pipeline.paths import find_repo_root, pipeline_root
 from accel_pipeline.worker_isolation import (
@@ -109,6 +109,7 @@ def run_pack_query(
     extra_args: list[str] | None = None,
     isolation_mode: str = "worktree",
     pack_queries: list[int] | None = None,
+    concurrent_workers: int = 1,
 ) -> dict[str, Any]:
     from accel_pipeline.worker_worktree import ensure_worker_worktree
 
@@ -140,8 +141,10 @@ def run_pack_query(
     env["ACCEL_PIPELINE_ISOLATION_MODE"] = isolation_mode
     env["CODEX_HOME"] = str(codex_home)
     # One engine instance per worker (container names and ports derive from it).
-    base_instance = os.environ.get("ACCEL_ENGINE_INSTANCE") or f"accel_{entry.engine or 'engine'}"
-    env["ACCEL_ENGINE_INSTANCE"] = re.sub(r"[^A-Za-z0-9_.-]", "_", f"{base_instance}_{worker_id}")
+    tag = instance_tag(worker_id, build_dir)
+    env["ACCEL_INSTANCE_TAG"] = tag
+    env["ACCEL_ENGINE_INSTANCE"] = f"{tag}-{entry.engine or 'engine'}"
+    env["ACCEL_CONCURRENT_WORKERS"] = str(concurrent_workers)  # the CPU partition (core_budget)
     if pack_queries:
         env["ACCEL_PIPELINE_PACK_QUERIES"] = ",".join(str(q) for q in pack_queries)
 
@@ -329,6 +332,7 @@ def run_pack(
                 extra_args=extra_args,
                 isolation_mode=isolation_mode,
                 pack_queries=pack_query_ids,
+                concurrent_workers=max_workers,
             )
             for entry in chain
         ]

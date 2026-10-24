@@ -24,7 +24,7 @@ from accel_pipeline.session import HEARTBEAT_FILE
 
 def _forwarded_to_mcp(key: str) -> bool:
     """Engine, verus and mode settings reach the MCP server; the pipeline's own ACCEL_PIPELINE_* are set explicitly."""
-    return key == "ACCEL_PIPELINE_MODE" or (key.startswith("ACCEL_") and not key.startswith("ACCEL_PIPELINE_"))
+    return key in ("ACCEL_PIPELINE_MODE", "CMAKE_BUILD_PARALLEL_LEVEL") or (key.startswith("ACCEL_") and not key.startswith("ACCEL_PIPELINE_"))
 
 
 def sidecar_env_line(key: str, value: Any) -> str:

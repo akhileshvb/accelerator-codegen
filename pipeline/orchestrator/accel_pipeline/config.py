@@ -118,6 +118,31 @@ def _quick_tier_config(data: dict[str, Any]) -> QuickTierConfig:
     )
 
 
+@dataclass(frozen=True)
+class ConcurrencyConfig:
+    """CPU budgets and host-wide leases between concurrently running pipelines (core_budget, measurement_lease)."""
+
+    workers: int = 1  # pipeline workers sharing this host's CPUs (a pack's concurrency overrides it)
+    measure_cores: int | None = None  # CPUs reserved for benchmarks; None: none for one worker, else a fifth (2..8)
+    host_lock_dir: str = ""  # shared by every tree on the host; "": /dev/shm/accel-pipeline-<uid>
+    measurement_lease: bool = True
+    measurement_wait_sec: float = 3600.0  # bound on queuing for the measurement lease
+    shared_lease_wait_sec: float = 300.0  # bound on queuing for the shared-tree lease
+
+    @classmethod
+    def from_dict(cls, raw: dict[str, Any] | None) -> "ConcurrencyConfig":
+        raw = raw or {}
+        cores = raw.get("measure_cores")
+        return cls(
+            workers=max(1, int(raw.get("workers", cls.workers))),
+            measure_cores=None if cores is None else int(cores),
+            host_lock_dir=str(raw.get("host_lock_dir") or ""),
+            measurement_lease=bool(raw.get("measurement_lease", cls.measurement_lease)),
+            measurement_wait_sec=float(raw.get("measurement_wait_sec", cls.measurement_wait_sec)),
+            shared_lease_wait_sec=float(raw.get("shared_lease_wait_sec", cls.shared_lease_wait_sec)),
+        )
+
+
 @dataclass
 class PipelineConfig:
     repo_root: Path
@@ -187,6 +212,7 @@ class PipelineConfig:
     write_policy: str = "warn"
     measurement: MeasurementConfig = field(default_factory=MeasurementConfig)
     quick_tier: QuickTierConfig = field(default_factory=QuickTierConfig)
+    concurrency: ConcurrencyConfig = field(default_factory=ConcurrencyConfig)
 
 
 def _load_yaml(path: Path) -> dict[str, Any]:
@@ -512,6 +538,7 @@ def load_pipeline_config(
         write_policy=_choice(data, "write_policy", ("enforce", "warn", "off"), "warn"),
         measurement=MeasurementConfig.from_dict(data.get("measurement")),
         quick_tier=_quick_tier_config(data),
+        concurrency=ConcurrencyConfig.from_dict(data.get("concurrency")),
     )
 
     env_build = os.environ.get("ACCEL_PIPELINE_BUILD_DIR")
@@ -1050,6 +1077,7 @@ def _apply_optimization_block(pipeline_config: PipelineConfig, opt: dict[str, An
         sandbox_extra_rw=list(pipeline_config.sandbox_extra_rw),
         write_policy=pipeline_config.write_policy,
         quick_tier=pipeline_config.quick_tier,
+        concurrency=pipeline_config.concurrency,
     )
 
 
@@ -1173,6 +1201,7 @@ def _apply_workload_overrides(pipeline_config: PipelineConfig, workload: dict[st
         sandbox_extra_rw=list(pipeline_config.sandbox_extra_rw),
         write_policy=pipeline_config.write_policy,
         quick_tier=pipeline_config.quick_tier,
+        concurrency=pipeline_config.concurrency,
     )
     if has_opt:
         return _apply_optimization_block(merged, opt_block)

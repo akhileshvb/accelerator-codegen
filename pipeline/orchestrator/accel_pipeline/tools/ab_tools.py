@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from accel_pipeline.core_budget import build_jobs
 from accel_pipeline.aux_bench import parse_aux_benchmark_output, summarize_sweep_rows
 from accel_pipeline.aux_profile import write_aux_profile_artifacts
 from accel_pipeline.base_bench import parse_benchmark_log
@@ -22,6 +23,7 @@ from accel_pipeline.config import (
 from accel_pipeline.kernel_snapshot import resolve_snapshot_paths
 from accel_pipeline.layout import query_dir
 from accel_pipeline.measurement import check_measurement
+from accel_pipeline.measurement_lease import lease_note, noise_warning, run_measured
 from accel_pipeline.optimization_checkpoint import load_best_valid_baseline
 from accel_pipeline.optimization_eval import aux_optimization_score, improvement_ratio
 from accel_pipeline.optimization_runtime import record_ab_trial, refresh_optimization_runtime
@@ -251,6 +253,14 @@ def _reference_score_for_trial(ctx: AbToolContext) -> float:
     return 0.0
 
 
+def _run_bench(cmd: list[str], *, acceptance: bool, **kwargs) -> subprocess.CompletedProcess:
+    """Acceptance runs are measurements: they queue for the measurement lease and run on its CPUs. The quick
+    tier (direction only) runs at once, on the worker's own CPUs."""
+    if acceptance:
+        return run_measured(cmd, reason="run_quick_benchmark acceptance", **kwargs)
+    return subprocess.run(cmd, **kwargs)
+
+
 def _run_aux_quick_sweep(
     bin_path: Path,
     *,
@@ -293,8 +303,9 @@ def _run_aux_quick_sweep(
     outputs: list[str] = []
     for pct in freqs:
         try:
-            proc = subprocess.run(
+            proc = _run_bench(
                 [str(bin_path), "--query", str(query), str(pct)],
+                acceptance=acceptance,
                 cwd=repo,
                 capture_output=True,
                 text=True,
@@ -521,7 +532,7 @@ def make_ab_tools(ctx: AbToolContext):
 
         with build_lock(build_dir):
             build = subprocess.run(
-                ["cmake", "--build", str(build_dir), "--target", bench_target, "-j", "4"],
+                ["cmake", "--build", str(build_dir), "--target", bench_target, "-j", str(build_jobs())],
                 cwd=repo,
                 capture_output=True,
                 text=True,
@@ -573,8 +584,9 @@ def make_ab_tools(ctx: AbToolContext):
                 workload=ctx.workload,
                 include_profile=include_profile,
             )
-            proc = subprocess.run(
+            proc = _run_bench(
                 [str(bin_path)],
+                acceptance=acceptance,
                 cwd=repo,
                 capture_output=True,
                 text=True,
@@ -624,6 +636,10 @@ def make_ab_tools(ctx: AbToolContext):
             if acceptance
             else "quick: direction only, never kept or discarded on this; end_ab_trial(keep=True) needs an acceptance=True run"
         )
+        if lease := lease_note(output):
+            payload["measurement_lease"] = {**lease, "note": f"waited {lease['waited_sec']} s for the measurement lease"}
+        elif not acceptance and (noise := noise_warning(ctx.pipeline_config.repair.load_factor)):
+            payload["measurement_noise"] = noise
         if invalid:
             payload["measurement_invalid"] = invalid
             payload["ab_signal"] = "invalid_measurement"
@@ -698,7 +714,7 @@ def make_ab_tools(ctx: AbToolContext):
                             ctx.workload,
                         ),
                         "-j",
-                        "4",
+                        str(build_jobs()),
                     ],
                     cwd=ctx.pipeline_config.repo_root,
                     capture_output=True,

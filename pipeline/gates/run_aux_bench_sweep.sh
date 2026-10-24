@@ -99,7 +99,7 @@ unset "ACCEL_Q${QUERY}_WRITE_FREQUENCY_PCT"   # the point is the CLI argument (q
 for suite in "${SUITE_LIST[@]}"; do
   export "ACCEL_Q${QUERY}_BENCH_SUITE=${suite}"
   for pct in "${FREQ_LIST[@]}"; do
-    engine_run "${BENCH_TARGET}" --query "${QUERY}" "${pct// /}"
+    engine_measure "${BENCH_TARGET}" --query "${QUERY}" "${pct// /}"
     printf '%s\n' "${LOG}" >> "${SWEEP_LOG}"
     [[ ${RC} -eq 0 ]] || SWEEP_RC=${RC}
     # keep the CSV rows (one header), drop banners

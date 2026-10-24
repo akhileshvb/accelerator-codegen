@@ -20,6 +20,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
 
+from accel_pipeline.core_budget import build_jobs
 from accel_pipeline.layout import PROOFLIB
 from accel_pipeline.textutil import tail_marked
 from accel_pipeline.verus import params as qparams
@@ -370,7 +371,7 @@ def ensure_runner(ctx: VerusContext) -> dict[str, Any]:
         if ctx.runner.is_file():
             return {"ok": True}
         proc = _run(["cmake", "--build", ctx.build_dir, "--target", "verus_kit_runner", "-j",
-                     str(os.cpu_count() or 8)], timeout=7200)
+                     str(build_jobs())], timeout=7200)
     if proc.returncode != 0:
         return {"ok": False, "error": tail_marked(proc.stdout + proc.stderr, 4000)}
     return {"ok": True}
@@ -391,7 +392,7 @@ def build_runner(ctx: VerusContext, *, proofs: bool = True, _foreign_retry: int 
         before = {p.name: p.read_bytes() for p in ctx.kit_dir.glob("*.[ch]pp")} if ctx.kit_dir.is_dir() else {}
         sync_glue(ctx)
         proc = _run(["cmake", "--build", ctx.build_dir, "--target", "verus_kit_runner", "-j",
-                     str(os.cpu_count() or 8)], timeout=7200)
+                     str(build_jobs())], timeout=7200)
         if proc.returncode != 0:
             # every pipeline links every query's glue: put back the last glue that built, so
             # this query's broken glue never fails another pipeline's build

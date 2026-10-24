@@ -36,6 +36,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
 
+from accel_pipeline.core_budget import build_jobs
 from accel_pipeline.textutil import tail_marked
 
 PRIMS_REL = "accelerators/prims"
@@ -389,7 +390,7 @@ def _rebuild_dependents(primary: Path, changed_existing: set[str], build_dir: Pa
     targets = sorted(_targets_for_sources(build_dir, sources))
     if not targets:
         return None
-    jobs = str(os.cpu_count() or 4)
+    jobs = str(build_jobs())
     rc, out = _run(["cmake", "--build", str(build_dir), "--target", *targets, "-j", jobs, "--", "-k"],
                    cwd=primary, env=env, timeout=3600)
     if rc != 0:
@@ -528,7 +529,7 @@ def primitive_publish(
                             f"-DPRIMS_REPO_ROOT={primary}", "-DCMAKE_BUILD_TYPE=Release"], cwd=primary, env=env)
             if rc == 0:
                 rc, out = _run(["cmake", "--build", str(bdir), "--target", "test_prims", "-j",
-                                str(os.cpu_count() or 4)], cwd=primary, env=env)
+                                str(build_jobs())], cwd=primary, env=env)
             if rc != 0:
                 restore()
                 return _fail("test_prims does not build; nothing published", log_tail=tail_marked(out))

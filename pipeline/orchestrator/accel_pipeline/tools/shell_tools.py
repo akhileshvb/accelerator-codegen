@@ -103,7 +103,9 @@ def make_shell_tools(ctx: ToolContext):
                 sticky_lease_obj().ensure_held(holder, reason="cmake under sticky lease")
             else:
                 lease_obj = SharedFileLease(ctx.pipeline_config.repo_root)
-                lease_obj.acquire(holder, reason="cmake shared build", timeout_sec=600.0)
+                lease_obj.acquire(
+                    holder, reason="cmake shared build", timeout_sec=ctx.pipeline_config.concurrency.shared_lease_wait_sec
+                )
                 acquired_here = True
 
         workdir = ctx.pipeline_config.repo_root

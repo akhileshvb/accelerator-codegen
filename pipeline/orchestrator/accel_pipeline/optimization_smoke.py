@@ -7,6 +7,7 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+from accel_pipeline.core_budget import build_jobs
 from accel_pipeline.build_stamp import build_lock, code_stamp
 from accel_pipeline.config import PipelineConfig, resolve_workload_paths
 from accel_pipeline.layout import query_dir
@@ -134,7 +135,7 @@ def run_build(
     with build_lock(build_dir):
         for target in targets:
             proc = subprocess.run(
-                ["cmake", "--build", str(build_dir), "--target", target, "-j", "4"],
+                ["cmake", "--build", str(build_dir), "--target", target, "-j", str(build_jobs())],
                 cwd=pipeline_config.repo_root,
                 capture_output=True,
                 text=True,

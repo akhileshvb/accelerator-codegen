@@ -47,6 +47,8 @@ def _compact_gate_payload(gate_name: str, data: dict) -> dict:
     ):
         if key in data and data[key] is not None:
             compact[key] = data[key]
+    if waited := (data.get("phase_timings") or {}).get("measurement_lease_wait"):
+        compact["measurement_lease"] = f"waited {waited} s for the measurement lease"
     if data.get("status") == "fail":
         from accel_pipeline.gate_capture import log_tail_for_agent
 

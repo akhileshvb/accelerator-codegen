@@ -2,15 +2,18 @@ from __future__ import annotations
 
 import threading
 import time
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from accel_pipeline import gate_parallel
+from accel_pipeline.engine_host import instance_tag
 from accel_pipeline.gate_parallel import run_gates_parallel
 from accel_pipeline.gates import GateResult
 
-CONFIG = SimpleNamespace(quick_tier=SimpleNamespace(gate_jobs=0), worker_id="w3", repo_root=None)
+CONFIG = SimpleNamespace(quick_tier=SimpleNamespace(gate_jobs=0), worker_id="w3", repo_root=None, build_dir=Path("/builds/b3"))
+TAG = instance_tag("w3", CONFIG.build_dir)
 WORKLOAD = {"engine_name": "eng"}
 
 
@@ -88,9 +91,9 @@ def test_the_parallel_group_runs_at_once_each_on_its_own_instance(monkeypatch):
     assert all(r.status == "pass" for r in results)
     instances = {name: env["ACCEL_ENGINE_INSTANCE"] for name, env in fake.envs.items()}
     assert instances == {
-        "aux_multi_connection": "w3-eng-aux_multi_connection",
-        "aux_cross_accel": "w3-eng-aux_cross_accel",
-        "aux_cost_model_calibrate": "w3-eng-aux_cost_model_calibrate",
+        "aux_multi_connection": f"{TAG}-eng-aux_multi_connection",
+        "aux_cross_accel": f"{TAG}-eng-aux_cross_accel",
+        "aux_cost_model_calibrate": f"{TAG}-eng-aux_cost_model_calibrate",
     }
 
 

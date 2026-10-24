@@ -17,7 +17,7 @@ if ! engine_ready "${BENCH_TARGET}"; then
   emit_result "${JSON}" profile skip "benchmark target not built: ${ENGINE_FAIL}" "${ENGINE_LOG}" "query:=${QUERY}"
 fi
 
-ACCEL_BENCH_PROFILE=1 engine_run "${BENCH_TARGET}" "${QUERY}"
+ACCEL_BENCH_PROFILE=1 engine_measure "${BENCH_TARGET}" "${QUERY}"
 SUMMARY="${GATE_ART}/profile_summary.json"
 python3 -c "import json,sys; json.dump({'log_tail': sys.argv[1][-8000:]}, open(sys.argv[2], 'w'), indent=2)" "${LOG}" "${SUMMARY}"
 STATUS=pass
