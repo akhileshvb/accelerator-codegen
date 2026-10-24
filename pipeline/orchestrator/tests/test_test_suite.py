@@ -251,6 +251,8 @@ def test_a_frozen_suite_cannot_be_edited_and_a_change_request_is_the_way(tmp_pat
     ts.archive_change_request(art, "the tester kept the suite as it was")
     assert ts.pending_change_request(art) == ""
     assert "kept the suite" in (art / "test_suite_change_requests" / "01.md").read_text()
+    ts.archive_change_request(art, "filed already by the tester")   # nothing pending: not an error, nothing archived
+    assert len(list((art / "test_suite_change_requests").glob("*.md"))) == 1
 
 
 def test_old_pipeline_states_resume_at_the_renamed_stage(tmp_path):

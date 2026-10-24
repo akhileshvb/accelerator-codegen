@@ -427,6 +427,8 @@ def pending_change_request(art: Path) -> str:
 def archive_change_request(art: Path, outcome: str) -> None:
     """Move the request to test_suite_change_requests/<n>.md with the tester's outcome."""
     path = art / CHANGE_REQUEST
+    if not path.is_file():  # the tester already filed it itself
+        return
     log = art / "test_suite_change_requests"
     log.mkdir(exist_ok=True)
     n = len(list(log.glob("*.md"))) + 1
