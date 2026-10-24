@@ -72,7 +72,9 @@ GATE_SCRIPTS = {
 
 
 # Gates that run a cheaper tier of another gate's script; each has its own result file.
-GATE_TIERS = {"aux_correctness_quick": "quick", "quick_check": "quick"}
+# The sanitizer gate runs on the small test subset too: races do not need the full dataset, and an instrumented
+# build and differential on it took 20+ min per run (past the MCP tool-call limit).
+GATE_TIERS = {"aux_correctness_quick": "quick", "quick_check": "quick", "aux_tsan": "quick"}
 
 
 @dataclass

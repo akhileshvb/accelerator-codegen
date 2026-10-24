@@ -36,3 +36,9 @@ def test_engine_backend_validation_runs_slot_tsan():
     workload = load_workload("engine_mysql", REPO_ROOT)
     assert "slot_tsan" in workload["post_validation_gates"]
     assert _allowed(workload, "bash pipeline/gates/run_aux_tsan.sh slots")
+
+
+def test_the_tsan_gate_runs_on_the_test_subset_but_the_slot_gate_has_no_dataset():
+    from accel_pipeline.gates import GATE_TIERS
+
+    assert GATE_TIERS["aux_tsan"] == "quick" and "slot_tsan" not in GATE_TIERS and "aux_bench_sweep" not in GATE_TIERS
