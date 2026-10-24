@@ -135,21 +135,28 @@ engine_ready() {
 }
 
 # The build-dir binaries run by the ctest tests matching a regex (and not an optional exclude regex), one per
-# line; a test that runs a tool (cmake -P) has none. A gate that runs `ctest` builds them first, and only a
-# configured build dir lists the tests.
+# line; a test that runs a tool (cmake -P) has none. A gate that runs `ctest` builds them first. Only a configured
+# build dir lists the tests, and the listing leaves out the command of a binary that is not built yet, so the
+# commands come from the add_test lines of the generated CTestTestfile.cmake.
 ctest_targets() {
 	local pattern="$1" exclude="${2:-}" args=()
 	[[ -z "${exclude}" ]] || args=(-E "${exclude}")
 	ctest --test-dir "${ACCEL_BUILD_DIR}" -N -R "${pattern}" "${args[@]}" --show-only=json-v1 2>/dev/null |
 		BUILD="${ACCEL_BUILD_DIR}" python3 -c "
-import json, os, sys
+import json, os, re, sys
+from pathlib import Path
 try:
-    tests = json.load(sys.stdin).get('tests', [])
+    names = [t['name'] for t in json.load(sys.stdin).get('tests', [])]
 except ValueError:
-    tests = []
-build = os.path.realpath(os.environ['BUILD'])
-print('\\n'.join(sorted({os.path.basename(t['command'][0]) for t in tests
-                         if t.get('command') and os.path.realpath(t['command'][0]).startswith(build + os.sep)})))
+    names = []
+build = Path(os.environ['BUILD']).resolve()
+files = ''.join(p.read_text(errors='replace') for p in build.rglob('CTestTestfile.cmake') if 'CMakeFiles' not in p.parts)
+found = set()
+for name in names:
+    m = re.search(r'add_test\\(\"' + re.escape(name) + r'\" \"([^\"]+)\"', files)
+    if m and Path(m.group(1)).resolve().parent == build:
+        found.add(Path(m.group(1)).name)
+print('\\n'.join(sorted(found)))
 " || true
 }
 

@@ -242,12 +242,14 @@ def test_aux_unit_builds_the_binaries_of_the_tests_it_runs(repo, tmp_path):
     bin_dir = tmp_path / "fakebin"
     bin_dir.mkdir()
     ctest = bin_dir / "ctest"
-    ctest.write_text("#!/usr/bin/env bash\n"
-                     "if [[ \"$*\" == *--show-only=json-v1* ]]; then\n"
-                     "  echo '{\"tests\": [{\"name\": \"a\", \"command\": [\"'$ACCEL_BUILD_DIR'/test_unit_one\"]}, "
-                     "{\"name\": \"t\", \"command\": [\"/usr/bin/cmake\", \"-P\", \"x.cmake\"]}, "
-                     "{\"name\": \"b\", \"command\": [\"'$ACCEL_BUILD_DIR'/test_unit_two\"]}]}'\n"
-                     "fi\n")
+    ctest.write_text(
+        "#!/usr/bin/env bash\n"
+        "if [[ \"$*\" == *--show-only=json-v1* ]]; then\n"
+        # the listing has no command for a binary that is not built; the add_test lines do
+        "  printf 'add_test(\"a\" \"%s/test_unit_one\" \"x\")\\nadd_test(\"t\" \"/usr/bin/cmake\" \"-P\" \"y\")\\n"
+        "add_test(\"b\" \"%s/test_unit_two\")\\n' \"$ACCEL_BUILD_DIR\" \"$ACCEL_BUILD_DIR\" > \"$ACCEL_BUILD_DIR/CTestTestfile.cmake\"\n"
+        "  echo '{\"tests\": [{\"name\": \"a\"}, {\"name\": \"t\"}, {\"name\": \"b\"}]}'\n"
+        "fi\n")
     ctest.chmod(0o755)
     _, calls, *_ = run_gate(repo, "run_aux_unit_tests.sh", "5",
                             env_extra={"PATH": f"{bin_dir}:{os.environ['PATH']}"})
