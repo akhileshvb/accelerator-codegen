@@ -162,6 +162,7 @@ def run_quick_check(pipeline_config: PipelineConfig, workload: dict, query: int,
     timings.update(result.data.get("phase_timings") or {})
     if result.status == "pass":
         if stamp:
+            passed_path.parent.mkdir(parents=True, exist_ok=True)
             passed_path.write_text(stamp, encoding="utf-8")
         return QuickResult(status="pass", phase_timings=timings, summary="quick_check passed")
     passed_path.unlink(missing_ok=True)

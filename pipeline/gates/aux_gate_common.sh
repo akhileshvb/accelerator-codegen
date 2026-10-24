@@ -111,12 +111,12 @@ build_stamp() {
 	local scope=()
 	[[ -z "${BENCHMARK_NAME:-}" ]] || scope=(--query-dir "accelerators/${BENCHMARK_NAME}/q${GATE_QUERY}")
 	python3 "${GATE_ROOT}/pipeline/orchestrator/accel_pipeline/build_stamp.py" "${GATE_ROOT}" "${scope[@]}" \
-		"$*" "${ACCEL_CMAKE_ARGS}" "${ACCEL_BUILD_DIR}" "${ACCEL_ENGINE_INSTANCE}" \
-		"$(stat -c %Y "${ACCEL_BUILD_DIR}/CMakeCache.txt" 2>/dev/null)"
+		"$*" "${ACCEL_CMAKE_ARGS}" "${ACCEL_BUILD_DIR}" "${ACCEL_ENGINE_INSTANCE}" 2>/dev/null
 }
 
 # up + load + build for the targets; the build is skipped when the same targets already built
-# from the same stamp in this instance (ACCEL_BUILD_STAMP_CACHE=0 turns that off).
+# from the same stamp in this instance and the build dir is configured (ACCEL_BUILD_STAMP_CACHE=0
+# turns the cache off).
 engine_ready() {
 	local started stamp="" stamp_file="${ACCEL_ENGINE_STATE_DIR}/build_stamps/$(printf '%s' "$*" | sha1sum | cut -c1-16)"
 	if [[ "${ACCEL_BUILD_STAMP_CACHE:-1}" != 0 ]]; then
@@ -124,7 +124,7 @@ engine_ready() {
 		stamp="$(build_stamp "$@")" || stamp=""
 		record_phase build_stamp "${started}"
 	fi
-	if [[ -n "${stamp}" && "$(cat "${stamp_file}" 2>/dev/null)" == "${stamp}" ]]; then
+	if [[ -n "${stamp}" && -f "${ACCEL_BUILD_DIR}/CMakeCache.txt" && "$(cat "${stamp_file}" 2>/dev/null)" == "${stamp}" ]]; then
 		engine_steps "up" "load ${SCHEMA_SQL}"
 		return
 	fi

@@ -27,6 +27,17 @@ def _resolve_query(args: argparse.Namespace) -> int:
     return int(args.query or 0)
 
 
+def _budget_footer(pipeline_config, stage: str, query: int) -> str:
+    """The wall-budget notice appended to every tool result (empty until a deadline is near); never fails a call."""
+    try:
+        from accel_pipeline.session import budget_footer
+
+        footer = budget_footer(pipeline_config, stage, query)
+    except Exception:  # noqa: BLE001
+        return ""
+    return f"\n\n{footer}" if footer else ""
+
+
 def _build_context(args: argparse.Namespace):
     from accel_pipeline.config import load_pipeline_config, load_workload, apply_workload_overrides
     from accel_pipeline.paths import find_repo_root, query_artifacts_dir
@@ -347,16 +358,6 @@ def main(argv: list[str] | None = None) -> int:
                 "(CodexExecBackend should write pipeline/.codex/accel_pipeline_mcp.env)"
             )
         return context
-
-    def _budget_footer(pipeline_config, stage: str, q: int) -> str:
-        """The wall-budget notice (empty until a deadline is near); never fails a tool call."""
-        try:
-            from accel_pipeline.session import budget_footer
-
-            footer = budget_footer(pipeline_config, stage, q)
-        except Exception:  # noqa: BLE001
-            return ""
-        return f"\n\n{footer}" if footer else ""
 
     def _call(name: str, *a, **kw) -> str:
         try:

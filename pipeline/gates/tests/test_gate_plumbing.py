@@ -75,9 +75,9 @@ def run_gate(repo, script, *args, ctx_extra=None, env_extra=None, kind="aux_stat
         "ACCEL_ENGINE_STATE_ROOT": str(repo / "state"), "FAKE_COST_MODEL": str(repo / "cost_model.json"),
         "ACCEL_PIPELINE_BUILD_DIR": str(repo / "build-release"), **(env_extra or {}),
     }
-    env.pop("ACCEL_ENGINE_INSTANCE", None)
-    env.pop("ACCEL_ENGINE_STATE_DIR", None)
-    env.pop("ACCEL_CMAKE_ARGS", None)
+    for pinned in ("ACCEL_ENGINE_INSTANCE", "ACCEL_ENGINE_STATE_DIR", "ACCEL_CMAKE_ARGS"):
+        if pinned not in (env_extra or {}):
+            env.pop(pinned, None)
     proc = subprocess.run(["bash", str(repo / "pipeline" / "gates" / script), *args], cwd=repo,
                           env=env, capture_output=True, text=True, timeout=120)
     calls = [l.split(" | ")[0] for l in log.read_text().splitlines()] if log.exists() else []
