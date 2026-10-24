@@ -39,7 +39,6 @@ txns:
   "022.sql": {kind: bulk_delete}
   "023.sql": {kind: bulk_update}
   "024.sql": {kind: bulk_update}
-  "025.sql": {kind: point_insert}
   "026.sql": {kind: point_update}
   "027.sql": {kind: key_move}
   "028.sql": {kind: point_update}
