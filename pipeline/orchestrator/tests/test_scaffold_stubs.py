@@ -112,11 +112,13 @@ def test_materialize_registration_fills_the_engines_template_once(tmp_path, monk
     (tmp_path / "art").mkdir()
     monkeypatch.setattr("accel_pipeline.workload_facts.query_artifacts_dir", lambda *a, **k: tmp_path / "art")
     register = "accelerators/toybench/q1/toyengine/aux/register.cpp"
-    workload = {"benchmark_name": "toybench", "engine_name": "toyengine", "parameters": [{"name": "c", "type": "integer"}],
+    workload = {"workload_kind": "aux_state", "benchmark_name": "toybench", "engine_name": "toyengine", "parameters": [{"name": "c", "type": "integer"}],
                 "engine_host": {"aux_register_path": register},
                 "reference_sql_path": str(repo / "workloads/toybench/instances/seed_1/1.sql")}
     config = type("Cfg", (), {"repo_root": repo})()
 
+    stateless = {**workload, "workload_kind": "base"}  # a stateless query has no analysis accelerator_id and no aux module
+    assert materialize_registration(config, stateless, 1)["created"] == [] and not (repo / register).exists()
     assert materialize_registration(config, workload, 1) == {"created": [register]}
     text = (repo / register).read_text()
     assert '1 toybench_q1_aux accel_toybench_q1_aux {"INTEGER"} {"t", "u"}' in text and "u.c > $1" in text

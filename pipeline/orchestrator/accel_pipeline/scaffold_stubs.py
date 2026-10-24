@@ -205,6 +205,8 @@ def materialize_registration(pipeline_config: PipelineConfig, workload: dict[str
     from accel_pipeline.paths import analysis_artifact_path
 
     repo = pipeline_config.repo_root
+    if workload.get("workload_kind") != "aux_state":  # the declining module is an aux module; a stateless query has none
+        return {"created": [], "skipped": "not an aux-state workload"}
     engine = str(workload.get("engine_name") or "")
     host = workload.get("engine_host") or {}
     destination = str(host.get("aux_register_path") or "")
