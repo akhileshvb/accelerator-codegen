@@ -1,0 +1,48 @@
+version: 1
+query: 3
+rationale: >
+  Q3 joins customer (c_mktsegment = $1), orders (o_orderdate < $2) and lineitem (l_shipdate > $2) and keeps the top 10
+  groups by revenue. The tuples spread the five segments and the cutoff over the whole date domain, add off-spec
+  segments (case, padding, unknown), extreme dates and empty answers; domain.yaml draws fresh ones every run. The
+  transactions write every dependent table (insert, update, delete), move customers between segments, change dates and
+  prices of lines in answers, and run RF-shaped bulk chunks with keys beyond 2^32.
+edge_coverage:
+  in_spec: [1, 2, 3, 4, 5, 9, 10, 11]
+  off_spec: [19, 20, 21, 22, 23]
+  null_param: "n/a: a NULL segment or cutoff makes every comparison unknown, an empty answer that tuple 23 and the empty dates already cover"
+  empty_result: [19, 20, 21, 22, 23]
+  limit_ties: [12]
+  extreme_values: [6, 7, 8, 17, 18, 24]
+  large_keys: "n/a: no key parameter; keys beyond 2^32 are written by transaction 022"
+txns:
+  "001.sql": {kind: key_move}
+  "002.sql": {kind: sequence}
+  "003.sql": {kind: point_update}
+  "004.sql": {kind: point_insert}
+  "005.sql": {kind: point_delete}
+  "006.sql": {kind: point_update}
+  "007.sql": {kind: key_move}
+  "008.sql": {kind: point_insert}
+  "009.sql": {kind: sequence}
+  "010.sql": {kind: point_update}
+  "011.sql": {kind: sequence}
+  "012.sql": {kind: point_update}
+  "013.sql": {kind: point_update}
+  "014.sql": {kind: point_insert}
+  "015.sql": {kind: point_update}
+  "016.sql": {kind: key_move}
+  "017.sql": {kind: sequence}
+  "018.sql": {kind: point_update}
+  "019.sql": {kind: point_update}
+  "020.sql": {kind: point_delete}
+  "021.sql": {kind: sequence}
+  "022.sql": {kind: bulk_insert}
+  "023.sql": {kind: bulk_delete}
+not_applicable:
+  rollback: "the Verus kit runner that shares this suite cannot abort a transaction; aborts are covered by the engine harness's own write checks"
+point_writes: {min_count: 4, max_probes: 8, tables: [customer, orders, lineitem]}
+bulk_writes: {required: true, min_chunks: 2}
+scale_scenarios:
+  - "write of rows with keys beyond 2^32 (transaction 022) into a state sized for SF1 keys"
+  - "RF-sized bulk insert and delete cycles (022, 023): state must not grow"
+  - "bulk write at 1 vs N maintenance threads with ACCEL_AUX_TEST_GRAIN=1 (aux_tsan)"

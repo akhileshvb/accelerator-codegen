@@ -37,7 +37,7 @@ FROZEN_RECORD = "test_suite_frozen.json"
 CHANGE_REQUEST = "test_suite_change_request.md"
 ROLLBACK_MARK = "-- rollback"
 
-EDGE_CLASSES = ("in_spec", "off_spec", "null", "empty_result", "limit_ties", "extreme_values", "large_keys")
+EDGE_CLASSES = ("in_spec", "off_spec", "null_param", "empty_result", "limit_ties", "extreme_values", "large_keys")
 TXN_KINDS = ("point_insert", "point_update", "point_delete", "bulk_insert", "bulk_update", "bulk_delete",
              "sequence", "rollback", "key_move", "other")
 VERBS = ("INSERT", "UPDATE", "DELETE")
@@ -338,9 +338,9 @@ def validate_report(report: dict[str, Any], suite: Path, dependent_tables: list[
     for i in edges.get("empty_result") if isinstance(edges.get("empty_result"), list) else []:
         if 1 <= i <= len(rows) and rows[i - 1] != 0:
             problems.append(f"edge_coverage.empty_result: tuple {i} returns {rows[i - 1]} rows, not none")
-    for i in edges.get("null") if isinstance(edges.get("null"), list) else []:
+    for i in edges.get("null_param") if isinstance(edges.get("null_param"), list) else []:
         if 1 <= i <= len(tuples) and not re.search(r"\bnull\b", tuples[i - 1], re.I):
-            problems.append(f"edge_coverage.null: tuple {i} contains no NULL")
+            problems.append(f"edge_coverage.null_param: tuple {i} contains no NULL")
     if not aux:
         return problems
     changes = {e["txn"]: int(e["changes_answers_of"]) for e in report.get("txn_effects") or []}
