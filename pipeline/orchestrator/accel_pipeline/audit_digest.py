@@ -180,7 +180,8 @@ def _open_findings(art: Path) -> list[str]:
         out += [f"- gate `{q.get('gate')}` quarantined ({q.get('infra_reason')}) in {q.get('stage')}"
                 for q in json.loads(quarantine.read_text(encoding="utf-8"))]
     for result in sorted(gates_dir_for_query(art).glob("*.json")):
-        status = read_json(result).get("status")
+        data = read_json(result)
+        status = data.get("status") if isinstance(data, dict) else None  # not every file there is a gate result
         if status not in (None, "pass", "skip", "cancelled"):
             out.append(f"- gate `{result.stem}` last result: {status}")
     summary = read_json(art / "aux_bench_summary.json")

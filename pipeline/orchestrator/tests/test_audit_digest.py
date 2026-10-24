@@ -93,6 +93,13 @@ def test_the_digest_maps_files_entry_points_design_log_and_open_findings(config)
     assert digest == query_digest(cfg, WORKLOAD, 5)  # deterministic
 
 
+def test_files_in_the_gates_directory_that_are_not_gate_results_are_ignored(config):
+    cfg, art = config
+    (art / "gates").mkdir()
+    (art / "gates" / "aux_bench_draws.json").write_text("[1, 2, 3]")
+    assert "none recorded" in query_digest(cfg, WORKLOAD, 5)
+
+
 def test_the_digest_without_an_analysis_or_log_still_renders(config):
     cfg, _ = config
     digest = query_digest(cfg, WORKLOAD, 5)
