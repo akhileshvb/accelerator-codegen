@@ -20,6 +20,7 @@ from accel_pipeline.engine_profile import (
 from accel_pipeline.layout import backend_glob, query_dir, query_glob
 from accel_pipeline.paths import find_repo_root, pipeline_root
 from accel_pipeline.shared_file_lease import DEFAULT_SHARED_PATH_GLOBS
+from accel_pipeline.test_suite import SuiteConfig
 
 
 @dataclass
@@ -187,6 +188,7 @@ class PipelineConfig:
     write_policy: str = "warn"
     measurement: MeasurementConfig = field(default_factory=MeasurementConfig)
     quick_tier: QuickTierConfig = field(default_factory=QuickTierConfig)
+    test_suite: SuiteConfig = field(default_factory=SuiteConfig)
 
 
 def _load_yaml(path: Path) -> dict[str, Any]:
@@ -512,6 +514,7 @@ def load_pipeline_config(
         write_policy=_choice(data, "write_policy", ("enforce", "warn", "off"), "warn"),
         measurement=MeasurementConfig.from_dict(data.get("measurement")),
         quick_tier=_quick_tier_config(data),
+        test_suite=SuiteConfig.from_dict(data.get("test_suite")),
     )
 
     env_build = os.environ.get("ACCEL_PIPELINE_BUILD_DIR")

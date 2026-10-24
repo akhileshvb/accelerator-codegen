@@ -66,6 +66,15 @@ def workload_schema_sql(bench: str) -> str:
     return f"{WORKLOADS}/{bench}/schema.sql"
 
 
+def workload_schema_constraints(bench: str) -> str:
+    return f"{WORKLOADS}/{bench}/schema_constraints.sql"
+
+
+def suite_dir(bench: str, query: int | str) -> str:
+    """The query's test suite: written by the test_suite stage, then frozen (accel_pipeline.test_suite)."""
+    return f"{ACCELERATORS}/{bench}/q{query}/tests/workload"
+
+
 @dataclass(frozen=True)
 class Layer:
     """Which layer a repo-relative path belongs to."""

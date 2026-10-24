@@ -54,9 +54,9 @@ aux_bench_sweep_optimization:
   write_mix_sample:
     enabled: true
     count: 2
-    choices: [1, 5, 10]
-    # Cap mixes at 10%: higher % (20–50) can hang baseline for minutes–hours when
-    # aux write paths full-rebuild (seen on Q8). Agents still see a write axis.
+    # The frequencies are drawn from the query's suite write_mix.yaml, capped here: above ~10% the
+    # baseline can hang for minutes–hours when aux write paths full-rebuild (seen on Q8).
+    max_pct: 10
     lock_per_attempt: true
   optimization_score_metric: dual_axis_weighted
   read_score_weight: 0.75

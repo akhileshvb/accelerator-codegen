@@ -15,6 +15,7 @@ fi
 
 # shellcheck source=aux_gate_common.sh
 source "$(dirname "${BASH_SOURCE[0]}")/aux_gate_common.sh"
+source "$(dirname "${BASH_SOURCE[0]}")/suite_gate_common.sh"
 export ACCEL_GATE_TIER=quick
 load_aux_gate_context "${ROOT}" "${QUERY}"
 
@@ -27,7 +28,7 @@ fi
 HOST_RUN="${ENGINE_HOST} run"
 fail_step() { # step reproduce-command
   emit_result "${JSON}" quick_check fail "$1 failed" "${ENGINE_LOG:-}${LOG:-}" "step=$1" \
-    "reproduce=ACCEL_ENGINE_INSTANCE=${ACCEL_ENGINE_INSTANCE} ACCEL_ENGINE_STATE_DIR=${ACCEL_ENGINE_STATE_DIR} ACCEL_BUILD_DIR=${ACCEL_BUILD_DIR} $2"
+    "reproduce=ACCEL_ENGINE_INSTANCE=${ACCEL_ENGINE_INSTANCE} ACCEL_ENGINE_STATE_DIR=${ACCEL_ENGINE_STATE_DIR} ACCEL_BUILD_DIR=${ACCEL_BUILD_DIR} $2" "${SUITE_EXTRAS[@]}"
 }
 
 # The query's other registered ctest tests (the aux smoke test is run directly below).
@@ -62,7 +63,9 @@ for target in "${EXTRA_TARGETS[@]}"; do
 done
 if [[ ${WITH_DIFF} -eq 1 ]]; then
   export ACCEL_ADV_MAX_PROBES="${ACCEL_ADV_MAX_PROBES:-${ACCEL_QUICK_PROBES:-3}}"
+  suite_prepare quick "${JSON}" quick_check
   engine_run "${DIFF_BINARY}" "${QUERY}"
+  suite_extras run_aux_quick_check.sh
   [[ ${RC} -eq 0 ]] || fail_step differential "${HOST_RUN} ${DIFF_BINARY} ${QUERY}"
 fi
-emit_result "${JSON}" quick_check pass "" "${ENGINE_LOG}${LOG}" "dataset=${ACCEL_DATASET_DIR}"
+emit_result "${JSON}" quick_check pass "" "${ENGINE_LOG}${LOG}" "dataset=${ACCEL_DATASET_DIR}" "${SUITE_EXTRAS[@]}"

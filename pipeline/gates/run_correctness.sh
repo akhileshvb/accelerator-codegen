@@ -12,6 +12,7 @@ fi
 
 # shellcheck source=aux_gate_common.sh
 source "$(dirname "${BASH_SOURCE[0]}")/aux_gate_common.sh"
+source "$(dirname "${BASH_SOURCE[0]}")/suite_gate_common.sh"
 load_aux_gate_context "${ROOT}" "${QUERY}"
 
 JSON="${GATE_OUT}/correctness.json"
@@ -30,8 +31,10 @@ fi
 # templates name).
 ACCEL_SQL_ENTRY="$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('function_name') or '')" "${CTX}")"
 export ACCEL_SQL_ENTRY
+suite_prepare "${ACCEL_GATE_TIER:-full}" "${JSON}" correctness
 engine_run "${DIFF_BINARY}" "${QUERY}"
+suite_extras run_correctness.sh
 if [[ ${RC} -ne 0 ]]; then
-  emit_result "${JSON}" correctness fail "${DIFF_BINARY} failed for query ${QUERY}" "${ENGINE_LOG}${LOG}" "query:=${QUERY}" "exit_code:=${RC}"
+  emit_result "${JSON}" correctness fail "${DIFF_BINARY} failed for query ${QUERY}" "${ENGINE_LOG}${LOG}" "query:=${QUERY}" "exit_code:=${RC}" "${SUITE_EXTRAS[@]}"
 fi
-emit_result "${JSON}" correctness pass "" "${ENGINE_LOG}${LOG}" "query:=${QUERY}" "exit_code:=0"
+emit_result "${JSON}" correctness pass "" "${ENGINE_LOG}${LOG}" "query:=${QUERY}" "exit_code:=0" "${SUITE_EXTRAS[@]}"

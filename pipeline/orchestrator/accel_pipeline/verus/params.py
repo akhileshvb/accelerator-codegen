@@ -16,8 +16,6 @@ comparisons take one draw and hand it to both sides.
 from __future__ import annotations
 
 import json
-import os
-import re
 import subprocess
 import sys
 import time
@@ -25,6 +23,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from accel_pipeline.sql_tuples import fresh_seed, n_params, split_tuple
 from accel_pipeline.verus.context import VerusContext
 
 GENERATOR = "eval/compare/gen_tpch_params.py"
@@ -38,49 +37,6 @@ class Draw:
     path: Path  # the tuples, one per line (what the runner reads)
     record: Path  # JSON copy in the run's artifacts
     problems: list[str] = field(default_factory=list)
-
-
-def fresh_seed() -> int:
-    """A new seed per call: the OS entropy pool (never the clock alone)."""
-    return int.from_bytes(os.urandom(8), "little") % (2**31 - 1) + 1
-
-
-def n_params(query_sql: str) -> int:
-    """How many $n parameters the query takes (the highest n)."""
-    nums = [int(m) for m in re.findall(r"\$(\d+)", query_sql)]
-    return max(nums) if nums else 0
-
-
-def split_tuple(t: str) -> list[str]:
-    """The top-level comma-separated literals of a tuple (quotes and parentheses respected)."""
-    out, depth, cur, i = [], 0, "", 0
-    while i < len(t):
-        c = t[i]
-        if c == "'":
-            j = i + 1
-            while j < len(t):
-                if t[j] == "'" and t[j + 1:j + 2] == "'":
-                    j += 2
-                    continue
-                if t[j] == "'":
-                    break
-                j += 1
-            cur += t[i:j + 1]
-            i = j + 1
-            continue
-        if c in "([":
-            depth += 1
-        elif c in ")]":
-            depth -= 1
-        if c == "," and depth == 0:
-            out.append(cur.strip())
-            cur = ""
-        else:
-            cur += c
-        i += 1
-    if cur.strip():
-        out.append(cur.strip())
-    return out
 
 
 def _generate(ctx: VerusContext, sets: int, seed: int) -> list[str]:

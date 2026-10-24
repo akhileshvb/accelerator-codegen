@@ -85,8 +85,8 @@ def failure_from_gate(
     workload = workload or {}
     kind, reason = classify(result.name, result.data, workload, repo_root, load_factor=load_factor)
     tail = gate_log_tail(result.data)
-    reproduce = ""
-    if workload.get("test_target"):
+    reproduce = str(result.data.get("reproduce") or "")
+    if not reproduce and workload.get("test_target"):
         reproduce = (f"cmake --build build-release --target {workload['test_target']} -j$(nproc) && "
                      f"ctest -R {workload.get('ctest_smoke_regex', '')}")
     return Failure(

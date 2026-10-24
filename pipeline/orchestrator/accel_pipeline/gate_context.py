@@ -14,6 +14,7 @@ from accel_pipeline.config import (
 )
 from accel_pipeline.layout import workload_schema_sql
 from accel_pipeline.paths import gates_dir_for_query, query_artifacts_dir
+from accel_pipeline.test_suite import gate_settings
 from accel_pipeline.workload_facts import FACTS_FILE, workload_facts
 
 
@@ -56,6 +57,8 @@ def build_gate_context(
         "kernel_path": paths["kernel_path"],
         "package_path": paths["package_path"],
     }
+    if kind != "engine_backend":
+        ctx["test_suite"] = gate_settings(pipeline_config, workload, query)
     if workload.get("workload_kind") == "aux_state":
         ctx.update(
             {

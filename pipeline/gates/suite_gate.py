@@ -1,0 +1,101 @@
+#!/usr/bin/env python3
+"""The gates' side of the frozen test suite (accel_pipeline.test_suite): what a gate script needs of it.
+
+    suite_gate.py <root> prepare <quick|full>   exports for the run: verifies the freeze, draws the run's random
+                                                tuples under a fresh seed (ACCEL_SUITE_SEED reproduces one), prints the
+                                                ACCEL_SUITE_* environment (host_contract.md, "Test suite")
+    suite_gate.py <root> summary <report.json>  the run's report as the gate result's `suite` field
+    suite_gate.py <root> mix <acceptance|quick> the write frequencies of one benchmark run: seed and the list
+    suite_gate.py <root> freeze                 record the suite's content hash (the test_suite stage does it)
+
+Exit 3: the suite is edited (or never frozen); the reason is on stderr.  No suite directory: nothing is printed.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import shlex
+import sys
+from pathlib import Path
+
+
+def _context() -> dict:
+    return json.loads(Path(os.environ["ACCEL_GATE_CONTEXT"]).read_text(encoding="utf-8"))
+
+
+def _exports(env: dict[str, str]) -> str:
+    return "\n".join(f"export {k}={shlex.quote(v)}" for k, v in env.items())
+
+
+def prepare(ts, ctx: dict, tier: str) -> int:
+    settings = ctx["test_suite"]
+    suite, art = Path(settings["dir"]), Path(ctx["artifacts_dir"])
+    if not suite.is_dir():
+        return 0
+    if problem := ts.frozen_problem(art, suite):
+        print(problem, file=sys.stderr)
+        return 3
+    seed = int(os.environ.get("ACCEL_SUITE_SEED") or 0) or None
+    cfg = ts.SuiteConfig(**settings["config"])
+    out = Path(os.environ.get("ACCEL_GATE_OUT_DIR") or art / "gates")
+    env = ts.run_environment(suite, tier=tier, cfg=cfg, seed=seed, params_file=out / f"suite_{tier}_params.sql")
+    env.update(
+        ACCEL_SUITE_REPORT=str(out / f"suite_{tier}_report.json"),
+        ACCEL_SUITE_QUERY_SQL=settings["query_sql"],
+        ACCEL_SUITE_FUNCTION=settings["function"],
+        ACCEL_SUITE_ARITY=str(settings["arity"]),
+        ACCEL_SUITE_SCHEMA_SQL=settings["schema_sql"],
+        ACCEL_SUITE_HASH=ts.content_hash(suite),
+    )
+    print(_exports(env))
+    return 0
+
+
+def summary(report_path: str) -> int:
+    try:
+        report = json.loads(Path(report_path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        print("{}")
+        return 0
+    keep = ("ok", "seed", "params", "txns", "checks", "mismatches", "order_mismatches", "write_errors", "reference_errors",
+            "executes", "seconds", "examples", "write_error_examples")
+    print(json.dumps({**{k: report[k] for k in keep if k in report},
+                      "param_tuples": report.get("param_tuples"), "hash": os.environ.get("ACCEL_SUITE_HASH", "")}))
+    return 0
+
+
+def mix(ts, ctx: dict, tier: str) -> int:
+    settings = ctx["test_suite"]
+    suite = Path(settings["dir"])
+    cfg = ts.SuiteConfig(**settings["config"])
+    spec = ts.read_write_mix(suite) if (suite / ts.WRITE_MIX).is_file() else cfg.write_mix
+    if not spec:
+        return 0
+    seed = int(os.environ.get("ACCEL_SUITE_MIX_SEED") or ts.fresh_seed())
+    samples = int(spec["frequency_pct"]["samples"]) if tier == "acceptance" else int(os.environ.get("ACCEL_SUITE_QUICK_SAMPLES", 2))
+    print(json.dumps({"seed": seed, "frequencies": ts.draw_write_frequencies(spec, samples, seed)}))
+    return 0
+
+
+def main(argv: list[str]) -> int:
+    root, command, rest = Path(argv[0]), argv[1], argv[2:]
+    sys.path.insert(0, str(root / "pipeline" / "orchestrator"))
+    from accel_pipeline import test_suite as ts
+
+    if command == "summary":
+        return summary(rest[0])
+    ctx = _context()
+    if command == "prepare":
+        return prepare(ts, ctx, rest[0])
+    if command == "mix":
+        return mix(ts, ctx, rest[0])
+    if command == "freeze":
+        settings = ctx["test_suite"]
+        print(json.dumps(ts.freeze(Path(ctx["artifacts_dir"]), Path(settings["dir"]), query=int(ctx["query_number"]))))
+        return 0
+    raise SystemExit(f"unknown command {command}")
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
