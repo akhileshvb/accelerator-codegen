@@ -1,96 +1,55 @@
-# Q14: 100 * SUM(PROMO lines' value) / SUM(all lines' value) over lineitem JOIN part, restricted to
-# l_shipdate in [start_date, start_date + 1 month). Two dependent tables (the analysis): lineitem
-# supplies the amounts, the shipdate filter and the grain; part supplies the join multiplicity and the
-# exact `p_type LIKE 'PROMO%'` classification. Both are written by every kind of transaction below.
+# Smoke-test suite of the scripted agent: the query's reference parameter tuples and transactions with a manifest
+# that declares them. (The files are data of the smoke test, not a model's work.)
 version: 1
 query: 14
 rationale: >
-  Q14 is a single scalar ratio over the join of two dependent tables, so a maintained intermediate can
-  only be a pair of exact sums (a numerator restricted to `p_type LIKE 'PROMO%'` and a denominator over
-  all rows) and the state under it must answer any DATE window, not the benchmark's month-aligned one.
-  The tuples therefore walk the whole DATE domain (mid-month starts, month ends, leap days, the first
-  and last data days, empty windows, NULL and extreme dates) and domain.yaml re-draws from a wider range
-  than the generator's set, so a kernel keyed to any fixed value or to `date_trunc('month', $1)` fails.
-  The transactions write both tables through point inserts/updates/deletes, key moves across the join
-  and the grouping day, RF-shaped chunks, undoing sequences and one aborted transaction; several of them
-  duplicate the join key (part rows under an existing p_partkey, lineitem rows under an existing
-  (l_orderkey, l_linenumber)) and remove the duplicate again, so a kernel that assumes the schema's
-  undeclared keys are unique either counts the duplicates exactly or declines to the SQL fallback.
+  Q14 is a scalar ratio over lineitem joined to part for one date window. The tuples walk month-aligned windows,
+  whole years, day-wide and leap-day windows and dates outside the data; the transactions write both dependent
+  tables with point and bulk inserts, updates and deletes, duplicate join keys and a key move.
 edge_coverage:
-  # The benchmark generator's own set: the first of a month in 1993-01..1997-12; these spread over the
-  # whole data range and all have a non-empty, non-trivial answer.
   in_spec: [1, 2, 3, 4, 5]
-  # Valid DATEs outside the generator's set: a mid-month window, a window opening on the last data day
-  # (18 lines), one opening on the first data day (a partial month), and windows that lie entirely after
-  # or before the data.
-  off_spec: [6, 7, 8, 9, 10, 11]
-  # A NULL start_date (and NULL end_date): every comparison is unknown, nothing qualifies, and the scalar
-  # aggregate is NULL rather than an error. Tuple 12 holds the NULLs.
-  null_param: [12]
-  # Q14 is a scalar aggregate with no GROUP BY: it answers exactly one row for every parameter, its value
-  # NULL when nothing qualifies. A zero-row answer is impossible, so the empty answer is checked by the
-  # NULL-valued tuples 9-11 and 16-17 and by the report's null_param/answer checks, not by row counts.
-  empty_result: "n/a: the query is a GROUP-BY-free scalar aggregate, so it always returns one row (NULL when empty); tuples 9-11 and 16-17 return NULL"
-  # No LIMIT and no ORDER BY: no cut, so no tie can decide which rows are in the answer.
-  limit_ties: "n/a: the query has no ORDER BY and no LIMIT, so there is no cut where a tie could matter"
-  # Month-end clamping (1995-01-31 -> 1995-02-28), a leap day, a year boundary, and dates outside the
-  # data (0001-01-01, 9999-11-30, 1993-03-31) whose answers are still well defined.
-  extreme_values: [13, 14, 15, 16, 17, 18]
-  # Q14's only parameter is a DATE; no key parameter exists, so no tuple can carry a key beyond 2^32.
-  # Keys of that width are written instead, by txns/016.sql (a part row at key 4294967311) and
-  # txns/017.sql (an 8-row lineitem chunk on it), which is where a 32-bit key or offset breaks.
-  large_keys: "n/a: the only parameter is a DATE; keys beyond 2^32 are exercised by txns/016.sql-017.sql instead"
+  off_spec: [25, 26, 27, 28, 29, 30]
+  null_param: "n/a: the smoke suite carries no NULL window (the real suites do)"
+  empty_result: "n/a: a scalar aggregate always returns one row"
+  limit_ties: "n/a: the query has no ORDER BY and no LIMIT"
+  extreme_values: [31, 32]
+  large_keys: "n/a: the only parameter is a DATE"
 txns:
-  "001.sql": {kind: point_insert}
+  "001.sql": {kind: point_update}
   "002.sql": {kind: point_update}
   "003.sql": {kind: point_update}
-  "004.sql": {kind: point_delete}
-  "005.sql": {kind: sequence}
-  "006.sql": {kind: key_move}
-  "007.sql": {kind: sequence}
-  "008.sql": {kind: point_delete}
-  "009.sql": {kind: point_insert}
-  "010.sql": {kind: sequence}
-  "011.sql": {kind: key_move}
-  "012.sql": {kind: sequence}
-  "013.sql": {kind: point_insert}
-  "014.sql": {kind: sequence}
-  "015.sql": {kind: key_move}
-  "016.sql": {kind: point_insert}
-  "017.sql": {kind: bulk_insert}
-  "018.sql": {kind: bulk_delete}
-  "019.sql": {kind: sequence}
-  "020.sql": {kind: bulk_insert}
-  "021.sql": {kind: bulk_update}
+  "004.sql": {kind: point_update}
+  "005.sql": {kind: point_update}
+  "006.sql": {kind: point_update}
+  "007.sql": {kind: point_insert}
+  "008.sql": {kind: point_update}
+  "009.sql": {kind: point_delete}
+  "010.sql": {kind: point_insert}
+  "011.sql": {kind: point_update}
+  "012.sql": {kind: point_update}
+  "013.sql": {kind: point_delete}
+  "014.sql": {kind: bulk_update}
+  "015.sql": {kind: bulk_update}
+  "016.sql": {kind: bulk_update}
+  "017.sql": {kind: bulk_update}
+  "018.sql": {kind: bulk_insert}
+  "019.sql": {kind: bulk_update}
+  "020.sql": {kind: bulk_delete}
+  "021.sql": {kind: point_insert}
   "022.sql": {kind: bulk_delete}
-  "023.sql": {kind: bulk_insert}
-  "024.sql": {kind: bulk_delete}
+  "023.sql": {kind: bulk_update}
+  "024.sql": {kind: bulk_update}
   "025.sql": {kind: point_insert}
-  "026.sql": {kind: sequence}
-  "027.sql": {kind: point_delete}
-  "028.sql": {kind: rollback}
-# Both dependent tables carry INSERT, UPDATE and DELETE, so no write kind is waived. Every write kind
-# the analysis lists for them is applied incrementally by the accelerator (supported_delta), which the
-# differential checks after each transaction here.
-not_applicable: {}
-# Point writes: the smallest corrections a live workload makes, 3-8 probes on the two dependent tables
-# (adversarial differential probe counts; the probes themselves come from the query's catalog entry).
+  "026.sql": {kind: point_update}
+  "027.sql": {kind: key_move}
+  "028.sql": {kind: point_update}
+  "029.sql": {kind: point_delete}
+  "030.sql": {kind: point_insert}
+  "031.sql": {kind: bulk_insert}
+  "032.sql": {kind: sequence}
+not_applicable:
+  rollback: "the smoke suite applies committed transactions only"
 point_writes: {min_count: 3, max_probes: 8, tables: [lineitem, part]}
-# RF-shaped chunks: 017/018 (an 8-row order chunk on a >2^32 key under one transaction), 020-022 and
-# 023-024 (an in-window order copied, updated and withdrawn), the granularity the TPC-H refresh
-# function commits at, so a per-commit cost that grows with total state is visible. 028 is the same
-# chunk shape applied and then aborted.
 bulk_writes: {required: true, min_chunks: 2}
-# One entry per applicable failure class of scale_factor_contract.md: the write or database that
-# exercises it. The magnitude databases come from scripts/make_tpch_magnitude_dbs.sh.
 scale_scenarios:
-  - "Sums beyond 64 bits (scaled money products, running totals): tpch_big, whose money columns are x3000, with the 8-row chunk insert 017 (one row at DECIMAL(15,2)'s limit) and its bulk delete 018, plus every in-spec tuple's ratio"
-  - "Keys, ids, offsets and counts beyond 32 bits: txns/016.sql-017.sql write part key 4294967311 and lineitem orderkeys 4294967412+, and txns/015.sql moves a part key to max(p_partkey)+1; on tpch_shift every key is at its SF3000 maximum"
-  - "Dense ranges or arrays sized by the maximum key (sparse key space): txns/016.sql-019.sql write a lone key beyond 2^32 into an otherwise 1..200000 key space; state bytes and RSS on tpch_shift must track row counts, not the maximum key"
-  - "Fixed shard, slot or partition counts: the point writes 001-016 and the RF chunks 020-024 on SF1 vs tpch_shift; per-changed-row maintenance time and per-key read time must stay flat"
-  - "A hard-coded cap that forces RebuildAll or a flatten: the RF-shaped commits 017, 020 and 023 (2 chunks minimum, more at scale) must be absorbed incrementally (decision log ApplyDelta, no rebuild or fallback in ReadAuxExecuteCounts)"
-  - "Overlays, tombstones or delta logs that only grow: the delete cycles 004, 008, 010, 014, 018, 019, 022, 024, 026, 027 and the aborted 028 must return state size and read time to the fresh-build baseline"
-  - "Per-commit work proportional to total state (whole-payload clones, full-state passes): the single-row commits 001-008 on SF1 vs tpch_shift and the magnitude databases, where one row's maintenance must not scale with the table"
-  - "Serial per-row work at large refresh or build sizes: the RF chunks 017, 020-024 with ACCEL_AUX_MAINT_THREADS / BUILD_THREADS / ACCEL_AUX_TEST_GRAIN at 1 and above; results must be identical and the time must fall"
-  - "Transient memory peaks (whole-table vectors, all partials alive, buffers sized by state): peak RSS of a build and of the 8-row commit 017 vs settled state must be a small multiple, not 2-5x"
-  - "Node-based maps, per-row strings, scans of all slots or groups: bytes/row and read time of the in-spec tuples at SF1 vs tpch_shift vs tpch_big must stay flat in total state (reads bounded to the days of one window)"
+  - "The smoke suite runs at the test scale only; the scale classes are exercised by the real suites"

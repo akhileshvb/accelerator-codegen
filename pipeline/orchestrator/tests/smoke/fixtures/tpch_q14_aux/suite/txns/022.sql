@@ -1,2 +1,2 @@
--- bulk_delete / lineitem: withdraw the updated chunk of 020/021 in one statement.
-DELETE FROM lineitem WHERE l_shipmode = 'Q14RF1';
+DELETE FROM part WHERE p_comment = 'v14-new';
+DELETE FROM lineitem WHERE l_comment = 'v14-new-line';

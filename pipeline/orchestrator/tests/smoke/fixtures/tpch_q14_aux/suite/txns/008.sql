@@ -1,4 +1,7 @@
--- point_delete / lineitem: remove the scratch row of 001, so the answer drops back to its pre-001
--- shape (the numerator and denominator shrink together). A maintenance that only ever adds is caught
--- here.
-DELETE FROM lineitem WHERE l_comment = 'Q14S1';
+UPDATE lineitem
+SET l_extendedprice = l_extendedprice + 250.00,
+    l_discount = 0.08,
+    l_shipdate = l_shipdate + INTERVAL '1 day'
+WHERE l_comment = 'v14-new-order-line';
+UPDATE orders SET o_totalprice = 27090.50
+WHERE o_comment = 'v14-new-order';

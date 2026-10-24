@@ -1,3 +1,4 @@
--- sequence (redo/undo of 011): the row back inside the window on a day-15 date, so the daily summary
--- for the window must gain it back exactly where it left.
-UPDATE lineitem SET l_shipdate = DATE '1995-06-15' WHERE l_comment = 'Q14M1';
+UPDATE lineitem SET l_extendedprice = l_extendedprice + 100.01, l_discount = 0.03
+WHERE l_comment = 'v14-new-line';
+UPDATE part SET p_type = 'STANDARD BRUSHED COPPER'
+WHERE p_comment = 'v14-new';

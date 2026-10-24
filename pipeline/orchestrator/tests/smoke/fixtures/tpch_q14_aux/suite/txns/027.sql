@@ -1,7 +1,6 @@
--- point_delete / lineitem on real data: delete one joined in-window line (the largest by value), the
--- shape a cancellation takes. Both sums must shrink by exactly that row's contribution.
-DELETE FROM lineitem
-WHERE (l_orderkey, l_linenumber) IN (
-    SELECT l.l_orderkey, l.l_linenumber FROM lineitem l JOIN part p ON p.p_partkey = l.l_partkey
-     WHERE l.l_shipdate >= DATE '1995-06-01' AND l.l_shipdate < DATE '1995-07-01'
-     ORDER BY l.l_extendedprice * (1 - l.l_discount) DESC, l.l_orderkey, l.l_linenumber LIMIT 1);
+UPDATE part SET p_partkey = (SELECT max(p_partkey) + 1 FROM part)
+WHERE p_comment = 'v14-regular';
+UPDATE lineitem SET l_extendedprice = l_extendedprice + 777.77
+WHERE l_comment = 'v14-base-2';
+UPDATE lineitem SET l_extendedprice = l_extendedprice + 0.13
+WHERE l_comment = 'v14-base-3';

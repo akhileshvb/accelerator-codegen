@@ -1,8 +1,7 @@
--- key_move / part: move every row of a PROMO key that has in-window lineitems to a fresh key. The old
--- key disappears from the join, so its lineitems leave the answer; the new key joins nothing yet.
-UPDATE part SET p_partkey = (SELECT COALESCE(MAX(p_partkey), 0) + 1 FROM part)
-WHERE p_partkey = (
-    SELECT q.p_partkey FROM part q JOIN lineitem l ON l.l_partkey = q.p_partkey
-     WHERE l.l_shipdate >= DATE '1995-06-01' AND l.l_shipdate < DATE '1995-07-01'
-       AND q.p_type LIKE 'PROMO%'
-     ORDER BY q.p_partkey DESC LIMIT 1);
+UPDATE lineitem SET l_discount = CASE WHEN l_discount < 0.05 THEN 0.08 ELSE 0.02 END
+WHERE rowid IN (
+    SELECT lineitem.rowid FROM lineitem JOIN part ON l_partkey = p_partkey
+    WHERE l_shipdate >= DATE '1995-03-01' AND l_shipdate < DATE '1995-04-01'
+      AND l_comment NOT LIKE 'v14-%'
+    ORDER BY l_orderkey, l_linenumber LIMIT 20
+);

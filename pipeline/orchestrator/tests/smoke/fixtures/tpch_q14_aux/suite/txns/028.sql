@@ -1,10 +1,6 @@
--- rollback / lineitem: the same in-window chunk insert as 020, applied and then aborted. The
--- accelerator must see nothing at all: no staged maintenance, no epoch, no publish. A suite whose
--- only negative test is this one still catches a maintenance that applies before commit.
--- rollback
-INSERT INTO lineitem
-SELECT * REPLACE ((SELECT COALESCE(MAX(l_orderkey), 0) FROM lineitem) + 4004 AS l_orderkey,
-                  'Q14RB' AS l_shipmode, 'Q14RB' AS l_comment)
-FROM lineitem
-WHERE l_shipdate >= DATE '1995-06-01' AND l_shipdate < DATE '1995-07-01'
-ORDER BY l_orderkey, l_linenumber LIMIT 4;
+UPDATE lineitem SET l_extendedprice = l_extendedprice + 222.22,
+                    l_discount = 0.09, l_shipdate = DATE '1995-09-01'
+WHERE l_comment = 'v14-base-4';
+UPDATE part SET p_partkey =
+    (SELECT l_partkey FROM lineitem WHERE l_comment = 'v14-base-2')
+WHERE p_comment = 'v14-regular';

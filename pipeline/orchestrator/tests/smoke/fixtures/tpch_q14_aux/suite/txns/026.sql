@@ -1,3 +1,8 @@
--- sequence (remove the duplicated row of 025): one copy is left, and the answer is back. The pair of
--- transactions is what makes a de-duplicating kernel visible.
-DELETE FROM lineitem WHERE l_comment = 'Q14DUPROW';
+UPDATE part SET p_type = 'promo POLISHED STEEL'
+WHERE rowid = (SELECT min(rowid) FROM part WHERE p_comment = 'v14-duplicate');
+DELETE FROM part
+WHERE rowid = (SELECT min(rowid) FROM part WHERE p_comment = 'v14-duplicate');
+DELETE FROM lineitem
+WHERE rowid = (SELECT min(rowid) FROM lineitem WHERE l_comment = 'v14-base-3');
+UPDATE part SET p_type = 'PROMO POLISHED STEEL '
+WHERE p_comment = 'v14-twin' AND p_type = ' PROMO POLISHED STEEL';

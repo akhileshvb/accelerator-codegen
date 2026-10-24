@@ -1,28 +1,45 @@
--- Q14's fixture, run once before the accelerator is built (eval/harness/suite.hpp, RunSuiteDifferential):
--- the transactions of txns/ all target rows by subquery, so they need the query window
--- [1995-06-01, 1995-07-01) to hold at least one lineitem on a PROMO part and one on a part that is
--- not PROMO. Both magnitudes hold that at SF1 and in the test subset, but a suite must apply on any
--- dataset the gates point it at, so this one statement adds one window line per class only when the
--- class is missing. It is a plain schema-valid INSERT (no keys are declared, no foreign keys).
--- One statement, so no harness has to split it.
+INSERT INTO part
+SELECT * REPLACE (
+    (SELECT max(p_partkey) + 1 FROM part) AS p_partkey,
+    'PROMO POLISHED STEEL' AS p_type,
+    'v14-promo' AS p_comment
+)
+FROM part
+WHERE p_type LIKE 'PROMO%'
+ORDER BY p_partkey LIMIT 1;
+
+INSERT INTO part
+SELECT * REPLACE (
+    (SELECT max(p_partkey) + 1 FROM part) AS p_partkey,
+    'STANDARD POLISHED STEEL' AS p_type,
+    'v14-regular' AS p_comment
+)
+FROM part
+WHERE p_type NOT LIKE 'PROMO%'
+ORDER BY p_partkey LIMIT 1;
+
 INSERT INTO lineitem
-    (l_orderkey, l_partkey, l_suppkey, l_linenumber, l_quantity, l_extendedprice, l_discount, l_tax,
-     l_returnflag, l_linestatus, l_shipdate, l_commitdate, l_receiptdate, l_shipinstruct, l_shipmode,
-     l_comment)
-SELECT (SELECT COALESCE(MAX(l_orderkey), 0) FROM lineitem) + 1,
-       f.p_partkey, f.s_suppkey, 1, 5.00, 1000.00, 0.05, 0.02, 'N', 'O',
-       DATE '1995-06-10', DATE '1995-06-15', DATE '1995-06-20', 'NONE', 'AIR', 'Q14FIXTURE'
-FROM (SELECT p.p_partkey, (SELECT MIN(s_suppkey) FROM supplier) AS s_suppkey
-      FROM part p WHERE p.p_type LIKE 'PROMO%' ORDER BY p.p_partkey LIMIT 1) f
-WHERE NOT EXISTS (SELECT 1 FROM lineitem l JOIN part q ON l.l_partkey = q.p_partkey
-                  WHERE l.l_shipdate >= DATE '1995-06-01' AND l.l_shipdate < DATE '1995-07-01'
-                    AND q.p_type LIKE 'PROMO%')
-UNION ALL
-SELECT (SELECT COALESCE(MAX(l_orderkey), 0) FROM lineitem) + 2,
-       f.p_partkey, f.s_suppkey, 1, 5.00, 1000.00, 0.05, 0.02, 'N', 'O',
-       DATE '1995-06-10', DATE '1995-06-15', DATE '1995-06-20', 'NONE', 'AIR', 'Q14FIXTURE'
-FROM (SELECT p.p_partkey, (SELECT MIN(s_suppkey) FROM supplier) AS s_suppkey
-      FROM part p WHERE NOT (p.p_type LIKE 'PROMO%') ORDER BY p.p_partkey LIMIT 1) f
-WHERE NOT EXISTS (SELECT 1 FROM lineitem l JOIN part q ON l.l_partkey = q.p_partkey
-                  WHERE l.l_shipdate >= DATE '1995-06-01' AND l.l_shipdate < DATE '1995-07-01'
-                    AND NOT (q.p_type LIKE 'PROMO%'));
+SELECT source.* REPLACE (
+    CASE WHEN fixture.slot % 2 = 1
+        THEN (SELECT p_partkey FROM part WHERE p_comment = 'v14-promo')
+        ELSE (SELECT p_partkey FROM part WHERE p_comment = 'v14-regular')
+    END AS l_partkey,
+    source.l_linenumber + fixture.slot AS l_linenumber,
+    CAST(10000 + fixture.slot * 321.07 AS DECIMAL(15,2)) AS l_extendedprice,
+    CAST(0.01 * fixture.slot AS DECIMAL(15,2)) AS l_discount,
+    fixture.shipdate AS l_shipdate,
+    fixture.shipdate - INTERVAL '2 days' AS l_commitdate,
+    fixture.shipdate + INTERVAL '3 days' AS l_receiptdate,
+    'v14-base-' || CAST(fixture.slot AS VARCHAR) AS l_comment
+)
+FROM (SELECT * FROM lineitem ORDER BY l_orderkey, l_linenumber LIMIT 1) source
+CROSS JOIN (VALUES
+    (1, DATE '1995-08-31'),
+    (2, DATE '1995-09-01'),
+    (3, DATE '1995-09-15'),
+    (4, DATE '1995-09-30'),
+    (5, DATE '1995-10-01'),
+    (6, DATE '1995-10-15'),
+    (7, DATE '1996-02-29'),
+    (8, DATE '1998-11-20')
+) fixture(slot, shipdate);

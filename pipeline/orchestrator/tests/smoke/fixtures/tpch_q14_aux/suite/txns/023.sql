@@ -1,11 +1,10 @@
--- bulk_insert / lineitem, a second RF chunk (min_chunks = 2 in suite.yaml): the same shape from a
--- different in-window order, so a kernel that only handles the first chunk's key range is caught.
-INSERT INTO lineitem
-SELECT * REPLACE ((SELECT COALESCE(MAX(l_orderkey), 0) FROM lineitem) + 3003 AS l_orderkey,
-                  'Q14RF2' AS l_shipmode, 'Q14RF2' AS l_comment)
-FROM lineitem
-WHERE l_orderkey = (
-    SELECT l_orderkey FROM lineitem
-     WHERE l_shipdate >= DATE '1995-06-01' AND l_shipdate < DATE '1995-07-01'
-     ORDER BY l_orderkey DESC LIMIT 1)
-ORDER BY l_orderkey, l_linenumber;
+UPDATE part SET p_comment = 'v14-retire'
+WHERE p_partkey IN (
+    SELECT DISTINCT l_partkey FROM lineitem
+    WHERE l_shipdate >= DATE '1995-03-01' AND l_shipdate < DATE '1995-04-01'
+      AND l_comment NOT LIKE 'v14-%'
+    ORDER BY l_partkey DESC LIMIT 4
+);
+DELETE FROM lineitem
+WHERE l_partkey IN (SELECT p_partkey FROM part WHERE p_comment = 'v14-retire');
+DELETE FROM part WHERE p_comment = 'v14-retire';
