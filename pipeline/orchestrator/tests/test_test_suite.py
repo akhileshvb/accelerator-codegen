@@ -487,7 +487,7 @@ def test_the_stateful_tester_prompt_covers_writes_and_the_write_mix():
                                     "03_optimization_unified.md", "aux_state/03_optimization_worker.md",
                                     "aux_state/03_optimization_unified.md"))
 def test_the_implementing_stages_treat_the_suite_as_frozen(prompt):
-    text = (PROMPTS / prompt).read_text(encoding="utf-8")
+    text = (PROMPTS / prompt).read_text(encoding="utf-8").lower()
     assert "frozen" in text and "test_suite_change_request.md" in text and "never edit it" in text
 
 
