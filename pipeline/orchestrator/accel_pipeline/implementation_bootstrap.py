@@ -77,7 +77,7 @@ def build_implementation_bootstrap(
             "1. Read the reference aux paths above once (they are the layout to mirror).",
             "2. **Immediately** write `module.hpp`, then `module.cpp`, then other `files_to_create`.",
             "3. Unit tests: none to write (shared ModuleRuntime test); make the catalog probe/arguments follow `unit_test_contract.md` + the predicate checklist above.",
-            "4. Do **not** list the repo root, re-read analysis.json, or search for q14/q1 layouts after step 1.",
+            "4. Do **not** list the repo root or search other queries' layouts after step 1. Do re-read the part of analysis.json you are implementing (`state_storage`, `composition_rule`, `mutation_coverage`, `legal_deltas`) whenever you start on it.",
             "5. Search several files with `rg`; read a single file with `sed -n`.",
             "6. Build/test only after all primary sources exist; **register everywhere** (mirror peer-query wiring); finish only after MCP `run_correctness` **and** `run_multi_connection` both pass.",
             "",
