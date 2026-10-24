@@ -123,6 +123,9 @@ engine_profile:
     differential_db: "TPC-H database loaded into the postgres container, text columns in C collation."
     sql_client: "psql against the server (PGHOST/PGPORT/PGUSER/PGDATABASE), from the host or inside the container."
 
+  data_sql:
+    dialect: postgres
+
   hazards:
     - symptom: "A statement that writes and then reads in one transaction gets state that lacks its own rows, or a rebuild/maintenance runs on other sessions' data only."
       engine_fact: "Uncommitted rows exist only in the writing backend's own snapshot; no other process can see them until commit, so any state kept outside that backend lacks them."

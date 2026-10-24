@@ -314,3 +314,13 @@ def test_engine_state_and_build_dirs_in_the_tree_are_not_agent_writes(tmp_path: 
         (r / ".engine_state/build_stamps/abc").write_text("stamp")
 
     assert _violations(root, write) == {}
+
+
+def test_dataset_inside_a_writable_bind_is_rebound_read_only(tmp_path: Path, isolated: Path) -> None:
+    root = _tree(tmp_path / "tree").resolve()
+    (root / "data").mkdir()
+    dataset = root / "data" / "toybench.toydb"
+    dataset.touch()
+    binds = sandbox.cpp_mounts(_cfg(root, datasets={"toybench_sf1": dataset}))
+    order = [(m, d) for m, _, d in binds]
+    assert ("ro", dataset) in order and order.index(("rw", root)) < order.index(("ro", dataset))

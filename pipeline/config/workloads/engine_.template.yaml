@@ -106,6 +106,9 @@ engine_profile:
     differential_db: "REPLACE_ME"
     sql_client: "REPLACE_ME: the engine's own client for running SQL against the reference database"
 
+  data_sql:                           # optional: how data tools reach the data with SQL
+    dialect: <sqlglot dialect of the engine's SQL>
+
   hazards:                            # engine fact + symptom, never a fix
     - symptom: "REPLACE_ME: what goes wrong"
       engine_fact: "REPLACE_ME: the engine behaviour behind it"

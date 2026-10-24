@@ -126,6 +126,9 @@ engine_profile:
     differential_db: "TPC-H database in the mysql container, schema with utf8mb4_0900_bin text columns."
     sql_client: "The mysql command-line client against the server (MYSQL_HOST/MYSQL_TCP_PORT, user root), from the host or inside the container."
 
+  data_sql:
+    dialect: mysql
+
   hazards:
     - symptom: "A build that scans in parallel hangs or times out, or DDL (DROP TRIGGER, TRUNCATE) hangs indefinitely, while an accelerator build is running."
       engine_fact: "MySQL holds metadata locks (MDL) for a statement's transaction; a DDL statement queues behind a table's existing SHARED_READ holders, and later SHARED_READ requests queue behind the DDL. When some scan connections already hold the table's MDL with a snapshot transaction open and an idle one has not yet touched the table, the late connection waits behind the DDL, which waits for the holders: a cycle the server cannot detect."

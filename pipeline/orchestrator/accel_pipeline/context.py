@@ -199,15 +199,17 @@ def build_prompt_context(
     paths = resolve_workload_paths(pipeline_config, workload, query)
 
     if is_aux and stage == "analysis":
-        from accel_pipeline.data_shape import build_data_shape_markdown
+        from accel_pipeline.data_shape import build_data_section, dependent_table_names
+        from accel_pipeline.tools.data_tools import DataToolContext, dataset_row_counts
 
         if not reference_sql.strip():
             reference_sql = (
                 f"-- MISSING reference SQL at {reference_sql_path or '(unset)'}\n"
                 "-- Regenerate with: python3 scripts/generate_tpch_sf1_instances.py"
             )
-        data_shape_section = build_data_shape_markdown(
-            workload, paths.get("dataset_db"), repo=repo, query=query
+        data_section = build_data_section(
+            str(workload.get("engine_name") or ""),
+            dataset_row_counts(DataToolContext(pipeline_config, workload, query, art), dependent_table_names(workload)),
         )
         workload_reference_section = "\n".join(
             [
@@ -229,7 +231,7 @@ def build_prompt_context(
                 "",
                 yaml.safe_dump(workload.get("partitioning", {})),
                 "",
-                data_shape_section,
+                data_section,
             ]
         )
     elif is_aux:

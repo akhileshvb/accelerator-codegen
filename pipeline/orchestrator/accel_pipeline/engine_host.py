@@ -57,8 +57,9 @@ def run_host_verb(
     *args: str,
     build_dir: Path,
     timeout: float | None = None,
+    env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
-    env = {**os.environ, **instance_env(repo_root, engine, build_dir)}
+    env = {**os.environ, **instance_env(repo_root, engine, build_dir), **(env or {})}
     return subprocess.run(
         [str(host_script(repo_root, engine)), verb, *args],
         cwd=repo_root, env=env, capture_output=True, text=True, timeout=timeout,
@@ -75,6 +76,29 @@ def host_info(repo_root: Path, engine: str, build_dir: Path) -> dict[str, Any] |
     except (OSError, subprocess.SubprocessError, ValueError):
         return None
     return info if done.returncode == 0 and isinstance(info, dict) else None
+
+
+def ensure_dataset_loaded(workload: dict[str, Any], repo_root: Path, build_dir: Path, timeout: float = 3600) -> str | None:
+    """Bring the engine instance up with the workload's dataset loaded (`up` and `load` are idempotent and
+    cheap when done). None on success, else why not; never raises."""
+    from accel_pipeline.layout import workload_schema_sql
+
+    engine = str(workload.get("engine_name") or "")
+    dataset_dir = str(workload.get("dataset_dir") or os.environ.get("ACCEL_DATASET_DIR") or "")
+    if not host_script(repo_root, engine).is_file():
+        return f"no host.sh for engine {engine!r}"
+    if not dataset_dir:
+        return "no dataset directory (workload dataset_dir or ACCEL_DATASET_DIR)"
+    schema = repo_root / workload_schema_sql(str(workload.get("dataset_benchmark") or workload.get("benchmark_name") or ""))
+    try:
+        for verb, args in (("up", ()), ("load", (str(schema),))):
+            done = run_host_verb(repo_root, engine, verb, *args, build_dir=build_dir, timeout=timeout,
+                                 env={"ACCEL_DATASET_DIR": dataset_dir})
+            if done.returncode not in (0, 77):
+                return f"host.sh {verb} failed (exit {done.returncode}): {(done.stderr or done.stdout)[-500:]}"
+    except (OSError, subprocess.SubprocessError) as exc:
+        return f"host.sh failed: {exc}"
+    return None
 
 
 def inject_host_runtime_into_gate_env(
