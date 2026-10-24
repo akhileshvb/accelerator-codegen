@@ -101,18 +101,30 @@ def ensure_subset_dataset(pipeline_config: PipelineConfig, workload: dict[str, A
 
 
 def _result_stamp(pipeline_config: PipelineConfig, workload: dict[str, Any], query: int,
-                  targets: list[str], differential: bool) -> str:
+                  targets: list[str], differential: bool, sanitizer: str = "", threads: int = 0) -> str:
     bench = str(workload.get("benchmark_name") or "")
     return code_stamp(
         pipeline_config.repo_root,
         query_dir=query_dir(bench, query) if bench else "",
-        extra=[QUICK_GATE, *targets, f"differential={differential}", str(pipeline_config.build_dir)],
+        extra=[QUICK_GATE, *targets, f"differential={differential}", f"sanitizer={sanitizer}:{threads}",
+               str(pipeline_config.build_dir)],
     )
 
 
 def _passed_stamp_path(pipeline_config: PipelineConfig, workload: dict[str, Any], query: int) -> Path:
     art = query_artifacts_dir(pipeline_config.repo_root, query, workload=workload)
     return gates_dir_for_query(art) / f"{QUICK_GATE}.stamp"
+
+
+def _sanitizer_evidence(data: dict[str, Any]) -> str:
+    found = data.get("sanitizer_findings") or {}
+    lines = []
+    for item in found.get("yours") or []:
+        lines += [item["summary"], *[f"    {f}" for f in item["frames"]]]
+    infra = found.get("infra") or {}
+    if infra.get("count"):
+        lines.append(f"infrastructure reports (not failures): {infra['count']}, e.g. " + "; ".join(infra.get("summaries") or []))
+    return "\n".join(lines)
 
 
 def _failure(data: dict[str, Any], timings: dict[str, float]) -> Failure:
@@ -123,25 +135,36 @@ def _failure(data: dict[str, Any], timings: dict[str, float]) -> Failure:
         stage=QUICK_GATE,
         source=QUICK_GATE,
         summary=f"quick_check: {reason or data.get('status')}" + (f" (step {step})" if step else ""),
-        evidence=str(data.get("log_tail") or ""),
+        evidence=_sanitizer_evidence(data) or str(data.get("log_tail") or ""),
         reproduce=str(data.get("reproduce") or ""),
         diagnosis=[f"{name}: {seconds:.1f}s" for name, seconds in timings.items()],
     )
 
 
+SANITIZERS = ("thread", "address")
+SANITIZER_TIMEOUT_SEC = 3600  # the first instrumented build of a worker; later checks are incremental
+
+
 def run_quick_check(pipeline_config: PipelineConfig, workload: dict, query: int, *, targets: list[str] | None = None,
-                    differential: bool = True) -> QuickResult:
+                    differential: bool = True, sanitizer: str = "", threads: int = 4) -> QuickResult:
     """Build the query's targets (skipped when unchanged), run its tests, and, when `differential`,
     the SQL-vs-accelerator differential on the subset dataset. `targets` are extra build targets
     (the agent's own test binaries) that are built and run. A tree unchanged since the last passing
-    check passes without running anything."""
+    check passes without running anything.
+
+    `sanitizer` ("thread" or "address") builds in an instrumented build dir of the worker's own (incremental),
+    runs the same steps with every phase of the thread budget at `threads`, and reports the sanitizer findings:
+    only reports with a frame in the query's own directory fail the check, the rest is counted as
+    infrastructure. A host that cannot build the variant reports "not applicable"."""
+    if sanitizer and sanitizer not in SANITIZERS:
+        return QuickResult(status="fail", summary=f"sanitizer must be one of {SANITIZERS}, not {sanitizer!r}")
     quick = pipeline_config.quick_tier
     if not quick.enabled:
         return QuickResult(status="skip", summary="quick tier disabled (quick_tier.enabled)")
     if workload.get("workload_kind") != "aux_state":
         return QuickResult(status="skip", summary="quick_check covers aux-state workloads")
     extra_targets = list(targets or [])
-    stamp = _result_stamp(pipeline_config, workload, query, extra_targets, differential)
+    stamp = _result_stamp(pipeline_config, workload, query, extra_targets, differential, sanitizer, threads)
     passed_path = _passed_stamp_path(pipeline_config, workload, query)
     if stamp and passed_path.is_file() and passed_path.read_text(encoding="utf-8") == stamp:
         return QuickResult(status="pass", summary="unchanged since the last passing quick_check")
@@ -156,10 +179,13 @@ def run_quick_check(pipeline_config: PipelineConfig, workload: dict, query: int,
             "ACCEL_QUICK_DIFFERENTIAL": "1" if differential else "0",
             "ACCEL_QUICK_PROBES": str(quick.differential_probes),
             "ACCEL_BUILD_STAMP_CACHE": "1" if quick.build_stamp_cache else "0",
+            **({"ACCEL_QUICK_SANITIZER": sanitizer, "ACCEL_QUICK_THREADS": str(threads)} if sanitizer else {}),
         },
-        timeout_s=quick.timeout_sec,
+        timeout_s=max(quick.timeout_sec, SANITIZER_TIMEOUT_SEC) if sanitizer else quick.timeout_sec,
     )
     timings.update(result.data.get("phase_timings") or {})
+    if result.status == "skip":
+        return QuickResult(status="skip", phase_timings=timings, summary=str(result.data.get("reason") or "skipped"))
     if result.status == "pass":
         if stamp:
             passed_path.parent.mkdir(parents=True, exist_ok=True)

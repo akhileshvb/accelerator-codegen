@@ -455,11 +455,15 @@ def main(argv: list[str] | None = None) -> int:
         return _call("gate_status", gate_name)
 
     @_tool(annotations=_ro)
-    def quick_check(targets: list[str] | None = None, differential: bool = True) -> str:
+    def quick_check(targets: list[str] | None = None, differential: bool = True, sanitizer: str = "",
+                    threads: int = 4) -> str:
         """Seconds-level check of this query's accelerator: incremental build, its own tests, the
         differential on the small test subset. Run after every edit. targets: extra build targets of
-        your own test binaries (built and run). Correctness only; the subset is never a tuning target."""
-        return _call("quick_check", targets, differential)
+        your own test binaries (built and run). Correctness only; the subset is never a tuning target.
+        sanitizer="thread" or "address": the same check in an instrumented build (its own build dir, incremental)
+        with every phase at `threads` threads; use quick_check(sanitizer="thread", threads=N) after touching
+        concurrent code. Only reports with a frame in the query's own directory fail."""
+        return _call("quick_check", targets, differential, sanitizer, threads)
 
     @_tool(annotations=_rw)
     def run_engine_build() -> str:
