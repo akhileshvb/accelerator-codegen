@@ -19,6 +19,8 @@ class PipelineState:
     stage: str = "analysis"
     optimization_iter: int = 0
     session_id: str = ""
+    # "" while running or finished; "stopped:<reason>" after a clean stop (--resume continues)
+    status: str = ""
     structural_reanalysis_count: int = 0
     last_gate: dict[str, str] = field(default_factory=dict)
 

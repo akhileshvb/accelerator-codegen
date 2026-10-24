@@ -5,12 +5,11 @@ import json
 from accel_pipeline.aux_bench import initialize_optimization_state, process_aux_bench_after_gates
 from accel_pipeline.base_bench import process_base_bench_after_gates
 from accel_pipeline.config import ModelConfig, PipelineConfig, load_run_workload, resolve_workload_paths
-from accel_pipeline.crash_debug import run_post_stage_gates_with_crash_debug
-
-IMPLEMENTATION_FIX_ROUNDS = 3
 from accel_pipeline.gates import run_gate
 from accel_pipeline.layout import query_dir
 from accel_pipeline.paths import analysis_artifact_path, query_artifacts_dir
+from accel_pipeline.repair import RepairCtx, run_with_repair
+from accel_pipeline.session import MAIN
 from accel_pipeline.stages.gate_plan import workload_post_implementation_gates
 from accel_pipeline.stages.base import run_agent_stage
 from accel_pipeline.validation import AuxAnalysisValidationError, validate_aux_analysis_file
@@ -94,72 +93,66 @@ def run(
             except AuxAnalysisValidationError as exc:
                 raise RuntimeError(f"aux analysis validation failed before implementation: {exc}") from exc
 
-    result = run_agent_stage(
-        stage="implementation",
-        prompt_file="02_implementation.md",
-        pipeline_config=pipeline_config,
-        model_config=model_config,
-        workload_name=workload_name,
-        query=query,
-        user_message=_implementation_user_message(pipeline_config, workload, query),
-        model_overrides=model_overrides,
-        dry_run=dry_run,
-        must_change=pipeline_config.repo_root / query_dir(str(workload.get("benchmark_name", "tpch")), query),
-    )
-    if not dry_run and not skip_gates:
-        workload = load_run_workload(pipeline_config, workload_name)
-        analysis_path = analysis_artifact_path(pipeline_config.repo_root, query, workload=workload)
+    def implement():
+        return run_agent_stage(
+            stage="implementation",
+            prompt_file="02_implementation.md",
+            pipeline_config=pipeline_config,
+            model_config=model_config,
+            workload_name=workload_name,
+            query=query,
+            user_message=_implementation_user_message(pipeline_config, workload, query),
+            model_overrides=model_overrides,
+            dry_run=dry_run,
+            must_change=pipeline_config.repo_root / query_dir(str(workload.get("benchmark_name", "tpch")), query),
+            session_role=MAIN,
+        )
+
+    if dry_run:
+        return implement()
+    repair_ctx = RepairCtx(pipeline_config, model_config, workload_name, query, stage="implementation",
+                           change_kind="implementation", model_overrides=model_overrides)
+    if skip_gates:
+        return run_with_repair(repair_ctx, implement)
+    workload = load_run_workload(pipeline_config, workload_name)
+    analysis_path = analysis_artifact_path(pipeline_config.repo_root, query, workload=workload)
+    impl_gates = workload_post_implementation_gates(workload)
+
+    def implement_and_seed():
+        result = implement()
         if analysis_path.is_file() and workload.get("workload_kind") == "aux_state":
             analysis = json.loads(analysis_path.read_text(encoding="utf-8"))
             initialize_optimization_state(pipeline_config.repo_root, query, analysis, workload)
-        impl_gates = workload_post_implementation_gates(workload)
-        if workload.get("workload_kind") == "aux_state":
-            # a failing gate goes back to a bounded crash-debug fix instead of ending the run
-            run_post_stage_gates_with_crash_debug(
-                pipeline_config,
-                model_config,
-                workload_name,
-                query,
-                impl_gates,
-                change_kind="implementation",
-                iteration=0,
-                model_overrides=model_overrides,
-                max_rounds=IMPLEMENTATION_FIX_ROUNDS,
-            )
-        else:
-            run_post_stage_gates_with_crash_debug(
-                pipeline_config,
-                model_config,
-                workload_name,
-                query,
-                impl_gates,
-                change_kind="implementation",
-                iteration=0,
-                model_overrides=model_overrides,
-            )
-        if workload.get("workload_kind") != "aux_state":
-            process_base_bench_after_gates(
-                pipeline_config.repo_root,
-                query,
-                workload,
-                iteration=0,
-                change_kind="implementation",
-            )
-        elif "aux_bench_sweep" in impl_gates:
-            selected = ""
-            if analysis_path.is_file():
-                selected = (
-                    json.loads(analysis_path.read_text(encoding="utf-8"))
-                    .get("correctness_facts", {})
-                    .get("state_design", {})
-                    .get("selected_candidate_id", "")
-                )
-            process_aux_bench_after_gates(
-                pipeline_config.repo_root,
-                query,
-                iteration=0,
-                change_kind="baseline",
-                active_candidate_id=selected or None,
-                workload=workload,
-            )
+        return result
+
+    result = run_with_repair(repair_ctx, implement_and_seed, gates=impl_gates)
+    run_with_repair(repair_ctx, lambda: _record_baseline(pipeline_config, workload, query, analysis_path, impl_gates))
     return result
+
+
+def _record_baseline(pipeline_config, workload: dict, query: int, analysis_path, impl_gates: list[str]) -> None:
+    if workload.get("workload_kind") != "aux_state":
+        process_base_bench_after_gates(
+            pipeline_config.repo_root,
+            query,
+            workload,
+            iteration=0,
+            change_kind="implementation",
+        )
+    elif "aux_bench_sweep" in impl_gates:
+        selected = ""
+        if analysis_path.is_file():
+            selected = (
+                json.loads(analysis_path.read_text(encoding="utf-8"))
+                .get("correctness_facts", {})
+                .get("state_design", {})
+                .get("selected_candidate_id", "")
+            )
+        process_aux_bench_after_gates(
+            pipeline_config.repo_root,
+            query,
+            iteration=0,
+            change_kind="baseline",
+            active_candidate_id=selected or None,
+            workload=workload,
+        )

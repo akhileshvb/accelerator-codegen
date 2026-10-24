@@ -13,6 +13,8 @@ class StageRunRequest:
     model_id: str
     agent_model: str | Any | None = None
     max_turns: int = 15
+    # resume_session_id / phase_change: continue a codex session (the stage's instructions only on a phase change)
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass

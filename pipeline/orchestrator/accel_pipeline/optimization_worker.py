@@ -25,6 +25,7 @@ from accel_pipeline.optimization_worker_checkpoint import (
 from accel_pipeline.optimization_worker_metrics import WorkerMetrics, save_worker_metrics
 from accel_pipeline.paths import query_artifacts_dir
 from accel_pipeline.pipeline_log import log_event
+from accel_pipeline.session import MAIN, run_in_session
 from accel_pipeline.prompts import render_prompt, save_rendered_prompt, with_codex_tooling
 
 CANDIDATE_READY = "CANDIDATE_READY"
@@ -214,6 +215,11 @@ class OptimizationWorker:
             seed_chars=len(self.seed_message),
         )
 
+    def _run(self, request: StageRunRequest) -> Any:
+        """Candidate cycles continue the stage's main codex session (instructions sent once)."""
+        return run_in_session(self.backend, request, pipeline_config=self.pipeline_config, art=self.art_dir,
+                              query=self.query, role=MAIN)
+
     def run_candidate_cycle(self, user_message: str) -> CandidateCycleResult:
         model_id = make_model_id(_WORKER_STAGE, self.pipeline_config, self.model_config, self.model_overrides)
         agent_model = model_id
@@ -240,7 +246,7 @@ class OptimizationWorker:
         )
 
         started = time.monotonic()
-        result = self.backend.run_stage(request)
+        result = self._run(request)
 
         # Codex often exits after edits/tests without printing CANDIDATE_READY.
         # Give one short follow-up attempt so the cycle can still complete.
@@ -277,7 +283,7 @@ class OptimizationWorker:
                 agent_model=agent_model,
                 max_turns=max_turns,
             )
-            nudge_result = self.backend.run_stage(nudge)
+            nudge_result = self._run(nudge)
             if nudge_result.status == "finished" and (
                 CANDIDATE_READY in (nudge_result.final_text or "")
                 or OPTIMIZATION_SATURATED in (nudge_result.final_text or "")
