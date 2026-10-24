@@ -189,3 +189,34 @@ def test_no_code_path_names_an_engine_or_benchmark():
     forbidden = re.compile(r"\b(" + "|".join(map(re.escape, names)) + r")\b")
     for name in ("tools/data_tools.py", "data_shape.py", "data_shape_stats.py"):
         assert not forbidden.search((package / name).read_text().lower()), name
+
+
+def test_concurrent_calls_run_one_statement_at_a_time_on_the_instance(ctx, tools, monkeypatch):
+    """An embedded engine's database file takes one process: parallel tool calls queue instead of failing on the lock."""
+    import subprocess
+    import threading
+
+    active, peak, guard = [0], [0], threading.Lock()
+    real = subprocess.Popen
+
+    class Probe(real):
+        def __init__(self, *a, **k):
+            super().__init__(*a, **k)
+            with guard:
+                active[0] += 1
+                peak[0] = max(peak[0], active[0])
+
+        def wait(self, *a, **k):
+            try:
+                return super().wait(*a, **k)
+            finally:
+                with guard:
+                    active[0] -= 1
+
+    monkeypatch.setattr(data_tools.subprocess, "Popen", Probe)
+    threads = [threading.Thread(target=tools["query_data"], args=("SELECT count(*) FROM orders",)) for _ in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert peak[0] == 1

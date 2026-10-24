@@ -17,6 +17,7 @@ import json
 import os
 import re
 import signal
+import fcntl
 import subprocess
 import threading
 import time
@@ -109,6 +110,16 @@ class HostSql:
 
     def _run(self, sql: str, seconds: float, max_lines: int) -> tuple[int, list[str]]:
         """(exit code, first max_lines output lines); the process group is killed at the time box or the line cap."""
+        # One statement at a time on the instance: an embedded engine's database file takes one process, and an agent
+        # that issues several tool calls at once would otherwise get lock errors from all but the first.
+        lock = (Path(self.env["ACCEL_ENGINE_STATE_DIR"]) / "data_tools.lock").open("a")
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            return self._run_locked(sql, seconds, max_lines)
+        finally:
+            lock.close()
+
+    def _run_locked(self, sql: str, seconds: float, max_lines: int) -> tuple[int, list[str]]:
         proc = subprocess.Popen(
             [str(host_script(self.cfg.repo_root, self.engine)), "sql", "-"], cwd=self.cfg.repo_root, env=self.env,
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, start_new_session=True,
