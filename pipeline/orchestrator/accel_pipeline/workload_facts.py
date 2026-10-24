@@ -24,6 +24,8 @@ from accel_pipeline.layout import workload_schema_sql
 from accel_pipeline.paths import query_artifacts_dir
 
 FACTS_FILE = "workload_facts.json"
+SCRATCH_DIALECT = "duckdb"  # the scratch SQL engine's sqlglot dialect
+SCRATCH_ERRORS = (duckdb.Error,)  # what a failed or interrupted scratch statement raises
 
 
 def _schema_columns(con: duckdb.DuckDBPyConnection) -> dict[str, dict[str, str]]:
@@ -50,11 +52,11 @@ def _exists_probes_read_no_columns(tree: exp.Expression) -> None:
 
 
 def _dependent_tables(sql: str, schema: dict[str, dict[str, str]]) -> list[dict[str, Any]]:
-    tree = sqlglot.parse_one(sql, read="duckdb")
+    tree = sqlglot.parse_one(sql, read=SCRATCH_DIALECT)
     _exists_probes_read_no_columns(tree)
     ctes = {cte.alias for cte in tree.find_all(exp.CTE)}
     appearance = list(dict.fromkeys(t.name for t in tree.find_all(exp.Table) if t.name not in ctes))
-    qualified = qualify(tree, schema=schema, dialect="duckdb", validate_qualify_columns=False)
+    qualified = qualify(tree, schema=schema, dialect=SCRATCH_DIALECT, validate_qualify_columns=False)
     read: dict[str, set[str]] = {}
     for scope in traverse_scope(qualified):
         for column in scope.columns:

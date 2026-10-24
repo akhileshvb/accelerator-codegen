@@ -14,13 +14,12 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
-import duckdb
 import sqlglot
 from sqlglot import exp
 from sqlglot.optimizer.qualify import qualify
 from sqlglot.optimizer.scope import traverse_scope
 
-from accel_pipeline.workload_facts import scratch_connection
+from accel_pipeline.workload_facts import SCRATCH_DIALECT, SCRATCH_ERRORS, scratch_connection
 
 SAMPLE_ROWS = 10_000_000
 STATEMENT_SECONDS = 10.0
@@ -75,8 +74,8 @@ def _conjuncts(clause: exp.Expression | None) -> list[exp.Expression]:
 
 
 def analyze_query(sql: str, schema: dict[str, dict[str, str]]) -> QueryShape:
-    tree = sqlglot.parse_one(sql.strip().rstrip(";"), read="duckdb")
-    qualified = qualify(tree, schema=schema, dialect="duckdb", validate_qualify_columns=False)
+    tree = sqlglot.parse_one(sql.strip().rstrip(";"), read=SCRATCH_DIALECT)
+    qualified = qualify(tree, schema=schema, dialect=SCRATCH_DIALECT, validate_qualify_columns=False)
     shape = QueryShape()
     candidates: dict[tuple[str, str], set[str]] = {}  # constrained numeric/date column -> params it shares
     direct: list[tuple[tuple[str, str], tuple[str, str]]] = []
@@ -132,7 +131,7 @@ def _param_predicate(conj, select, resolve, names) -> ParamPredicate | None:
     def has_param(n: exp.Expression) -> bool:
         return any(isinstance(x, _PARAMS) for x in n.find_all(_PARAMS))
 
-    text = conj.sql(dialect="duckdb")
+    text = conj.sql(dialect=SCRATCH_DIALECT)
     if isinstance(conj, exp.In):
         subject, op = conj.this, "in"
     elif isinstance(conj, (exp.Like, exp.ILike)):
@@ -156,7 +155,7 @@ def _param_predicate(conj, select, resolve, names) -> ParamPredicate | None:
     if aggs:
         group = [resolve(c) for c in _owned(select.args["group"], select, exp.Column)] if select.args.get("group") else []
         group = [g[1] for g in group if g and g[0] == cols[0][0]]
-        return ParamPredicate(text, names, cols[0][0], cols[0][1], "agg" + op, group, subject.sql(dialect="duckdb"))
+        return ParamPredicate(text, names, cols[0][0], cols[0][1], "agg" + op, group, subject.sql(dialect=SCRATCH_DIALECT))
     return ParamPredicate(text, names, cols[0][0], cols[0][1], op)
 
 
@@ -211,7 +210,7 @@ class Probe:
         timer.start()
         try:
             return self.con.execute(sql, params or []).fetchall()
-        except (duckdb.InterruptException, duckdb.Error):
+        except SCRATCH_ERRORS:
             self.timeouts += 1
             return None
         finally:

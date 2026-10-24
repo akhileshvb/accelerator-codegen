@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-import duckdb
 import pytest
 
 from accel_pipeline import data_shape_stats
+from accel_pipeline.workload_facts import scratch_connection
 from accel_pipeline.data_shape import build_data_shape_markdown
 
 QUERY = """
@@ -16,8 +16,8 @@ GROUP BY o.region ORDER BY total DESC
 
 @pytest.fixture()
 def dataset(tmp_path):
-    path = tmp_path / "acme.duckdb"
-    con = duckdb.connect(str(path))
+    path = tmp_path / "acme.db"
+    con = scratch_connection(str(path))
     con.execute("CREATE TABLE orders(id BIGINT, kind VARCHAR, region VARCHAR, placed DATE)")
     con.execute("CREATE TABLE events(order_id BIGINT, happened DATE, amount DECIMAL(10,2))")
     con.execute(
@@ -33,7 +33,7 @@ def dataset(tmp_path):
 
 
 def _schema(path):
-    con = duckdb.connect(str(path), read_only=True)
+    con = scratch_connection(str(path), read_only=True)
     schema: dict = {}
     for t, c, d in con.execute("SELECT table_name, column_name, data_type FROM information_schema.columns").fetchall():
         schema.setdefault(t, {})[c] = d
@@ -87,5 +87,5 @@ def test_large_tables_are_sampled(dataset, monkeypatch):
 
 
 def test_unparameterised_or_missing_database_falls_back_to_counts(tmp_path):
-    text = build_data_shape_markdown({"benchmark_name": "acme", "dependent_tables": [{"name": "orders"}]}, tmp_path / "none.duckdb")
+    text = build_data_shape_markdown({"benchmark_name": "acme", "dependent_tables": [{"name": "orders"}]}, tmp_path / "none.db")
     assert "Live DB unavailable" in text
