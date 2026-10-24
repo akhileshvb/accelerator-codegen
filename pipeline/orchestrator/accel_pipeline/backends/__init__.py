@@ -11,6 +11,7 @@ from accel_pipeline.paths import query_artifacts_dir
 _ARTIFACT_STAGES = frozenset(
     {
         "analysis",
+        "analysis_critic",
         "test_suite",
         "implementation",
         "optimization_unified",

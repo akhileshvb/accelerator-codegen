@@ -10,6 +10,7 @@ codex_bypass_approvals_and_sandbox: true
 
 stage_providers:
   analysis: codex_exec
+  analysis_critic: codex_exec
   test_suite: codex_exec
   host_bootstrap: codex_exec
   implementation: codex_exec
@@ -54,6 +55,7 @@ presets:
   cheap_code: openai/gpt-6-luna
   code: openai/gpt-6-luna-pro
   reasoning: openai/gpt-6-luna-pro
+  critic: openai/gpt-6.1-sol
   debug: openai/gpt-6-luna-pro
   reviewer: openai/gpt-6-luna-pro
   default: openai/gpt-6-luna-pro
@@ -80,6 +82,7 @@ stages:
   verus_opt_worker: verus_code
   verus_audit: verus_review
   analysis: reasoning
+  analysis_critic: critic   # a different model from the analyst
   test_suite: code
   host_bootstrap: code
   implementation: code

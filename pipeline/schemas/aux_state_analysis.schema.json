@@ -352,6 +352,8 @@
         "operators_eliminated": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
         "residual_read_algorithm": { "type": "string", "minLength": 1 },
         "estimated_state_units_read": { "$ref": "#/$defs/estimated_state_units_read" },
+        "units_probe": { "type": "string", "description": "The query_data statement, exactly as run, that counts the entries this candidate's read visits." },
+        "measured_units": { "type": "string", "description": "What units_probe returned, per binding and write scenario." },
         "read_path_bottleneck_risk": { "enum": ["low", "medium", "high"] },
         "read_path_scaling_variable": { "type": "string", "minLength": 1 },
         "parameter_scaling_argument": { "type": "string", "minLength": 1 },

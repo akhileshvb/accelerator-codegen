@@ -146,6 +146,7 @@ prompt_subdir: aux_state
 # Aux analysis needs more turns than base parallel queries.
 stage_max_turns:
   analysis: 24
+  analysis_critic: 16
   test_suite: 24
   implementation: 0  # 0 = unlimited (resolved in stages/base.py)
   optimization: 0
@@ -160,6 +161,9 @@ host_bootstrap_gate_max_rounds: 3
 host_bootstrap_critique_max_rounds: 2
 
 optimization_max_turns_per_episode: 0
+
+# Independent critic rounds on the analysis (each may send it back for one revision); 0 disables.
+analysis_critique_max_rounds: 1
 
 # Max times analysis may re-run after implementation/optimization finds a structural bottleneck.
 max_structural_reanalysis: 2

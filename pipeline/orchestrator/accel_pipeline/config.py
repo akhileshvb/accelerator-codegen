@@ -947,6 +947,7 @@ def _merge_aux_defaults(workload: dict[str, Any], repo_root: Path) -> None:
         "fairness",
         "host_bootstrap_gate_max_rounds",
         "host_bootstrap_critique_max_rounds",
+        "analysis_critique_max_rounds",
     ):
         if key in aux_defaults:
             if key == "fairness":
