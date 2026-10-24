@@ -158,6 +158,8 @@ quick_tier:
   background_gates: [aux_correctness, aux_unit, prims_tests, aux_multi_connection, aux_cross_accel]
   parallel_gates: true
   gate_jobs: 0   # 0 = one worker per gate of a parallel group
+  write_cost_budget_share: 0.5   # quick_check fails when the projected full-gate writes and builds exceed this share of the gate timeout
+  admission_gates: [aux_correctness, aux_bench_sweep, aux_tsan]   # request_gate refuses these until quick_check passed on the current code
 
 # CPU budgets and host-wide leases between pipelines running at once (core_budget.py, measurement_lease.py).
 # Each worker takes one of `workers` disjoint CPU sets of the host and pins itself (and so its agent, builds,
@@ -173,11 +175,10 @@ concurrency:
   shared_lease_wait_sec: 300
 
 # The per-query test suite (accel_pipeline.test_suite): written by the test_suite stage before the
-# implementation, frozen, and run by the correctness gates with fresh random draws every run.
+# implementation, frozen, and run by the correctness gates with fresh random draws every run. quick_check runs
+# the same tuples and transactions as aux_correctness, on the subset dataset.
 test_suite:
   acceptance_random_tuples: 20    # random domain tuples of an aux_correctness run, besides the fixed ones
-  quick_random_tuples: 4          # the same for quick_check
-  quick_txns: 4                   # quick_check applies this many transactions (the first of each distinct kind)
   differential_every: 5           # aux_correctness compares every tuple every N transactions (else two random ones)
   iterate_random_tuples: 10       # aux_correctness_iterate (the gate of an optimization iteration): fewer random tuples,
   iterate_every: 10               #   a comparison every N transactions, the minimum write probes, one thread count

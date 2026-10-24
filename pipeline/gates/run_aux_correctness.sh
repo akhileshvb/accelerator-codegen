@@ -46,25 +46,7 @@ THREADS_N=0
 THREADS_CHECKED="[]"
 if [[ ${WITH_DIFF} -eq 1 ]]; then
   suite_prepare "${ACCEL_GATE_TIER:-full}" "${JSON}" "${ACCEL_GATE_NAME:-aux_correctness}"
-  SCENARIOS="${ACCEL_SUITE_DIR:-}/suite.yaml"
-  if [[ -f "${SCENARIOS}" ]]; then
-    eval "$(QUICK_PROBES="${ACCEL_QUICK_PROBES:-3}" python3 - "${SCENARIOS}" <<'PY'
-import os, sys, yaml
-d = yaml.safe_load(open(sys.argv[1]))
-p, b = d.get("point_writes") or {}, d.get("bulk_writes") or {}
-tier = os.environ.get("ACCEL_GATE_TIER")
-cap = int(os.environ["QUICK_PROBES"]) if tier == "quick" else 1 << 30
-max_probes = int(p.get("max_probes") or p.get("min_count") or 5)
-if tier == "iterate":
-    max_probes = int(p.get("min_count") or 2)
-print(f"export ACCEL_ADV_MAX_PROBES={min(cap, max_probes)}")
-print(f"export ACCEL_ADV_MIN_PROBES={min(cap, int(p.get('min_count') or 2))}")
-print(f"export ACCEL_ADV_MIN_CHUNKS={int(b.get('min_chunks') or 0)}")
-print(f"export ACCEL_ADV_REQUIRE_BULK={1 if b.get('required') else 0}")
-PY
-)"
-  fi
-  [[ "${ACCEL_GATE_TIER:-full}" != quick ]] || export ACCEL_ADV_MAX_PROBES="${ACCEL_ADV_MAX_PROBES:-${ACCEL_QUICK_PROBES:-3}}"
+  suite_adversarial_env
   engine_run "${DIFF_BINARY}" "${QUERY}"
   DIFF_RC=${RC}
   LOG_ALL="${LOG_ALL}"$'\n'"${LOG}"

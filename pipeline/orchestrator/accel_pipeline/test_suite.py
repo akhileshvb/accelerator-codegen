@@ -49,8 +49,6 @@ class SuiteConfig:
     """``test_suite:`` of config/default.yaml."""
 
     acceptance_random_tuples: int = 20
-    quick_random_tuples: int = 4
-    quick_txns: int = 4
     differential_every: int = 5
     iterate_random_tuples: int = 10
     iterate_every: int = 10
@@ -132,6 +130,13 @@ def statements(sql: str) -> list[tuple[str, str]]:
     text = re.sub(r"--[^\n]*", "", sql)
     found = re.findall(r"(?:^|;)\s*(INSERT\s+INTO|UPDATE|DELETE\s+FROM)\s+([A-Za-z_]\w*)", text, re.I)
     return [(v.split()[0].upper(), t.lower()) for v, t in found]
+
+
+def txn_profiles(suite: Path) -> dict[str, tuple[str, tuple[str, ...]]]:
+    """{file name: (declared kind, tables written)} of the write transactions."""
+    declared = _yaml(suite / MANIFEST).get("txns") or {}
+    return {name: (str((declared.get(name) or {}).get("kind") or "other"), tuple(sorted({t for _, t in statements(sql)})))
+            for name, sql in txn_files(suite).items()}
 
 
 def is_rollback(sql: str) -> bool:
@@ -361,31 +366,17 @@ def validate_report(report: dict[str, Any], suite: Path, dependent_tables: list[
 # ---------------------------------------------------------------- the run of a tier
 
 
-def quick_txn_names(suite: Path, count: int) -> list[str]:
-    """The quick tier's transactions: the first of each distinct (kind, tables), in order, up to `count`."""
-    declared = (_yaml(suite / MANIFEST).get("txns") or {})
-    chosen, seen = [], set()
-    for name, sql in txn_files(suite).items():
-        key = ((declared.get(name) or {}).get("kind"), tuple(sorted({t for _, t in statements(sql)})))
-        if key not in seen:
-            seen.add(key)
-            chosen.append(name)
-    return chosen[:count]
-
-
 def run_environment(suite: Path, *, tier: str, cfg: SuiteConfig, seed: int | None, params_file: Path) -> dict[str, str]:
-    """The ACCEL_SUITE_* environment (host_contract.md, "Test suite") for one run of `tier` (quick, iterate, full or validate) with `seed`;
+    """The ACCEL_SUITE_* environment (host_contract.md, "Test suite") for one run of `tier` (iterate, validate, or full, which the quick tier also is: the same
+    tuples and transactions on the subset dataset) with `seed`;
     writes the run's random tuples to `params_file`."""
     seed = seed or fresh_seed()
-    random_tuples = {"quick": cfg.quick_random_tuples, "validate": cfg.validation_random_tuples,
-                     "iterate": cfg.iterate_random_tuples}.get(tier, cfg.acceptance_random_tuples)
+    random_tuples = {"validate": cfg.validation_random_tuples, "iterate": cfg.iterate_random_tuples}.get(tier, cfg.acceptance_random_tuples)
     drawn = draw_tuples(_yaml(suite / DOMAIN), random_tuples, seed) if (suite / DOMAIN).is_file() else []
     params_file.parent.mkdir(parents=True, exist_ok=True)
     params_file.write_text("\n".join(drawn) + ("\n" if drawn else ""), encoding="utf-8")
     env = {"ACCEL_SUITE_DIR": str(suite), "ACCEL_SUITE_PARAMS_FILE": str(params_file), "ACCEL_SUITE_SEED": str(seed),
-           "ACCEL_SUITE_EVERY": "0" if tier == "quick" else str(cfg.iterate_every if tier == "iterate" else cfg.differential_every)}
-    if tier == "quick":
-        env["ACCEL_SUITE_TXNS"] = ",".join(quick_txn_names(suite, cfg.quick_txns))
+           "ACCEL_SUITE_EVERY": str(cfg.iterate_every if tier == "iterate" else cfg.differential_every)}
     if tier == "validate":
         env["ACCEL_SUITE_MODE"] = "validate"
     return env

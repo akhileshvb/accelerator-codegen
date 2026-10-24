@@ -269,7 +269,7 @@ def test_aux_unit_builds_the_binaries_of_the_tests_it_runs(repo, tmp_path):
 
 
 def test_quick_check_builds_runs_smoke_then_differential(repo):
-    proc, calls, _, gj, _ = run_gate(repo, "run_aux_quick_check.sh", "5", env_extra={"ACCEL_GATE_NAME": "quick_check"})
+    proc, calls, _, gj, _ = run_gate(repo, "run_aux_quick_check.sh", "5", env_extra={"ACCEL_GATE_NAME": "quick_check", "ACCEL_AUX_THREADS": "1"})
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert calls[:2] == ["up", "load workloads/tpch/schema.sql"]
     assert calls[2] == "build aux_unit_bin diff_bin"
@@ -279,7 +279,7 @@ def test_quick_check_builds_runs_smoke_then_differential(repo):
 
 def test_quick_check_builds_and_runs_the_agents_own_targets(repo):
     proc, calls, *_ = run_gate(repo, "run_aux_quick_check.sh", "5",
-                               env_extra={"ACCEL_GATE_NAME": "quick_check", "ACCEL_QUICK_TARGETS": "my_test other_test"})
+                               env_extra={"ACCEL_GATE_NAME": "quick_check", "ACCEL_QUICK_TARGETS": "my_test other_test", "ACCEL_AUX_THREADS": "1"})
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert calls[2] == "build aux_unit_bin diff_bin my_test other_test"
     assert calls[3:] == ["run aux_unit_bin", "run my_test", "run other_test", "run diff_bin 5"]

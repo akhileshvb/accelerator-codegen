@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import atexit
+import contextlib
+import contextvars
 import json
 import os
 import shutil
@@ -147,6 +150,30 @@ def require_gate_pass(result: GateResult, *, allow_skip: bool = False) -> None:
 
 GATE_TIMEOUT_S = float(os.environ.get("ACCEL_GATE_TIMEOUT", 7200))
 CANCEL_POLL_S = 1.0
+TOOL_CALL_LIMIT_S = float(os.environ.get("ACCEL_TOOL_CALL_LIMIT", 600))  # the agent client's limit on one tool call
+TOOL_CALL_MARGIN_S = 20.0  # the gate is killed this long before the client gives up on the call
+_tool_deadline: contextvars.ContextVar[float | None] = contextvars.ContextVar("tool_deadline", default=None)
+_live_groups: set[int] = set()  # process groups of running gates, killed if this process exits first
+
+
+@contextlib.contextmanager
+def tool_call_limit(seconds: float = TOOL_CALL_LIMIT_S):
+    """Within a tool call: a gate run here is killed (its whole process group) before the client's limit on the call,
+    instead of running on as an orphan after the client has given up."""
+    token = _tool_deadline.set(time.monotonic() + seconds - TOOL_CALL_MARGIN_S)
+    try:
+        yield
+    finally:
+        _tool_deadline.reset(token)
+
+
+def _kill_live_groups() -> None:
+    for pgid in list(_live_groups):
+        with contextlib.suppress(OSError):
+            os.killpg(pgid, signal.SIGKILL)
+
+
+atexit.register(_kill_live_groups)
 
 
 def read_phase_log(gate_json: Path) -> dict[str, float]:
@@ -175,9 +202,15 @@ def _run_gate_script(
     )
     limit = GATE_TIMEOUT_S if timeout_s is None else timeout_s
     deadline = time.monotonic() + limit
+    hint = ""
+    if (tool_deadline := _tool_deadline.get()) is not None and tool_deadline < deadline:
+        limit, deadline = max(0.0, tool_deadline - time.monotonic()), tool_deadline
+        hint = ": the tool-call limit; long gates go in the background (request_gate(gate, background=True))"
+    _live_groups.add(proc.pid)
     while True:
         try:
             out, err = proc.communicate(timeout=min(CANCEL_POLL_S, max(0.0, deadline - time.monotonic())))
+            _live_groups.discard(proc.pid)
             return subprocess.CompletedProcess(proc.args, proc.returncode, out, err)
         except subprocess.TimeoutExpired:
             cancelled = cancel is not None and cancel.is_set()
@@ -185,10 +218,11 @@ def _run_gate_script(
                 continue
         os.killpg(proc.pid, signal.SIGKILL)
         out, err = proc.communicate()
+        _live_groups.discard(proc.pid)
         verdict = (
             {"status": "cancelled", "reason": "cancelled: a sibling gate failed"}
             if cancelled
-            else {"status": "fail", "reason": f"gate did not finish within {limit:.0f}s"}
+            else {"status": "fail", "reason": f"gate did not finish within {limit:.0f}s{hint}"}
         )
         return subprocess.CompletedProcess(proc.args, proc.returncode, out + "\n" + json.dumps(verdict), err)
 

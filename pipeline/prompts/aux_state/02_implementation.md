@@ -61,7 +61,7 @@ Full analysis: `{{full_analysis_path}}` · Workload SQL: `{{reference_sql_path}}
 Compiling is not enough. Do not end the stage until all of these have **passed** (not merely run):
 
 1. After new module, test, bench or calibrator sources: `cmake -S . -B <worker_build_dir>` once. Build the host's differential binary and gate harnesses with `backends/{{engine_name}}/host.sh` (`build`, `sql`, `run`, `slot`; `query_host_bootstrap.md` when a harness lacks this query).
-2. `quick_check` green after every edit.
+2. `quick_check` green after every edit. It runs the whole frozen suite at N and 1 threads on the subset and projects each write kind's cost to the full dataset: iterate until it passes with no projected-cost failure (a write that rebuilds the state fails it). The heavy gates below are refused before that, and each then runs once, not as a debugging loop.
 3. `run_correctness` / `request_gate` `aux_correctness` (module smoke plus the SF1 differential on the **{{engine_name}}** host). On failure fix the implementation or registration, never the fixtures.
 4. `run_multi_connection` (the engine's own harness).
 5. `request_gate` `aux_tsan` when the module has `ParallelEach` / `ParallelReduce` / `PartitionedBuild` code: it fails on a data race or a forced-grain mismatch.

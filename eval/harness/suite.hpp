@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <cmath>
 #include <cstdlib>
 #include <filesystem>
@@ -23,6 +24,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "duckdb.hpp"
@@ -492,10 +494,39 @@ inline std::string Project(const std::string &tuple, std::size_t n) {
   return out;
 }
 
+// What one write cost: the commit (statements, capture, maintenance run in it) and the first accelerated read
+// after it, which waits for any maintenance the commit left pending; maint_ms is the accelerator's own share of
+// both (-1: the engine does not report it), without the engine's cost of executing and committing the SQL.
+struct WriteCost {
+  std::string txn;
+  double write_ms = 0, read_ms = 0, maint_ms = -1;
+};
+
+// Milliseconds of accelerator maintenance of each adversarial-phase probe (eval/harness/differential.cpp), for the
+// suite report.
+inline std::vector<double> &ProbeCostsMs() {
+  static std::vector<double> costs;
+  return costs;
+}
+
 struct DifferentialRun {
   int write_errors = 0;
   std::string write_error_examples = "[";
   std::map<std::string, int> actions; // staged maintenance action -> count
+  std::vector<WriteCost> costs;
+
+  // `"write_costs":[...],"probe_costs_ms":[...]`: the cost model of quick_check projects these to the full dataset.
+  std::string CostFields() const {
+    std::string out = "\"write_costs\":[";
+    for (std::size_t i = 0; i < costs.size(); ++i)
+      out += (i ? "," : "") + std::string("{\"txn\":") + Json(costs[i].txn) + ",\"write_ms\":" +
+             std::to_string(costs[i].write_ms) + ",\"read_ms\":" + std::to_string(costs[i].read_ms) +
+             ",\"maint_ms\":" + std::to_string(costs[i].maint_ms) + "}";
+    out += "],\"probe_costs_ms\":[";
+    for (std::size_t i = 0; i < ProbeCostsMs().size(); ++i)
+      out += (i ? "," : "") + std::to_string(ProbeCostsMs()[i]);
+    return out + "]";
+  }
 };
 
 // A transaction whose first line is `-- rollback` is applied and then aborted: nothing may change.
@@ -512,11 +543,28 @@ inline DifferentialRun RunDifferentialLoop(
     Tally &tally, const Spec &spec, const std::string &query_sql, const Ordering &ordering, duckdb::Connection &qc,
     int every, uint64_t seed, const std::function<Rows(const std::string &, const std::string &)> &accel,
     const std::function<void(const std::string &)> &apply,
-    const std::function<void(const std::string &)> &abort = {}) {
+    const std::function<void(const std::string &)> &abort = {},
+    const std::function<double()> &maintenance_us = {}) { // cumulative accelerator maintenance (apply + build) time
   DifferentialRun run;
   std::mt19937_64 rng(seed);
+  using Clock = std::chrono::steady_clock;
+  const auto since_ms = [](Clock::time_point t) { return std::chrono::duration<double, std::milli>(Clock::now() - t).count(); };
+  constexpr auto kNone = static_cast<std::size_t>(-1);
+  std::size_t unread = kNone; // the write whose first read is still to be timed
+  double maintenance_before = 0;
+  auto timed_accel = [&](const std::string &where, const std::string &t) {
+    const auto started = Clock::now();
+    auto rows = accel(where, t);
+    if (unread != kNone) {
+      auto &cost = run.costs[std::exchange(unread, kNone)];
+      cost.read_ms = since_ms(started);
+      if (maintenance_us)
+        cost.maint_ms = (maintenance_us() - maintenance_before) / 1000.0;
+    }
+    return rows;
+  };
   auto check = [&](const std::string &where, const std::string &t) {
-    tally.CheckCall(where, t, [&] { return accel(where, t); }, [&] { return RunQuery(qc, query_sql, t); }, ordering,
+    tally.CheckCall(where, t, [&] { return timed_accel(where, t); }, [&] { return RunQuery(qc, query_sql, t); }, ordering,
                     [&] { return RunQuery(qc, ordering.unlimited_sql, t); });
   };
   auto check_all = [&](const std::string &where) {
@@ -526,6 +574,10 @@ inline DifferentialRun RunDifferentialLoop(
   check_all("build");
   for (std::size_t i = 0; i < spec.txns.size(); ++i) {
     core::ClearMaintenanceDecisionLog();
+    unread = kNone;
+    const auto write_started = Clock::now();
+    if (maintenance_us)
+      maintenance_before = maintenance_us();
     try {
       if (IsRollbackTxn(spec.txns[i])) {
         Require(static_cast<bool>(abort), "the suite has a rollback transaction and the harness cannot abort one");
@@ -540,6 +592,8 @@ inline DifferentialRun RunDifferentialLoop(
                                     Json(spec.txn_names[i]) + ",\"error\":" + Json(std::string(e.what()).substr(0, 600)) + "}";
       continue;
     }
+    run.costs.push_back({spec.txn_names[i], since_ms(write_started), 0});
+    unread = run.costs.size() - 1;
     const auto d = core::LastMaintenanceDecision();
     run.actions[d ? std::to_string(static_cast<int>(d->staged_action)) : "none"]++;
     const std::string where = "txn " + std::to_string(i) + " (" + spec.txn_names[i] + ")";

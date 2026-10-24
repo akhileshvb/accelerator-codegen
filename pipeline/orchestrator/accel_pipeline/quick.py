@@ -18,14 +18,20 @@ from pathlib import Path
 from typing import Any
 
 from accel_pipeline.build_stamp import code_stamp
+from accel_pipeline import test_suite as ts
+from accel_pipeline import write_cost
 from accel_pipeline.config import PipelineConfig
 from accel_pipeline.failure import Failure, render_failure
-from accel_pipeline.gates import run_gate
+from accel_pipeline.gate_stamps import current_stamp
+from accel_pipeline.gates import GATE_TIMEOUT_S, run_gate
 from accel_pipeline.layout import query_dir, workload_schema_sql
 from accel_pipeline.paths import gates_dir_for_query, query_artifacts_dir
+from accel_pipeline.test_suite import suite_path
 from accel_pipeline.workload_facts import scratch_connection
 
 QUICK_GATE = "quick_check"
+ADMISSION_FILE = f"{QUICK_GATE}.admitted"
+PROJECTION_LINES = 5  # the costliest write kinds a passing check reports
 SUBSET_MAX_SOURCE_GB = float(os.environ.get("ACCEL_SUBSET_MAX_SOURCE_GB", 30))
 
 
@@ -35,6 +41,7 @@ class QuickResult:
     phase_timings: dict[str, float] = field(default_factory=dict)
     failure: Failure | None = None
     summary: str = ""
+    projection: list[str] = field(default_factory=list)  # the projected full-gate write cost per transaction kind
 
 
 def _sql_statements(path: Path) -> list[str]:
@@ -116,6 +123,42 @@ def _passed_stamp_path(pipeline_config: PipelineConfig, workload: dict[str, Any]
     return gates_dir_for_query(art) / f"{QUICK_GATE}.stamp"
 
 
+def record_admission(pipeline_config: PipelineConfig, workload: dict[str, Any], query: int) -> None:
+    """quick_check passed on the code as it is now: the heavy gates may run."""
+    stamp = current_stamp(pipeline_config, workload, query)
+    if stamp:
+        path = _passed_stamp_path(pipeline_config, workload, query).with_name(ADMISSION_FILE)
+        path.write_text(stamp, encoding="utf-8")
+
+
+def admission_refusal(pipeline_config: PipelineConfig, workload: dict[str, Any], query: int, gate: str) -> str:
+    """Why `gate` may not run yet ("" when it may): a heavy aux gate needs a passing quick_check on the current code."""
+    quick = pipeline_config.quick_tier
+    if not quick.enabled or gate not in quick.admission_gates or workload.get("workload_kind") != "aux_state":
+        return ""
+    path = _passed_stamp_path(pipeline_config, workload, query).with_name(ADMISSION_FILE)
+    stamp = current_stamp(pipeline_config, workload, query)
+    if stamp and path.is_file() and path.read_text(encoding="utf-8") == stamp:
+        return ""
+    return f"{gate} refused: run quick_check first and iterate until it passes on the current code (it takes seconds), then request {gate} once."
+
+
+def _project_write_cost(pipeline_config: PipelineConfig, workload: dict[str, Any], query: int, subset: Path | None) -> write_cost.Projection | None:
+    """The full gate's write time, projected from the timings of the quick differential (None: no timings)."""
+    bench = str(workload.get("benchmark_name") or "")
+    art = query_artifacts_dir(pipeline_config.repo_root, query, workload=workload)
+    reports = write_cost.load_reports(gates_dir_for_query(art))
+    suite = suite_path(pipeline_config.repo_root, bench, query)
+    if not reports or not (suite / ts.MANIFEST).is_file():
+        return None
+    full = Path(str(workload.get("dataset_dir") or os.environ.get("ACCEL_DATASET_DIR") or ""))
+    probes = int(((ts._yaml(suite / ts.MANIFEST).get("point_writes") or {}).get("max_probes")) or 5)
+    return write_cost.project(
+        reports, profiles=ts.txn_profiles(suite), dependent=ts.dependent_tables(art),
+        scale=write_cost.table_scale(full if full.is_dir() else None, subset), probes_full=probes,
+        budget_s=GATE_TIMEOUT_S * pipeline_config.quick_tier.write_cost_budget_share)
+
+
 def _sanitizer_evidence(data: dict[str, Any]) -> str:
     found = data.get("sanitizer_findings") or {}
     lines = []
@@ -166,11 +209,17 @@ def run_quick_check(pipeline_config: PipelineConfig, workload: dict, query: int,
     extra_targets = list(targets or [])
     stamp = _result_stamp(pipeline_config, workload, query, extra_targets, differential, sanitizer, threads)
     passed_path = _passed_stamp_path(pipeline_config, workload, query)
+    admits = differential and not sanitizer  # only the plain run with the differential opens the heavy gates
     if stamp and passed_path.is_file() and passed_path.read_text(encoding="utf-8") == stamp:
+        if admits:
+            record_admission(pipeline_config, workload, query)
         return QuickResult(status="pass", summary="unchanged since the last passing quick_check")
 
     started = time.monotonic()
-    ensure_subset_dataset(pipeline_config, workload)
+    subset = ensure_subset_dataset(pipeline_config, workload)
+    gates_dir = gates_dir_for_query(query_artifacts_dir(pipeline_config.repo_root, query, workload=workload))
+    for stale in write_cost.report_paths(gates_dir):
+        stale.unlink(missing_ok=True)
     timings = {"subset_dataset": round(time.monotonic() - started, 3)}
     result = run_gate(
         pipeline_config, QUICK_GATE, query, workload,
@@ -187,10 +236,22 @@ def run_quick_check(pipeline_config: PipelineConfig, workload: dict, query: int,
     if result.status == "skip":
         return QuickResult(status="skip", phase_timings=timings, summary=str(result.data.get("reason") or "skipped"))
     if result.status == "pass":
+        projection = _project_write_cost(pipeline_config, workload, query, subset) if admits else None
+        if projection and projection.over:
+            passed_path.unlink(missing_ok=True)
+            failure = Failure(
+                kind="code", stage=QUICK_GATE, source=QUICK_GATE,
+                summary=f"quick_check: {projection.summary()}: the full gate would time out. Costliest: {projection.worst}",
+                evidence="\n".join(projection.lines),
+                diagnosis=[f"{name}: {seconds:.1f}s" for name, seconds in timings.items()])
+            return QuickResult(status="fail", phase_timings=timings, failure=failure, summary=failure.summary)
         if stamp:
             passed_path.parent.mkdir(parents=True, exist_ok=True)
             passed_path.write_text(stamp, encoding="utf-8")
-        return QuickResult(status="pass", phase_timings=timings, summary="quick_check passed")
+        if admits:
+            record_admission(pipeline_config, workload, query)
+        return QuickResult(status="pass", phase_timings=timings, summary="quick_check passed" + (f"; {projection.summary()}" if projection else ""),
+                           projection=projection.lines[:PROJECTION_LINES] if projection else [])
     passed_path.unlink(missing_ok=True)
     failure = _failure(result.data, timings)
     return QuickResult(status="fail", phase_timings=timings, failure=failure, summary=failure.summary)
@@ -199,6 +260,8 @@ def run_quick_check(pipeline_config: PipelineConfig, workload: dict, query: int,
 def render_quick_result(result: QuickResult) -> str:
     """Compact JSON for the agent: status, seconds per phase, and on failure the rendered failure."""
     payload: dict[str, Any] = {"status": result.status, "summary": result.summary}
+    if result.projection:
+        payload["projected_full_gate_write_cost"] = result.projection
     if result.phase_timings:
         payload["phase_seconds"] = result.phase_timings
     if result.failure:

@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 from typing import Any, Callable
 
+from accel_pipeline.gates import tool_call_limit
 from accel_pipeline.jsonio import read_json
 from accel_pipeline.no_progress import record_check
 from accel_pipeline.optimization_saturation import mark_profile_run
@@ -71,7 +72,7 @@ def build_mcp_tool_callables(
     from accel_pipeline.gates import run_gate
     from accel_pipeline.tools.ab_tools import AbToolContext, make_ab_tools
     from accel_pipeline.tools.gate_tools import ToolContext as GateCtx
-    from accel_pipeline.tools.gate_tools import make_gate_tools
+    from accel_pipeline.tools.gate_tools import admission_refusal_payload, make_gate_tools
     from accel_pipeline.tools.reanalysis_tools import ToolContext as ReanalysisCtx
     from accel_pipeline.tools.reanalysis_tools import make_reanalysis_tools
     from accel_pipeline.tools.shell_tools import ToolContext as ShellCtx
@@ -97,6 +98,8 @@ def build_mcp_tool_callables(
     begin_ab_trial, run_quick_benchmark, end_ab_trial = make_ab_tools(ab_ctx)
 
     def _run_named_gate(gate_name: str, env: dict[str, str] | None = None) -> str:
+        if refusal := admission_refusal_payload(gate_ctx, gate_name):
+            return refusal
         result = run_gate(
             pipeline_config,
             gate_name,
@@ -408,7 +411,7 @@ def main(argv: list[str] | None = None) -> int:
             tools = build_mcp_tool_callables(
                 pipeline_config, workload, workload_name, q, stage, optimization_iter, art
             )
-            with keep_alive(art):  # a long tool call (gate, bench, build) is agent activity, not idleness
+            with keep_alive(art), tool_call_limit():  # a long tool call (gate, bench, build) is agent activity, not idleness
                 result = tools[name](*a, **kw)
             record_check(art, name, a, result)
             return result + _budget_footer(pipeline_config, stage, q)
