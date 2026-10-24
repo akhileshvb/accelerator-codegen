@@ -54,6 +54,58 @@ bulk_writes: {required: true, min_chunks: 2}                    # stateful: RF-s
 scale_scenarios: ["one per applicable failure class of scale_factor_contract.md: the write or database that exercises it"]   # stateful
 ```
 
+## Worked example: a complete minimal suite
+
+Toy query `SELECT o_orderpriority, count(*) FROM orders WHERE o_orderdate >= $1 AND o_orderdate < $2 AND o_orderstatus = $3 GROUP BY 1 ORDER BY 1` (dependent table `orders`, parameters in `$n` order). The directory is `accelerators/<bench>/q<N>/tests/workload/` and holds exactly:
+
+`params.sql` (one tuple per line, SQL literals; `NULL` is a literal; tuple numbers in `suite.yaml` count the non-comment lines from 1):
+
+```sql
+-- in-spec
+DATE '1995-01-01', DATE '1995-04-01', 'F'
+DATE '1993-07-01', DATE '1993-10-01', 'O'
+-- off-spec: unknown status, reversed bounds, equal bounds
+DATE '1995-01-01', DATE '1995-04-01', 'x'
+DATE '1995-04-01', DATE '1995-01-01', 'F'
+DATE '1995-01-01', DATE '1995-01-01', 'F'
+-- NULL, far dates
+NULL, DATE '1995-04-01', 'F'
+DATE '1900-01-01', DATE '2100-01-01', 'P'
+```
+
+`txns/001.sql` ... (names sort in application order; one file = one transaction of `;`-separated statements, committed; later files see earlier effects; target rows by subquery, never by id; each statement is plain INSERT / UPDATE / DELETE):
+
+```sql
+-- 001.sql  point_update: moves one counted order to another priority
+UPDATE orders SET o_orderpriority = '1-URGENT' WHERE o_orderkey = (SELECT min(o_orderkey) FROM orders WHERE o_orderdate >= DATE '1995-01-01' AND o_orderdate < DATE '1995-04-01' AND o_orderstatus = 'F' AND o_orderpriority <> '1-URGENT');
+```
+
+```sql
+-- rollback
+-- 002.sql: the first line is exactly the marker above; the transaction is applied, then aborted
+DELETE FROM orders WHERE o_orderkey = (SELECT min(o_orderkey) FROM orders WHERE o_orderstatus = 'F');
+```
+
+An INSERT copies a visible row by subquery (`INSERT INTO orders SELECT o_orderkey + 1000000000, o_custkey, ... FROM orders WHERE ... LIMIT 1`); a bulk chunk is one file with many rows (`INSERT INTO t SELECT ... FROM t WHERE <slice> `); a duplicate key is an INSERT of an existing key, and its undo a DELETE of the later copy.
+
+`domain.yaml`, `write_mix.yaml`: as above. `suite.yaml` for the toy:
+
+```yaml
+version: 1
+query: 4
+rationale: "orders is the only dependent table; the tuples cover in-spec, off-spec status, reversed/equal bounds, NULL and far dates; the writes move counted rows across groups, remove and re-add them, and duplicate a key."
+edge_coverage: {in_spec: [1, 2], off_spec: [3, 4, 5], null_param: [6], empty_result: [3, 4, 5], limit_ties: "n/a: the query has no LIMIT", extreme_values: [7], large_keys: "n/a: no key parameter"}
+txns: {"001.sql": {kind: point_update}, "002.sql": {kind: rollback}, "003.sql": {kind: point_insert}, "004.sql": {kind: point_delete}, "005.sql": {kind: key_move}, "006.sql": {kind: bulk_insert}}
+not_applicable: {}
+point_writes: {min_count: 3, max_probes: 8, tables: [orders]}
+bulk_writes: {required: true, min_chunks: 2}
+scale_scenarios: ["one entry per applicable failure class of scale_factor_contract.md: the write or database that exercises it"]
+```
+
+## How to validate (do not build or run the harness yourself)
+
+Write the whole suite first (every file above), then call `request_gate` with `test_suite_validate`: about a minute. It first checks the files (every problem of the static checks is listed at once, in the wording below), then runs, with no accelerator, every tuple and random draw on the reference SQL and every transaction applied, rolled back and re-applied on a writable copy of the **test database** (a small subset of the benchmark database: choose targets by subquery so they exist there; `query_data` explores the full database). Fix everything the result lists, and call it again; a draft that fails is cheaper than reading how the checker works. The gate needs no registration, build or host process from you: do not start engine processes (the host script, the engine's CLI on its database files) and never read the orchestrator, gates or harness sources.
+
 ## What the stage's validation checks
 
 - every `params.sql` tuple and every random draw from `domain.yaml` has the query's parameter count and **runs the reference SQL** on the test database without error;

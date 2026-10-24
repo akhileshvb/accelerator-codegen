@@ -493,3 +493,30 @@ def test_the_audit_checks_the_suite_covers_the_query(prompt):
 
 def test_no_prompt_still_names_the_retired_stage():
     assert not [p for p in PROMPTS.rglob("*.md") if "adversarial_write_scenarios" in p.read_text(encoding="utf-8")]
+
+
+def test_the_format_docs_worked_example_passes_the_static_checks(tmp_path):
+    """The example suite in pipeline/prompts/shared/test_suite.md is what a tester copies: it must be valid."""
+    import re
+
+    doc = (Path(__file__).resolve().parents[2] / "prompts" / "shared" / "test_suite.md").read_text(encoding="utf-8")
+    example = doc.split("## Worked example")[1].split("## How to validate")[0]
+    blocks = re.findall(r"```(\w+)\n(.*?)```", example, re.S)
+    sql = [b for lang, b in blocks if lang == "sql"]
+    suite = tmp_path / "workload"
+    (suite / "txns").mkdir(parents=True)
+    (suite / "params.sql").write_text(sql[0], encoding="utf-8")
+    txns = {"001": sql[1], "002": sql[2], "003": "INSERT INTO orders SELECT * FROM orders LIMIT 1;",
+            "004": "DELETE FROM orders WHERE o_orderkey = 1;", "005": "UPDATE orders SET o_custkey = o_custkey + 1;",
+            "006": "INSERT INTO orders SELECT * FROM orders LIMIT 5;"}
+    for name, text in txns.items():
+        (suite / "txns" / f"{name}.sql").write_text(text, encoding="utf-8")
+    (suite / "suite.yaml").write_text([b for lang, b in blocks if lang == "yaml"][-1], encoding="utf-8")
+    (suite / "domain.yaml").write_text("version: 1\nparams:\n  - {name: a, type: date, min: 1992-01-02, max: 1998-12-01}\n"
+                                       "  - {name: b, type: derived, from: a, add_months: 3}\n  - {name: c, type: choice, values: [\"'F'\"]}\n",
+                                       encoding="utf-8")
+    (suite / "write_mix.yaml").write_text("version: 1\nfrequency_pct: {min: 1, max: 50, samples: 3, distribution: log}\n"
+                                          "kinds: {point_update: 5, point_insert: 2, point_delete: 2, bulk_insert: 1}\n", encoding="utf-8")
+    query = ("SELECT o_orderpriority, count(*) FROM orders WHERE o_orderdate >= $1 AND o_orderdate < $2 "
+             "AND o_orderstatus = $3 GROUP BY 1 ORDER BY 1")
+    assert ts.validate_static(suite, query_sql=query, param_names=["a", "b", "c"], dependent_tables=["orders"], aux=True) == []

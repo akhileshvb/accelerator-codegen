@@ -11,7 +11,7 @@ Write the acceptance test suite of **{{display_name}}** **Q{{query_number}}**. Y
 3. **A random write mix.** `write_mix.yaml`: the write-frequency range (percent of operations that are writes) the benchmarks sample from on every run, and the kinds' relative weights as the application makes them. Pick a range an accelerator must stay fast across, not one it was tuned for.
 4. **Scale.** `suite.yaml` records the scale scenarios, point-write and bulk-write minimums the gates enforce (`scale_factor_contract.md`).
 
-**Owns:** the query's `tests/workload/` directory, nothing else. **Never touches:** the accelerator, harnesses, gates, `backends/`, `substrate/`, other queries. If a suite already exists there, make it meet this contract; never weaken it. Never record backend or harness requests: if a gate fails for a reason outside `tests/workload/`, call `report_blocker` with the evidence and stop. **Judged by:** the `test_suite_validate` gate (mechanical, below), then, as the implementation's acceptance, `aux_correctness` and `quick_check`.
+**Owns:** `accelerators/{{benchmark_name}}/q{{query_number}}/tests/workload/` (create it; it may not exist yet), nothing else. **Never touches:** the accelerator, harnesses, gates, `backends/`, `substrate/`, other queries. If a suite already exists there, make it meet this contract; never weaken it. Never record backend or harness requests: if a gate fails for a reason outside `tests/workload/`, call `report_blocker` with the evidence and stop. **Judged by:** the `test_suite_validate` gate (mechanical, below), then, as the implementation's acceptance, `aux_correctness` and `quick_check`.
 
 {{hard_guidelines}}
 
@@ -21,8 +21,8 @@ Write the acceptance test suite of **{{display_name}}** **Q{{query_number}}**. Y
 
 - Analysis: `{{full_analysis_path}}` · compact facts: `{{analysis_json}}`
 - Query (`$n` parameters): `workloads/{{benchmark_name}}/q{{query_number}}.sql` · schema: `workloads/{{benchmark_name}}/schema.sql` (its NOT NULL columns are enforced on the test database: a write that breaks the schema is outside what the accelerator is specified for)
-- Explore the test database with `backends/{{engine_name}}/host.sh sql`; an existing suite of a neighboring query is a worked example of the format.
-- Format, files and the validation rules: `pipeline/prompts/shared/test_suite.md`.
+- Explore the data with the MCP tools (`query_data`, `query_shape`, `rows_qualifying`, ...): read-only and time-boxed. Do not start engine processes yourself (the host script, the engine's CLI on its database).
+- **Everything you need is in `pipeline/prompts/shared/test_suite.md`: every file's format with a complete worked example, the validation rules and how to run them.** Read it once, write the whole suite, then `request_gate test_suite_validate` and fix what it lists. Pipeline, gate and harness sources tell you nothing more: do not read them; no suite of another query exists to copy.
 
 {{change_request}}
 
