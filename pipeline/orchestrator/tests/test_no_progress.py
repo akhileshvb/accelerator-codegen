@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import time
 from pathlib import Path
@@ -119,14 +120,14 @@ def test_footer_asks_for_the_blocker_after_nudge_and_counts_guarded_reads(tmp_pa
     assert "No progress for 10 min" in footer and "report_blocker" in footer and "11 shell reads" in footer
 
 
-def _backend(tmp_path, monkeypatch, mode, nudge=0.3, redirect=0.8):
+def _backend(tmp_path, monkeypatch, mode, nudge=0.3, redirect=0.8, exit_gate=()):
     _git_repo(tmp_path)
     monkeypatch.setenv("FAKE_CODEX_MODE", mode)
     monkeypatch.setenv("FAKE_CODEX_DIR", str(tmp_path))
     monkeypatch.setenv("FAKE_CODEX_EDIT", str(tmp_path / QUERY_FILE))
     monkeypatch.setenv("FAKE_CODEX_ART", str(tmp_path / "art"))
     (tmp_path / "art").mkdir()
-    cfg = _config(tmp_path, no_progress=NoProgressConfig(nudge_sec=nudge, redirect_sec=redirect))
+    cfg = _config(tmp_path, no_progress=NoProgressConfig(nudge_sec=nudge, redirect_sec=redirect), exit_gate=exit_gate)
     models = ModelConfig(api_key_env="K", presets={}, stages={}, codex_bin=str(FAKE_CODEX))
     return CodexExecBackend(pipeline_config=cfg, model_config=models, query=1, stage="implementation",
                             art_dir=tmp_path / "art")
@@ -226,3 +227,28 @@ def test_a_persisting_blocker_stops_cleanly_citing_the_blocker(tmp_path, monkeyp
     assert world.agent_calls == 1 and len(world.gate_calls) == 2  # one agent turn, one re-check, no code rounds
     report = stopped.value.report.read_text()
     assert "agent-reported blocker" in report and "gate is broken" in report and "still failed" in report
+
+
+def test_a_pass_of_the_stages_exit_gate_ends_the_turn_as_a_finish(tmp_path, monkeypatch):
+    backend = _backend(tmp_path, monkeypatch, "gate_pass", nudge=0, redirect=0, exit_gate=(("implementation", "fake_gate"),))
+    started = time.monotonic()
+    result = backend.run_stage(_request())
+    assert result.status == "finished" and time.monotonic() - started < 20
+    assert not result.metadata.get("timed_out")
+
+
+def test_a_failing_exit_gate_or_a_stage_without_one_runs_to_the_end(tmp_path, monkeypatch):
+    result = _backend(tmp_path, monkeypatch, "gate_fail", nudge=0, redirect=0, exit_gate=(("implementation", "fake_gate"),)).run_stage(_request())
+    assert result.status == "finished" and result.metadata["exit_code"] == 0
+    (tmp_path / "o").mkdir()
+    other = _backend(tmp_path / "o", monkeypatch, "gate_fail", nudge=0, redirect=0, exit_gate=(("test_suite", "fake_gate"),))
+    assert other.run_stage(_request()).status == "finished"
+
+
+def test_an_exit_gate_record_older_than_the_turn_does_not_end_it(tmp_path, monkeypatch):
+    backend = _backend(tmp_path, monkeypatch, "gate_fail", nudge=0, redirect=0, exit_gate=(("implementation", "fake_gate"),))
+    gates = tmp_path / "art" / "gates"
+    gates.mkdir()
+    (gates / "fake_gate.json").write_text('{"status": "pass"}')
+    os.utime(gates / "fake_gate.json", (1, 1))
+    assert backend._exit_gate_passed(time.time()) is False

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import signal
 import sys
@@ -55,7 +56,7 @@ class _Outcome:
     stdout: str
     stderr: str
     killed: str = ""
-    reason: str = ""  # why it was stopped: deadline | idle | no_progress | blocker
+    reason: str = ""  # why it was stopped: deadline | idle | no_progress | blocker | exit_gate (a finish, not a failure)
     detail: str = ""  # the evidence a directed resume carries
 
 
@@ -429,6 +430,10 @@ class CodexExecBackend:
                     killed, reason = f"codex exec hit the hard deadline ({hard:.0f}s)", "deadline"
                 elif idle and now - last_active >= idle:
                     killed, reason = f"codex exec idle for {idle:.0f}s (no output, session or tool activity)", "idle"
+                elif self._exit_gate_passed(since):
+                    reason = "exit_gate"
+                    _kill(proc)
+                    break
                 elif (blocker := self._blocker_since(since)):
                     killed, reason, detail = "the agent reported a blocker (report_blocker)", "blocker", blocker
                 elif clock is not None and clock.poll(rollout) == "redirect":
@@ -437,7 +442,7 @@ class CodexExecBackend:
                 if killed:
                     _kill(proc)
                     break
-            return _Outcome(proc.returncode, out_path.read_text(errors="replace"),
+            return _Outcome(0 if reason == "exit_gate" else proc.returncode, out_path.read_text(errors="replace"),
                             err_path.read_text(errors="replace"), killed, reason, detail)
 
     def _progress_clock(self, since: float) -> no_progress.ProgressClock | None:
@@ -449,6 +454,18 @@ class CodexExecBackend:
             self._art_dir, self._pipeline_config.repo_root, query=self._query, stage=self._stage,
             pipeline_config=self._pipeline_config, nudge_sec=nudge, redirect_sec=redirect, started_wall=since,
             sample_sec=max(0.05, min(15.0, (nudge or redirect) / 4)))
+
+    def _exit_gate_passed(self, since: float) -> bool:
+        """The stage's exit gate (config session.exit_gate) passed during this turn: its acceptance is met, so the
+        turn ends (the agent would only keep polishing)."""
+        gate = self._pipeline_config.session.exit_gate_for(self._stage)
+        if not gate or self._art_dir is None:
+            return False
+        try:
+            path = self._art_dir / "gates" / f"{gate}.json"
+            return path.stat().st_mtime >= since and json.loads(path.read_text(encoding="utf-8")).get("status") == "pass"
+        except (OSError, ValueError):
+            return False
 
     def _blocker_since(self, since: float) -> str:
         """The report_blocker file written during this turn, else ''."""

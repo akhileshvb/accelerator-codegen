@@ -116,6 +116,10 @@ class SessionConfig:
     max_resumes: int = 25
     max_context_tokens: int = 0
     no_progress: NoProgressConfig = field(default_factory=NoProgressConfig)
+    exit_gate: tuple[tuple[str, str], ...] = ()  # stage -> gate whose pass (during the turn) ends the agent's turn
+
+    def exit_gate_for(self, stage: str) -> str:
+        return dict(self.exit_gate).get(stage, "")
 
     def soft_deadline_for(self, stage: str) -> int:
         return dict(self.stage_soft_deadline_sec).get(stage, self.soft_deadline_sec)
@@ -497,6 +501,7 @@ def _session_config(block: dict[str, Any]) -> SessionConfig:
         max_resumes=int(block.get("max_resumes", defaults.max_resumes)),
         max_context_tokens=int(block.get("max_context_tokens", defaults.max_context_tokens)),
         no_progress=_no_progress_config(block.get("no_progress") or {}),
+        exit_gate=tuple((str(k), str(v)) for k, v in (block.get("exit_gate") or {}).items()),
     )
 
 

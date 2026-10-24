@@ -143,6 +143,8 @@ session:
   max_context_tokens: 0
   # No real progress (an owned file, a stage artifact, or a check result that changed; reads and greps
   # are activity): the tool footer asks for the blocker, then the turn ends with a directed resume.
+  # A stage's own acceptance gate passing during the agent's turn ends the turn (the stage then runs the gate again and completes).
+  exit_gate: {test_suite: test_suite_validate}
   no_progress: {nudge_sec: 480, redirect_sec: 1200}   # stages: {<stage>: {nudge_sec: N, redirect_sec: N}}
 
 # Fast inner loop (quick_check tool, quick bench tier, parallel and background gates).
