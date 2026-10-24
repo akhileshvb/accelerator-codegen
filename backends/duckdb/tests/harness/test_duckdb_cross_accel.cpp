@@ -6,8 +6,12 @@
 
 #include "duckdb.hpp"
 
-int main() {
+int main(int argc, char **argv) {
 	try {
+		if (argc == 2 && std::string(argv[1]) == "--help") {
+			std::cout << "usage: test_duckdb_cross_accel   (database: ACCEL_TPCH_DB)\n";
+			return EXIT_SUCCESS;
+		}
 		accelerator_codegen::test_support::EnableCrossAccelHybridMaintenance();
 		duckdb::DuckDB database(accelerator_codegen::test_support::CrossAccelMutableDatabasePath());
 		duckdb::Connection connection(database);

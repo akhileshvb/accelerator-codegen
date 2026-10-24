@@ -19,8 +19,12 @@ void Require(bool condition, const std::string &message) {
 
 } // namespace
 
-int main() {
+int main(int argc, char **argv) {
 	try {
+		if (argc == 2 && std::string(argv[1]) == "--help") {
+			std::cout << "usage: test_duckdb_aux_multi_connection_stress   (database: ACCEL_TPCH_DB; ACCEL_MULTI_CONN_STRESS_SEC)\n";
+			return EXIT_SUCCESS;
+		}
 		accelerator_codegen::test_support::EnableCrossAccelHybridMaintenance();
 		const auto targets = accelerator_codegen::test_support::MultiConnectionTestQueries();
 		Require(!targets.empty(), "no target queries configured");

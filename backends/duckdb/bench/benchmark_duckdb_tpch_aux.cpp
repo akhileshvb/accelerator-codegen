@@ -15,6 +15,10 @@ namespace aux_sweep = accelerator_codegen::benchmarks::aux_sweep;
 
 int main(int argc, char **argv) {
   try {
+    if (argc == 2 && std::string(argv[1]) == "--help") {
+      std::cout << "usage: benchmark_duckdb_tpch_aux --query <N>   (database: ACCEL_TPCH_DB)\n";
+      return 0;
+    }
     const driver::Args args(argc, argv);
     const int query = args.query;
     if (!std::getenv("ACCEL_AUX_WRITE_INTERVALS") && !std::getenv("ACCEL_AUX_WRITE_FREQUENCIES")) {

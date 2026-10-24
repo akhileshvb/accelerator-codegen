@@ -69,6 +69,10 @@ int CalibrateAndWriteCostModel(int query_num, const std::vector<std::string> &po
 // Usage: calibrate_duckdb_tpch_aux_cost_model --query N [out_json]   (database: ACCEL_TPCH_DB)
 int main(int argc, char **argv) {
 	try {
+		if (argc == 2 && std::string(argv[1]) == "--help") {
+			std::cout << "usage: calibrate_duckdb_tpch_aux_cost_model --query <N>   (database: ACCEL_TPCH_DB)\n";
+			return EXIT_SUCCESS;
+		}
 		const accelerator_codegen::benchmarks::driver::Args args(argc, argv);
 		return accelerator_codegen::calibration::CalibrateAndWriteCostModel(args.query, args.positional);
 	} catch (const std::exception &ex) {
