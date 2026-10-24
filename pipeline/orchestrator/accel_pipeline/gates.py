@@ -31,6 +31,7 @@ GATE_SCRIPTS = {
     "test_suite_validate": "run_test_suite_validate.sh",
     "aux_correctness": "run_aux_correctness.sh",
     "aux_correctness_quick": "run_aux_correctness.sh",
+    "aux_correctness_iterate": "run_aux_correctness.sh",
     "quick_check": "run_aux_quick_check.sh",
     "aux_unit": "run_aux_unit_tests.sh",
     "prims_tests": "run_prims_tests.sh",
@@ -74,7 +75,9 @@ GATE_SCRIPTS = {
 # Gates that run a cheaper tier of another gate's script; each has its own result file.
 # The sanitizer gate runs on the small test subset too: races do not need the full dataset, and an instrumented
 # build and differential on it took 20+ min per run (past the MCP tool-call limit).
-GATE_TIERS = {"aux_correctness_quick": "quick", "quick_check": "quick", "aux_tsan": "quick"}
+# The iterate tier is the stage-exit gate of an optimization iteration: the full dataset, a lighter suite and fewer
+# write probes, one thread count (the design already passed the full tier; the audit runs it again).
+GATE_TIERS = {"aux_correctness_quick": "quick", "quick_check": "quick", "aux_tsan": "quick", "aux_correctness_iterate": "iterate"}
 
 
 @dataclass
@@ -269,7 +272,7 @@ def run_gate(
         from accel_pipeline.quick import ensure_subset_dataset
 
         gate_env["ACCEL_GATE_TIER"] = tier
-        subset = ensure_subset_dataset(pipeline_config, workload)
+        subset = ensure_subset_dataset(pipeline_config, workload) if tier == "quick" else None
         if subset:
             gate_env["ACCEL_SUBSET_DATASET_DIR"] = str(subset)
     gate_env.update(env or {})

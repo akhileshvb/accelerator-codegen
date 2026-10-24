@@ -222,6 +222,17 @@ def test_the_quick_tier_caps_the_differential_probes(repo):
     assert seen == {"quick": "3", "full": "9"}
 
 
+def test_the_iterate_tier_uses_the_minimum_probes_the_full_dataset_and_one_thread_count(repo):
+    ctx = suite_ctx(repo, "point_writes: {max_probes: 9, min_count: 6}\n")
+    host = repo / "backends" / "fake" / "host.sh"
+    host.write_text('#!/usr/bin/env bash\n[[ "$1" != run ]] || echo "$2 probes=${ACCEL_ADV_MAX_PROBES:-unset} threads=${ACCEL_AUX_THREADS:-n}" >> "${FAKE_LOG}.probes"\n')
+    proc, *_ = run_gate(repo, "run_aux_correctness.sh", "5", ctx_extra=ctx,
+                        env_extra={"ACCEL_GATE_TIER": "iterate", "ACCEL_SUBSET_DATASET_DIR": "/data/subset"})
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    runs = [line for line in (repo / "host.log.probes").read_text().splitlines() if line.startswith("diff_bin")]
+    assert runs == ["diff_bin probes=6 threads=n"]   # one run (no threads=1 rerun), the min_count probes
+
+
 def test_the_quick_tier_result_never_overwrites_the_full_one(repo):
     run_gate(repo, "run_aux_correctness.sh", "5")
     run_gate(repo, "run_aux_correctness.sh", "5", env_extra={"ACCEL_GATE_NAME": "aux_correctness_quick", "FAKE_RC_run": "1"})

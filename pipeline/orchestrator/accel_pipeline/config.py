@@ -72,7 +72,7 @@ class RepairConfig:
     max_replans: int = 1
     max_orchestrator_retries: int = 1
     load_factor: float = 1.5
-    never_quarantine: tuple[str, ...] = ("aux_correctness", "aux_unit")
+    never_quarantine: tuple[str, ...] = ("aux_correctness", "aux_correctness_iterate", "aux_unit")
     provider_retries: int = 3  # network/provider flakes: their own budget, with a growing wait
     provider_backoff_sec: tuple[float, ...] = (30.0, 90.0, 270.0)
 

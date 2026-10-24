@@ -52,6 +52,8 @@ class SuiteConfig:
     quick_random_tuples: int = 4
     quick_txns: int = 4
     differential_every: int = 5
+    iterate_random_tuples: int = 10
+    iterate_every: int = 10
     validation_random_tuples: int = 12
     bench_repeats: int = 3
     write_mix: dict[str, Any] | None = None
@@ -372,16 +374,16 @@ def quick_txn_names(suite: Path, count: int) -> list[str]:
 
 
 def run_environment(suite: Path, *, tier: str, cfg: SuiteConfig, seed: int | None, params_file: Path) -> dict[str, str]:
-    """The ACCEL_SUITE_* environment (host_contract.md, "Test suite") for one run of `tier` (quick, full or validate) with `seed`;
+    """The ACCEL_SUITE_* environment (host_contract.md, "Test suite") for one run of `tier` (quick, iterate, full or validate) with `seed`;
     writes the run's random tuples to `params_file`."""
     seed = seed or fresh_seed()
-    random_tuples = {"quick": cfg.quick_random_tuples, "validate": cfg.validation_random_tuples}.get(
-        tier, cfg.acceptance_random_tuples)
+    random_tuples = {"quick": cfg.quick_random_tuples, "validate": cfg.validation_random_tuples,
+                     "iterate": cfg.iterate_random_tuples}.get(tier, cfg.acceptance_random_tuples)
     drawn = draw_tuples(_yaml(suite / DOMAIN), random_tuples, seed) if (suite / DOMAIN).is_file() else []
     params_file.parent.mkdir(parents=True, exist_ok=True)
     params_file.write_text("\n".join(drawn) + ("\n" if drawn else ""), encoding="utf-8")
     env = {"ACCEL_SUITE_DIR": str(suite), "ACCEL_SUITE_PARAMS_FILE": str(params_file), "ACCEL_SUITE_SEED": str(seed),
-           "ACCEL_SUITE_EVERY": "0" if tier == "quick" else str(cfg.differential_every)}
+           "ACCEL_SUITE_EVERY": "0" if tier == "quick" else str(cfg.iterate_every if tier == "iterate" else cfg.differential_every)}
     if tier == "quick":
         env["ACCEL_SUITE_TXNS"] = ",".join(quick_txn_names(suite, cfg.quick_txns))
     if tier == "validate":

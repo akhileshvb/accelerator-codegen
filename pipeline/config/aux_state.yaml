@@ -105,7 +105,7 @@ post_implementation_gates:
 
 # End-of-optimization-iteration gate batch (not run per attempt).
 post_optimization_gates:
-  - aux_correctness
+  - aux_correctness_iterate
   - aux_unit
   - prims_tests
   - aux_cost_model_calibrate

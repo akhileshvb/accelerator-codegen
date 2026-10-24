@@ -220,6 +220,10 @@ def test_a_run_environment_is_its_seed_and_tier(tmp_path):
     quick = ts.run_environment(suite, tier="quick", cfg=cfg, seed=5, params_file=tmp_path / "quick.sql")
     assert len((tmp_path / "quick.sql").read_text().splitlines()) == 2 and quick["ACCEL_SUITE_EVERY"] == "0"
     assert quick["ACCEL_SUITE_TXNS"].split(",") == ["001.sql", "002.sql", "003.sql"]
+    iterate = ts.run_environment(suite, tier="iterate", cfg=ts.SuiteConfig(acceptance_random_tuples=7, iterate_random_tuples=3, iterate_every=10),
+                                 seed=5, params_file=tmp_path / "iterate.sql")
+    assert len((tmp_path / "iterate.sql").read_text().splitlines()) == 3 and iterate["ACCEL_SUITE_EVERY"] == "10"
+    assert "ACCEL_SUITE_TXNS" not in iterate
     fresh = ts.run_environment(suite, tier="full", cfg=cfg, seed=None, params_file=tmp_path / "fresh.sql")
     assert fresh["ACCEL_SUITE_SEED"] != "0" and again == {**full, "ACCEL_SUITE_PARAMS_FILE": again["ACCEL_SUITE_PARAMS_FILE"]}
 

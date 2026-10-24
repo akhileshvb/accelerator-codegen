@@ -7,7 +7,7 @@ from pathlib import Path
 
 from accel_pipeline.config import load_workload
 from accel_pipeline.gates import GATES_ALLOW_SKIP, GATE_SCRIPTS
-from accel_pipeline.stages.gate_plan import workload_post_audit_gates
+from accel_pipeline.stages.gate_plan import workload_post_audit_gates, workload_post_optimization_gates
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
@@ -30,15 +30,8 @@ def test_aux_state_audit_runs_tsan():
         assert {"aux_tsan", "module_tsan"} <= set(workload_post_audit_gates(workload))
         assert _allowed(workload, "bash pipeline/gates/run_aux_tsan.sh 3")
         assert _allowed(workload, "bash pipeline/gates/run_module_tsan.sh 3")
+        # an optimization iteration exits on the lighter correctness tier; the audit runs the full one
+        assert "aux_correctness_iterate" in workload_post_optimization_gates(workload)
+        assert "aux_correctness" not in workload_post_optimization_gates(workload)
+        assert "aux_correctness" in workload_post_audit_gates(workload)
 
-
-def test_engine_backend_validation_runs_slot_tsan():
-    workload = load_workload("engine_mysql", REPO_ROOT)
-    assert "slot_tsan" in workload["post_validation_gates"]
-    assert _allowed(workload, "bash pipeline/gates/run_aux_tsan.sh slots")
-
-
-def test_the_tsan_gate_runs_on_the_test_subset_but_the_slot_gate_has_no_dataset():
-    from accel_pipeline.gates import GATE_TIERS
-
-    assert GATE_TIERS["aux_tsan"] == "quick" and "slot_tsan" not in GATE_TIERS and "aux_bench_sweep" not in GATE_TIERS

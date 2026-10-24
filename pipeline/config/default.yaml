@@ -128,7 +128,7 @@ repair:
   max_replans: 1
   max_orchestrator_retries: 1
   load_factor: 1.5          # a gate timeout under loadavg > load_factor * cores is infra
-  never_quarantine: [aux_correctness, aux_unit, test_suite_validate]   # a suite that cannot be validated stops the stage; it is never frozen unvalidated
+  never_quarantine: [aux_correctness, aux_correctness_iterate, aux_unit, test_suite_validate]   # a suite that cannot be validated stops the stage; it is never frozen unvalidated
   provider_retries: 3       # provider/network flakes: their own budget (not infra_retries), with a growing wait
   provider_backoff_sec: [30, 90, 270]
 
@@ -177,6 +177,8 @@ test_suite:
   quick_random_tuples: 4          # the same for quick_check
   quick_txns: 4                   # quick_check applies this many transactions (the first of each distinct kind)
   differential_every: 5           # aux_correctness compares every tuple every N transactions (else two random ones)
+  iterate_random_tuples: 10       # aux_correctness_iterate (the gate of an optimization iteration): fewer random tuples,
+  iterate_every: 10               #   a comparison every N transactions, the minimum write probes, one thread count
   validation_random_tuples: 12    # random tuples the stage's validation runs through the reference SQL
   bench_repeats: 3                # acceptance bench sweeps, each with fresh write-frequency draws; median [min-max] is reported
   write_mix:                      # the range the tester starts from (write_mix.yaml of the suite is the query's own)

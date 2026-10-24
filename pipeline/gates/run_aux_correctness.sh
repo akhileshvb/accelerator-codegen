@@ -2,8 +2,9 @@
 # Aux-state correctness: the aux smoke test, then the SQL-vs-aux differential (tpch),
 # both built and run through the engine host. ACCEL_GATE_TIER=quick runs it on the subset
 # dataset (ACCEL_SUBSET_DATASET_DIR) with at most ACCEL_QUICK_PROBES write probes; the default
-# full tier is the stage-exit check. Run as the gate aux_correctness_quick, its result never overwrites
-# aux_correctness.json.
+# full tier is the stage-exit check. ACCEL_GATE_TIER=iterate (the gate aux_correctness_iterate, an optimization
+# iteration's exit) runs the full dataset with a lighter suite, the minimum write probes and the N-thread run only.
+# Run as the gate aux_correctness_quick, its result never overwrites aux_correctness.json.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -51,8 +52,12 @@ if [[ ${WITH_DIFF} -eq 1 ]]; then
 import os, sys, yaml
 d = yaml.safe_load(open(sys.argv[1]))
 p, b = d.get("point_writes") or {}, d.get("bulk_writes") or {}
-cap = int(os.environ["QUICK_PROBES"]) if os.environ.get("ACCEL_GATE_TIER") == "quick" else 1 << 30
-print(f"export ACCEL_ADV_MAX_PROBES={min(cap, int(p.get('max_probes') or p.get('min_count') or 5))}")
+tier = os.environ.get("ACCEL_GATE_TIER")
+cap = int(os.environ["QUICK_PROBES"]) if tier == "quick" else 1 << 30
+max_probes = int(p.get("max_probes") or p.get("min_count") or 5)
+if tier == "iterate":
+    max_probes = int(p.get("min_count") or 2)
+print(f"export ACCEL_ADV_MAX_PROBES={min(cap, max_probes)}")
 print(f"export ACCEL_ADV_MIN_PROBES={min(cap, int(p.get('min_count') or 2))}")
 print(f"export ACCEL_ADV_MIN_CHUNKS={int(b.get('min_chunks') or 0)}")
 print(f"export ACCEL_ADV_REQUIRE_BULK={1 if b.get('required') else 0}")
@@ -69,8 +74,8 @@ PY
     emit_result "${JSON}" aux_correctness fail "SQL-vs-aux differential failed at threads=${THREADS_N} (${DIFF_BINARY})" "${LOG_ALL}" \
       "differential_binary=${DIFF_BINARY}" "smoke_exit_code:=${SMOKE_RC}" "differential_exit_code:=${DIFF_RC}" "${SUITE_EXTRAS[@]}"
   fi
-  # Full tier: the same differential again, same draws, capped at one thread (the quick tier stays at N).
-  if [[ "${ACCEL_GATE_TIER:-full}" != quick && ${THREADS_N} -gt 1 ]]; then
+  # Full tier: the same differential again, same draws, capped at one thread (the quick and iterate tiers stay at N).
+  if [[ "${ACCEL_GATE_TIER:-full}" == full && ${THREADS_N} -gt 1 ]]; then
     SUITE_N_EXTRAS=("${SUITE_EXTRAS[@]}")
     [[ -z "${ACCEL_SUITE_REPORT:-}" ]] || export ACCEL_SUITE_REPORT="${ACCEL_SUITE_REPORT%.json}_threads1.json"
     ACCEL_AUX_THREADS=1 engine_run "${DIFF_BINARY}" "${QUERY}"
