@@ -90,6 +90,7 @@ generated:
   - eval/tests/test_registration.cpp
   - eval/tests/test_shared_incremental_differential.cpp
   - eval/tests/test_shared_tpch_rf_differential.cpp
+  - eval/tests/test_suite_format.cpp
   - eval/tests/test_slot_gates_duckdb.cpp
   - eval/tests/test_tpch_*.cpp
   - eval/tests/maintenance_choice_demo.cpp

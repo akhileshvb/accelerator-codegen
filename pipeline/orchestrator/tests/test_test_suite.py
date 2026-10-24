@@ -417,7 +417,8 @@ def test_the_gate_summary_carries_seed_tuples_and_counts(tmp_path):
                                                  "checks": 9, "mismatches": 1, "extra": "dropped"}))
     summary = json.loads(suite_gate(tmp_path, "summary", str(tmp_path / "r.json"), ACCEL_SUITE_HASH="abc").stdout)
     assert summary["seed"] == 11 and summary["param_tuples"] == ["1"] and summary["hash"] == "abc" and "extra" not in summary
-    assert json.loads(suite_gate(tmp_path, "summary", str(tmp_path / "missing.json")).stdout) == {}
+    assert summary["ran"] is True
+    assert json.loads(suite_gate(tmp_path, "summary", str(tmp_path / "missing.json")).stdout)["ran"] is False
 
 
 def test_a_failed_gate_hands_its_reproduce_command_to_the_repair_loop(tmp_path):
