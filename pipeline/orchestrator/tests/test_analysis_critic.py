@@ -29,7 +29,13 @@ def harness(tmp_path, monkeypatch):
     monkeypatch.setattr(stage, "_ensure_dataset", lambda *a: None)
     monkeypatch.setattr(stage, "load_run_workload", lambda *a: {"workload_kind": "aux_state", **harness_workload})
     monkeypatch.setattr(stage, "analysis_artifact_path", lambda *a, **k: path)
-    monkeypatch.setattr(stage, "_validate", lambda *a: None)
+    invalid: list[str] = []
+
+    def fake_validate(*_):
+        if invalid:
+            raise RuntimeError(invalid.pop(0))
+
+    monkeypatch.setattr(stage, "_validate", fake_validate)
     monkeypatch.setattr(stage, "log_analysis_candidates", lambda *a, **k: None)
     monkeypatch.setattr(stage, "log_event", lambda *a, **k: events.append(k))
     harness_workload: dict = {}
@@ -41,7 +47,7 @@ def harness(tmp_path, monkeypatch):
         stage.run(SimpleNamespace(repo_root=harness.dir), object(), "w", 3)
         return [(s, role) for s, role, _ in calls], calls
 
-    run.critiques, run.events, run.dir = critiques, events, tmp_path
+    run.critiques, run.events, run.dir, run.invalid = critiques, events, tmp_path, invalid
     return run
 
 
@@ -78,3 +84,17 @@ def test_a_critic_that_fails_never_stops_the_run(harness):
     harness.critiques.append(StageFailure(Failure(kind="infra", stage="analysis_critic", source="codex_exec", summary="timeout")))
     stages, _ = harness()
     assert stages == [("analysis", "main"), ("analysis_critic", None)]
+
+
+def test_validation_errors_go_back_to_the_main_session(harness):
+    harness.invalid.append("state_storage is required")
+    harness.critiques.append({"verdict": "accept", "checks": []})
+    stages, calls = harness()
+    assert stages == [("analysis", "main"), ("analysis", "main"), ("analysis_critic", None)]
+    assert "state_storage is required" in calls[1][2]
+
+
+def test_validation_repair_is_bounded(harness):
+    harness.invalid.extend(["bad"] * 3)
+    with pytest.raises(RuntimeError, match="bad"):
+        harness()
