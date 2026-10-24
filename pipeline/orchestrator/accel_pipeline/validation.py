@@ -413,4 +413,53 @@ def validate_aux_analysis_file(
         raise AuxAnalysisValidationError(f"analysis file not found: {path}")
     analysis = _load_json(path)
     validate_aux_analysis(analysis, allow_poor_fitness=allow_poor_fitness)
+    log = path.parent / "data_queries.jsonl"
+    if log.is_file() and analysis["fitness_assessment"].get("recommended"):
+        _validate_units_probes(analysis["state_candidate_search"]["candidates"], log)
     return analysis
+
+
+def _squash(sql: str) -> str:
+    return " ".join(sql.split()).rstrip(";").lower()
+
+
+MIN_SIMULATED_CANDIDATES = 3
+
+
+def _logged_queries(log: Path) -> set[str]:
+    ran = set()
+    for line in log.read_text(encoding="utf-8").splitlines():
+        try:
+            call = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if call.get("tool") == "query_data" and not call.get("error"):
+            ran.add(_squash(str((call.get("args") or {}).get("sql", ""))))
+    return ran
+
+
+def _validate_units_probes(candidates: list[dict[str, Any]], log: Path) -> None:
+    """Every candidate's units read are simulated on the data by a logged query_data call, not estimated on paper."""
+    ran = _logged_queries(log)
+    probes = set()
+    for index, candidate in enumerate(candidates):
+        where = f"state_candidate_search.candidates[{index}]"
+        probe = candidate.get("units_probe")
+        if not isinstance(probe, str) or not probe.strip():
+            raise AuxAnalysisValidationError(
+                f"{where}.units_probe is required: the SQL of the query_data call that simulates this candidate's "
+                "read on the data (counts the entries it would visit at representative and extreme bindings)"
+            )
+        if _squash(probe) not in ran:
+            raise AuxAnalysisValidationError(
+                f"{where}.units_probe does not match a successful query_data call in {log.name}; "
+                "run the simulation and copy its SQL"
+            )
+        if not str(candidate.get("measured_units") or "").strip():
+            raise AuxAnalysisValidationError(f"{where}.measured_units is required: what units_probe returned")
+        probes.add(_squash(probe))
+    if len(probes) < MIN_SIMULATED_CANDIDATES:
+        raise AuxAnalysisValidationError(
+            f"at least {MIN_SIMULATED_CANDIDATES} candidates need their own simulated read (distinct units_probe); "
+            f"found {len(probes)}"
+        )

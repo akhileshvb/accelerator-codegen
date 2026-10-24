@@ -119,8 +119,12 @@ Tools (time-boxed, capped, logged to `data_queries.jsonl`):
 `join_fanout(left, right)`; `rows_qualifying(predicate_sql, values)` with `$1` bound to each value;
 `column_spread(a, b, join_sql)`; `query_shape()` the statistics the query's own SQL implies.
 
-The bound check's numbers (rows qualifying at each binding extreme, fan-outs, spreads between columns the
-predicates combine) come from these tools. Record each figure you rely on in `evidence` with the call that
+Use them for two things. Describe the data: rows qualifying at each binding extreme, fan-outs, spreads between
+columns the predicates combine. Then test each candidate design against it: express the candidate's read as SQL
+over the base tables (the entries it keeps, the bound or partition it prunes with, the stopping rule it applies)
+and count what it would visit at representative and extreme bindings. CTEs and window functions express most
+designs in one statement. A candidate's units read come from that count, not from a guess; when the count
+contradicts the design, revise the design. Record each figure you rely on in `evidence` with the call that
 produced it, so a reviewer can re-run it. Do not hardcode iteration-scale capacities into the implementation."""
 
 
