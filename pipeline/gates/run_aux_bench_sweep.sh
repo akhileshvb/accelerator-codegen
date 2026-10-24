@@ -138,6 +138,23 @@ for ((repeat = 1; repeat <= REPEATS; repeat++)); do
 done
 printf '[%s]' "$(IFS=,; echo "${DRAWS[*]}")" > "${DRAWS_JSON}"
 
+# One extra read-only point at one thread, next to the default budget's read-only point (first repeat, first suite):
+# the speedup of N threads over 1, report-only. The measurement lease and CPUs are the sweep's.
+THREADS_N="$(gate_threads measure)"
+THREADS1_CSV="${ACCEL_AUX_BENCH_WORK_DIR}/results_threads1.csv"
+: > "${THREADS1_CSV}"
+if [[ "${ACCEL_AUX_THREAD_POINT:-1}" != 0 && ${THREADS_N} -gt 1 && "${CHANGE_KIND}" != "optimization" ]]; then
+  export "ACCEL_Q${QUERY}_BENCH_SUITE=${SUITE_LIST[0]}"
+  export ACCEL_AUX_WRITE_FREQUENCIES=0
+  echo "thread point: read-only at ACCEL_AUX_THREADS=1 (default budget ${THREADS_N})" | tee -a "${SWEEP_LOG}"
+  ACCEL_AUX_THREADS=1 engine_measure "${BENCH_TARGET}" --query "${QUERY}" 0
+  printf '%s\n' "${LOG}" >> "${SWEEP_LOG}"
+  printf '%s\n' "${LOG}" | awk -F, '
+    /^suite,/ { if (!hdr) { print; hdr = 1 }; next }
+    /^speedup_gate/ || /^#/ { next }
+    NF >= 10 { print }' >> "${THREADS1_CSV}"
+fi
+
 python3 - <<PY
 import json
 import os
@@ -145,7 +162,7 @@ import pathlib
 import sys
 
 sys.path.insert(0, "${ROOT}/pipeline/orchestrator")
-from accel_pipeline.aux_bench import aggregate_sweep_repeats, record_aux_bench_sweep_outcome, summarize_sweep_csv
+from accel_pipeline.aux_bench import aggregate_sweep_repeats, record_aux_bench_sweep_outcome, summarize_sweep_csv, thread_scaling
 from accel_pipeline.config import load_workload
 
 results_csvs = [pathlib.Path(p) for p in "${RESULT_CSVS[*]}".split()]
@@ -177,6 +194,12 @@ for one, expected in zip(summaries, expected_rows):
             "(benchmark must emit CSV with workload_speedup per write frequency)"
         )
 
+threads1_csv = pathlib.Path("${THREADS1_CSV}")
+scaling = {}
+if threads1_csv.is_file() and threads1_csv.stat().st_size:
+    scaling = thread_scaling(results_csv, threads1_csv, int("${THREADS_N}"), "${SUITE_LIST[0]}")
+    summary["thread_scaling"] = scaling
+
 gate = {
     "gate": "aux_bench_sweep",
     "query": int("${QUERY}"),
@@ -190,6 +213,7 @@ gate = {
     "results_csv": str(results_csv),
     "repeats": summary.get("repeats") or draws,
     "score_spread": summary.get("score_spread", {}),
+    "thread_scaling": scaling,
     "notes": "; ".join(notes) if notes else "sweep complete",
     "log_tail": log_tail,
 }
@@ -203,7 +227,7 @@ if status == "pass":
     query = int("${QUERY}")
     workload_name = f"{bench}_q{query}_aux"
     try:
-        workload = load_workload(workload_name, pathlib.Path("${ROOT}"))
+        workload = load_workload(workload_name, pathlib.Path("${ROOT}"), engine="${ENGINE_NAME}")
     except FileNotFoundError:
         workload = None
     change_kind = os.environ.get("ACCEL_GATE_CHANGE_KIND", "bench_sweep")

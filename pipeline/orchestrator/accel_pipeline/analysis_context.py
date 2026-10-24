@@ -168,6 +168,7 @@ def compact_bench_summary(summary: dict[str, Any]) -> dict[str, Any]:
         "composite_score": summary.get("composite_score"),
         "composite_workload_speedup": summary.get("composite_workload_speedup"),
         "read_only_query_speedup": summary.get("read_only_query_speedup"),
+        "thread_scaling": summary.get("thread_scaling"),
         "by_write_frequency_pct": by_freq,
     }
 

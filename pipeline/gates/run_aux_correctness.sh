@@ -41,6 +41,8 @@ if [[ ${SMOKE_RC} -ne 0 ]]; then
 fi
 
 DIFF_RC=0
+THREADS_N=0
+THREADS_CHECKED="[]"
 if [[ ${WITH_DIFF} -eq 1 ]]; then
   suite_prepare "${ACCEL_GATE_TIER:-full}" "${JSON}" "${ACCEL_GATE_NAME:-aux_correctness}"
   SCENARIOS="${ACCEL_SUITE_DIR:-}/suite.yaml"
@@ -62,9 +64,29 @@ PY
   DIFF_RC=${RC}
   LOG_ALL="${LOG_ALL}"$'\n'"${LOG}"
   suite_extras run_aux_correctness.sh
+  THREADS_N="$(gate_threads)"
   if [[ ${DIFF_RC} -ne 0 ]]; then
-    emit_result "${JSON}" aux_correctness fail "SQL-vs-aux differential failed (${DIFF_BINARY})" "${LOG_ALL}" \
+    emit_result "${JSON}" aux_correctness fail "SQL-vs-aux differential failed at threads=${THREADS_N} (${DIFF_BINARY})" "${LOG_ALL}" \
       "differential_binary=${DIFF_BINARY}" "smoke_exit_code:=${SMOKE_RC}" "differential_exit_code:=${DIFF_RC}" "${SUITE_EXTRAS[@]}"
+  fi
+  # Full tier: the same differential again, same draws, capped at one thread (the quick tier stays at N).
+  if [[ "${ACCEL_GATE_TIER:-full}" != quick && ${THREADS_N} -gt 1 ]]; then
+    SUITE_N_EXTRAS=("${SUITE_EXTRAS[@]}")
+    [[ -z "${ACCEL_SUITE_REPORT:-}" ]] || export ACCEL_SUITE_REPORT="${ACCEL_SUITE_REPORT%.json}_threads1.json"
+    ACCEL_AUX_THREADS=1 engine_run "${DIFF_BINARY}" "${QUERY}"
+    DIFF1_RC=${RC}
+    LOG_ALL="${LOG_ALL}"$'\n'"[threads=1]"$'\n'"${LOG}"
+    suite_extras run_aux_correctness.sh
+    if [[ ${DIFF1_RC} -ne 0 ]]; then
+      emit_result "${JSON}" aux_correctness fail \
+        "SQL-vs-aux differential passed at threads=${THREADS_N} but failed at threads=1 (${DIFF_BINARY}); reproduce with ACCEL_AUX_THREADS=1" \
+        "${LOG_ALL}" "differential_binary=${DIFF_BINARY}" "smoke_exit_code:=${SMOKE_RC}" "differential_exit_code:=${DIFF1_RC}" \
+        "threads_checked:=[${THREADS_N}, 1]" "${SUITE_EXTRAS[@]}"
+    fi
+    SUITE_EXTRAS=("${SUITE_N_EXTRAS[@]}")
+    THREADS_CHECKED="[${THREADS_N}, 1]"
+  else
+    THREADS_CHECKED="[${THREADS_N}]"
   fi
 fi
 
@@ -79,4 +101,4 @@ if [[ ${BACKEND_RC} -ne 0 ]]; then
     "${BACKEND_LOG}" "differential_binary=${DIFF_BINARY}"
 fi
 emit_result "${JSON}" aux_correctness pass "" "${LOG_ALL}" "differential_binary=${DIFF_BINARY}" \
-  "smoke_exit_code:=${SMOKE_RC}" "differential_exit_code:=${DIFF_RC}" "${SUITE_EXTRAS[@]}"
+  "smoke_exit_code:=${SMOKE_RC}" "differential_exit_code:=${DIFF_RC}" "threads_checked:=${THREADS_CHECKED}" "${SUITE_EXTRAS[@]}"

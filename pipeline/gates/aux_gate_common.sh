@@ -211,3 +211,29 @@ engine_target_gate() {
 	emit_result "${json}" "${gate}" pass "ran ${target}; exit 0" "${ENGINE_LOG}${LOG}" \
 		"engine=${ENGINE_NAME}" "cmake_target=${target}" "returncode:=0"
 }
+
+# Threads the gate's processes may use: ACCEL_AUX_THREADS, else the CPUs of this process's affinity (the
+# worker's core budget). With `measure`, one lease window of the measurement set (ACCEL_MEASURE_SET split into
+# ACCEL_MEASURE_SLOTS windows), the CPUs the lease pins a benchmark to.
+gate_threads() {
+	if [[ -n "${ACCEL_AUX_THREADS:-}" ]]; then echo "${ACCEL_AUX_THREADS}"; return; fi
+	if [[ "${1:-}" == measure && -n "${ACCEL_MEASURE_SET:-}" ]]; then
+		python3 -c "
+import sys
+n = 0
+for part in sys.argv[1].split(','):
+    lo, _, hi = part.partition('-')
+    n += int(hi or lo) - int(lo) + 1
+print(max(1, n // max(1, int(sys.argv[2]))))" "${ACCEL_MEASURE_SET}" "${ACCEL_MEASURE_SLOTS:-1}"
+		return
+	fi
+	nproc
+}
+
+# thread_lint: the query's sources hold no hard-coded thread counts or hardware_concurrency (the thread-budget
+# lint, strict, on accelerators/<bench>/q<N>). Sets THREAD_LINT_RC and THREAD_LINT_LOG.
+thread_lint() {
+	THREAD_LINT_RC=0
+	THREAD_LINT_LOG="$(cd "${GATE_ROOT}" && bash pipeline/gates/run_thread_budget_lint.sh --strict \
+		"accelerators/${BENCHMARK_NAME}/q${GATE_QUERY}" 2>&1)" || THREAD_LINT_RC=$?
+}

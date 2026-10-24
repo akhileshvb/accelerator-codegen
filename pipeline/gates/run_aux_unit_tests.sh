@@ -26,6 +26,13 @@ else
   EXCLUDE="^${BENCHMARK_NAME}_q${QUERY}_smoke_test$"
 fi
 
+thread_lint
+if [[ ${THREAD_LINT_RC} -ne 0 ]]; then
+  emit_result "${OUT}/aux_unit.json" aux_unit fail \
+    "hard-coded thread count or hardware_concurrency in the query sources: take caps from the substrate thread budget (ACCEL_AUX_THREADS ...)" \
+    "${THREAD_LINT_LOG}" "query:=${QUERY}"
+fi
+
 if ! engine_ready; then
   emit_result "${OUT}/aux_unit.json" aux_unit fail "${ENGINE_FAIL}" "${ENGINE_LOG}" "query:=${QUERY}"
 fi

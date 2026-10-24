@@ -25,6 +25,7 @@ WITH_DIFF=0
 if [[ -z "${AUX_TEST_TARGET}" ]] || { [[ ${WITH_DIFF} -eq 1 && -z "${DIFF_BINARY}" ]]; }; then
   emit_result "${JSON}" quick_check fail "aux test / differential target missing from the gate context. ${HOST_HINT}" ""
 fi
+thread_lint
 HOST_RUN="${ENGINE_HOST} run"
 fail_step() { # step reproduce-command
   emit_result "${JSON}" quick_check fail "$1 failed" "${ENGINE_LOG:-}${LOG:-}" "step=$1" \
@@ -68,4 +69,11 @@ if [[ ${WITH_DIFF} -eq 1 ]]; then
   suite_extras run_aux_quick_check.sh
   [[ ${RC} -eq 0 ]] || fail_step differential "${HOST_RUN} ${DIFF_BINARY} ${QUERY}"
 fi
-emit_result "${JSON}" quick_check pass "" "${ENGINE_LOG}${LOG}" "dataset=${ACCEL_DATASET_DIR}" "${SUITE_EXTRAS[@]}"
+THREAD_WARNING=""
+if [[ ${THREAD_LINT_RC} -ne 0 ]]; then
+  THREAD_WARNING="warning: hard-coded thread count or hardware_concurrency in the query sources (aux_unit fails on it)"
+  THREAD_WARNING+=$'\n'"${THREAD_LINT_LOG}"
+  echo "${THREAD_WARNING}" >&2
+fi
+emit_result "${JSON}" quick_check pass "" "${ENGINE_LOG}${LOG}" "dataset=${ACCEL_DATASET_DIR}" "thread_lint_warning=${THREAD_WARNING}" \
+  "${SUITE_EXTRAS[@]}"
