@@ -1,17 +1,15 @@
-# Shared project constraints
+# Stage boundaries (stateless kernels)
 
-See also `hard_guidelines.md` (native base storage, fair benchmarks, scale-safe profile-guided optimization).
+**This stage owns** the query's own files under `accelerators/{benchmark}/q{N}/{engine}/`: kernel, package, header, tests, benchmark, registrar.
 
-Reads (`Execute`), builds (`Build`) and maintenance each parallelize on the backend's one thread budget, with one cap per phase, through `services` only (`engine_interfaces.md`, module thread rules; primitives: `substrate_primitives.md`). Work proportional to the data is split; a serial loop over it is a defect at large scale.
+**It must not touch** `backends/`, `substrate/`, `cmake/`, the root `CMakeLists.txt`, other queries, or `accelerators/prims/` (the primitive library grows only through `primitive_publish`, and stateless kernels have no persistent state to put in it). A missing backend helper goes to the request log in `query_host_bootstrap.md` (Ownership).
 
-- **`engine_name` is required** — never default to an engine. Emit kernels under `accelerators/{benchmark}/q{N}/{engine}/`.
-- Base tables: use **this engine’s** native scan/storage APIs. Do not bypass with unfair client SQL on the hot path. Do **not** assume a shared portable scan IR.
-- Aux state (when applicable): custom storage is allowed and preferred; do **not** cache final query answers / precomputed final results as aux. Intermediate aux structures may be redesigned when speedups stall. Aux modules speak the shared `AuxQueryModule` contract; the runtime skeleton owns commit order, versions and builds.
-- Base (non-aux) kernels: no persistent auxiliary state, materialized views, or accelerator-specific indexes across executions; transient state rebuilt per execution. Base consume is **engine-local**.
-- Preserve generic fallbacks for unexpected layouts, nulls, and transaction-local rows.
-- Do not alter query semantics for implementation convenience.
-- Benchmark fairness: time the full production query path, consume all results; compare against the base engine at an equal core budget (same `taskset`, base-engine threads = the accelerator's thread budget).
+**Rules**
 
-TPC-H: pipeline iterates on **SF1**; production targets **SF3000** (~8 TB RAM) with **high speedups required at high SF**, not only on the iteration DB. See `scale_factor_contract.md` (failure classes to design against and how they are tested) — no SF1-hardcoded capacities or full-domain work that does not scale.
+- `engine_name` is required; never default to an engine.
+- Base tables come from this engine's native scan APIs. A stateless kernel keeps no state across executions: transient state is rebuilt per execution.
+- Keep generic fallbacks for unexpected layouts, NULLs and transaction-local rows. Do not change query semantics for convenience.
+- Reads and builds split data-proportional work over the backend's one thread budget through `services` (`engine_interfaces.md`, `substrate_primitives.md`); a serial loop over the data is a defect at SF3000.
+- Benchmark against the engine's own path at an equal core budget (same `taskset`, same thread count).
 
-See `profiling_conventions.md` for profile API rules.
+**Judged by** the gates: build, correctness (differential vs the reference SQL), baseline speedup, profile, fairness, audit.

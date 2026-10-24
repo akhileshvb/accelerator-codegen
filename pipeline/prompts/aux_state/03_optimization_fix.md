@@ -1,18 +1,16 @@
-# Aux-state optimization fix round
+# Optimization fix round (stateful)
 
-Your hypothesis patch failed **build** or **quick smoke correctness** (`ctest -R …_aux`). The failure report is in the **task message** below.
+Your hypothesis patch failed **build** or **quick smoke correctness** (`ctest -R …_aux`). The failure report is in the task message.
 
 {{hard_guidelines}}
 
 {{codex_tooling}}
 
-**Stay on the same hypothesis** — debug and fix; do not start a unrelated redesign.
+**Stay on the same hypothesis.** Fix the reported error; do not start an unrelated redesign.
 
-## Task
-
-1. Read assertion / compile errors in the log tail.
-2. Patch editable aux files (`module.hpp`, `module.cpp`, `finalize.cpp`, tests, cost model).
-3. Rebuild with `cmake --build build-release --target test_tpch_q{{query_number}}_aux` (and the bench target if needed), then run the `ctest` command from the report (shell or MCP `run_pipeline_command`).
-4. Confirm reproduce passes before ending your turn.
+1. Read the assertion or compile error in the log tail.
+2. Patch the smallest set of editable files (`module.hpp`, `module.cpp`, `finalize.cpp`, tests, cost model).
+3. Rebuild (`cmake --build {{build_dir}} --target test_tpch_q{{query_number}}_aux`, plus the bench target if needed) and run the `ctest` command from the report, or use `quick_check`.
+4. When the reproduce passes, end your turn.
 
 {{constraints}}

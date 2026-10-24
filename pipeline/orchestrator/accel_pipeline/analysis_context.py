@@ -11,6 +11,8 @@ from accel_pipeline.textutil import squeeze_truncate
 
 _STAGE_SHARED_DOCS: dict[str, list[tuple[str, str]]] = {
     "analysis": [
+        ("Low-level execution", "../../shared/low_level_execution.md"),
+        ("COW primitives", "cow_primitives.md"),
         ("Scale factors", "../../shared/scale_factor_contract.md"),
         ("Substrate primitives", "../../shared/substrate_primitives.md"),
         ("Fitness rubric", "aux_state_fitness.md"),
@@ -27,6 +29,8 @@ _STAGE_SHARED_DOCS: dict[str, list[tuple[str, str]]] = {
         ("Registration", "registration_checklist.md"),
     ],
     "implementation": [
+        ("Low-level execution", "../../shared/low_level_execution.md"),
+        ("COW primitives", "cow_primitives.md"),
         ("Scale factors", "../../shared/scale_factor_contract.md"),
         ("Generated layout", "../../shared/generated_layout.md"),
         ("Engine interfaces", "../../shared/engine_interfaces.md"),
@@ -48,6 +52,8 @@ _STAGE_SHARED_DOCS: dict[str, list[tuple[str, str]]] = {
         ("Taxonomy index", "taxonomy_index.md"),
     ],
     "audit": [
+        ("Low-level execution", "../../shared/low_level_execution.md"),
+        ("COW primitives", "cow_primitives.md"),
         ("Scale factors", "../../shared/scale_factor_contract.md"),
         ("Engine interfaces", "../../shared/engine_interfaces.md"),
         ("Mutation coverage", "mutation_coverage.md"),

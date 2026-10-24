@@ -1,57 +1,34 @@
-# Stage 3: Aux-state optimization (unified, iter {{optimization_iter}})
+# Stage 3: Aux-state optimization, stateful (unified, iter {{optimization_iter}})
 
-**{{display_name}} Q{{query_number}}** — fast experiment loop: hypothesize, patch, quick correctness test, benchmark.
+**{{display_name}} Q{{query_number}}**: hypothesize, patch, quick correctness test, benchmark.
+
+## Goal
+
+**Push both axes at SF3000: fast reads and cheap maintenance, from copy-on-write state, correctly.** The accept score is `read_only^0.75 * write_mix^0.25`: read-only speedup at 0% writes, and workload speedup over sampled write mixes (re-sampled every attempt). A read win that deepens the write cliff loses.
+
+1. **Low-level execution** on the read, build and maintain paths, driven by the profile: SIMD inner loops (AVX-512/AVX2 with a scalar fallback), cache-conscious layouts, branch-free predicates, prefetch, no per-row allocation, fused passes. Guide: `pipeline/prompts/shared/low_level_execution.md`.
+2. **State from the COW primitive library.** Reuse a catalogued primitive when it fits. Otherwise design a bespoke, generic COW primitive for this query template's access pattern and publish it with `primitive_publish` (additions only, generic, tested). Never hand-roll a private COW container in the module; never deep-copy state per commit. Maintenance cost is proportional to touched data. Guide: `pipeline/prompts/aux_state/shared/cow_primitives.md`.
+3. **Structure over tweaks.** When a ceiling shows (reads stall, or write-mix stays ≪ 1x), redesign the layout, encoding or maintenance strategy for the data's shape. Forbidden: storing final query results. Prefer `ApplyDelta` and partition-local updates over `RebuildAll`. When read is strong and write-mix is collapsed, attack maintenance first (`maintenance_framework.md`, "Refresh-shaped writes").
+
+**Owns:** the editable files below. **Never touches:** `backends/`, `substrate/`, other queries, the query's `base/**` kernel, `accelerators/prims/` except through `primitive_publish`. **Judged by:** build, smoke ctest x2, a correctness probe and the quick bench with a graded verdict (accept / keep_explore / reject) after your handoff; `optimization_fix` rounds repair build or smoke failures; the heavy gates run once at the end of the iteration.
 
 {{hard_guidelines}}
 
 {{codex_tooling}}
 
-## Mindset
-
-Work like a performance engineer on **two equal axes**:
-
-1. **Editable sources are bootstrapped** in the user message (full files + line numbers); do not re-read them.
-2. **Explore other queries** by searching the reference aux modules in the index (`rg`, `sed -n` in the shell) — pull only the snippets you need.
-3. **Ambitious redesigns are encouraged** — new partition layouts, alternate aux-state encodings, **maintenance strategies** (delta vs rebuild), dense structures, version bumps. If either read gains or write-mix health stall, **change the aux structure** given data shape/cardinality. Coordinate **all affected files** (header, module, finalize, tests, cost model). **Forbidden:** precomputed final query results as aux.
-4. **Dual optimization axes (both scored every attempt):**
-   - **Read axis** — `read_only_query_speedup` at 0% writes (hit latency vs base).
-   - **Write/maintenance axis** — sampled write-mix `workload_speedup` (geo-mean across the
-     attempt's write frequencies; re-sampled each attempt, always includes 0% read-only).
-   - **Accept/reject score** = weighted geometric mean
-     `read_only^0.75 * write_mix^0.25` (read weighs more; write still moves the gate).
-     Prefer **ApplyDelta / partition-local** maintenance over **RebuildAll on every point write**.
-     A design that is fast at 0% but collapses under write load is **incomplete** — the dual-axis score will reject pure read wins that deepen the write cliff.
-4a. **Primitives.** A new state layout is built from `prims/` (consult the `prims/README.md` catalogue, which may be empty, before writing a helper). If it needs a generic engine-neutral container no primitive covers, stage it (header + randomized tests, full files under `pipeline/prims_staging/<repo-relative path>`) and **publish it with `primitive_publish` before using it** (it adds the catalogue row and rejects a duplicate: reuse or extend); prefer a new primitive over modifying an existing one. `prims/` is not directly writable. Never hand-roll a private COW container in the module or deep-copy the state per commit.
-4b. **Optimizations must not trade away generality** (`hard_guidelines.md` §4): no narrowing keys/offsets, enumerating parameter values, double arithmetic, per-row heap objects, or whole-state copies/rebuilds per write to win a benchmark. Nor may they break the large-scale failure classes (`scale_factor_contract.md`) or the parallel rules (`engine_interfaces.md`: results identical at any thread cap, no engine calls in slices). Re-run the param/off-spec differential, the magnitude-database differential and the 1-vs-N thread comparison after structural changes. Tools to reach for: `substrate_primitives.md`.
-5. **Honor measured A/B** — never keep/yield a change that regresses the dual-axis score vs `scoreboard.best_valid_score`. When read is already strong and write-mix workload is ≪1×, **prefer a maintenance hypothesis** over further ≤5% read micro-opts.
-6. **Few turns** — hypothesize, implement, then `HYPOTHESIS_PATCH_COMPLETE`.
-7. **Custom profiling required for phase breakdown** — invent whatever timers/counts help; getenv(`ACCEL_AUX_CUSTOM_PROFILE`) + `ACCEL_CUSTOM_PROFILE {json}` with **phase + us + work counts**; no-op when unset. Remeasure after every accept/restore (`freshness.stale`). Own shell/scripts for ad-hoc profiling are fine.
-8. **Measure-first** — do not hypothesize from a stale digest; call `run_profile` on the CURRENT tree. Cite both 0% hit metrics **and** sampled write-mix metrics.
-9. **Trust the measurement** — before relying on a bench number, check it measured the accelerator ("Trusting a benchmark number", below).
+{{fast_loop}}
 
 ## Editable files
 
 {{optimization_edit_paths}}
 
-Do **not** edit `accelerators/tpch/q{{query_number}}/<engine>/base/**` (the base workload's kernel, a separate accelerator).
+The sources are bootstrapped in the user message with line numbers; do not re-read them. Search reference modules with `rg` (`accelerators/tpch/q*/<engine>/aux/`) and `sed -n`. Retrieved precedents are non-binding.
 
-## Searching reference accelerators
+## Flow
 
-Use the shell: `rg` for patterns, symbols and comments across `accelerators/tpch/q*/<engine>/aux/`, `sed -n` for a snippet once you know the path.
+Optimizations do not trade away generality: keep `hard_guidelines.md` §4, the scale failure classes (`scale_factor_contract.md`) and the thread rules (results identical at any cap); re-run the parameter, magnitude-database and 1-vs-N thread differentials after structural changes.
 
-## Workflow
-
-### 1. Context + bootstrap (already in user message)
-
-Measurements, evidence, full editable sources, and a **reference aux index** (other queries).
-
-### 2. Optional: explore references
-
-Before or while designing, check `accelerators/prims/README.md` and the optimization playbook for proven patterns.
-
-### 3. Hypothesis JSON
-
-Structured, evidence-backed hypothesis **before any edit**. Cite measured diagnostics by name and value.
+1. **Hypothesis phase.** `run_profile` on the CURRENT tree, then write the hypothesis JSON before any edit, citing measured diagnostics by name and value, 0% hit metrics and sampled write-mix metrics both. End with **`HYPOTHESIS_COMPLETE`**.
 
 ```json
 {
@@ -59,34 +36,14 @@ Structured, evidence-backed hypothesis **before any edit**. Cite measured diagno
   "tier": "eliminate_scans | dense_layout | selectivity | decode | fusion | layout | micro | structural_redesign | incremental_maintenance",
   "scope": "read_path | maintenance | complete",
   "target_metrics": ["read_only_query_speedup", "write_mix_workload_speedup"],
-  "why": "evidence-backed rationale citing 0% hit metrics AND sampled write-mix / maintenance path (RebuildAll vs ApplyDelta)",
+  "why": "evidence-backed rationale citing 0% hit metrics AND the write-mix / maintenance path",
   "falsifiable_prediction": "expected read and/or write-mix improvement",
-  "edit_plan": ["coordinated edits — may include new partitions, delta maintenance, state version bump, test updates"]
+  "edit_plan": ["coordinated edits: partitions, delta maintenance, version bump, tests"]
 }
 ```
 
-When `write_mix_workload_speedup` is below ~1× while read-only is already strong, check the maintenance profile against refresh-shaped writes (bulk, keys spread uniformly: COW unit size, per-touch index rebuilds, size-guard rebuilds, base-table rescans, serial per-row loops that `ParallelEach` / `ParallelReduce` would split, cost-model calibration; `maintenance_framework.md`), then set `"scope": "maintenance"` (or `"complete"`) and prioritize cheap incremental apply over further hit-path micro-opts.
-Two-phase flow (default): end hypothesis phase with **`HYPOTHESIS_COMPLETE`**, then patch phase with **`HYPOTHESIS_PATCH_COMPLETE`**. No grep/edit switching within patch phase.
-
-Retrieved precedents are **non-binding** — adapt, combine, or reject based on this query's constraints.
-
-### 4. Implement
-
-- Rewrite a whole file for large/coordinated changes; make targeted patches for localized edits.
-- Bump encode/decode version constants when aux blob layout changes.
-- Run `quick_check` after every edit (inner loop in the tooling guide): build, the query's tests and the subset differential in seconds. Write small test binaries in your query directory for what you change, and use `perf` on the bench binary directly. `run_quick_benchmark` is direction only; the orchestrator's graded verdict is the measurement. The subset and SF1 are for correctness and direction: design for SF3000, never tune against them.
-
-### 5. Hand off
-
-Hypothesis JSON + summary + **`HYPOTHESIS_PATCH_COMPLETE`**.
-
-Orchestrator: **build → smoke ctest (×2) → correctness probe → quick bench → graded verdict (accept / keep_explore / reject)**. On build/smoke failure, **optimization_fix** rounds run with full logs until compile/ctest pass (same attempt).
-
-**Heavy gates** (cross_accel, fair bench sweep, etc.) run **once at end of each optimization iteration**, not per attempt.
-
-If impossible: `{"status": "cannot_test", "reason": "..."}` + `CANNOT_TEST`.
-
-Be aggressive on both axes. If further attempts are stuck (no real dual-axis movement left — absolute speedups are query-dependent), you may end with `OPTIMIZATION_SATURATED` + JSON reason. Do not call that early while write-mix is collapsed or a clear redesign remains.
+2. **Patch phase.** Rewrite whole files for coordinated changes, patch for local ones; bump encode/decode version constants when the blob layout changes. No grep/edit switching: implement, `quick_check`, then end with the hypothesis JSON, a short summary and **`HYPOTHESIS_PATCH_COMPLETE`**.
+3. If impossible: `{"status": "cannot_test", "reason": "..."}` and `CANNOT_TEST`. If both axes are exhausted (not while write-mix is collapsed or a clear redesign remains): `OPTIMIZATION_SATURATED` with a JSON reason.
 
 {{measurement_trust}}
 

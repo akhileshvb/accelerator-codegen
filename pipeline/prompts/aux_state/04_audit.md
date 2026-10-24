@@ -1,6 +1,6 @@
 # Stage 4: Aux-state audit
 
-Audit **Q{{query_number}}** (`{{aux_function_name}}`).
+Audit **Q{{query_number}}** (`{{aux_function_name}}`) against the stateful goals: correct, fast reads and cheap maintenance from COW primitive state (`cow_primitives.md`), hardware-aware inner loops (`low_level_execution.md`), at SF3000.
 
 {{hard_guidelines}}
 

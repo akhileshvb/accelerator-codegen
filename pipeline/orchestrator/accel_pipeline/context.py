@@ -393,22 +393,10 @@ def build_prompt_context(
         )
     optimization_feedback = _read_text(art / "optimization_feedback.md", "(no gate feedback yet — first optimization iter uses implementation gates)")
 
-    base_kernel_opt_path = pipe / "prompts" / "shared" / "base_kernel_optimization.md"
+    constraints_text = _read_text(constraints_path)
     if lean_stage:
-        if stage == "optimization":
-            base_kernel_optimization = ""
-        else:
-            base_kernel_optimization = (
-                "See `pipeline/prompts/shared/base_kernel_optimization.md` (read it if needed)."
-            )
-        constraints_text = (
-            "See `pipeline/prompts/shared/hard_guidelines.md`, `constraints.md`, "
-            "`generated_layout.md`, and `scale_factor_contract.md` (read it if needed)."
-        )
         profiling_text = "See `pipeline/prompts/shared/profiling_conventions.md` (read it if needed)."
     else:
-        base_kernel_optimization = _read_text(base_kernel_opt_path)
-        constraints_text = _read_text(constraints_path)
         profiling_text = _read_text(pipe / "prompts" / "shared" / "profiling_conventions.md")
 
     if is_aux:
@@ -468,6 +456,11 @@ def build_prompt_context(
             "(native edit/search/shell + MCP profile/gate/A/B tools)."
         )
 
+    # The fast-loop working rules are inline in every stage that edits code.
+    fast_loop = ""
+    if is_implementation_stage(stage) or stage.startswith("optimization"):
+        fast_loop = _read_text(pipe / "prompts" / "shared" / "fast_loop.md")
+
     optimization_runtime_path = ""
     if stage == "optimization":
         optimization_runtime_path = runtime_path_for_prompt(pipeline_config, workload, query)
@@ -522,11 +515,7 @@ def build_prompt_context(
             if is_aux
             else ""
         ),
-        "constraints": (
-            "See `pipeline/prompts/aux_state/shared/constraints.md` (read it if needed)."
-            if is_aux
-            else constraints_text
-        ),
+        "constraints": constraints_text,
         "profiling_conventions": (
             "See `pipeline/prompts/shared/profiling_conventions.md` (read it if needed)."
             if is_aux or lean_stage
@@ -565,7 +554,6 @@ def build_prompt_context(
                 else opt_state
             )
         ),
-        "base_kernel_optimization": base_kernel_optimization,
         "optimization_max_iterations": str(pipeline_config.optimization_max_iterations),
         "optimization_goal": (
             "Maximize dual-axis score read_only^0.75 * write_mix^0.25: strong hit latency at 0% writes "
@@ -578,6 +566,7 @@ def build_prompt_context(
         "hard_guidelines": hard_guidelines,
         "measurement_trust": _read_text(pipe / "prompts" / "shared" / "measurement_trust.md"),
         "codex_tooling": codex_tooling,
+        "fast_loop": fast_loop,
         "audit_result_json": _read_text(art / "audit_result.json", "{}"),
         "retrieval_brief": retrieval_brief,
         "experiment_log_excerpt": _tail_lines(art / "experiment_log.md", 2 if lean_stage else 5),
