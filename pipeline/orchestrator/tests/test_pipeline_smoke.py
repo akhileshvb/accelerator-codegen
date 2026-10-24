@@ -61,7 +61,9 @@ def test_a_stop_report_a_repair_call_or_a_timeout_fails_the_run(tmp_path):
     (tmp_path / "a").mkdir()
     (tmp_path / "a" / "stop_report.md").write_text("stopped")
     assert any("stop report" in p for p in problems(CLEAN_LOG, tmp_path))
-    assert any("agent call" in p for p in problems(CLEAN_LOG, tmp_path / "b", [{"stage": "implementation", "resumed": True}]))
+    assert any("ran 2 times" in p for p in problems(CLEAN_LOG, tmp_path / "b", [{"stage": "audit"}, {"stage": "audit"}]))
+    assert any("only asks on a failure" in p for p in problems(CLEAN_LOG, tmp_path / "d", [{"stage": "crash_debug"}]))
+    assert problems(CLEAN_LOG, tmp_path / "e", [{"stage": "optimization_worker", "resumed": True}] * 2) == []
     assert any("timed out" in p for p in problems(CLEAN_LOG, tmp_path / "c", rc=None))
 
 

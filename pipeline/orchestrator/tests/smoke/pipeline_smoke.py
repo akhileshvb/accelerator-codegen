@@ -36,6 +36,9 @@ SMOKE_HOME = Path(os.environ.get("ACCEL_SMOKE_HOME", f"/flash1/{os.environ.get('
 STAGES = ("analysis", "test_suite", "implementation", "optimization", "audit")
 GIT = ["git", "-c", "user.name=smoke", "-c", "user.email=smoke@localhost"]
 NO_MODEL_ENV = "ACCEL_SMOKE_NO_MODEL"  # what the models config asks for instead of a provider key
+# the host-wide settings of the real runs, passed into the sandbox when set (ACCEL_MEASURE_SLOTS below the number of
+# measurement cores gives the benchmarks several threads and so exercises the bench's one-thread point)
+PASSED_THROUGH = ("ACCEL_MEASURE_SLOTS", "ACCEL_MEASURE_CORES")
 BUILD_JOBS = os.environ.get("ACCEL_SMOKE_JOBS", "8")
 
 
@@ -203,6 +206,7 @@ def launch(tree: Path, work: Path, kit: Path, env: dict[str, str], workload: str
         **env, "ACCEL_ENGINE_INSTANCE": instance, "ACCEL_ENGINE_STATE_DIR": str(state),
         "ACCEL_CONCURRENT_WORKERS": os.environ.get("ACCEL_CONCURRENT_WORKERS", "4"),
         "CMAKE_BUILD_PARALLEL_LEVEL": BUILD_JOBS,
+        **{k: os.environ[k] for k in PASSED_THROUGH if k in os.environ},
         NO_MODEL_ENV: "scripted", "ACCEL_SMOKE_KIT": str(kit), "ACCEL_SMOKE_REFERENCE": str(kit / "reference"),
         "ACCEL_SMOKE_CALLS": str(state / "agent_calls.jsonl"),
     }

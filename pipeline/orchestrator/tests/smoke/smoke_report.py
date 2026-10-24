@@ -14,6 +14,8 @@ GATE_REUSED = re.compile(r"gate (\w+): reused")
 STAGE_MARK = re.compile(r"^=== stage: (\w+) ===", re.M)
 # a line that says something was broken or repaired (a clean run prints none of them)
 TROUBLE = re.compile(r"gate FAILED|^\[repair\]|stage \w+ raised|retrying stage|write_policy_violation|stopped:", re.M)
+SINGLE_RUN_STAGES = ("analysis", "test_suite", "implementation", "audit")
+REPAIR_STAGES = ("crash_debug", "optimization_fix")
 SKIPPABLE = {"skip"}  # a gate may skip itself when it does not apply (gate_plan.GATES_ALLOW_SKIP)
 
 
@@ -47,9 +49,11 @@ def problems_of(log: str, tree: Path, calls: list[dict], rc: int | None) -> list
         if status not in ("pass", "reused", *SKIPPABLE):
             found.append(f"gate {gate} (planned in {stage}) {'did not run' if not status else 'ended ' + status}")
     found += [f"stop report: {p.relative_to(tree)}" for p in tree.rglob("stop_report.md")]
-    stages_called = [c["stage"] for c in calls if "error" not in c]
-    found += [f"agent call {c}" for c in calls if c.get("resumed") or "error" in c]
-    found += [f"agent stage {s} ran {stages_called.count(s)} times" for s in set(stages_called) if stages_called.count(s) > 1]
+    found += [f"agent call failed: {c}" for c in calls if "error" in c]
+    called = [c["stage"] for c in calls if "error" not in c]
+    # a stage the pipeline asks an agent for once; the optimization worker's session legitimately resumes per candidate
+    found += [f"agent stage {s} ran {called.count(s)} times" for s in SINGLE_RUN_STAGES if called.count(s) > 1]
+    found += [f"agent asked for {s}, which the pipeline only asks on a failure" for s in set(called) if s in REPAIR_STAGES]
     return found
 
 
@@ -74,6 +78,16 @@ def timing_table(marks: list[tuple[float, str]], timings: list[tuple[str, float]
     return "\n".join([*lines, f"{'pipeline total':<{width}}  {total:7.0f}s"])
 
 
+def coverage_notes(tree: Path) -> list[str]:
+    """What the thread checks of the gates did in this run (reported, not asserted: the host's cores decide)."""
+    notes = []
+    for gate, key in (("aux_correctness", "threads_checked"), ("aux_bench_sweep", "thread_scaling")):
+        for path in sorted(tree.rglob(f"gates/{gate}.json")):
+            value = json.loads(path.read_text()).get(key)
+            notes.append(f"{gate}.{key}: {value if value else 'none (the host gave this run one thread)'}")
+    return notes
+
+
 def verify(tree: Path, work: Path, rc: int | None, timings: list[tuple[str, float]],
            marks: list[tuple[float, str]]) -> int:
     log = (work / "pipeline.log").read_text(errors="replace")
@@ -81,6 +95,7 @@ def verify(tree: Path, work: Path, rc: int | None, timings: list[tuple[str, floa
     calls = [json.loads(l) for l in calls_file.read_text().splitlines()] if calls_file.is_file() else []
     problems = problems_of(log, tree, calls, rc)
     print("\n" + timing_table(marks, timings))
+    print("\n" + "\n".join(coverage_notes(tree)))
     if problems:
         print("\nSMOKE TEST FAILED:", *[f"  - {p}" for p in problems], sep="\n")
         print(f"\nlog tail ({work / 'pipeline.log'}):\n" + "\n".join(log.splitlines()[-25:]))
