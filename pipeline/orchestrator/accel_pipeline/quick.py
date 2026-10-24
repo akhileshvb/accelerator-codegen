@@ -161,6 +161,17 @@ def _project_write_cost(pipeline_config: PipelineConfig, workload: dict[str, Any
         budget_s=GATE_RUN_TIMEOUT_S * pipeline_config.quick_tier.write_cost_budget_share)
 
 
+def _unfaithful_rebuilds(pipeline_config: PipelineConfig, workload: dict[str, Any], query: int) -> list[str]:
+    art = query_artifacts_dir(pipeline_config.repo_root, query, workload=workload)
+    analysis = art / "analysis.json"
+    reports = write_cost.load_reports(gates_dir_for_query(art))
+    if not reports or not analysis.is_file():
+        return []
+    coverage = (json.loads(analysis.read_text(encoding="utf-8")).get("correctness_facts") or {}).get("mutation_coverage") or []
+    suite = suite_path(pipeline_config.repo_root, str(workload.get("benchmark_name", "")), query)
+    return write_cost.unfaithful_rebuilds(reports, ts.txn_files(suite), coverage, ts.statements)
+
+
 def _sanitizer_evidence(data: dict[str, Any]) -> str:
     found = data.get("sanitizer_findings") or {}
     lines = []
@@ -238,6 +249,15 @@ def run_quick_check(pipeline_config: PipelineConfig, workload: dict, query: int,
     if result.status == "skip":
         return QuickResult(status="skip", phase_timings=timings, summary=str(result.data.get("reason") or "skipped"))
     if result.status == "pass":
+        unfaithful = _unfaithful_rebuilds(pipeline_config, workload, query) if admits else []
+        if unfaithful:
+            passed_path.unlink(missing_ok=True)
+            failure = Failure(
+                kind="code", stage=QUICK_GATE, source=QUICK_GATE,
+                summary=f"quick_check: {len(unfaithful)} write transaction(s) rebuild the state where the analysis "
+                        f"maintains them incrementally (at full scale each is a full scan). First: {unfaithful[0]}",
+                evidence="\n".join(unfaithful))
+            return QuickResult(status="fail", phase_timings=timings, failure=failure, summary=failure.summary)
         projection = _project_write_cost(pipeline_config, workload, query, subset) if admits else None
         if projection and projection.over:
             passed_path.unlink(missing_ok=True)

@@ -66,6 +66,28 @@ class Projection:
         return f"projected full-gate write time ~{self.total_s:.0f} s (budget {self.budget_s:.0f} s)"
 
 
+def is_rebuild(cost_s: float, build_s: float) -> bool:
+    """A write whose maintenance costs about as much as building the state from scratch."""
+    return cost_s * 1000 >= MIN_REBUILD_MS and cost_s >= REBUILD_SHARE * build_s
+
+
+def unfaithful_rebuilds(reports: list[dict], txn_sql: dict[str, str], coverage: list[dict],
+                        statements: Callable[[str], list[tuple[str, str]]]) -> list[str]:
+    """Suite transactions that rebuild the state although analysis.json's mutation_coverage maintains every
+    (table, mutation) they write as supported_delta: one line each, naming the transaction and those writes."""
+    delta = {(str(c.get("table", "")).lower(), str(c.get("mutation", "")).lower())
+             for c in coverage if c.get("behavior") == "supported_delta"}
+    out: dict[str, str] = {}
+    for report in reports:
+        build_s = float(report.get("build_seconds") or 0.0)
+        for cost in report.get("write_costs") or []:
+            writes = sorted({(t, verb.lower()) for verb, t in statements(txn_sql.get(cost["txn"], ""))})
+            if writes and all(w in delta for w in writes) and is_rebuild(_maintenance_s(cost), build_s):
+                out[cost["txn"]] = (f"{cost['txn']} ({', '.join(f'{v} {t}' for t, v in writes)}): maintenance costs as much as "
+                                    "a full build; analysis.json maintains these writes incrementally (supported_delta)")
+    return list(out.values())
+
+
 def _maintenance_s(cost: dict) -> float:
     """The accelerator's own time for one write: what the engine reports, else the whole commit and first read."""
     return cost["maint_ms"] / 1000.0 if cost.get("maint_ms", -1) >= 0 else (cost["write_ms"] + cost["read_ms"]) / 1000.0
@@ -90,7 +112,7 @@ def project(reports: list[dict], *, profiles: dict[str, tuple[str, tuple[str, ..
         if probe_ms:  # the adversarial probes: every table the state depends on, scaled to the full gate's probe count
             costs += [(("adversarial_probe", tuple(dependent)), sum(probe_ms) / len(probe_ms) / 1000.0)] * probes_full
         for (kind, tables), cost_s in costs:
-            rebuild = cost_s * 1000 >= MIN_REBUILD_MS and cost_s >= REBUILD_SHARE * build_s
+            rebuild = is_rebuild(cost_s, build_s)
             r_touch = scale(tables) if tables else r_dep
             factor = max(r_dep if rebuild else 1.0, r_touch if kind.startswith("bulk") else math.sqrt(r_touch))
             out.total_s += cost_s * factor
