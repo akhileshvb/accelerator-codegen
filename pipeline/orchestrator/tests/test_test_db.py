@@ -6,7 +6,7 @@ import pytest
 from fake_engine import QUERY, make_engine
 
 from accel_pipeline import test_db
-from accel_pipeline.test_db import CutDatasets, cut_selects, ensure_cut_datasets
+from accel_pipeline.test_db import CutDatasets, cut_selects, ensure_cut_datasets, key_links
 
 SCHEMA = """CREATE TABLE orders(id INTEGER, kind TEXT, region TEXT, placed INTEGER);
 CREATE TABLE events(order_id INTEGER, happened INTEGER, amount NUMERIC);
@@ -51,6 +51,18 @@ def test_a_table_without_an_integer_column_cannot_be_sampled():
         cut_selects(["notes"], [], {"notes": 10}, {"notes": []}, 5)
 
 
+def test_key_columns_with_the_same_name_link_tables_the_query_does_not_join():
+    schema = {"lineitem": {"l_orderkey": "BIGINT", "l_partkey": "BIGINT", "l_comment": "VARCHAR"},
+              "orders": {"o_orderkey": "BIGINT", "o_totalprice": "DECIMAL"},
+              "partsupp": {"ps_partkey": "BIGINT"}, "part": {"p_partkey": "BIGINT"},
+              "visits": {"customer_id": "INTEGER", "id": "INTEGER"}, "customers": {"customer_id": "INTEGER", "id": "INTEGER", "year": "INTEGER"}}
+    assert key_links(schema) == [
+        (("lineitem", "l_orderkey"), ("orders", "o_orderkey")),
+        (("lineitem", "l_partkey"), ("partsupp", "ps_partkey")), (("lineitem", "l_partkey"), ("part", "p_partkey")),
+        (("partsupp", "ps_partkey"), ("part", "p_partkey")),
+        (("visits", "customer_id"), ("customers", "customer_id"))]  # not the bare `id`s, not text or decimals
+
+
 def test_scale_is_full_rows_per_subset_row_and_one_when_unknown():
     cuts = CutDatasets(None, None, {"source_rows": {"orders": 1000, "events": 5000}, "subset_rows": {"orders": 10, "events": 100}})
     assert cuts.scale(["orders"]) == 100 and cuts.scale(["ORDERS", "events"]) == pytest.approx(6000 / 110)
@@ -68,6 +80,7 @@ def cut_env(tmp_path, monkeypatch):
     data = tmp_path / "data"
     data.mkdir()
     (data / "orders.tbl").write_text("1|k|r|1|\n")
+    (data / "events.tbl").write_text("1|1|1|\n")
     monkeypatch.setattr(test_db, "SUBSET_ROOT_ROWS", 120)
     monkeypatch.setattr(test_db, "TINY_ROOT_ROWS", 30)
     workload = {**ctx.workload, "workload_kind": "aux_state", "dataset_dir": str(data),
@@ -96,6 +109,14 @@ def test_the_children_of_a_kept_key_are_all_kept(cut_env):
     kept = {e[0] for e in rows_of(cuts.subset, "events")}
     all_events = [(1 + i % 100) for i in range(400)]  # fake_engine.make_dataset
     assert len(rows_of(cuts.subset, "events")) == sum(1 for o in all_events if str(o) in kept)
+
+
+def test_every_table_of_the_dataset_is_cut_even_when_the_query_does_not_read_it(cut_env, tmp_path):
+    cfg, workload, data = cut_env
+    cfg.repo_root.joinpath("workloads", "acme", "q1.sql").write_text("SELECT COUNT(*) FROM events WHERE amount > $1")  # no orders
+    (data / "orders.tbl").write_text("1|k|r|1|\n")
+    cuts = ensure_cut_datasets(cfg, workload, 1)
+    assert {p.name for p in cuts.subset.glob("*.tbl")} == {"events.tbl", "orders.tbl"} and rows_of(cuts.subset, "events")
 
 
 def test_the_cuts_are_made_once_per_dataset(cut_env, monkeypatch):

@@ -1,9 +1,11 @@
 """The run's test databases, cut once out of the engine's loaded dataset, right after host bootstrap.
 
-A cut keeps a sample of the query's largest table and, along the query's join keys, every row those rows join
-to (the parents they reference and the children that reference them), so the query's answers on it are as
-non-trivial as on the full data. Two cuts, each a directory of <table>.tbl files (what every host.sh `load`
-reads) written from the host's `sql` verb, so any engine works:
+A cut keeps a sample of the largest table and, along the query's join keys, every row those rows join to (the
+parents they reference and the children that reference them), so the query's answers on it are as non-trivial as
+on the full data. It holds every table of the dataset, because a harness may write tables the query does not read
+(TPC-H's refresh functions need orders beside lineitem): the ones the query does not join to follow key columns
+of the same name (`l_orderkey` and `o_orderkey`, or `customer_id` in both). Two cuts, each a directory of
+<table>.tbl files (what every host.sh `load` reads) written from the host's `sql` verb, so any engine works:
 
 * `subset`: what quick_check's differential, build and read measurements run on;
 * `tiny`: a few thousand rows in all, for the sanitizer runs (5-20x slower per row).
@@ -27,18 +29,17 @@ from pathlib import Path
 from typing import Any
 
 from accel_pipeline import data_shape_stats as stats
-from accel_pipeline.data_shape import catalog_sql, dependent_table_names
+from accel_pipeline.data_shape import catalog_sql
 from accel_pipeline.engine_host import ensure_dataset_loaded
 from accel_pipeline.config import PipelineConfig
 from accel_pipeline.layout import workload_schema_sql
 from accel_pipeline.paths import query_artifacts_dir
 from accel_pipeline.tools.data_tools import DataToolContext, HostSql
-from accel_pipeline.workload_facts import with_facts
 
 SUBSET_ROOT_ROWS = 40_000  # rows of the largest table in the quick cut
-TINY_ROOT_ROWS = 1_500
+TINY_ROOT_ROWS = 1_500  # the adversarial phase needs a few rows the point-write probes can invalidate
 STATEMENT_SECONDS = 900.0
-FORMAT_VERSION = 2
+FORMAT_VERSION = 5
 _IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
@@ -54,6 +55,19 @@ class CutDatasets:
         full = sum(n for t, n in self.manifest["source_rows"].items() if t.lower() in names)
         cut = sum(n for t, n in self.manifest["subset_rows"].items() if t.lower() in names)
         return max(1.0, full / cut) if full and cut else 1.0
+
+
+def key_links(schema: dict[str, dict[str, str]]) -> list[tuple[tuple[str, str], tuple[str, str]]]:
+    """Integer key columns of different tables that name the same key: equal once a short table prefix (`l_`, `ps_`)
+    is stripped, and ending in `key` or `id`."""
+    named: dict[str, list[tuple[str, str]]] = {}
+    for table, columns in schema.items():
+        for column, dtype in columns.items():
+            name = column.lower()
+            name = name.split("_", 1)[1] if "_" in name[:4] else name
+            if name not in ("key", "id") and name.endswith(("key", "id")) and stats.is_integer(dtype):
+                named.setdefault(name, []).append((table, column))
+    return [(a, b) for columns in named.values() for i, a in enumerate(columns) for b in columns[i + 1:] if a[0] != b[0]]
 
 
 def cut_selects(tables: list[str], joins: list[tuple[tuple[str, str], tuple[str, str]]], rows: dict[str, int],
@@ -123,17 +137,17 @@ def _key(cfg: PipelineConfig, workload: dict[str, Any], query: int, source: Path
     return digest.hexdigest()[:16]
 
 
-def _cut(cfg: PipelineConfig, workload: dict[str, Any], query: int, destination: Path) -> dict[str, Any]:
+def _cut(cfg: PipelineConfig, workload: dict[str, Any], query: int, source: Path, destination: Path) -> dict[str, Any]:
     runner = HostSql(DataToolContext(cfg, workload, query, query_artifacts_dir(cfg.repo_root, query, workload=workload)))
     runner.require_up()
     schema = stats.read_schema(runner, 60.0, runner.catalog_sql)
     names = {t.lower(): t for t in schema}
-    tables = [names[t.lower()] for t in dependent_table_names(with_facts(cfg.repo_root, workload, query)) if t.lower() in names]
+    tables = [names[p.stem.lower()] for p in sorted(source.glob("*.tbl")) if p.stem.lower() in names]
     for name in tables + [c for t in tables for c in schema[t]]:
         if not _IDENTIFIER.match(name):
             raise ValueError(f"{name!r} is not a plain identifier")
     rows = {t: int(runner.rows(f"SELECT COUNT(*) FROM {t}", STATEMENT_SECONDS)[0][0] or 0) for t in tables}
-    joins = stats.analyze_query(catalog_sql(workload, cfg.repo_root, query), schema, runner.dialect).joins
+    joins = stats.analyze_query(catalog_sql(workload, cfg.repo_root, query), schema, runner.dialect).joins + key_links(schema)
     integers = {t: [c for c, dtype in schema[t].items() if stats.is_integer(dtype)] for t in tables}
     manifest: dict[str, Any] = {"source_rows": rows}
     for name, root_rows in (("subset", SUBSET_ROOT_ROWS), ("tiny", TINY_ROOT_ROWS)):
@@ -161,7 +175,7 @@ def ensure_cut_datasets(cfg: PipelineConfig, workload: dict[str, Any], query: in
                 problem = ensure_dataset_loaded(workload, cfg.repo_root, cfg.build_dir)
                 if problem:
                     raise RuntimeError(problem)
-                manifest = _cut(cfg, workload, query, destination)
+                manifest = _cut(cfg, workload, query, source, destination)
             except (RuntimeError, ValueError, TimeoutError, OSError) as exc:
                 shutil.rmtree(destination, ignore_errors=True)
                 print(f"[pipeline] test databases not made ({exc}); quick_check runs on the full dataset", file=sys.stderr, flush=True)
