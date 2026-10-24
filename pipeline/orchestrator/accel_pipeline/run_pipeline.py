@@ -422,6 +422,10 @@ def _main(argv: list[str] | None = None) -> int:
         (query_artifacts_dir(repo_root, query, workload=workload) / REPAIR_STATE_FILE).unlink(missing_ok=True)
 
     if workload.get("workload_kind") == "aux_state":
+        if not args.dry_run:
+            from accel_pipeline.quick import prepare_inner_loop
+
+            prepare_inner_loop(pipeline_config, workload, query)
         ensure_base_accelerator_prerequisite(
             pipeline_config,
             args.workload,

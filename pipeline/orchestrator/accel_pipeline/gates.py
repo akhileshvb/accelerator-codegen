@@ -303,12 +303,12 @@ def run_gate(
         gate_env["ACCEL_WORKLOAD_KIND"] = kind
     tier = GATE_TIERS.get(gate_name)
     if tier:
-        from accel_pipeline.quick import ensure_subset_dataset
+        from accel_pipeline.test_db import ensure_cut_datasets
 
         gate_env["ACCEL_GATE_TIER"] = tier
-        subset = ensure_subset_dataset(pipeline_config, workload) if tier == "quick" else None
-        if subset:
-            gate_env["ACCEL_SUBSET_DATASET_DIR"] = str(subset)
+        cuts = ensure_cut_datasets(pipeline_config, workload, query) if tier == "quick" else None
+        if cuts:
+            gate_env["ACCEL_SUBSET_DATASET_DIR"] = str(cuts.subset)
     gate_env.update(env or {})
 
     # Codex may never create the worker build dir. Once the engine has a host.sh, only its

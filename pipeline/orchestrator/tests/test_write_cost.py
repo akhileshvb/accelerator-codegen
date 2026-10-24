@@ -12,6 +12,7 @@ from accel_pipeline.config import QuickTierConfig
 from accel_pipeline.gates import GateResult
 from accel_pipeline.layout import suite_dir
 from accel_pipeline.paths import gates_dir_for_query, query_artifacts_dir
+from accel_pipeline.test_db import CutDatasets
 from test_quick import GIT, WORKLOAD, config, Gate  # noqa: F401  (config is a fixture)
 
 PROFILES = {"001.sql": ("point_update", ("orders",)), "002.sql": ("bulk_delete", ("orders",))}
@@ -73,18 +74,6 @@ def test_the_projection_passes_within_the_budget_and_reports_the_costliest_kind_
     assert out.lines == sorted(out.lines, key=lambda line: -float(line.split("~")[1].split(" s")[0]))
 
 
-def test_table_scale_is_the_ratio_of_tbl_sizes_and_one_when_unknown(tmp_path):
-    full, sub = tmp_path / "full", tmp_path / "sub"
-    full.mkdir(), sub.mkdir()
-    (full / "orders.tbl").write_text("x" * 1000)
-    (sub / "orders.tbl").write_text("x" * 10)
-    (full / "lineitem.tbl").write_text("x" * 5000)
-    (sub / "lineitem.tbl").write_text("x" * 100)
-    scale = write_cost.table_scale(full, sub)
-    assert scale(["orders"]) == 100 and scale(["ORDERS", "lineitem"]) == pytest.approx(6000 / 110) and scale(["nation"]) == 1.0
-    assert write_cost.table_scale(None, None)(["orders"]) == 1.0
-
-
 def test_reports_are_read_from_both_thread_runs_and_ignore_a_report_without_costs(tmp_path):
     (tmp_path / "suite_quick_report.json").write_text(json.dumps(report(1)))
     (tmp_path / "suite_quick_report_threads1.json").write_text(json.dumps({"ok": True}))
@@ -93,17 +82,14 @@ def test_reports_are_read_from_both_thread_runs_and_ignore_a_report_without_cost
 
 # quick_check wiring ---------------------------------------------------------------------------------------
 
-def stage_suite(config, subset_bytes, full_bytes, reports):
-    """A suite, datasets of those sizes and the reports of a quick differential, for the real projection code."""
+def stage_suite(config, subset_rows, full_rows, reports):
+    """A suite, test databases of those row counts and the reports of a quick differential, for the real projection code."""
     root = config.repo_root
     suite = root / suite_dir("tpch", 6)
     (suite / "txns").mkdir(parents=True)
     (suite / "txns" / "001.sql").write_text("UPDATE orders SET o_flag = 'B' WHERE o_orderkey = 1;\n")
     (suite / "suite.yaml").write_text("txns:\n  001.sql: {kind: point_update}\npoint_writes: {max_probes: 5}\n")
-    full, sub = root.parent / "full", root.parent / "sub"
-    full.mkdir(), sub.mkdir()
-    (full / "orders.tbl").write_text("x" * full_bytes)
-    (sub / "orders.tbl").write_text("x" * subset_bytes)
+    cuts = CutDatasets(root / "subset", root / "tiny", {"source_rows": {"orders": full_rows}, "subset_rows": {"orders": subset_rows}})
     art = query_artifacts_dir(root, 6, workload=WORKLOAD)
     art.mkdir(parents=True, exist_ok=True)
     (art / "analysis.json").write_text(json.dumps({"correctness_facts": {"dependent_tables": [{"name": "orders"}]}}))
@@ -111,7 +97,7 @@ def stage_suite(config, subset_bytes, full_bytes, reports):
     gates.mkdir(parents=True, exist_ok=True)
     for path, rep in zip(write_cost.report_paths(gates), reports):
         path.write_text(json.dumps(rep))
-    return {**WORKLOAD, "dataset_dir": str(full)}, sub
+    return WORKLOAD, cuts
 
 
 class ReportingGate(Gate):
@@ -131,10 +117,10 @@ class ReportingGate(Gate):
 
 def check(config, monkeypatch, write_ms, timeout=30.0):
     reports = [report(write_ms=write_ms, build_s=0.05)] * 2
-    workload, sub = stage_suite(config, 40, 10_000, [])  # 250x the subset
+    workload, cuts = stage_suite(config, 40, 10_000, [])  # 250x the subset
     monkeypatch.setattr(quick, "GATE_RUN_TIMEOUT_S", timeout / config.quick_tier.write_cost_budget_share)
     gate = ReportingGate(monkeypatch, config, workload, reports)
-    monkeypatch.setattr(quick, "ensure_subset_dataset", lambda *a: sub)
+    monkeypatch.setattr(quick, "ensure_cut_datasets", lambda *a: cuts)
     return quick.run_quick_check(config, workload, 6), gate
 
 
@@ -148,14 +134,14 @@ def test_a_write_that_rebuilds_fails_quick_check_with_an_actionable_message(conf
 
 def test_an_incremental_write_passes_and_the_projection_is_reported(config, monkeypatch):
     result, _ = check(config, monkeypatch, write_ms=0.5)
-    assert result.status == "pass" and "projected full-gate write time" in result.summary
-    assert result.projection and json.loads(quick.render_quick_result(result))["projected_full_gate_write_cost"] == result.projection
+    assert result.status == "pass" and "projected full-gate write time" in result.report["writes_total"]
+    assert result.report["writes"] and json.loads(quick.render_quick_result(result))["writes"] == result.report["writes"]
 
 
 def test_a_stale_report_from_an_earlier_run_is_not_projected(config, monkeypatch):
-    workload, sub = stage_suite(config, 40, 10_000, [report(write_ms=500)] * 2)
+    workload, cuts = stage_suite(config, 40, 10_000, [report(write_ms=500)] * 2)
     Gate(monkeypatch)  # leaves no report
-    monkeypatch.setattr(quick, "ensure_subset_dataset", lambda *a: sub)
+    monkeypatch.setattr(quick, "ensure_cut_datasets", lambda *a: cuts)
     assert quick.run_quick_check(config, workload, 6).status == "pass"
 
 

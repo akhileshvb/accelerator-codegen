@@ -21,7 +21,7 @@ FAKE_PERF = textwrap.dedent(
         return args[args.index(flag) + 1]
     if verb == "stat":
         queries = int(os.environ["ACCEL_BENCH_QUERIES"])
-        assert os.environ["ACCEL_PROFILE_CONTROL"].count(",") == 1
+        assert os.environ["ACCEL_PROFILE_CONTROL"].count(",") in (0, 1)
         with open(opt("-o"), "w") as out:
             out.write(f"{{0.5 * queries}},,task-clock:u,1,100.00,,\\n")
             out.write(f"{{5000 * queries}},,cycles:u,1,100.00,,\\n")
@@ -134,13 +134,41 @@ def test_profile_hit_path_against_fake_perf(fake_perf):
     assert "ScanState" in text and "ipc=2.4" in text and "cpu_ms=0.5" in text
 
 
-def test_bench_that_never_opens_the_window_is_not_applicable(fake_perf):
+def test_bench_that_never_opens_the_window_is_an_error(fake_perf):
     profile = pp.profile_hit_path([sys.executable, "-c", "pass"], {"FAKE_NO_WINDOW": "1"}, hit_us=10_000.0)
-    assert profile["status"] == "not_applicable"
+    assert profile["status"] == "error"
+    assert pp.render_for_agent(profile).startswith("profile FAILED")
 
 
-def test_profile_hit_path_without_perf_is_not_applicable(monkeypatch):
+def test_profile_hit_path_without_perf_is_an_error_not_a_waiver(monkeypatch):
     monkeypatch.setenv(pp.PERF_BIN_ENV, "/nonexistent/perf")
     profile = pp.profile_hit_path(["true"], {})
-    assert profile["status"] == "not_applicable" and "perf" in profile["reason"]
-    assert "not applicable" in pp.render_for_agent(profile)
+    assert profile["status"] == "error" and "perf" in profile["reason"]
+    assert "FAILED" in pp.render_for_agent(profile)
+
+
+def test_a_server_engine_stays_not_applicable():
+    assert "not applicable" in pp.render_for_agent(pp.not_applicable(pp.engine_profile_gap({"embedded": False})))
+
+
+def test_counters_alone_take_no_samples(fake_perf):
+    profile = pp.profile_hit_path([sys.executable, "-c", "pass"], {}, hit_us=1000.0, loop_seconds=0.5, record=False)
+    assert profile["status"] == "ok" and "sampling" not in profile
+    assert profile["counters_per_query"]["instructions"] == 12000.0
+
+
+def test_the_loop_length_sets_the_window(fake_perf):
+    long = pp.profile_hit_path([sys.executable, "-c", "pass"], {}, hit_us=1000.0, loop_seconds=10.0, record=False)
+    assert long["counters_per_query"]["cycles"] == 5000.0  # per query, whatever the window held
+    assert pp.window_query_count(1000.0, 10.0) == 10_000 and pp.window_query_count(1000.0, 0.5) == pp.MIN_QUERIES * 5
+
+
+def test_the_build_profile_lists_the_hot_spots(fake_perf):
+    profile = pp.profile_build([sys.executable, "-c", "pass"], {})
+    assert profile["status"] == "ok"
+    assert profile["sampling"]["top_functions"][0]["symbol"].endswith("query::ScanState(int)")
+    assert "ScanState" in pp.render_for_agent(profile)
+
+
+def test_a_build_with_no_samples_is_an_error(fake_perf):
+    assert pp.profile_build([sys.executable, "-c", "pass"], {"FAKE_NO_WINDOW": "1"})["status"] == "error"
