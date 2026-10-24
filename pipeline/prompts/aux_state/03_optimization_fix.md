@@ -4,7 +4,6 @@ Your hypothesis patch failed **build** or **quick smoke correctness** (`ctest -R
 
 {{hard_guidelines}}
 
-{{codex_tooling}}
 
 **Stay on the same hypothesis.** Fix the reported error; do not start an unrelated redesign.
 

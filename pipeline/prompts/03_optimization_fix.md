@@ -4,7 +4,6 @@ Your hypothesis patch built or passed smoke at first but **failed validation** (
 
 {{hard_guidelines}}
 
-{{codex_tooling}}
 
 **Stay on the same hypothesis.** Fix the reported error; redesign only if the failure is unfixable.
 

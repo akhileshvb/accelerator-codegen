@@ -23,7 +23,6 @@ Pipeline files (`pipeline/`, `substrate/`, `backends/` gates and prompts, `cmake
 
 **Stuck?** Call `ask_advisor(question)` when you have been on one failure for more than ~10 minutes, or before you declare that part of the analysed plan cannot be built or a failed check "only the budget remains". A stronger model reads this whole conversation and the files and returns a diagnosis with next steps; a few consults per stage, so say what you tried.
 
-{{codex_tooling}}
 
 {{fast_loop}}
 

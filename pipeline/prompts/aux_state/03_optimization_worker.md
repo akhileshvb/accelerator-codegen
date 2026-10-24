@@ -21,7 +21,6 @@ The test suite (`tests/workload/`) is frozen and `quick_check` runs it: never ed
 
 Pipeline files (`pipeline/`, `substrate/`, `backends/` gates and prompts, `cmake/`) are not yours: edits there are reverted and warned about in tool footers; if the task is blocked on one, call `report_blocker`.
 
-{{codex_tooling}}
 
 {{fast_loop}}
 

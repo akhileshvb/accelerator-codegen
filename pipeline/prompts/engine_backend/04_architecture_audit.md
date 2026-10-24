@@ -6,7 +6,6 @@ violate the hard constraints — do not rewrite the backend yourself. The first 
 the backend digest and where each layer's diff is (`{{artifacts_path}}/layer_diffs/<layer>.diff`):
 review from those, opening a file only to check a concrete suspicion.
 
-{{codex_tooling}}
 
 {{engine_host_discovery}}
 

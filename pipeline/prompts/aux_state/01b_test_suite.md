@@ -15,7 +15,6 @@ Write the acceptance test suite of **{{display_name}}** **Q{{query_number}}**. Y
 
 {{hard_guidelines}}
 
-{{codex_tooling}}
 
 ## Inputs
 
