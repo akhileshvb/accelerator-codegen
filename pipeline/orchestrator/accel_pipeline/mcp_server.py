@@ -345,9 +345,25 @@ def build_mcp_tool_callables(
             return f"invalid: {exc}"
         return "valid"
 
+    def update_analysis(operations: list[dict[str, Any]]) -> str:
+        """Apply JSON Patch operations to analysis.json, write it, and validate."""
+        import json as _json
+
+        from accel_pipeline.json_patch import PatchError, apply
+        from accel_pipeline.paths import analysis_artifact_path
+
+        path = analysis_artifact_path(pipeline_config.repo_root, query, workload=workload)
+        try:
+            patched = apply(_json.loads(path.read_text(encoding="utf-8")), operations)
+        except (OSError, ValueError, PatchError) as exc:
+            return f"not applied: {exc}"
+        path.write_text(_json.dumps(patched, indent=2) + "\n", encoding="utf-8")
+        return f"applied {len(operations)} operation(s); validation: {validate_analysis()}"
+
     return {
         "report_blocker": report_blocker,
         "validate_analysis": validate_analysis,
+        "update_analysis": update_analysis,
         "request_gate": request_gate,
         "gate_status": gate_status,
         "quick_check": quick_check,
@@ -641,6 +657,17 @@ def main(argv: list[str] | None = None) -> int:
     def validate_analysis() -> str:
         """Check analysis.json exactly as the analysis stage will when your turn ends: "valid" or the first problem."""
         return _call("validate_analysis")
+
+    @_tool(annotations=_rw)
+    def update_analysis(operations: list[dict[str, Any]]) -> str:
+        """Edit analysis.json in place with JSON Patch operations, then validate it as the stage will.
+
+        operations: [{"op": "replace"|"add"|"remove", "path": "/correctness_facts/state_design/state_storage/2/primitive",
+        "value": ...}]; paths are JSON Pointers ("/" separated keys and list indexes, "-" appends to a list). Use it
+        for revisions: change only what the critique or validation names instead of rewriting the file. Returns
+        "applied N operation(s); validation: valid" or the first problem; nothing is written when an operation
+        cannot apply."""
+        return _call("update_analysis", operations)
 
     @_tool(annotations=_ro)
     def query_data(sql: str, max_rows: int | None = None) -> str:
