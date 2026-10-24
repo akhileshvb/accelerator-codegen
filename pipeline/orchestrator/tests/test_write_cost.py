@@ -190,3 +190,19 @@ def test_other_gates_and_other_workloads_are_never_refused(config):
     assert quick.admission_refusal(config, {**WORKLOAD, "workload_kind": "base"}, 6, "aux_correctness") == ""
     config.quick_tier = QuickTierConfig(enabled=False)
     assert quick.admission_refusal(config, WORKLOAD, 6, "aux_correctness") == ""
+
+
+def test_rebuilds_of_supported_delta_writes_are_unfaithful():
+    from accel_pipeline.test_suite import statements
+
+    report = {"build_seconds": 0.020, "write_costs": [
+        {"txn": "001.sql", "maint_ms": 15.0, "write_ms": 40.0, "read_ms": 1.0},   # rebuild-sized
+        {"txn": "002.sql", "maint_ms": 0.2, "write_ms": 40.0, "read_ms": 1.0},    # incremental
+        {"txn": "003.sql", "maint_ms": 15.0, "write_ms": 40.0, "read_ms": 1.0}]}  # rebuild, but the analysis allows it
+    sql = {"001.sql": "UPDATE accounts SET status = 'x' WHERE id = 1;",
+           "002.sql": "UPDATE accounts SET status = 'y' WHERE id = 2;",
+           "003.sql": "DELETE FROM events WHERE id = 3;"}
+    coverage = [{"table": "accounts", "mutation": "update", "behavior": "supported_delta"},
+                {"table": "events", "mutation": "delete", "behavior": "bounded_rebuild"}]
+    lines = write_cost.unfaithful_rebuilds([report], sql, coverage, statements)
+    assert len(lines) == 1 and lines[0].startswith("001.sql (update accounts)")
