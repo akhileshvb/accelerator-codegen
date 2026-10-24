@@ -3,6 +3,7 @@
 #include <stdexcept>
 #include <string>
 
+#include "backends/duckdb/tests/harness/duckdb_suite_check.hpp"
 #include "eval/harness/differential.hpp"
 #include "eval/tests/test_support/db_paths.hpp"
 #include "catalog/query_catalog.hpp"
@@ -18,7 +19,8 @@ void Require(bool condition, const std::string &message) {
 } // namespace
 
 // SF1 parity: DuckDB reference SQL vs aux Execute for one catalog query.
-// Runs read-only, single-probe incremental, then adversarial multi-point + RF.
+// Runs read-only, single-probe incremental, then adversarial multi-point + RF, then the
+// frozen test suite when ACCEL_SUITE_DIR is set.
 // Every phase runs on a private copy of <tpch_db_path> in a per-process
 // scratch dir (the incremental phase writes and restores, the adversarial one
 // writes), so the source DB is never opened for writing and concurrent runs
@@ -55,6 +57,12 @@ int main(int argc, char **argv) {
     accelerator_codegen::aux_state::harness::RunAdversarialWriteDifferentialCheck(
         work, entry, /*max_probes=*/5, /*min_chunks=*/1, default_bulk);
     std::cerr << "PASS tpch Q" << query_id << " adversarial write differential\n";
+    if (accelerator_codegen::aux_state::harness::SuiteRequested()) {
+      // The frozen test suite (ACCEL_SUITE_*): its tuples and transactions, from the source DB's state.
+      ts::PrivateDbCopy(tpch_db, scratch);
+      accelerator_codegen::aux_state::harness::RunSuiteDifferential(work, entry);
+      std::cerr << "PASS tpch Q" << query_id << " test suite\n";
+    }
     return 0;
   } catch (const std::exception &error) {
     std::cerr << "test_duckdb_tpch_differential failed: " << error.what()

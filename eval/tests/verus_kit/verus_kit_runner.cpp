@@ -15,12 +15,8 @@
 //     (no accelerator: setup runs, every parameter tuple evaluates and runs
 //     the query, every transaction runs and is rolled back)
 //
-// Spec directory (written by the pipeline's adversarial-test stage):
-//   setup.sql    optional; run once before the accelerator is built
-//   params.sql   one parameter tuple per line, as SQL literals separated by
-//                commas (e.g.  'SAUDI ARABIA'  or  DATE '1995-01-01', 24)
-//   txns/*.sql   one write transaction per file (statements separated by ;)
-//   bench_txns/*.sql  optional; the writes of `bench` (else txns/)
+// Spec directory: the test suite of eval/harness/suite.hpp (setup.sql, params.sql, txns/, bench_txns/;
+// bench_txns/ are the writes of `bench`, else txns/).
 //
 // differential: after the build and after every transaction (captured by the
 //   engine), the accelerator (accel_<id>(...)) is compared with the query
@@ -49,7 +45,7 @@
 // Parameter tuples drawn by the pipeline from the query's domain, fresh on every run:
 //   VERUS_KIT_PARAMS_FILE=<file>        these tuples replace the spec's (bench, profiles)
 //   VERUS_KIT_EXTRA_PARAMS_FILE=<file>  these are checked besides the spec's (differential, snapshots)
-// (one tuple per line, as in params.sql)
+// (one tuple per line, as in params.sql; the spec format is eval/harness/suite.hpp)
 // The store is the C++ one unless ACCEL_AUX_STORE=verus.  Output: one JSON
 // object on stdout.  The database file is modified; pass a copy.
 #include "backends/duckdb/api/duckdb_runtime.hpp"
@@ -58,6 +54,7 @@
 #include "substrate/aux/core/aux_maintenance_decision_log.hpp"
 #include "substrate/verus/kit/verus_kit.hpp"
 #include "catalog/query_catalog.hpp"
+#include "eval/harness/suite.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -81,144 +78,27 @@
 #include "duckdb/main/materialized_query_result.hpp"
 
 namespace {
-namespace fs = std::filesystem;
+using namespace accelerator_codegen::suite;
 namespace engine = accelerator_codegen::aux_state::engine;
 namespace core = accelerator_codegen::aux_state::core;
 namespace kit = accelerator_codegen::verus_kit;
 using engine::duckdb::DuckdbRuntime;
 using Clock = std::chrono::steady_clock;
 
-void Require(bool ok, const std::string &msg) {
-  if (!ok)
-    throw std::runtime_error(msg);
-}
-
-std::string ReadFile(const fs::path &p) {
-  std::ifstream in(p);
-  std::stringstream ss;
-  ss << in.rdbuf();
-  return ss.str();
-}
-
-std::string Json(const std::string &s) {
-  std::string o = "\"";
-  for (unsigned char c : s) {
-    if (c == '"' || c == '\\')
-      o += '\\', o += static_cast<char>(c);
-    else if (c < 0x20)
-      o += "\\u00" + std::string(1, "0123456789abcdef"[c >> 4]) + "0123456789abcdef"[c & 15];
-    else
-      o += static_cast<char>(c);
+// An accelerator call that answered with the SQL fallback: why (the host could not convert an
+// argument, or the kernel returned None).
+Rows RunAccelRecorded(Tally &tally, duckdb::Connection &c, const std::string &id, const std::string &where,
+                      const std::string &tuple) {
+  kit::ClearArgFailure();
+  const auto before = core::ReadAuxExecuteCounts().fallback;
+  Rows r = RunAccel(c, "accel_" + id, tuple);
+  if (core::ReadAuxExecuteCounts().fallback > before) {
+    const auto arg = kit::LastArgFailure();
+    const char *kind = arg.what.empty() ? "kernel_none" : arg.outside_type ? "param_outside_type" : "host_conversion";
+    tally.NoteFallback(where, tuple, kind,
+                       arg.what.empty() ? "kernel returned None" : "host arg conversion failed: " + arg.what);
   }
-  return o + "\"";
-}
-
-struct Spec {
-  std::string setup;
-  std::vector<std::string> params; // SQL literal tuples
-  std::vector<std::string> txns;
-  std::vector<std::string> txn_names; // file names, for messages
-  std::vector<std::string> bench_txns;
-};
-
-std::vector<std::string> SqlFiles(const fs::path &dir) {
-  std::vector<std::string> out;
-  if (!fs::is_directory(dir))
-    return out;
-  std::vector<fs::path> files;
-  for (const auto &e : fs::directory_iterator(dir))
-    if (e.path().extension() == ".sql")
-      files.push_back(e.path());
-  std::sort(files.begin(), files.end());
-  for (const auto &f : files)
-    out.push_back(ReadFile(f));
-  return out;
-}
-
-Spec LoadSpec(const fs::path &dir) {
-  Spec s;
-  if (fs::exists(dir / "setup.sql"))
-    s.setup = ReadFile(dir / "setup.sql");
-  auto load_params = [&](const std::string &text) {
-    std::vector<std::string> out;
-    std::istringstream lines(text);
-    for (std::string line; std::getline(lines, line);) {
-      const auto b = line.find_first_not_of(" \t\r");
-      if (b == std::string::npos || line.compare(b, 2, "--") == 0)
-        continue;
-      out.push_back(line.substr(b));
-    }
-    return out;
-  };
-  s.params = load_params(fs::exists(dir / "params.sql") ? ReadFile(dir / "params.sql") : "");
-  // Random parameter tuples drawn by the pipeline from the query's domain (a fresh draw per run):
-  //   VERUS_KIT_PARAMS_FILE        replaces the spec's tuples (bench, profiles)
-  //   VERUS_KIT_EXTRA_PARAMS_FILE  adds to them (differential, snapshots)
-  if (const char *f = std::getenv("VERUS_KIT_PARAMS_FILE"); f && *f) {
-    auto drawn = load_params(ReadFile(f));
-    if (!drawn.empty())
-      s.params = std::move(drawn);
-  }
-  if (const char *f = std::getenv("VERUS_KIT_EXTRA_PARAMS_FILE"); f && *f)
-    for (auto &t : load_params(ReadFile(f)))
-      if (std::find(s.params.begin(), s.params.end(), t) == s.params.end())
-        s.params.push_back(std::move(t));
-  if (s.params.empty())
-    s.params.push_back(""); // a query without parameters
-  s.txns = SqlFiles(dir / "txns");
-  if (fs::is_directory(dir / "txns")) {
-    for (const auto &e : fs::directory_iterator(dir / "txns"))
-      if (e.path().extension() == ".sql")
-        s.txn_names.push_back(e.path().filename().string());
-    std::sort(s.txn_names.begin(), s.txn_names.end());
-  }
-  s.txn_names.resize(s.txns.size());
-  s.bench_txns = SqlFiles(dir / "bench_txns");
-  if (s.bench_txns.empty())
-    s.bench_txns = s.txns;
-  return s;
-}
-
-std::unique_ptr<duckdb::MaterializedQueryResult> Q(duckdb::Connection &c, const std::string &sql) {
-  auto r = c.Query(sql);
-  Require(r && !r->HasError(), (r ? r->GetError() : "query failed") + ": " + sql);
   return r;
-}
-
-using Rows = std::vector<std::vector<std::string>>;
-
-std::string Cell(const duckdb::Value &v) { return v.IsNull() ? "NULL" : v.ToString(); }
-
-Rows Collect(duckdb::QueryResult &r) {
-  auto &m = dynamic_cast<duckdb::MaterializedQueryResult &>(r);
-  Rows rows;
-  for (duckdb::idx_t i = 0; i < m.RowCount(); ++i) {
-    std::vector<std::string> row;
-    for (duckdb::idx_t c = 0; c < m.ColumnCount(); ++c)
-      row.push_back(Cell(m.GetValue(c, i)));
-    rows.push_back(std::move(row));
-  }
-  return rows;
-}
-
-// The query with its parameters (the tuple's literals, evaluated by DuckDB).
-Rows RunQuery(duckdb::Connection &c, const std::string &query_sql, const std::string &tuple) {
-  duckdb::vector<duckdb::Value> values;
-  if (!tuple.empty()) {
-    auto t = Q(c, "SELECT " + tuple);
-    for (duckdb::idx_t i = 0; i < t->ColumnCount(); ++i)
-      values.push_back(t->GetValue(i, 0));
-  }
-  auto stmt = c.Prepare(query_sql);
-  Require(stmt && !stmt->HasError(), stmt ? stmt->GetError() : "prepare failed");
-  auto r = stmt->Execute(values, false);
-  Require(r && !r->HasError(), r ? r->GetError() : "query failed");
-  return Collect(*r);
-}
-
-Rows RunAccel(duckdb::Connection &c, const std::string &id, const std::string &tuple) {
-  auto r = Q(c, "SELECT * FROM accel_" + id + "(" + tuple + ")");
-  return Collect(*r);
 }
 
 // Timed runs (bench): the same statements, the result materialized but not rendered as
@@ -243,280 +123,9 @@ std::size_t TimeAccel(duckdb::Connection &c, const std::string &id, const std::s
   return dynamic_cast<duckdb::MaterializedQueryResult &>(*r).RowCount();
 }
 
-bool SameCell(const std::string &a, const std::string &b) {
-  if (a == b)
-    return true;
-  char *ea = nullptr, *eb = nullptr;
-  const double x = std::strtod(a.c_str(), &ea), y = std::strtod(b.c_str(), &eb);
-  if (ea == a.c_str() || eb == b.c_str() || *ea || *eb)
-    return false;
-  return std::fabs(x - y) <= 1e-9 * std::max({1.0, std::fabs(x), std::fabs(y)});
-}
-
-bool SameRows(const Rows &a, const Rows &b) {
-  if (a.size() != b.size())
-    return false;
-  for (std::size_t i = 0; i < a.size(); ++i) {
-    if (a[i].size() != b[i].size())
-      return false;
-    for (std::size_t j = 0; j < a[i].size(); ++j)
-      if (!SameCell(a[i][j], b[i][j]))
-        return false;
-  }
-  return true;
-}
-
-// 0 same, 1 same rows in another order, 2 different.
-int Compare(const Rows &accel, const Rows &query) {
-  if (SameRows(accel, query))
-    return 0;
-  Rows x = accel, y = query;
-  std::sort(x.begin(), x.end());
-  std::sort(y.begin(), y.end());
-  return SameRows(x, y) ? 1 : 2;
-}
-
-// The query's final ORDER BY (output columns) and LIMIT: SQL leaves the order of
-// rows with equal keys open, and with a LIMIT, which of them make the cut.  An
-// accelerator's answer is right if it is sorted by the keys, has the query's key
-// sequence, and its rows are among the query's (unlimited) rows.
-struct Ordering {
-  std::vector<std::pair<std::size_t, bool>> keys; // column, descending
-  bool limited = false;
-  std::string unlimited_sql;                      // the query without its LIMIT
-};
-
-int CellOrder(const std::string &a, const std::string &b) {
-  if (SameCell(a, b))
-    return 0;
-  char *ea = nullptr, *eb = nullptr;
-  const double x = std::strtod(a.c_str(), &ea), y = std::strtod(b.c_str(), &eb);
-  if (ea != a.c_str() && eb != b.c_str() && !*ea && !*eb)
-    return x < y ? -1 : 1;
-  return a < b ? -1 : 1; // text, ISO dates
-}
-
-// position of the last top-level occurrence of `word` (case-insensitive), or npos
-std::size_t TopLevel(const std::string &sql, const std::string &word) {
-  std::size_t found = std::string::npos;
-  int depth = 0;
-  bool quote = false;
-  for (std::size_t i = 0; i < sql.size(); ++i) {
-    const char ch = sql[i];
-    if (ch == '\'')
-      quote = !quote;
-    if (quote)
-      continue;
-    depth += ch == '(' ? 1 : ch == ')' ? -1 : 0;
-    if (depth == 0 && i + word.size() <= sql.size() && (i == 0 || !std::isalnum(sql[i - 1])) &&
-        std::equal(word.begin(), word.end(), sql.begin() + i,
-                   [](char x, char y) { return std::toupper(x) == std::toupper(y); }) &&
-        (i + word.size() == sql.size() || !std::isalnum(sql[i + word.size()])))
-      found = i;
-  }
-  return found;
-}
-
-Ordering MakeOrdering(duckdb::Connection &c, const std::string &sql, const std::vector<std::string> &tuples) {
-  Ordering o;
-  const auto ob = TopLevel(sql, "ORDER BY");
-  if (ob == std::string::npos)
-    return o;
-  const auto lim = TopLevel(sql, "LIMIT");
-  o.limited = lim != std::string::npos && lim > ob;
-  o.unlimited_sql = o.limited ? sql.substr(0, lim) : sql;
-  auto stmt = c.Prepare(sql);
-  if (!stmt || stmt->HasError())
-    return o;
-  auto names = stmt->GetNames();
-  // A parameter whose type only its value decides (e.g. `SUM(x) * $2`) leaves the statement
-  // unbound until it runs: its output names are placeholders ("unknown") until then, so take
-  // them from a run with the first tuple DuckDB can evaluate.
-  if (!stmt->GetStatementProperties().bound_all_parameters)
-    for (const auto &tuple : tuples) {
-      try {
-        duckdb::vector<duckdb::Value> values;
-        if (!tuple.empty()) {
-          auto t = Q(c, "SELECT " + tuple);
-          for (duckdb::idx_t i = 0; i < t->ColumnCount(); ++i)
-            values.push_back(t->GetValue(i, 0));
-        }
-        auto r = stmt->Execute(values, false);
-        if (!r || r->HasError())
-          continue;
-        names = r->names;
-        break;
-      } catch (const std::exception &) {
-      }
-    }
-  std::stringstream items(sql.substr(ob + 8, (o.limited ? lim : sql.size()) - ob - 8));
-  for (std::string item; std::getline(items, item, ',');) {
-    std::stringstream words(item);
-    std::string name, dir;
-    words >> name >> dir;
-    for (auto &ch : dir)
-      ch = static_cast<char>(std::toupper(ch));
-    std::size_t col = names.size();
-    for (std::size_t i = 0; i < names.size(); ++i) {
-      std::string a = names[i], b = name;
-      for (auto &ch : a) ch = static_cast<char>(std::tolower(ch));
-      for (auto &ch : b) ch = static_cast<char>(std::tolower(ch));
-      if (a == b) col = i;
-    }
-    if (col == names.size() && !name.empty() && std::all_of(name.begin(), name.end(), ::isdigit))
-      col = std::stoul(name) - 1; // ORDER BY 2
-    if (col >= names.size()) {    // an expression: keep the exact comparison
-      o.keys.clear();
-      return o;
-    }
-    o.keys.emplace_back(col, dir == "DESC");
-  }
-  return o;
-}
-
-bool SameKeys(const Ordering &o, const std::vector<std::string> &a, const std::vector<std::string> &b) {
-  for (const auto &[col, desc] : o.keys)
-    if (CellOrder(a[col], b[col]) != 0)
-      return false;
-  return true;
-}
-
-bool SortedBy(const Ordering &o, const Rows &rows) {
-  for (std::size_t i = 1; i < rows.size(); ++i)
-    for (const auto &[col, desc] : o.keys) {
-      const int c = CellOrder(rows[i - 1][col], rows[i][col]) * (desc ? -1 : 1);
-      if (c < 0)
-        break;
-      if (c > 0)
-        return false;
-    }
-  return true;
-}
-
-// Compare, allowing the order (and LIMIT cut) that ties leave open.  `full`
-// yields the query's rows without its LIMIT (only asked for when needed).
-int CompareOrdered(const Ordering &o, const Rows &accel, const Rows &query, const std::function<Rows()> &full) {
-  const int c = Compare(accel, query);
-  if (c == 0 || o.keys.empty())
-    return c;
-  if (c == 1)
-    return SortedBy(o, accel) ? 0 : 1;
-  if (!o.limited || accel.size() != query.size() || !SortedBy(o, accel))
-    return 2;
-  for (std::size_t i = 0; i < accel.size(); ++i)
-    if (accel[i].size() != query[i].size() || !SameKeys(o, accel[i], query[i]))
-      return 2;
-  Rows all = full(), mine = accel; // accel's rows must be among the query's
-  std::sort(all.begin(), all.end());
-  std::sort(mine.begin(), mine.end());
-  std::size_t j = 0;
-  for (const auto &row : mine) {
-    while (j < all.size() && all[j] < row && !SameRows({all[j]}, {row}))
-      ++j;
-    if (j == all.size() || !SameRows({all[j]}, {row}))
-      return 2;
-    ++j;
-  }
-  return 0;
-}
-
-std::string RowsJson(const Rows &rows, std::size_t limit = 5) {
-  std::string o = "[";
-  for (std::size_t i = 0; i < rows.size() && i < limit; ++i) {
-    o += i ? ",[" : "[";
-    for (std::size_t j = 0; j < rows[i].size(); ++j)
-      o += (j ? "," : "") + Json(rows[i][j]);
-    o += "]";
-  }
-  if (rows.size() > limit)
-    o += ",\"...\"";
-  return o + "]";
-}
-
-struct Tally {
-  int checks = 0, mismatches = 0, order_mismatches = 0;
-  int reference_errors = 0; // DuckDB itself could not evaluate the query: nothing to compare
-  std::vector<std::string> examples;
-  std::vector<std::string> fallback_examples, reference_error_examples;
-  std::map<std::string, int> fallback_kinds; // kernel_none | param_outside_type | host_conversion
-  // One comparison: the reference first (if DuckDB cannot evaluate it, e.g. a decimal
-  // overflow on extreme test values, the check is skipped and counted); an accelerator
-  // call that fails where the reference succeeds is a wrong answer.
-  void CheckCall(const std::string &where, const std::string &tuple, const std::function<Rows()> &accel,
-                 const std::function<Rows()> &query, const Ordering &o, const std::function<Rows()> &full) {
-    Rows q;
-    try {
-      q = query();
-    } catch (const std::exception &e) {
-      ++reference_errors;
-      if (reference_error_examples.size() < 8)
-        reference_error_examples.push_back("{\"at\":" + Json(where) + ",\"params\":" + Json(tuple) +
-                                           ",\"error\":" + Json(std::string(e.what()).substr(0, 300)) + "}");
-      return;
-    }
-    Rows a;
-    try {
-      a = accel();
-    } catch (const std::exception &e) {
-      ++checks;
-      ++mismatches;
-      if (examples.size() < 8)
-        examples.push_back("{\"at\":" + Json(where) + ",\"params\":" + Json(tuple) +
-                           ",\"kind\":\"accel_error\",\"error\":" + Json(e.what()) + "}");
-      return;
-    }
-    Check(where, tuple, a, q, o, full);
-  }
-  void Check(const std::string &where, const std::string &tuple, const Rows &a, const Rows &q,
-             const Ordering &o = {}, const std::function<Rows()> &full = {}) {
-    ++checks;
-    const int c = CompareOrdered(o, a, q, full);
-    if (c == 0)
-      return;
-    (c == 1 ? order_mismatches : mismatches)++;
-    if (examples.size() < 8)
-      examples.push_back("{\"at\":" + Json(where) + ",\"params\":" + Json(tuple) + ",\"kind\":" +
-                         Json(c == 1 ? "order" : "rows") + ",\"accel_rows\":" + std::to_string(a.size()) +
-                         ",\"query_rows\":" + std::to_string(q.size()) + ",\"accel\":" + RowsJson(a) +
-                         ",\"query\":" + RowsJson(q) + "}");
-  }
-  // An accelerator call that answered with the SQL fallback: why (the host could not convert
-  // an argument, or the kernel returned None). Recorded per call, one example per tuple.
-  Rows RunAccelRecorded(duckdb::Connection &c, const std::string &id, const std::string &where,
-                        const std::string &tuple) {
-    kit::ClearArgFailure();
-    const auto before = core::ReadAuxExecuteCounts().fallback;
-    Rows r = RunAccel(c, id, tuple);
-    if (core::ReadAuxExecuteCounts().fallback > before) {
-      const auto arg = kit::LastArgFailure();
-      const char *kind = arg.what.empty() ? "kernel_none" : arg.outside_type ? "param_outside_type" : "host_conversion";
-      const std::string reason = arg.what.empty() ? "kernel returned None" : "host arg conversion failed: " + arg.what;
-      ++fallback_kinds[kind];
-      if (fallback_examples.size() < 64)
-        fallback_examples.push_back("{\"at\":" + Json(where) + ",\"params\":" + Json(tuple) +
-                                    ",\"kind\":" + Json(kind) + ",\"reason\":" + Json(reason) + "}");
-    }
-    return r;
-  }
-  static std::string Array(const std::vector<std::string> &items) {
-    std::string o = "[";
-    for (std::size_t i = 0; i < items.size(); ++i)
-      o += (i ? "," : "") + items[i];
-    return o + "]";
-  }
-  std::string Fields() const {
-    std::string ex = "[";
-    for (std::size_t i = 0; i < examples.size(); ++i)
-      ex += (i ? "," : "") + examples[i];
-    std::string kinds = "{";
-    for (const auto &[k, n] : fallback_kinds)
-      kinds += (kinds.size() > 1 ? "," : "") + Json(k) + ":" + std::to_string(n);
-    return "\"fallback_kinds\":" + kinds + "},\"fallback_examples\":" + Array(fallback_examples) + ",\"reference_error_examples\":" +
-           Array(reference_error_examples) + "," + "\"checks\":" + std::to_string(checks) + ",\"reference_errors\":" + std::to_string(reference_errors) +
-           ",\"mismatches\":" + std::to_string(mismatches) +
-           ",\"order_mismatches\":" + std::to_string(order_mismatches) + ",\"examples\":" + ex + "]";
-  }
-};
+// Tuples the Verus pipeline draws from the query's domain, fresh on every run: VERUS_KIT_PARAMS_FILE
+// replaces the spec's (bench, profiles), VERUS_KIT_EXTRA_PARAMS_FILE adds to them (differential, snapshots).
+Spec LoadKitSpec(const fs::path &dir) { return LoadSpec(dir, "VERUS_KIT_PARAMS_FILE", "VERUS_KIT_EXTRA_PARAMS_FILE"); }
 
 struct Setup {
   const kit::Glue *glue;
@@ -524,20 +133,12 @@ struct Setup {
   Ordering ordering;
 };
 
-// The declared schema's constraints (ACCEL_VERUS_SCHEMA_SQL: e.g. ALTER TABLE ...
-// SET NOT NULL), applied before anything else, so a write that leaves the
-// schema's world fails instead of producing data the spec says cannot exist.
-std::string SchemaSql() {
-  const char *path = std::getenv("ACCEL_VERUS_SCHEMA_SQL");
-  return path && *path && fs::exists(path) ? ReadFile(path) : std::string();
-}
-
 // with_setup=false (bench): measure the real data, without the tests' setup
 // rows (edge cases for correctness, not a workload).
 Setup Prepare(duckdb::Connection &setup, const std::string &id, const Spec &spec, bool with_setup = true) {
   Setup s{kit::Find(id), engine::VerusKitCatalogEntry(id)};
   Require(s.glue && s.entry, "no Verus accelerator registered as " + id);
-  if (const auto schema = SchemaSql(); !schema.empty())
+  if (const auto schema = SchemaSql("ACCEL_VERUS_SCHEMA_SQL"); !schema.empty())
     Q(setup, schema);
   if (with_setup && !spec.setup.empty())
     Q(setup, spec.setup);
@@ -564,52 +165,21 @@ int Differential(const std::string &path, const std::string &id, const Spec &spe
   rt.Build();
   const double build_ms = std::chrono::duration<double, std::milli>(Clock::now() - build_start).count();
   Tally tally;
-  std::mt19937_64 rng(7);
-  auto check_all = [&](const std::string &where) {
-    for (const auto &t : spec.params)
-      tally.CheckCall(where, t, [&] { return tally.RunAccelRecorded(qc, id, where, t); }, [&] { return RunQuery(qc, s.glue->query_sql, t); },
-                        s.ordering, [&] { return RunQuery(qc, s.ordering.unlimited_sql, t); });
-  };
-  check_all("build");
-  std::map<std::string, int> actions;
-  int write_errors = 0;
-  std::string write_error_examples = "[";
-  for (std::size_t i = 0; i < spec.txns.size(); ++i) {
-    core::ClearMaintenanceDecisionLog();
-    try {
-      rt.ApplyWrite(spec.txns[i]);
-    } catch (const std::exception &e) {
-      // the tests run on plain DuckDB (validated): a write the runtime cannot apply is a failure
-      if (++write_errors <= 3)
-        write_error_examples += std::string(write_errors > 1 ? "," : "") + "{\"txn\":" + Json(spec.txn_names[i]) +
-                                ",\"error\":" + Json(std::string(e.what()).substr(0, 600)) + "}";
-      continue;
-    }
-    const auto d = core::LastMaintenanceDecision();
-    actions[d ? std::to_string(static_cast<int>(d->staged_action)) : "none"]++;
-    const std::string where = "txn " + std::to_string(i);
-    if (every > 0 && (i + 1) % static_cast<std::size_t>(every) == 0) {
-      check_all(where);
-    } else {
-      for (int k = 0; k < 2; ++k) {
-        const auto &t = spec.params[rng() % spec.params.size()];
-        tally.CheckCall(where, t, [&] { return tally.RunAccelRecorded(qc, id, where, t); }, [&] { return RunQuery(qc, s.glue->query_sql, t); },
-                        s.ordering, [&] { return RunQuery(qc, s.ordering.unlimited_sql, t); });
-      }
-    }
-  }
-  check_all("end");
+  const auto run = RunDifferentialLoop(
+      tally, spec, s.glue->query_sql, s.ordering, qc, every, 7,
+      [&](const std::string &where, const std::string &t) { return RunAccelRecorded(tally, qc, id, where, t); },
+      [&](const std::string &sql) { rt.ApplyWrite(sql); });
   std::string acts = "{";
-  for (const auto &[k, v] : actions)
+  for (const auto &[k, v] : run.actions)
     acts += (acts.size() > 1 ? "," : "") + Json(k) + ":" + std::to_string(v);
-  std::cout << "{\"mode\":\"differential\",\"txns\":" << spec.txns.size() << ",\"write_errors\":" << write_errors
-            << ",\"write_error_examples\":" << write_error_examples << "]" << ",\"build_ms\":" << build_ms << "," << tally.Fields() << ",\"staged_actions\":" << acts
+  std::cout << "{\"mode\":\"differential\",\"txns\":" << spec.txns.size() << ",\"write_errors\":" << run.write_errors
+            << ",\"write_error_examples\":" << run.write_error_examples << "]" << ",\"build_ms\":" << build_ms << "," << tally.Fields() << ",\"staged_actions\":" << acts
             << "},\"staged_action_names\":{\"1\":\"ApplyDelta\",\"3\":\"RebuildAll\"}," << StoreFields(rt) << "}"
             << std::endl;
   // skipped comparisons (reference errors) must stay a minority: a run that compared
   // little or nothing proves little
   const bool compared = tally.checks > 0 && tally.reference_errors <= tally.checks;
-  return compared && write_errors == 0 && tally.mismatches + tally.order_mismatches == 0 && rt.StaleInstallCount() == 0 ? 0 : 1;
+  return compared && run.write_errors == 0 && tally.mismatches + tally.order_mismatches == 0 && rt.StaleInstallCount() == 0 ? 0 : 1;
 }
 
 int Snapshots(const std::string &path, const std::string &id, const Spec &spec, int writes, int readers,
@@ -633,7 +203,7 @@ int Snapshots(const std::string &path, const std::string &id, const Spec &spec, 
         while (!done.load()) {
           const auto &p = spec.params[rng() % spec.params.size()];
           Q(rc, "BEGIN TRANSACTION");
-          const auto a = RunAccel(rc, id, p);
+          const auto a = RunAccel(rc, "accel_" + id, p);
           std::this_thread::sleep_for(std::chrono::microseconds(rng() % 3000));
           Rows b;
           try {
@@ -646,7 +216,7 @@ int Snapshots(const std::string &path, const std::string &id, const Spec &spec, 
             continue;
           }
           std::this_thread::sleep_for(std::chrono::microseconds(rng() % 3000));
-          const auto c = RunAccel(rc, id, p);
+          const auto c = RunAccel(rc, "accel_" + id, p);
           const auto full = [&] { return RunQuery(rc, s.ordering.unlimited_sql, p); }; // same snapshot
           const bool wrong = CompareOrdered(s.ordering, a, b, full) != 0 || CompareOrdered(s.ordering, c, b, full) != 0;
           Q(rc, "COMMIT");
@@ -996,67 +566,17 @@ int Sql(const std::string &path, const std::string &sql, std::size_t max_rows) {
   return 0;
 }
 
-// The spec runs on the database: no accelerator needed (tests are written
-// before the kernel).
-int Validate(const std::string &path, const Spec &spec, const std::string &query_sql) {
-  duckdb::DuckDB db(path);
-  duckdb::Connection c(db);
-  std::vector<std::string> errors;
-  if (const auto schema = SchemaSql(); !schema.empty()) {
-    auto r = c.Query(schema);
-    if (!r || r->HasError())
-      errors.push_back("schema constraints: " + (r ? r->GetError() : std::string("failed")));
-  }
-  if (!spec.setup.empty()) {
-    auto r = c.Query(spec.setup);
-    if (!r || r->HasError())
-      errors.push_back("setup.sql: " + (r ? r->GetError() : std::string("failed")));
-  }
-  int nonempty = 0;
-  for (const auto &t : spec.params) {
-    try {
-      nonempty += !RunQuery(c, query_sql, t).empty();
-    } catch (const std::exception &e) {
-      errors.push_back("params " + t + ": " + e.what());
-    }
-  }
-  // In sequence, committed, as the tests run: a transaction is checked on the
-  // state the ones before it leave (a subquery that finds a row on the
-  // original data may find none later).
-  int txn_errors = 0;
-  for (std::size_t i = 0; i < spec.txns.size(); ++i) {
-    c.BeginTransaction();
-    auto r = c.Query(spec.txns[i]);
-    if (!r || r->HasError()) {
-      ++txn_errors;
-      if (errors.size() < 20)
-        errors.push_back("txn " + std::to_string(i) + " (" + spec.txn_names[i] + "): " +
-                         (r ? r->GetError() : std::string("failed")));
-      c.Rollback();
-    } else {
-      c.Commit();
-    }
-  }
-  std::string ej = "[";
-  for (std::size_t i = 0; i < errors.size(); ++i)
-    ej += (i ? "," : "") + Json(errors[i]);
-  std::cout << "{\"mode\":\"validate\",\"params\":" << spec.params.size() << ",\"params_nonempty\":" << nonempty
-            << ",\"txns\":" << spec.txns.size() << ",\"bench_txns\":" << spec.bench_txns.size()
-            << ",\"txn_errors\":" << txn_errors << ",\"errors\":" << ej << "]}" << std::endl;
-  return errors.empty() ? 0 : 1;
-}
-
 int main(int argc, char **argv) {
   try {
     if (argc >= 7 && std::string(argv[1]) == "record")
-      return Record(argv[2], argv[3], LoadSpec(argv[4]), argv[5], argv[6]);
+      return Record(argv[2], argv[3], LoadKitSpec(argv[4]), argv[5], argv[6]);
     if (argc >= 5 && std::string(argv[1]) == "validate")
-      return Validate(argv[2], LoadSpec(argv[3]), ReadFile(argv[4]));
+      return Validate(argv[2], LoadKitSpec(argv[3]), ReadFile(argv[4]), SchemaSql("ACCEL_VERUS_SCHEMA_SQL"));
     if (argc >= 4 && std::string(argv[1]) == "sql")
       return Sql(argv[2], argv[3], argc > 4 ? std::stoul(argv[4]) : 50);
     Require(argc >= 5, "usage: verus_kit_runner differential|snapshots|bench <db> <accel_id> <spec_dir> [...]");
     const std::string mode = argv[1], db = argv[2], id = argv[3];
-    const Spec spec = LoadSpec(argv[4]);
+    const Spec spec = LoadKitSpec(argv[4]);
     auto arg = [&](int i, const char *def) { return std::string(argc > i ? argv[i] : def); };
     if (mode == "differential")
       return Differential(db, id, spec, std::stoi(arg(5, "10")));

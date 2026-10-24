@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Parameter tuples of the TPC-H Verus kit test workloads
-(accelerators/tpch/q<N>/tests/verus_workload/params.sql), from one source.
+(accelerators/tpch/q<N>/tests/workload/params.sql), from one source.
 
 Every TPC-H substitution parameter is a runtime parameter of the kit function
 accel_tpch_qN_vgen(...) (its arity is the highest $n of the kit's query text,
@@ -210,7 +210,7 @@ def main() -> int:
             SCHEMA_CONSTRAINTS.write_text(sc, encoding="utf-8")
             print(f"{SCHEMA_CONSTRAINTS.relative_to(ROOT)} (updated)")
     for q in (int(x) for x in a.queries.split(",") if x):
-        path = ROOT / f"accelerators/tpch/q{q}/tests/verus_workload/params.sql"
+        path = ROOT / f"accelerators/tpch/q{q}/tests/workload/params.sql"
         old = path.read_text(encoding="utf-8") if path.is_file() else ""
         new, problems = render(q, old, drawn.get(q, []), a.sets, a.seed)
         for p in problems:

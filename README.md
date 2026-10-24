@@ -98,7 +98,7 @@ Run test and benchmark binaries from the repository root: cost-model paths
 (`accelerators/<bench>/q<N>/config/...`) are relative to the working directory.
 
 Verus kit correctness (differential + concurrent snapshots, per kit, from the
-repo's own inputs: `accelerators/tpch/q<N>/tests/verus_workload/` and
+repo's own inputs: `accelerators/tpch/q<N>/tests/workload/` and
 `workloads/tpch/schema_constraints.sql`):
 
 ```bash

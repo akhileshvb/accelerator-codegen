@@ -4,7 +4,7 @@
 # (accelerators/tpch/qN/config/qN_aux_cost_model*.json are the C++ accelerators' and stay as they are.)
 #
 # Reads are timed with each kit's first test parameter tuple
-# (accelerators/tpch/qN/tests/verus_workload/params.sql); maintenance with the query's
+# (accelerators/tpch/qN/tests/workload/params.sql); maintenance with the query's
 # registered calibration writes (accelerators/tpch/qN/calibration_writes.hpp).
 # A kit has one partition and a write-independent rebuild, so the rebuild is
 # measured once (ACCEL_AUX_CALIBRATION_REBUILD_ONCE=1).
@@ -37,7 +37,7 @@ pass=0; fail=0
 for q in ${QUERIES}; do
   out="${ROOT}/accelerators/tpch/q${q}/config/verus/q${q}_aux_cost_model_sf20.json"
   mkdir -p "$(dirname "${out}")"
-  params="$(grep -v '^[[:space:]]*--' "accelerators/tpch/q${q}/tests/verus_workload/params.sql" | grep -v '^[[:space:]]*$' | head -1 || true)"
+  params="$(grep -v '^[[:space:]]*--' "accelerators/tpch/q${q}/tests/workload/params.sql" | grep -v '^[[:space:]]*$' | head -1 || true)"
   copy="${WORK}/calibrate_q${q}.duckdb"
   echo "=== q${q} $(date +%T) params: ${params:-(none)}"
   cp "${DB}" "${copy}"
