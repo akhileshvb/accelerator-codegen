@@ -141,8 +141,8 @@ session:
   stage_soft_deadline_sec: {test_suite: 900, analysis: 900}   # per stage, instead of soft_deadline_sec
   idle_timeout_sec: 2400     # no rollout, tool or heartbeat activity: killed, then resumed
   hard_deadline_sec: 14400
-  max_resumes: 25            # past this (or max_context_tokens > 0), a fresh session with a handoff
-  max_context_tokens: 0
+  max_resumes: 0             # 0: no resume cap; one conversation per role, like a single agent session
+  max_context_tokens: 700000 # past this, a fresh session with a handoff (models here have ~1M context)
   # No real progress (an owned file, a stage artifact, or a check result that changed; reads and greps
   # are activity): the tool footer asks for the blocker, then the turn ends with a directed resume.
   # A stage's own acceptance gate passing during the agent's turn ends the turn (the stage then runs the gate again and completes).

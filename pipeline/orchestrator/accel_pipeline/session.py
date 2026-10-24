@@ -124,7 +124,7 @@ def build_handoff(art: Path) -> str:
 def _retired(pipeline_config: Any, store: SessionStore, query: int, role: str,
              codex_home: Path | None, session_id: str) -> bool:
     cfg = pipeline_config.session
-    if store.resumes(query, role) >= cfg.max_resumes:
+    if cfg.max_resumes and store.resumes(query, role) >= cfg.max_resumes:
         return True
     if codex_home is None:
         return False

@@ -157,3 +157,10 @@ def test_stage_soft_deadline_overrides_the_default():
 
     cfg = SessionConfig(soft_deadline_sec=5400, stage_soft_deadline_sec=(("test_suite", 900),))
     assert cfg.soft_deadline_for("test_suite") == 900 and cfg.soft_deadline_for("implementation") == 5400
+
+
+def test_no_resume_cap_keeps_one_conversation(tmp_path):
+    backend, config = FakeBackend(tmp_path / "home"), _config(max_resumes=0)
+    for _ in range(30):
+        run_in_session(backend, _request(), pipeline_config=config, art=tmp_path, query=3, role=MAIN)
+    assert all(r.metadata.get("resume_session_id") == "s1" for r in backend.requests[1:])

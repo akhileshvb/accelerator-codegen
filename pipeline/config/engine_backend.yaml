@@ -193,4 +193,4 @@ layer_gate_max_rounds: 3
 # findings go to the main session as one batched repair round, then the critic re-checks only those.
 layer_critique_max_rounds: 1
 # The main session carries every layer; past this context a fresh session starts from the backend digest.
-main_session_max_context_tokens: 250000
+main_session_max_context_tokens: 700000
