@@ -1,9 +1,10 @@
 """CPU budgets for concurrent pipeline workers on one host.
 
 The host's CPUs split into one disjoint set per worker plus a reserved measurement set that only
-benchmarks (measurement_lease) use. A worker claims its set with a host-wide flock slot, pins its own
-process to it, and exports the set and the job caps derived from it: every child (agent, builds,
-gates, engine instances) inherits both the affinity and the caps.
+benchmarks (measurement_lease) use, itself cut into slots so that several can measure at once. A worker
+claims its set with a host-wide flock slot, pins its own process to it, and exports the set and the job
+caps derived from it: every child (agent, builds, gates, engine instances) inherits both the affinity
+and the caps.
 """
 
 from __future__ import annotations
@@ -21,6 +22,7 @@ from accel_pipeline.host_lock import try_lock
 POOL_ENV = "ACCEL_CPU_POOL"
 CORE_SET_ENV = "ACCEL_CORE_SET"
 MEASURE_SET_ENV = "ACCEL_MEASURE_SET"
+MEASURE_SLOTS_ENV = "ACCEL_MEASURE_SLOTS"
 WORKERS_ENV = "ACCEL_CONCURRENT_WORKERS"
 MEASURE_CORES_ENV = "ACCEL_MEASURE_CORES"
 LOCK_DIR_ENV = "ACCEL_HOST_LOCK_DIR"
@@ -64,25 +66,44 @@ def cpu_pool() -> frozenset[int]:
     return frozenset(os.sched_getaffinity(0))
 
 
-def auto_measure_cores(pool_size: int, workers: int) -> int:
+def core_groups(pool: frozenset[int]) -> list[frozenset[int]]:
+    """The pool's physical cores, each as its hardware threads (a CPU alone when the topology is unknown), so a
+    budget never splits a core between two workers: hyperthread siblings slow each other down."""
+    groups: dict[frozenset[int], None] = {}
+    for cpu in sorted(pool):
+        siblings = Path(f"/sys/devices/system/cpu/cpu{cpu}/topology/thread_siblings_list")
+        try:
+            group = parse_cpus(siblings.read_text()) & pool
+        except (OSError, ValueError):
+            group = frozenset()
+        groups.setdefault(group or frozenset({cpu}), None)
+    return sorted(groups, key=min)
+
+
+def auto_measure_cores(pool_cores: int, workers: int) -> int:
     if workers <= 1:
         return 0
-    return max(1, min(MAX_AUTO_MEASURE_CORES, max(2, pool_size // 5), pool_size // 2))
+    return max(1, min(MAX_AUTO_MEASURE_CORES, max(2, pool_cores // 5), pool_cores // 2))
 
 
-def partition(pool: frozenset[int], workers: int, measure_cores: int) -> tuple[list[frozenset[int]], frozenset[int]]:
-    """(one disjoint set per worker, the measurement set): the measurement set is the pool's highest
-    CPUs, the rest is cut into near-equal contiguous runs."""
-    ordered = sorted(pool)
-    measure_cores = max(0, min(measure_cores, len(ordered) - 1))
-    rest = ordered[: len(ordered) - measure_cores]
-    measure = frozenset(ordered[len(rest):])
+def auto_measure_slots(measure_cores: int) -> int:
+    return max(1, measure_cores)
+
+
+def partition(
+    cores: list[frozenset[int]], workers: int, measure_cores: int
+) -> tuple[list[frozenset[int]], frozenset[int]]:
+    """(one disjoint CPU set per worker, the measurement set) of a list of physical cores: the measurement
+    set is the last `measure_cores` cores, the rest is cut into near-equal contiguous runs."""
+    measure_cores = max(0, min(measure_cores, len(cores) - 1))
+    rest = cores[: len(cores) - measure_cores]
+    measure = frozenset().union(*cores[len(rest):])
     workers = max(1, min(workers, len(rest)))
     base, extra = divmod(len(rest), workers)
     sets, start = [], 0
     for index in range(workers):
         size = base + (index < extra)
-        sets.append(frozenset(rest[start:start + size]))
+        sets.append(frozenset().union(*rest[start:start + size]))
         start += size
     return sets, measure
 
@@ -93,6 +114,7 @@ class CoreBudget:
     measure: frozenset[int]
     pool: frozenset[int]
     slot: int | None = None
+    measure_slots: int = 1
 
     @property
     def jobs(self) -> int:
@@ -116,20 +138,25 @@ def resolve(cfg: ConcurrencyConfig) -> CoreBudget:
     workers = int(os.environ.get(WORKERS_ENV) or cfg.workers)
     measure_cores = os.environ.get(MEASURE_CORES_ENV)
     measure_cores = int(measure_cores) if measure_cores else cfg.measure_cores
+    cores = core_groups(pool)
     if measure_cores is None:
-        measure_cores = auto_measure_cores(len(pool), workers)
-    sets, measure = partition(pool, workers, measure_cores)
+        measure_cores = auto_measure_cores(len(cores), workers)
+    sets, measure = partition(cores, workers, measure_cores)
+    measure_slots = int(os.environ.get(MEASURE_SLOTS_ENV) or 0) or cfg.measure_slots or auto_measure_slots(len(core_groups(measure)))
     if len(sets) == 1:
-        return CoreBudget(sets[0], measure, pool)
+        return CoreBudget(sets[0], measure, pool, None, measure_slots)
     slot = _claim_slot(host_lock_dir(cfg.host_lock_dir), len(sets))
-    return CoreBudget(sets[slot], measure, pool, slot)
+    return CoreBudget(sets[slot], measure, pool, slot, measure_slots)
 
 
 def activate(cfg: ConcurrencyConfig) -> CoreBudget:
     """Pin this process to its budget and export it (set, measurement set, pool, build/ctest job caps)
     so that every child inherits it. A process whose ancestor already activated keeps that budget."""
     if os.environ.get(CORE_SET_ENV):
-        budget = CoreBudget(parse_cpus(os.environ[CORE_SET_ENV]), parse_cpus(os.environ.get(MEASURE_SET_ENV, "")), cpu_pool())
+        budget = CoreBudget(
+            parse_cpus(os.environ[CORE_SET_ENV]), parse_cpus(os.environ.get(MEASURE_SET_ENV, "")), cpu_pool(),
+            measure_slots=int(os.environ.get(MEASURE_SLOTS_ENV) or 1),
+        )
     else:
         budget = resolve(cfg)
     os.sched_setaffinity(0, budget.cpus)
@@ -137,6 +164,7 @@ def activate(cfg: ConcurrencyConfig) -> CoreBudget:
         POOL_ENV: format_cpus(budget.pool),
         CORE_SET_ENV: format_cpus(budget.cpus),
         MEASURE_SET_ENV: format_cpus(budget.measure),
+        MEASURE_SLOTS_ENV: str(budget.measure_slots),
         LOCK_DIR_ENV: str(host_lock_dir(cfg.host_lock_dir)),
     }
     os.environ.update(exported)

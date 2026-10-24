@@ -45,26 +45,44 @@ def test_cpu_list_round_trip():
     assert core_budget.format_cpus({0, 1, 2, 3, 8, 10, 11}) == "0-3,8,10-11"
 
 
+def plain(n: int) -> list[frozenset[int]]:
+    return [frozenset({cpu}) for cpu in range(n)]
+
+
 def test_partition_is_disjoint_and_measurement_takes_the_top():
-    sets, measure = core_budget.partition(frozenset(range(40)), workers=4, measure_cores=8)
+    sets, measure = core_budget.partition(plain(40), workers=4, measure_cores=8)
     assert measure == frozenset(range(32, 40))
     assert [len(s) for s in sets] == [8, 8, 8, 8]
     assert frozenset().union(*sets) == frozenset(range(32))
-    assert sum(len(s) for s in sets) == 32
+
+
+def test_partition_never_splits_a_physical_core():
+    cores = [frozenset({i, i + 8}) for i in range(8)]  # hyperthread pairs
+    sets, measure = core_budget.partition(cores, workers=3, measure_cores=2)
+    assert measure == {6, 7, 14, 15}
+    assert sorted(len(s) for s in sets) == [4, 4, 4]
+    assert all(s == {c for c in range(16) if c % 8 in {x % 8 for x in s}} for s in sets)
 
 
 def test_partition_spreads_the_remainder_and_never_starves_a_worker():
-    sets, measure = core_budget.partition(frozenset(range(10)), workers=3, measure_cores=1)
+    sets, measure = core_budget.partition(plain(10), workers=3, measure_cores=1)
     assert sorted(len(s) for s in sets) == [3, 3, 3] and len(measure) == 1
-    sets, _ = core_budget.partition(frozenset(range(3)), workers=8, measure_cores=0)
+    sets, _ = core_budget.partition(plain(3), workers=8, measure_cores=0)
     assert len(sets) == 3 and all(sets)
 
 
-def test_auto_measurement_cores():
-    assert core_budget.auto_measure_cores(40, workers=1) == 0
+def test_core_groups_follow_the_sysfs_topology():
+    groups = core_budget.core_groups(frozenset(os.sched_getaffinity(0)))
+    assert frozenset().union(*groups) == frozenset(os.sched_getaffinity(0))
+    assert sum(len(g) for g in groups) == len(os.sched_getaffinity(0))
+
+
+def test_auto_measurement_cores_and_slots():
+    assert core_budget.auto_measure_cores(20, workers=1) == 0
     assert core_budget.auto_measure_cores(40, workers=8) == 8
     assert core_budget.auto_measure_cores(12, workers=4) == 2
     assert core_budget.auto_measure_cores(2, workers=2) == 1
+    assert core_budget.auto_measure_slots(4) == 4 and core_budget.auto_measure_slots(0) == 1
 
 
 def test_workers_claim_distinct_slots_host_wide(host_dir, monkeypatch):
@@ -74,7 +92,7 @@ def test_workers_claim_distinct_slots_host_wide(host_dir, monkeypatch):
     first, second = core_budget.resolve(cfg), core_budget.resolve(cfg)
     assert {first.slot, second.slot} == {0, 1}
     assert not first.cpus & second.cpus and not (first.cpus | second.cpus) & first.measure
-    assert first.measure == frozenset(range(12, 16))
+    assert first.measure == frozenset().union(*core_budget.core_groups(frozenset(range(16)))[-4:])
 
 
 def test_a_dead_workers_slot_is_free_again(host_dir):
@@ -106,8 +124,9 @@ def test_activate_pins_the_process_and_derives_job_caps(host_dir):
               os.environ["CMAKE_BUILD_PARALLEL_LEVEL"], os.environ["ACCEL_MEASURE_SET"], core_budget.build_jobs())
     """
     out = spawn(code).communicate()[0].strip()
-    worker = CPUS[:-1]
-    assert out == f"{worker} {len(worker)} {len(worker)} {len(worker)} {CPUS[-1]} {len(worker)}"
+    measure = core_budget.core_groups(frozenset(CPUS))[-1]
+    worker = [c for c in CPUS if c not in measure]
+    assert out == f"{worker} {len(worker)} {len(worker)} {len(worker)} {core_budget.format_cpus(measure)} {len(worker)}"
 
 
 def test_parallel_gates_split_the_workers_jobs(monkeypatch):
@@ -229,14 +248,14 @@ def test_measurement_lease_spans_trees_through_the_host_dir(host_dir, tmp_path):
     other_tree.mkdir()
     holder = spawn(window_script(3), "tree-a", cwd=other_tree)
     assert holder.stdout.readline().startswith("in")
-    info = measurement_lease.holder_info()
+    (info,) = measurement_lease.holders()
     assert info["holder"] == "tree-a" and info["reason"] == "test"
     assert measurement_lease.held_by_other("tree-b") and not measurement_lease.held_by_other("tree-a")
     started = time.monotonic()
     with measurement_lease.measurement_window("tree-b", "second") as window:
         assert window.waited_sec > 1 and time.monotonic() - started > 1
     holder.wait()
-    assert measurement_lease.holder_info() is None
+    assert measurement_lease.holders() == []
 
 
 def test_a_crashed_measurement_holder_frees_the_lease(host_dir):
@@ -262,6 +281,28 @@ def test_measurement_waits_are_bounded_and_beat(host_dir, monkeypatch):
     holder.wait()
 
 
+def test_slots_let_benchmarks_measure_at_once_on_disjoint_cpus(host_dir, monkeypatch):
+    monkeypatch.setenv(core_budget.MEASURE_SET_ENV, "10-15")
+    monkeypatch.setenv(core_budget.MEASURE_SLOTS_ENV, "3")
+    code = """
+        import sys, time
+        from accel_pipeline.measurement_lease import measurement_window
+        from accel_pipeline.core_budget import format_cpus
+        with measurement_window(sys.argv[1], "t") as w:
+            print(format_cpus(w.cpus), w.waited_sec, flush=True)
+            time.sleep(2)
+    """
+    first = [spawn(code, name) for name in ("a", "b", "c")]
+    cpus = [p.stdout.readline().split()[0] for p in first]
+    assert sorted(cpus) == ["10-11", "12-13", "14-15"]
+    fourth = time.monotonic()
+    with measurement_lease.measurement_window("d", "t") as window:
+        assert window.waited_sec > 0.5 and time.monotonic() - fourth > 0.5
+        assert window.cpus in ({10, 11}, {12, 13}, {14, 15})
+    for p in first:
+        p.wait()
+
+
 def test_a_disabled_lease_never_queues(host_dir, monkeypatch):
     monkeypatch.setenv(measurement_lease.ENABLED_ENV, "0")
     holder = spawn(window_script(3), "x", env={measurement_lease.ENABLED_ENV: "0"})
@@ -282,9 +323,9 @@ def test_the_wrapper_pins_the_command_and_holds_the_lease_until_it_exits(host_di
         env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
     )
     assert proc.stdout.readline().strip() == f"[{measure}] 1"
-    assert measurement_lease.holder_info()["holder"] == "h"  # still held by the exec'd command
+    assert [i["holder"] for i in measurement_lease.holders()] == ["h"]  # still held by the exec'd command
     proc.wait()
-    assert measurement_lease.holder_info() is None
+    assert measurement_lease.holders() == []
     assert re.search(r"waited 0\.\d s for the measurement lease; pinned to cores", proc.stderr.read())
 
 
@@ -325,7 +366,7 @@ def test_quick_runs_are_flagged_noisy_while_someone_measures(host_dir):
     assert measurement_lease.noise_warning(load_factor=1e9) is None
     holder = spawn(window_script(3), "busy")
     holder.stdout.readline()
-    assert "held by busy" in measurement_lease.noise_warning(load_factor=1e9)
+    assert "measurements are running (busy)" in measurement_lease.noise_warning(load_factor=1e9)
     holder.kill()
     holder.wait()
 

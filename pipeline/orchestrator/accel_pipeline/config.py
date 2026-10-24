@@ -124,6 +124,7 @@ class ConcurrencyConfig:
 
     workers: int = 1  # pipeline workers sharing this host's CPUs (a pack's concurrency overrides it)
     measure_cores: int | None = None  # CPUs reserved for benchmarks; None: none for one worker, else a fifth (2..8)
+    measure_slots: int | None = None  # benchmarks measuring at once, each on its share of the measurement CPUs; None: one per 2 CPUs
     host_lock_dir: str = ""  # shared by every tree on the host; "": /dev/shm/accel-pipeline-<uid>
     measurement_lease: bool = True
     measurement_wait_sec: float = 3600.0  # bound on queuing for the measurement lease
@@ -136,6 +137,7 @@ class ConcurrencyConfig:
         return cls(
             workers=max(1, int(raw.get("workers", cls.workers))),
             measure_cores=None if cores is None else int(cores),
+            measure_slots=None if raw.get("measure_slots") is None else max(1, int(raw["measure_slots"])),
             host_lock_dir=str(raw.get("host_lock_dir") or ""),
             measurement_lease=bool(raw.get("measurement_lease", cls.measurement_lease)),
             measurement_wait_sec=float(raw.get("measurement_wait_sec", cls.measurement_wait_sec)),

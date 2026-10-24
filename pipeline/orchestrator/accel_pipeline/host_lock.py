@@ -1,8 +1,8 @@
-"""A first-come-first-served mutex between processes, on flock.
+"""A first-come-first-served lock between processes, on flock: a mutex, or a semaphore of `slots` holders.
 
 Waiters queue as ticket files; each ticket is flock-held by its waiter, so a waiter that died is
-seen (its flock is free) and dropped. The lock itself is one flock file: it is released when the
-holder exits, however it exits.
+seen (its flock is free) and dropped. A slot is one flock file: it is released when the holder
+exits, however it exits.
 """
 
 from __future__ import annotations
@@ -39,17 +39,29 @@ def try_lock(path: Path) -> BinaryIO | None:
 
 
 class FairLock:
-    def __init__(self, directory: Path, name: str) -> None:
-        self.path = Path(directory) / f"{name}.lock"
+    def __init__(self, directory: Path, name: str, slots: int = 1) -> None:
+        self.slots = max(1, slots)
+        self.paths = [Path(directory) / (f"{name}.lock" if self.slots == 1 else f"{name}.{k}.lock") for k in range(self.slots)]
         self._queue = Path(directory) / f"{name}.queue"
 
-    def _open_lock(self) -> BinaryIO:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        return self.path.open("a+b")
+    def held_slots(self) -> list[int]:
+        busy = []
+        for slot, path in enumerate(self.paths):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with path.open("a+b") as probe:
+                if not _try_flock(probe):
+                    busy.append(slot)
+        return busy
 
     def is_held(self) -> bool:
-        with self._open_lock() as probe:
-            return not _try_flock(probe)
+        """Every slot is taken: an acquire would queue."""
+        return len(self.held_slots()) == self.slots
+
+    def _take_free_slot(self) -> tuple[BinaryIO, int] | None:
+        for slot, path in enumerate(self.paths):
+            if (handle := try_lock(path)) is not None:
+                return handle, slot
+        return None
 
     def _live_tickets(self) -> list[Path]:
         live = []
@@ -67,15 +79,18 @@ class FairLock:
     def queue_depth(self) -> int:
         return len(self._live_tickets()) if self._queue.is_dir() else 0
 
-    def acquire(
+    def acquire(self, **kwargs) -> BinaryIO:
+        return self.acquire_slot(**kwargs)[0]
+
+    def acquire_slot(
         self,
         *,
         timeout_sec: float,
         poll_sec: float = 0.1,
         on_wait: Callable[[float, int], None] | None = None,
-    ) -> BinaryIO:
-        """The held lock file (close it to release). `on_wait(waited_sec, ahead)` runs about every BEAT_SEC
-        while queued. Raises LockTimeout past `timeout_sec`."""
+    ) -> tuple[BinaryIO, int]:
+        """(the held slot file, its index); close the file to release. `on_wait(waited_sec, ahead)` runs about
+        every BEAT_SEC while queued. Raises LockTimeout past `timeout_sec`."""
         started = time.monotonic()
         self._queue.mkdir(parents=True, exist_ok=True)
         pending = self._queue / f".{os.getpid()}-{id(self)}"
@@ -87,11 +102,8 @@ class FairLock:
             try:
                 while True:
                     tickets = self._live_tickets()
-                    if tickets and tickets[0] == ticket:
-                        lock = self._open_lock()
-                        if _try_flock(lock):
-                            return lock
-                        lock.close()
+                    if tickets and tickets[0] == ticket and (taken := self._take_free_slot()) is not None:
+                        return taken
                     now = time.monotonic()
                     if now - started >= timeout_sec:
                         raise LockTimeout(f"not acquired within {timeout_sec:.0f}s")

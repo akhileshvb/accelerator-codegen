@@ -1,10 +1,10 @@
-"""The host-wide measurement lease: one benchmark at a time, on the reserved measurement CPUs.
+"""The host-wide measurement lease: benchmarks measure on the reserved measurement CPUs, one per slot.
 
     with measurement_window(holder, reason) as window:
         subprocess.run(window.argv(cmd), env={**os.environ, **window.env}, timeout=...)
 
 or, from a shell gate, `python -m accel_pipeline.measurement_lease --holder H --reason R -- cmd...`, which
-queues, pins itself and execs `cmd` still holding the lease (it ends with the process). The lock lives
+queues, pins itself to its slot's CPUs and execs `cmd` still holding the lease (it ends with the process). The lock lives
 under the host lock dir, so it spans every tree and worktree on the host, and it is a flock: a crashed
 holder releases it. Waiting is first come first served, bounded, and beats the agent heartbeat.
 """
@@ -24,7 +24,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Iterator
 
-from accel_pipeline.core_budget import MEASURE_SET_ENV, format_cpus, host_lock_dir, parse_cpus
+from accel_pipeline.core_budget import (
+    MEASURE_SET_ENV, MEASURE_SLOTS_ENV, core_groups, format_cpus, host_lock_dir, parse_cpus, partition,
+)
 from accel_pipeline.host_lock import FairLock, LockTimeout
 
 WAIT_ENV = "ACCEL_MEASURE_WAIT_SEC"
@@ -37,26 +39,26 @@ BUSY = re.compile(r"measurement lease not acquired")
 
 
 def _lock() -> FairLock:
-    return FairLock(host_lock_dir(), "measurement")
+    return FairLock(host_lock_dir(), "measurement", _settings()[3])
 
 
-def _meta_path() -> Path:
-    return host_lock_dir() / "measurement.holder.json"
+def _meta_path(slot: int) -> Path:
+    return host_lock_dir() / f"measurement.holder.{slot}.json"
 
 
-def holder_info() -> dict | None:
-    """Who holds the measurement lease right now, or None when it is free."""
-    if not _lock().is_held():
-        return None
-    try:
-        return json.loads(_meta_path().read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return {"holder": "?"}
+def holders() -> list[dict]:
+    """Who holds a measurement slot right now (none: the lease is idle)."""
+    out = []
+    for slot in _lock().held_slots():
+        try:
+            out.append(json.loads(_meta_path(slot).read_text(encoding="utf-8")))
+        except (OSError, ValueError):
+            out.append({"holder": "?"})
+    return out
 
 
 def held_by_other(me: str) -> bool:
-    info = holder_info()
-    return info is not None and info.get("holder") != me
+    return any(info.get("holder") != me for info in holders())
 
 
 def waited_seconds(text: str) -> float | None:
@@ -71,12 +73,13 @@ def _heartbeat() -> None:
         Path(beat).touch()
 
 
-def _describe_holder() -> str:
-    info = holder_info() or {}
-    if not info:
-        return "free"
-    since = f" for {time.time() - info['since']:.0f}s" if info.get("since") else ""
-    return f"held by {info.get('holder')} ({info.get('reason') or 'no reason'}){since}"
+def _describe_holders() -> str:
+    held = [
+        f"{info.get('holder')} ({info.get('reason') or 'no reason'})"
+        + (f" for {time.time() - info['since']:.0f}s" if info.get("since") else "")
+        for info in holders()
+    ]
+    return f"held by {', '.join(held)}" if held else "free"
 
 
 @dataclass(frozen=True)
@@ -108,42 +111,50 @@ class Window:
         return f"[measurement-lease] waited {self.waited_sec:.1f} s for the measurement lease{pinned}"
 
 
-def _acquire(holder: str, reason: str, wait_sec: float, beat: Callable[[], None] | None):
+def _acquire(holder: str, reason: str, wait_sec: float, beat: Callable[[], None] | None) -> tuple[object, int, float]:
     def on_wait(waited: float, ahead: int) -> None:
-        print(f"[measurement-lease] queued {waited:.0f}s, {ahead} ahead; {_describe_holder()}", file=sys.stderr, flush=True)
+        print(f"[measurement-lease] queued {waited:.0f}s, {ahead} ahead; {_describe_holders()}", file=sys.stderr, flush=True)
         _heartbeat()
         if beat is not None:
             beat()
 
     started = time.monotonic()
     try:
-        handle = _lock().acquire(timeout_sec=wait_sec, on_wait=on_wait)
+        handle, slot = _lock().acquire_slot(timeout_sec=wait_sec, on_wait=on_wait)
     except LockTimeout as exc:
-        raise LockTimeout(f"measurement lease not acquired within {wait_sec:.0f}s ({_describe_holder()}): {exc}") from None
+        raise LockTimeout(f"measurement lease not acquired within {wait_sec:.0f}s ({_describe_holders()}): {exc}") from None
     waited = time.monotonic() - started
-    _meta_path().write_text(
+    _meta_path(slot).write_text(
         json.dumps({"holder": holder, "reason": reason, "pid": os.getpid(), "since": time.time()}), encoding="utf-8"
     )
-    return handle, waited
+    return handle, slot, waited
 
 
-def _settings() -> tuple[bool, float, frozenset[int]]:
+def _settings() -> tuple[bool, float, frozenset[int], int]:
+    """(enabled, wait bound, measurement CPUs, slots), as core_budget.activate exported them."""
     return (
         os.environ.get(ENABLED_ENV, "1") != "0",
         float(os.environ.get(WAIT_ENV) or DEFAULT_WAIT_SEC),
         parse_cpus(os.environ.get(MEASURE_SET_ENV, "")),
+        int(os.environ.get(MEASURE_SLOTS_ENV) or 1),
     )
+
+
+def _slot_cpus(measure: frozenset[int], slots: int, slot: int) -> frozenset[int]:
+    """The slot's share of the measurement cores (a measurement runs the accelerator and the baseline engine
+    on that one budget)."""
+    return partition(core_groups(measure), slots, 0)[0][slot] if measure else frozenset()
 
 
 @contextmanager
 def measurement_window(holder: str, reason: str, *, beat: Callable[[], None] | None = None) -> Iterator[Window]:
     """Hold the lease for the block; yields how long it queued and the CPUs to pin the measurement to."""
-    enabled, wait_sec, cpus = _settings()
+    enabled, wait_sec, measure, slots = _settings()
     if not enabled:
-        yield Window(cpus=cpus)
+        yield Window(cpus=measure)
         return
-    handle, waited = _acquire(holder, reason, wait_sec, beat)
-    window = Window(waited, cpus, True, handle)
+    handle, slot, waited = _acquire(holder, reason, wait_sec, beat)
+    window = Window(waited, _slot_cpus(measure, slots, slot), True, handle)
     print(window.line(), file=sys.stderr, flush=True)
     try:
         yield window
@@ -177,8 +188,8 @@ def noise_warning(load_factor: float = 1.5) -> str | None:
     load, cpus = os.getloadavg()[0], len(os.sched_getaffinity(0))
     if load > load_factor * (os.cpu_count() or cpus):
         reasons.append(f"load average {load:.0f} on {os.cpu_count()} cores")
-    if (info := holder_info()) is not None:
-        reasons.append(f"the measurement lease is held by {info.get('holder')}")
+    if held := holders():
+        reasons.append(f"measurements are running ({', '.join(str(i.get('holder')) for i in held)})")
     return f"noisy: {'; '.join(reasons)} (not measured under the measurement lease)" if reasons else None
 
 
@@ -189,14 +200,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("cmd", nargs=argparse.REMAINDER)
     args = parser.parse_args(argv)
     cmd = args.cmd[1:] if args.cmd[:1] == ["--"] else args.cmd
-    enabled, wait_sec, cpus = _settings()
+    enabled, wait_sec, measure, slots = _settings()
+    cpus = measure
     if enabled:
         try:
-            handle, waited = _acquire(args.holder, args.reason, wait_sec, None)
+            handle, slot, waited = _acquire(args.holder, args.reason, wait_sec, None)
         except LockTimeout as exc:
             print(exc, file=sys.stderr)
             return BUSY_EXIT
         os.set_inheritable(handle.fileno(), True)  # the lease ends with the exec'd command
+        cpus = _slot_cpus(measure, slots, slot)
         print(Window(waited, cpus, True).line(), file=sys.stderr, flush=True)
     if cpus:
         try:
