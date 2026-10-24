@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from accel_pipeline.jsonio import read_json
+from accel_pipeline.no_progress import record_check
 from accel_pipeline.session import keep_alive
 
 
@@ -76,6 +77,7 @@ def build_mcp_tool_callables(
     from accel_pipeline.tools.gate_tools import _compact_gate_payload
     from accel_pipeline.tools.quick_tools import make_quick_tools
     from accel_pipeline.tools.quick_layer_tools import make_quick_layer_tool
+    from accel_pipeline.tools.data_tools import DataToolContext, make_data_tools
 
     gate_ctx = GateCtx(pipeline_config, query, workload=workload, stage=stage, workload_name=workload_name)
     request_gate, run_engine_build, run_layer_gate, gate_status = make_gate_tools(gate_ctx)
@@ -305,7 +307,15 @@ def build_mcp_tool_callables(
 
         return discover_host_sdk_json(workload, pipeline_config.repo_root, pipeline_config.build_dir)
 
+    def report_blocker(summary: str, evidence: str) -> str:
+        """The obstacle is outside your files: write blocker.md and end the turn."""
+        from accel_pipeline.no_progress import write_blocker
+
+        write_blocker(art, summary, evidence)
+        return "Blocker recorded. Stop now; the orchestrator takes over. Do not continue working."
+
     return {
+        "report_blocker": report_blocker,
         "request_gate": request_gate,
         "gate_status": gate_status,
         "quick_check": quick_check,
@@ -329,6 +339,7 @@ def build_mcp_tool_callables(
         "primitive_publish": primitive_publish,
         "discover_host_sdk": discover_host_sdk,
         "quick_layer": make_quick_layer_tool(GateCtx(pipeline_config, query, workload=workload, stage=stage)),
+        **make_data_tools(DataToolContext(pipeline_config, workload, query, art)),
     }
 
 
@@ -370,6 +381,7 @@ def main(argv: list[str] | None = None) -> int:
             )
             with keep_alive(art):  # a long tool call (gate, bench, build) is agent activity, not idleness
                 result = tools[name](*a, **kw)
+            record_check(art, name, a, result)
             return result + _budget_footer(pipeline_config, stage, q)
         except Exception as exc:  # noqa: BLE001 — surface to MCP client
             return json.dumps({"error": str(exc), "tool": name})
@@ -445,11 +457,15 @@ def main(argv: list[str] | None = None) -> int:
         return _call("gate_status", gate_name)
 
     @_tool(annotations=_ro)
-    def quick_check(targets: list[str] | None = None, differential: bool = True) -> str:
+    def quick_check(targets: list[str] | None = None, differential: bool = True, sanitizer: str = "",
+                    threads: int = 4) -> str:
         """Seconds-level check of this query's accelerator: incremental build, its own tests, the
         differential on the small test subset. Run after every edit. targets: extra build targets of
-        your own test binaries (built and run). Correctness only; the subset is never a tuning target."""
-        return _call("quick_check", targets, differential)
+        your own test binaries (built and run). Correctness only; the subset is never a tuning target.
+        sanitizer="thread" or "address": the same check in an instrumented build (its own build dir, incremental)
+        with every phase at `threads` threads; use quick_check(sanitizer="thread", threads=N) after touching
+        concurrent code. Only reports with a frame in the query's own directory fail."""
+        return _call("quick_check", targets, differential, sanitizer, threads)
 
     @_tool(annotations=_rw)
     def run_engine_build() -> str:
@@ -546,6 +562,13 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     @_tool(annotations=_rw)
+    def report_blocker(summary: str, evidence: str) -> str:
+        """Call when the obstacle is outside what you own (a pipeline, gate, harness or backend bug, a
+        missing input) instead of investigating it. Writes blocker.md and ends your turn; the
+        orchestrator re-runs the failing check once and otherwise stops for an operator."""
+        return _call("report_blocker", summary, evidence)
+
+    @_tool(annotations=_rw)
     def run_pipeline_command(command: str) -> str:
         """Allowlisted cmake/ctest command."""
         return _call("run_pipeline_command", command)
@@ -578,6 +601,37 @@ def main(argv: list[str] | None = None) -> int:
     def discover_host_sdk() -> str:
         """Describe this engine's host.sh verbs and how to connect."""
         return _call("discover_host_sdk")
+
+    @_tool(annotations=_ro)
+    def query_data(sql: str, max_rows: int | None = None) -> str:
+        """Run ONE read-only statement (SELECT/WITH/EXPLAIN/DESCRIBE/SUMMARIZE) on the iteration dataset: CSV, capped rows,
+        time-boxed, logged to data_queries.jsonl. Measure what a design depends on instead of guessing."""
+        return _call("query_data", sql, max_rows)
+
+    @_tool(annotations=_ro)
+    def column_stats(columns: list[str]) -> str:
+        """Per column ("table.column"): type, NULL fraction, ~NDV, min, p1, p50, p99, max (sampled above a size threshold)."""
+        return _call("column_stats", columns)
+
+    @_tool(annotations=_ro)
+    def join_fanout(left: str, right: str) -> str:
+        """Fan-out of a join between two key columns ("table.column"): keys, rows per key (avg/p99/max), rows with a partner."""
+        return _call("join_fanout", left, right)
+
+    @_tool(annotations=_ro)
+    def rows_qualifying(predicate_sql: str, values: list[str]) -> str:
+        """Rows qualifying for a predicate template over one table (e.g. "t.d < $1"), $1 replaced by each value."""
+        return _call("rows_qualifying", predicate_sql, values)
+
+    @_tool(annotations=_ro)
+    def column_spread(a: str, b: str, join_sql: str = "") -> str:
+        """Distribution of a - b ("table.column" each; dates in days) over joined rows; join_sql is the linking equality."""
+        return _call("column_spread", a, b, join_sql)
+
+    @_tool(annotations=_ro)
+    def query_shape() -> str:
+        """The statistics the query's own SQL implies (columns, fan-outs, parameter extremes, spreads), as tables."""
+        return _call("query_shape")
 
     @_tool(annotations=_rw)
     def quick_layer(layer: str = "") -> str:

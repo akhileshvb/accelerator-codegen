@@ -63,7 +63,7 @@ are run; other engines skip.
 Planned from the design note, covered today only inside layer harnesses or
 by observation: rebuild under continuous writes without a quiet window
 (`runtime` layer; `builds` counter in the epoch/hits reports), reads during a
-long apply (latency bound), shifted-key and value-inflated SF1 (run by hand today: the verification set of `pipeline/prompts/shared/scale_factor_contract.md`), 1-vs-N phase-cap comparison, peak threads under `taskset`
+long apply (latency bound), shifted-key and value-inflated SF1 (run by hand today: the verification set of `pipeline/prompts/shared/scale_factor_contract.md`), peak threads under `taskset`
 (`ThreadBudget::PeakThreads`), apply time and bytes copied per changed row at
 SF1 vs SF20.
 
@@ -74,3 +74,14 @@ computed through helpers or differently named variables; mark a reviewed line
 non-zero. Known offenders at the time of writing: q3/q9/q17 DuckDB modules cap
 `WorkerCount()` at 8; Postgres/MySQL q9/q13/q16/q20/q2/q11 use
 `hardware_concurrency`; `backends/duckdb/api/duckdb_runtime.cpp`.
+
+## Thread checks
+
+- `aux_correctness` (full tier) runs the suite differential at the worker's thread budget N (`ACCEL_AUX_THREADS`,
+  else the CPUs of its affinity) and again at `ACCEL_AUX_THREADS=1`; the quick tier runs once at N. The result
+  lists `threads_checked`.
+- `aux_bench_sweep` measures one extra read-only point at `ACCEL_AUX_THREADS=1` (first suite, under the measurement
+  lease) and reports `thread_scaling` (`read_speedup_at_N_vs_1`, `build_speedup_at_N_vs_1`) in the gate JSON and
+  `aux_bench_summary.json`. Report-only: an output-bound read legitimately shows ~1x. `ACCEL_AUX_THREAD_POINT=0` skips it.
+- `run_thread_budget_lint.sh --strict` on the query directory: a warning in `quick_check`
+  (`thread_lint_warning`), a failure in `aux_unit`.

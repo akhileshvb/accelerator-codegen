@@ -349,6 +349,29 @@ def aggregate_sweep_repeats(summaries: list[dict[str, Any]], draws: list[dict[st
     return out
 
 
+def thread_scaling(at_n_csv: Path, at_1_csv: Path, threads: int, suite: str | None = None) -> dict[str, Any]:
+    """Read (and build) time of the read-only point measured at the default thread budget (`threads`) and at
+    one thread, as the speedup of N threads over 1. Report-only: an output-bound read legitimately shows ~1x."""
+
+    def point(path: Path) -> dict[str, Any]:
+        rows = [r for r in parse_sweep_csv(path) if int(float(r.get("write_frequency_pct", -1) or 0)) == 0]
+        if suite is not None:
+            rows = [r for r in rows if r.get("suite") == suite] or rows
+        return (summarize_sweep_rows(rows[:1]).get("by_write_frequency_pct") or {}).get("0", {})
+
+    at_n, at_1 = point(at_n_csv), point(at_1_csv)
+    out: dict[str, Any] = {"threads": threads}
+    for metric in ("accel_hit_median_us", "accel_profiler_query_median_us", "accel_workload_us"):
+        if at_n.get(metric, 0) > 0 and at_1.get(metric, 0) > 0:
+            out.update({"read_metric": metric, "read_us_at_1": at_1[metric], "read_us_at_N": at_n[metric],
+                        "read_speedup_at_N_vs_1": round(at_1[metric] / at_n[metric], 3)})
+            break
+    if at_n.get("setup_full_build_ms", 0) > 0 and at_1.get("setup_full_build_ms", 0) > 0:
+        out.update({"build_ms_at_1": at_1["setup_full_build_ms"], "build_ms_at_N": at_n["setup_full_build_ms"],
+                    "build_speedup_at_N_vs_1": round(at_1["setup_full_build_ms"] / at_n["setup_full_build_ms"], 3)})
+    return out
+
+
 def summarize_sweep_csv(path: Path) -> dict[str, Any]:
     summary = summarize_sweep_rows(parse_sweep_csv(path))
     summary["results_csv"] = str(path)

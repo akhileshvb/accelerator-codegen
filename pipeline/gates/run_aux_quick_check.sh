@@ -4,6 +4,11 @@
 # aux_correctness gate stays the stage-exit check.
 #   ACCEL_QUICK_TARGETS   more targets to build and run (the agent's own test binaries)
 #   ACCEL_QUICK_DIFFERENTIAL=0   skip the differential
+#   ACCEL_QUICK_SANITIZER=thread|address   build the targets with that sanitizer (host.sh build, ACCEL_CMAKE_ARGS)
+#                         in a build dir of its own, run everything with every phase at ACCEL_QUICK_THREADS threads
+#                         (the substrate's ACCEL_AUX_*THREADS variables) and report sanitizer findings: only reports
+#                         with a frame in the query's own directory fail the check, the rest is counted as infrastructure.
+#                         A host that cannot build the variant (host.sh info embedded=false) reports "not applicable".
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -25,10 +30,48 @@ WITH_DIFF=0
 if [[ -z "${AUX_TEST_TARGET}" ]] || { [[ ${WITH_DIFF} -eq 1 && -z "${DIFF_BINARY}" ]]; }; then
   emit_result "${JSON}" quick_check fail "aux test / differential target missing from the gate context. ${HOST_HINT}" ""
 fi
+thread_lint
+SANITIZER="${ACCEL_QUICK_SANITIZER:-}"
+SAN_LOGDIR=""
+if [[ -n "${SANITIZER}" ]]; then
+  [[ "${SANITIZER}" == thread || "${SANITIZER}" == address ]] ||
+    emit_result "${JSON}" quick_check fail "sanitizer must be thread or address, not ${SANITIZER}" ""
+  if [[ "$(engine_trait embedded)" != "True" ]]; then
+    emit_result "${JSON}" quick_check skip "sanitizer=${SANITIZER} not applicable: the host cannot build an instrumented variant (host.sh info: embedded=false)" "" "sanitizer=${SANITIZER}"
+  fi
+  # Its own build dir, instance and state per worker: incremental across checks, never shared with the plain build.
+  export ACCEL_BUILD_DIR="${ACCEL_BUILD_DIR}-${SANITIZER}"
+  export ACCEL_ENGINE_INSTANCE="${ACCEL_ENGINE_INSTANCE}-${SANITIZER}"
+  export ACCEL_ENGINE_STATE_DIR="${ACCEL_ENGINE_STATE_DIR}-${SANITIZER}"
+  mkdir -p "${ACCEL_ENGINE_STATE_DIR}"
+  export ACCEL_CMAKE_ARGS="${ACCEL_CMAKE_ARGS} -DCMAKE_BUILD_TYPE=RelWithDebInfo -DACCEL_SANITIZE=${SANITIZER}"
+  THREADS="${ACCEL_QUICK_THREADS:-4}"
+  export ACCEL_AUX_THREADS="${THREADS}" ACCEL_AUX_READ_THREADS="${THREADS}" ACCEL_AUX_BUILD_THREADS="${THREADS}" \
+    ACCEL_AUX_MAINT_THREADS="${THREADS}" ACCEL_AUX_TEST_GRAIN=1
+  export TMPDIR="${TMPDIR:-/dev/shm}"
+  SAN_LOGDIR="${GATE_OUT}/quick_check_${SANITIZER}_logs"
+  rm -rf "${SAN_LOGDIR}"
+  mkdir -p "${SAN_LOGDIR}"
+  export TSAN_OPTIONS="suppressions=$(dirname "${BASH_SOURCE[0]}")/tsan.supp exitcode=0 second_deadlock_stack=1 log_path=${SAN_LOGDIR}/tsan"
+  export ASAN_OPTIONS="detect_leaks=0 log_path=${SAN_LOGDIR}/asan"
+  export UBSAN_OPTIONS="print_stacktrace=1 log_path=${SAN_LOGDIR}/ubsan"
+fi
 HOST_RUN="${ENGINE_HOST} run"
+SAN_EXTRAS=()
+sanitizer_report() { # sets SAN_EXTRAS and SAN_YOURS (reports in the query's own directory)
+	SAN_YOURS=0
+	SAN_EXTRAS=()
+	[[ -n "${SAN_LOGDIR}" ]] || return 0
+	local findings
+	findings="$(python3 "$(dirname "${BASH_SOURCE[0]}")/sanitizer_findings.py" "${SAN_LOGDIR}" \
+		"accelerators/${BENCHMARK_NAME}/q${QUERY}/")"
+	SAN_YOURS="$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['yours_count'])" "${findings}")"
+	SAN_EXTRAS=("sanitizer=${SANITIZER}" "threads:=${THREADS}" "sanitizer_findings:=${findings}")
+}
 fail_step() { # step reproduce-command
+  sanitizer_report
   emit_result "${JSON}" quick_check fail "$1 failed" "${ENGINE_LOG:-}${LOG:-}" "step=$1" \
-    "reproduce=ACCEL_ENGINE_INSTANCE=${ACCEL_ENGINE_INSTANCE} ACCEL_ENGINE_STATE_DIR=${ACCEL_ENGINE_STATE_DIR} ACCEL_BUILD_DIR=${ACCEL_BUILD_DIR} $2" "${SUITE_EXTRAS[@]}"
+    "reproduce=ACCEL_ENGINE_INSTANCE=${ACCEL_ENGINE_INSTANCE} ACCEL_ENGINE_STATE_DIR=${ACCEL_ENGINE_STATE_DIR} ACCEL_BUILD_DIR=${ACCEL_BUILD_DIR} ${SANITIZER:+ACCEL_QUICK_SANITIZER=${SANITIZER} ACCEL_QUICK_THREADS=${THREADS} }$2" "${SAN_EXTRAS[@]}" "${SUITE_EXTRAS[@]}"
 }
 
 # The query's other registered ctest tests (the aux smoke test is run directly below).
@@ -60,4 +103,18 @@ if [[ ${WITH_DIFF} -eq 1 ]]; then
   suite_extras run_aux_quick_check.sh
   [[ ${RC} -eq 0 ]] || fail_step differential "${HOST_RUN} ${DIFF_BINARY} ${QUERY}"
 fi
-emit_result "${JSON}" quick_check pass "" "${ENGINE_LOG}${LOG}" "dataset=${ACCEL_DATASET_DIR}" "${SUITE_EXTRAS[@]}"
+sanitizer_report
+if [[ ${SAN_YOURS} -gt 0 ]]; then
+  emit_result "${JSON}" quick_check fail "${SAN_YOURS} ${SANITIZER}-sanitizer report(s) with a frame in the query's own directory (see sanitizer_findings)" \
+    "${ENGINE_LOG}${LOG}" "step=sanitizer" \
+    "reproduce=ACCEL_QUICK_SANITIZER=${SANITIZER} ACCEL_QUICK_THREADS=${THREADS} (quick_check sanitizer=${SANITIZER} threads=${THREADS})" \
+    "${SAN_EXTRAS[@]}" "${SUITE_EXTRAS[@]}"
+fi
+THREAD_WARNING=""
+if [[ ${THREAD_LINT_RC} -ne 0 ]]; then
+  THREAD_WARNING="warning: hard-coded thread count or hardware_concurrency in the query sources (aux_unit fails on it)"
+  THREAD_WARNING+=$'\n'"${THREAD_LINT_LOG}"
+  echo "${THREAD_WARNING}" >&2
+fi
+emit_result "${JSON}" quick_check pass "" "${ENGINE_LOG}${LOG}" "dataset=${ACCEL_DATASET_DIR}" "thread_lint_warning=${THREAD_WARNING}" \
+  "${SAN_EXTRAS[@]}" "${SUITE_EXTRAS[@]}"

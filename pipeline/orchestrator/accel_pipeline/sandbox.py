@@ -110,6 +110,17 @@ def _add(binds: list[Bind], mode: str, path: Path | str | None) -> None:
         binds.append((mode, real, real))
 
 
+def _add_dataset(binds: list[Bind], path: Path) -> None:
+    """A dataset is never writable: its directory read-only, or, where a writable bind already holds it
+    (a dataset inside the tree or the build dir), the dataset itself re-bound read-only over that."""
+    if any(m == "ro" and path.is_relative_to(dst) for m, _, dst in binds):
+        return
+    if _covered(path, [b for b in binds if b[0] == "rw"]):
+        binds.append(("ro", path, path))
+    else:
+        _add(binds, "ro", path if path.is_dir() else path.parent)
+
+
 def backend_needs(cfg: Any) -> dict[str, Any] | None:
     """What the engine's backend says its verbs need (host.sh `info`: mounts, docker); None without a host.sh."""
     from accel_pipeline.engine_host import host_info
@@ -152,7 +163,7 @@ def cpp_mounts(cfg: Any) -> list[Bind]:
             _add(binds, mode, d)
     for f in [*cfg.datasets.values(), os.environ.get("ACCEL_DATASET_DIR")]:
         if f and Path(f).exists():
-            _add(binds, "ro", Path(f) if Path(f).is_dir() else Path(f).resolve().parent)
+            _add_dataset(binds, Path(f).resolve())
     if needs.get("docker"):
         _add(binds, "rw", DOCKER_SOCKET)
         if DOCKER_SOCKET.exists() and Path("/var/run").is_symlink():  # the docker CLI's default path

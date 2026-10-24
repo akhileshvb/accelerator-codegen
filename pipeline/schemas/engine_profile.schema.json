@@ -536,6 +536,25 @@
           "$ref": "#/$defs/text"
         }
       }
+    },
+    "data_sql": {
+      "type": "object",
+      "description": "How tools reach the engine's data with SQL (host.sh sql). Optional; the defaults are the sqlglot-neutral dialect and information_schema.",
+      "required": [
+        "dialect"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "dialect": {
+          "type": "string",
+          "minLength": 1,
+          "description": "sqlglot dialect name of the engine's SQL (the dialect names sqlglot lists): the statements data tools emit are transpiled to it."
+        },
+        "catalog_columns_sql": {
+          "type": "string",
+          "description": "A statement listing (table_name, column_name, data_type) of the dataset's tables, for engines without information_schema.columns."
+        }
+      }
     }
   }
 }

@@ -124,6 +124,9 @@ engine_profile:
     differential_db: "TPC-H DuckDB database file (ACCEL_TPCH_DB; a private copy per test)."
     sql_client: "The duckdb command-line shell on the database file (duckdb <file> < statements.sql), or any DuckDB client library; one process opens the file at a time for writing."
 
+  data_sql:
+    dialect: duckdb
+
   hazards:
     - symptom: "The process hangs at 0% CPU, or ThreadSanitizer reports a lock-order cycle, when the backend takes its own mutex inside an engine callback."
       engine_fact: "DuckDB calls the commit-id callback with the transaction manager's lock held; engine calls such as TryGetTransaction or a snapshot query take a MetaTransaction or manager lock. A backend mutex acquired in a callback and held across such a call closes a cycle with every thread that takes them in the other order."

@@ -18,14 +18,14 @@ WORKLOAD = {"workload_kind": "aux_state"}
 def test_quick_check_passes_its_arguments_on_and_renders_the_result(monkeypatch):
     seen = {}
 
-    def fake(config, workload, query, *, targets, differential):
-        seen.update(query=query, targets=targets, differential=differential)
+    def fake(config, workload, query, *, targets, differential, sanitizer, threads):
+        seen.update(query=query, targets=targets, differential=differential, sanitizer=sanitizer, threads=threads)
         return QuickResult("pass", {"host_build": 0.5}, summary="quick_check passed")
 
     monkeypatch.setattr(quick_tools, "run_quick_check", fake)
     quick_check = quick_tools.make_quick_tools(ToolContext(CONFIG, 6, WORKLOAD))
-    out = json.loads(quick_check(["my_test"], False))
-    assert seen == {"query": 6, "targets": ["my_test"], "differential": False}
+    out = json.loads(quick_check(["my_test"], False, "thread", 6))
+    assert seen == {"query": 6, "targets": ["my_test"], "differential": False, "sanitizer": "thread", "threads": 6}
     assert out == {"status": "pass", "summary": "quick_check passed", "phase_seconds": {"host_build": 0.5}}
 
 

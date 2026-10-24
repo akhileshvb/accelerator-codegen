@@ -16,14 +16,24 @@ GATES = Path(__file__).resolve().parents[1]
 ORCHESTRATOR = GATES.parent / "orchestrator"
 
 FAKE_HOST = r"""#!/usr/bin/env bash
-echo "$* | instance=${ACCEL_ENGINE_INSTANCE} state=${ACCEL_ENGINE_STATE_DIR} build=${ACCEL_BUILD_DIR} data=${ACCEL_DATASET_DIR}" >> "${FAKE_LOG}"
+echo "$* | instance=${ACCEL_ENGINE_INSTANCE} state=${ACCEL_ENGINE_STATE_DIR} build=${ACCEL_BUILD_DIR} data=${ACCEL_DATASET_DIR} threads=${ACCEL_AUX_THREADS:-}" >> "${FAKE_LOG}"
 verb="$1"; shift
 rc_var="FAKE_RC_${verb}"
 case "${verb}" in
   info) echo "{\"engine\": \"fake\", \"embedded\": ${FAKE_EMBEDDED:-false}, \"verbs\": []}" ;;
   run)
     [[ -z "${FAKE_RUN_HANG:-}" ]] || sleep 30
-    if [[ "$1" == benchmark* && "$2" == --query ]]; then  # a bench that counts hits (or, FAKE_BENCH_CONSTANT, one that assumes them)
+    if [[ -n "${FAKE_TSAN_REPORT:-}" && "$1" == diff_bin ]]; then  # a TSAN report whose stack has FAKE_TSAN_REPORT as a frame
+      path="${TSAN_OPTIONS##*log_path=}"
+      printf 'WARNING: ThreadSanitizer: data race (pid=1)\n  Write of size 8 at 0x1 by thread T1:\n    #0 Add %s/module.cpp:9 (bin+0x1)\n    #1 ParallelEach /x/substrate/pool.cpp:3 (bin+0x2)\n\nSUMMARY: ThreadSanitizer: data race %s/module.cpp:9 in Add\n' "${FAKE_TSAN_REPORT}" "${FAKE_TSAN_REPORT}" > "${path}.1"
+      printf 'WARNING: ThreadSanitizer: data race (pid=2)\n  Write of size 8 at 0x1 by thread T1:\n    #0 Foo /engine/src/x.cpp:9 (bin+0x1)\n\nSUMMARY: ThreadSanitizer: data race /engine/src/x.cpp:9 in Foo\n' > "${path}.2"
+    fi
+    [[ -z "${FAKE_FAIL_AT_ONE_THREAD:-}" || "${ACCEL_AUX_THREADS:-}" != 1 || "$1" != diff_bin ]] || exit 1
+    if [[ -n "${FAKE_SWEEP:-}" && "$1" == bench_aux ]]; then  # a sweep point: reads and builds scale with the thread budget
+      t="${ACCEL_AUX_THREADS:-4}"
+      echo "suite,write_frequency_pct,workload_speedup,cold_start_workload_speedup,query_only_speedup,accel_hit_median_us,accel_workload_us,setup_full_build_ms,accel_hit_rate,writes_executed"
+      echo "lineitem_only,$4,3.0,2.0,4.0,$((400 / t)),$((500 / t)),$((800 / t)),1.0,0"
+    elif [[ "$1" == benchmark* && "$2" == --query ]]; then  # a bench that counts hits (or, FAKE_BENCH_CONSTANT, one that assumes them)
       echo "suite,accel_hit_rate"
       if [[ -n "${FAKE_BENCH_CONSTANT:-}" || -z "${ACCEL_AUX_FORCE_FALLBACK:-}" ]]; then echo "lineitem_only,1.0"; else echo "lineitem_only,0.0"; fi
     else
@@ -36,6 +46,7 @@ case "${verb}" in
     args="${FAKE_IGNORE_CMAKE_ARGS:+-G Ninja}${FAKE_IGNORE_CMAKE_ARGS:-${ACCEL_CMAKE_ARGS}}"
     switch=OFF; [[ "${args}" == *-DACCELERATOR_CODEGEN_BUILD_FAKE=ON* ]] && switch=ON
     type="$(sed -nE 's/.*-DCMAKE_BUILD_TYPE=([^ ]+).*/\1/p' <<<"${args}")"
+    mkdir -p "${ACCEL_BUILD_DIR}"
     printf 'ACCELERATOR_CODEGEN_BUILD_FAKE:BOOL=%s\nCMAKE_BUILD_TYPE:STRING=%s\n' "${switch}" "${type}" \
       > "${ACCEL_BUILD_DIR}/CMakeCache.txt"
     echo "build ok" ;;
@@ -163,11 +174,11 @@ def test_slot_gate_calls_host_slot(repo, rc, status, exit_code):
     assert json.loads(out_json.read_text())["status"] == status
 
 
-def test_aux_correctness_runs_smoke_then_differential(repo):
-    proc, calls, _, gj, _ = run_gate(repo, "run_aux_correctness.sh", "5")
+def test_aux_correctness_runs_smoke_then_differential_at_n_and_at_one_thread(repo):
+    proc, calls, _, gj, _ = run_gate(repo, "run_aux_correctness.sh", "5", env_extra={"ACCEL_AUX_THREADS": "4"})
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert calls == ["up", "load workloads/tpch/schema.sql", "build aux_unit_bin diff_bin",
-                     "run aux_unit_bin", "run diff_bin 5"]
+                     "run aux_unit_bin", "run diff_bin 5", "run diff_bin 5"]
     assert result(gj, "aux_correctness")["status"] == "pass"
 
 

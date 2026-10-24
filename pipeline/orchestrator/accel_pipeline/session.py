@@ -15,6 +15,7 @@ SESSIONS_FILE = "sessions.json"
 META_FILE = "session_meta.json"
 RUN_FILE = "agent_run.json"
 HEARTBEAT_FILE = "agent_heartbeat"
+PROGRESS_FILE = "agent_progress.json"  # the supervisor's progress clock (accel_pipeline.no_progress)
 
 MAIN = "main"
 READONLY = "readonly"
@@ -165,11 +166,13 @@ def agent_run(art: Path | None, stage: str, pipeline_config: Any) -> Iterator[No
         return
     cfg = pipeline_config.session
     _write(art / RUN_FILE, {"stage": stage, "started": time.time(),
-                            "soft_deadline_sec": cfg.soft_deadline_for(stage), "hard_deadline_sec": cfg.hard_deadline_sec})
+                            "soft_deadline_sec": cfg.soft_deadline_for(stage), "hard_deadline_sec": cfg.hard_deadline_sec,
+                            "no_progress": dict(zip(("nudge_sec", "redirect_sec"), cfg.no_progress.for_stage(stage)))})
     try:
         yield
     finally:
-        (art / RUN_FILE).unlink(missing_ok=True)
+        for name in (RUN_FILE, PROGRESS_FILE):
+            (art / name).unlink(missing_ok=True)
 
 
 def heartbeat(art: Path) -> None:
@@ -199,11 +202,17 @@ def keep_alive(art: Path | None, every_sec: float = 30.0) -> Iterator[None]:
 
 
 def budget_footer(pipeline_config: Any, stage: str, query: int) -> str:
-    """Text appended to every MCP tool result: empty, or a wrap-up/checkpoint notice near the deadline."""
+    """Text appended to every MCP tool result: empty, or a wrap-up/checkpoint or no-progress notice."""
     art = os.environ.get("ACCEL_PIPELINE_ART_DIR")
     run = _read(Path(art) / RUN_FILE) if art else {}
     if not run:
         return ""
+    from accel_pipeline.no_progress import footer
+
+    return "\n".join(filter(None, [_wall_notice(run), footer(Path(art))]))
+
+
+def _wall_notice(run: dict[str, Any]) -> str:
     elapsed = time.time() - float(run.get("started", time.time()))
     soft, hard = float(run.get("soft_deadline_sec") or 0), float(run.get("hard_deadline_sec") or 0)
     if hard and elapsed >= hard - min(600.0, hard / 10):

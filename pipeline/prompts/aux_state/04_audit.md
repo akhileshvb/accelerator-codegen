@@ -23,6 +23,7 @@ Your findings are acted on: anything you list under `scale_review.generality_fai
 Hard gates after this stage verify **correctness** and run a **fair SF1 bench sweep**. Your job is analysis + a short written audit — not brittle micro-gates.
 
 1. **Correctness / contract** — implementation matches the selected design (partitioning, mutations, payload, `cross_accelerator_concurrency`). Confirm `mutation_coverage` behaviors are tested, and that the frozen suite (`tests/workload/`: `suite.yaml`, `params.sql`, `domain.yaml`, `txns/`) covers every parameter of the query and every write kind that can change its answer; list gaps as findings.
+   Check that each `evidence` entry of the analysis matches a call logged in `{{artifacts_path}}/data_queries.jsonl` (same figure from the same call); list any that does not as a finding.
 2. **Sweep evidence** — read `{{artifacts_path}}/aux_bench_summary.json` and/or `gates/aux_bench_sweep.json` (or `request_gate` `aux_bench_sweep` if missing). Record 0% / write-mix speedups and hit latency.
 3. **Scale review** (write this up; do not invent SF10 numbers if unmeasured):
    - Do structures size from bind-time / `row_estimate` (or equivalent), or are there SF1-hardcoded capacities / loops?
