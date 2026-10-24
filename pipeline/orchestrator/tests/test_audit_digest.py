@@ -198,7 +198,7 @@ def test_a_change_request_raised_in_the_repair_round_goes_to_the_tester_before_t
     handled = []
     monkeypatch.setattr(audit_stage, "_revise_test_suite", lambda ctx: handled.append(ctx) or True)
     audit_stage._fix_blocking_findings(stage_ctx, rnd.audit_turn)
-    assert handled == [stage_ctx] and "tester revised the frozen test suite" in rnd.audit_messages[0]
+    assert handled == [stage_ctx, stage_ctx] and "tester revised the frozen test suite" in rnd.audit_messages[0]
 
 
 GENERALITY_ONLY = {"correctness_ok": True, "scale_review": {"generality_failures": ["dates: Feb 29"]}}

@@ -83,6 +83,7 @@ def _fix_blocking_findings(ctx: RepairCtx, audit_turn) -> None:
     base = base_file.read_text(encoding="utf-8").strip() if base_file.is_file() else "HEAD"
     before = snapshot(repo_root, changed_files(repo_root, base, qdir))
     ctx.log(f"audit raised {len(findings)} blocking findings; one batched repair round")
+    _revise_test_suite(ctx)  # a request left pending by an earlier round goes first: repair_turn would run only the tester
     repair_turn(ctx, Failure(
         kind="code", stage="audit", source="audit_findings",
         summary=f"The independent audit found {len(findings)} blocking problems. Fix each in your query's files "
