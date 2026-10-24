@@ -1,7 +1,8 @@
 """What the quick tier's per-write timings predict for the full aux_correctness gate.
 
-The differential harness times each suite transaction (commit, then the first accelerated read after it), each
-adversarial probe's apply and the state build, on the subset dataset (host_contract.md, ACCEL_SUITE_REPORT).
+The differential harness times, on the subset dataset (host_contract.md, ACCEL_SUITE_REPORT), the accelerator's
+maintenance for each suite transaction (the engine's own cost of the SQL excluded; the whole commit and first read
+when the engine does not report it), each adversarial probe's, and the state build.
 project() scales them to the full dataset and sums what the full gate would spend on writes.
 
 The model, deliberately conservative and linear where it cannot tell:
@@ -65,6 +66,11 @@ class Projection:
         return f"projected full-gate write time ~{self.total_s:.0f} s (budget {self.budget_s:.0f} s)"
 
 
+def _maintenance_s(cost: dict) -> float:
+    """The accelerator's own time for one write: what the engine reports, else the whole commit and first read."""
+    return cost["maint_ms"] / 1000.0 if cost.get("maint_ms", -1) >= 0 else (cost["write_ms"] + cost["read_ms"]) / 1000.0
+
+
 def _kind_line(kind: str, tables: tuple[str, ...], subset_ms: float, per_write_s: float, factor: float, rebuild: bool) -> str:
     on = f" on {','.join(tables)}" if tables else ""
     why = ": as costly as a rebuild; likely a full rebuild per write, make it incremental" if rebuild else ""
@@ -79,7 +85,7 @@ def project(reports: list[dict], *, profiles: dict[str, tuple[str, tuple[str, ..
     worst: dict[tuple[str, tuple[str, ...]], tuple[float, str]] = {}
     for report in reports:
         build_s = float(report.get("build_seconds") or 0.0)
-        costs = [(profiles.get(c["txn"], ("other", ())), (c["write_ms"] + c["read_ms"]) / 1000.0) for c in report.get("write_costs") or []]
+        costs = [(profiles.get(c["txn"], ("other", ())), _maintenance_s(c)) for c in report.get("write_costs") or []]
         probe_ms = [float(ms) for ms in report.get("probe_costs_ms") or []]
         if probe_ms:  # the adversarial probes: every table the state depends on, scaled to the full gate's probe count
             costs += [(("adversarial_probe", tuple(dependent)), sum(probe_ms) / len(probe_ms) / 1000.0)] * probes_full

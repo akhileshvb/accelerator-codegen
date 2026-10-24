@@ -31,6 +31,7 @@ from accel_pipeline.workload_facts import scratch_connection
 
 QUICK_GATE = "quick_check"
 ADMISSION_FILE = f"{QUICK_GATE}.admitted"
+PROJECTION_LINES = 5  # the costliest write kinds a passing check reports
 SUBSET_MAX_SOURCE_GB = float(os.environ.get("ACCEL_SUBSET_MAX_SOURCE_GB", 30))
 
 
@@ -243,15 +244,14 @@ def run_quick_check(pipeline_config: PipelineConfig, workload: dict, query: int,
                 summary=f"quick_check: {projection.summary()}: the full gate would time out. Costliest: {projection.worst}",
                 evidence="\n".join(projection.lines),
                 diagnosis=[f"{name}: {seconds:.1f}s" for name, seconds in timings.items()])
-            return QuickResult(status="fail", phase_timings=timings, failure=failure, summary=failure.summary,
-                               projection=projection.lines)
+            return QuickResult(status="fail", phase_timings=timings, failure=failure, summary=failure.summary)
         if stamp:
             passed_path.parent.mkdir(parents=True, exist_ok=True)
             passed_path.write_text(stamp, encoding="utf-8")
         if admits:
             record_admission(pipeline_config, workload, query)
         return QuickResult(status="pass", phase_timings=timings, summary="quick_check passed" + (f"; {projection.summary()}" if projection else ""),
-                           projection=projection.lines if projection else [])
+                           projection=projection.lines[:PROJECTION_LINES] if projection else [])
     passed_path.unlink(missing_ok=True)
     failure = _failure(result.data, timings)
     return QuickResult(status="fail", phase_timings=timings, failure=failure, summary=failure.summary)

@@ -84,7 +84,11 @@ inline void RunSuiteDifferential(const std::string &db_path, const engine::Share
       suite::Require(!wc.Query(std::move(statement))->HasError(), "a rollback transaction failed");
     runtime.RollbackWrite();
   };
-  const auto run = suite::RunDifferentialLoop(tally, spec, query_sql, ordering, qc, every, seed, accel, apply, abort);
+  const auto maintenance_us = [&] {
+    const auto stats = runtime.Stats();
+    return stats.apply_us + stats.build_us;
+  };
+  const auto run = suite::RunDifferentialLoop(tally, spec, query_sql, ordering, qc, every, seed, accel, apply, abort, maintenance_us);
   const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
 
   const auto counts = core::ReadAuxExecuteCounts();

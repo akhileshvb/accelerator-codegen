@@ -21,9 +21,9 @@ def scale_of(**ratios):
     return lambda tables: max([ratios.get(t, 1.0) for t in tables] or list(ratios.values()))
 
 
-def report(write_ms, read_ms=0.0, build_s=0.05, probes=()):
+def report(write_ms, read_ms=0.0, build_s=0.05, probes=(), maint_ms=-1):
     return {"build_seconds": build_s, "probe_costs_ms": list(probes),
-            "write_costs": [{"txn": "001.sql", "write_ms": write_ms, "read_ms": read_ms}]}
+            "write_costs": [{"txn": "001.sql", "write_ms": write_ms, "read_ms": read_ms, "maint_ms": maint_ms}]}
 
 
 def project(reports, ratio=250.0, budget_s=30.0, probes_full=5):
@@ -36,6 +36,13 @@ def test_a_write_as_costly_as_a_rebuild_is_projected_linearly_and_named():
     assert out.over
     assert out.worst == ("point_update on orders: 180 ms on the subset, projected ~45.0 s per write at full scale (x250): "
                          "as costly as a rebuild; likely a full rebuild per write, make it incremental")
+
+
+def test_the_engines_own_cost_of_the_sql_is_not_the_accelerators():
+    slow_sql = report(write_ms=60, read_ms=0.3, build_s=0.08, maint_ms=0.05)  # a 60 ms commit, 50 us of maintenance
+    out = project([slow_sql], ratio=1000.0)
+    assert not out.over and "rebuild" not in out.worst and out.lines[0].startswith("point_update on orders: 0 ms on")
+    assert project([report(write_ms=60, read_ms=0.3, build_s=0.08)], ratio=1000.0).over  # unreported: all of it counts
 
 
 def test_an_incremental_write_grows_with_the_square_root_only():

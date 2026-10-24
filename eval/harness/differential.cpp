@@ -5,7 +5,6 @@
 #include <cmath>
 #include <cstdint>
 #include <array>
-#include <chrono>
 #include <cstdlib>
 #include <iostream>
 #include <iomanip>
@@ -869,10 +868,11 @@ void RunAdversarialWriteDifferentialCheck(const std::string &db_path,
                   " no longer changes DuckDB result for Q" +
                   std::to_string(entry.query_id));
       try {
-        const auto applied_at = std::chrono::steady_clock::now();
+        const auto before_stats = runtime.Stats();
         runtime.Apply(probe);
-        suite::ProbeCostsMs().push_back(
-            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - applied_at).count());
+        const auto after_stats = runtime.Stats();
+        suite::ProbeCostsMs().push_back((after_stats.apply_us + after_stats.build_us - before_stats.apply_us -
+                                         before_stats.build_us) / 1000.0);
         RequireForcedMaintenanceAction(runtime);
         const auto after_fp = FingerprintSharedBaseSql(connection, entry);
         Require(after_fp != before_fp,
