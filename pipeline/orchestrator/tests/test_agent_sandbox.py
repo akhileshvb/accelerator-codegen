@@ -303,3 +303,13 @@ def test_write_policy_enforce_warn_off(tmp_path: Path, monkeypatch: pytest.Monke
     if policy == "enforce":
         assert "accelerators/toybench/q3/k.cpp" in result.error and "cross-query" in result.error
     assert bool(result.metadata.get("write_violations")) == (policy != "off")
+
+
+def test_dataset_inside_a_writable_bind_is_rebound_read_only(tmp_path: Path, isolated: Path) -> None:
+    root = _tree(tmp_path / "tree").resolve()
+    (root / "data").mkdir()
+    dataset = root / "data" / "toybench.toydb"
+    dataset.touch()
+    binds = sandbox.cpp_mounts(_cfg(root, datasets={"toybench_sf1": dataset}))
+    order = [(m, d) for m, _, d in binds]
+    assert ("ro", dataset) in order and order.index(("rw", root)) < order.index(("ro", dataset))

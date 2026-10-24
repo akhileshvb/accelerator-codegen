@@ -34,7 +34,7 @@ Design a stateful (aux-state) accelerator for **{{display_name}}** **Q{{query_nu
 
 Write `{{full_analysis_path}}` per schema.
 
-- **Initial run:** use the **Query** SQL and **Data shape** section (plus workload hints) to choose aux state — no post-implementation measurements.
+- **Initial run:** use the **Query** SQL and the data (measured with the **Data** tools, plus workload hints) to choose aux state — no post-implementation measurements.
 - **Revision run** (non-empty evidence above): use measured bottlenecks; emit a new complete correctness contract.
 - If `fitness_assessment.recommended` is false, document why and stop unless override is configured.
 
@@ -67,11 +67,13 @@ Read `taxonomy_index.md` first; open `aux_state_taxonomy.md` and `aux_state_desi
 - Reject near-duplicates; use `viability: rejected` with `rejection_reason` for variants you considered but ruled out.
 
 **Bound check (required for every viable candidate, before selecting):**
-- **Any binding.** For each template parameter, name the binding that maximizes read work (widest range, a value at the end of the domain, a pattern with no literal, a value matching most rows) and the one that minimizes it. Estimate state entries read for both at SF1 and SF3000 from the **Data shape** facts, and record the numbers in `estimated_state_units_read` (`typical`, `worst_case`).
+- **Any binding.** For each template parameter, name the binding that maximizes read work (widest range, a value at the end of the domain, a pattern with no literal, a value matching most rows) and the one that minimizes it. Estimate state entries read for both at SF1 and SF3000 from numbers you measured with the data tools (`rows_qualifying` at each extreme, `join_fanout`), and record the numbers in `estimated_state_units_read` (`typical`, `worst_case`).
 - **Pruning follows the predicate.** A bound used to skip state (max/min/count summaries, ranges) must tighten with the bound parameter values: an entry that cannot contribute for a binding is skipped without visiting it. A bound that is the same for every binding (an entry's total over all parameter values) prunes nothing where it matters. Organize state so a binding's qualifying data is a contiguous range or a few partitions.
-- **Data shape narrows the range, never assumed.** Spreads and correlations between columns the predicates combine (two date columns of joined tables, a value bounded by another) can shrink the candidate range. Derive such a bound from the state itself and maintain it under writes (a write that widens the spread widens the bound), so arbitrary data stays exact.
+- **Data narrows the range, never assumed.** Spreads and correlations between columns the predicates combine (two date columns of joined tables, a value bounded by another; measure them with `column_spread`) can shrink the candidate range. Derive such a bound from the state itself and maintain it under writes (a write that widens the spread widens the bound), so arbitrary data stays exact.
 - **Heavy writes.** Estimate per-commit cost at the write mix's highest write frequency and at refresh size: a commit touches state in proportion to changed rows times their real fan-out; it never re-sorts, re-scans or rebuilds unchanged data, and dimension-table writes reach only actual dependents.
 - Revise or reject a candidate whose worst-case read for some valid binding scans state in proportion to a table when another design reads in proportion to the qualifying rows or the output.
+
+**Evidence (required):** `analysis.json` `evidence` lists each measured figure the bound check or a design choice relies on: `figure` (what it is), `value`, and `tool_call` (the call that produced it, as made). Every entry must match a logged call in `data_queries.jsonl`.
 
 **Selection:**
 - Exactly one `selected: true` — the best **worst-case** read over all valid bindings (then typical), subject to cheap maintenance under the heavy write mix.

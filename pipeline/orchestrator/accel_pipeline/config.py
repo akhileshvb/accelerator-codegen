@@ -82,6 +82,15 @@ class RepairConfig:
 
 
 @dataclass(frozen=True)
+class DataToolsConfig:
+    """Limits of the agents' data exploration tools (tools/data_tools.py)."""
+
+    query_seconds: float = 60.0  # time box of one statement
+    default_rows: int = 200
+    max_rows: int = 2000
+
+
+@dataclass(frozen=True)
 class SessionConfig:
     continuity: bool = True
     soft_deadline_sec: int = 5400
@@ -197,6 +206,7 @@ class PipelineConfig:
     optimization_early_stop: dict[str, Any] = field(default_factory=dict)
     repair: RepairConfig = field(default_factory=RepairConfig)
     session: SessionConfig = field(default_factory=SessionConfig)
+    data_tools: DataToolsConfig = field(default_factory=DataToolsConfig)
     stage_max_turns: dict[str, int] = field(default_factory=dict)
     write_paths: list[str] = field(default_factory=list)
     allowed_commands: list[str] = field(default_factory=list)
@@ -462,6 +472,15 @@ def _session_config(block: dict[str, Any]) -> SessionConfig:
     )
 
 
+def _data_tools_config(block: dict[str, Any]) -> DataToolsConfig:
+    defaults = DataToolsConfig()
+    return DataToolsConfig(
+        query_seconds=float(block.get("query_seconds", defaults.query_seconds)),
+        default_rows=int(block.get("default_rows", defaults.default_rows)),
+        max_rows=int(block.get("max_rows", defaults.max_rows)),
+    )
+
+
 def load_pipeline_config(
     config_path: Path | None = None,
     repo_root: Path | None = None,
@@ -535,6 +554,7 @@ def load_pipeline_config(
         optimization_early_stop=dict(opt.get("early_stop") or {}),
         repair=_repair_config(data.get("repair") or {}),
         session=_session_config(data.get("session") or {}),
+        data_tools=_data_tools_config(data.get("data_tools") or {}),
         stage_max_turns=dict(data.get("stage_max_turns", {})),
         write_paths=list(data.get("write_paths", [])),
         allowed_commands=list(data.get("allowed_commands", [])),
@@ -1071,6 +1091,7 @@ def _apply_optimization_block(pipeline_config: PipelineConfig, opt: dict[str, An
         ),
         repair=pipeline_config.repair,
         session=pipeline_config.session,
+        data_tools=pipeline_config.data_tools,
         measurement=pipeline_config.measurement,
         stage_max_turns=dict(pipeline_config.stage_max_turns),
         write_paths=list(pipeline_config.write_paths),
@@ -1196,6 +1217,7 @@ def _apply_workload_overrides(pipeline_config: PipelineConfig, workload: dict[st
         optimization_early_stop=dict(pipeline_config.optimization_early_stop),
         repair=pipeline_config.repair,
         session=pipeline_config.session,
+        data_tools=pipeline_config.data_tools,
         measurement=pipeline_config.measurement,
         stage_max_turns=stage_max_turns,
         write_paths=list(pipeline_config.write_paths) + extra_write_paths,

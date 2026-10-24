@@ -76,6 +76,7 @@ def build_mcp_tool_callables(
     from accel_pipeline.tools.gate_tools import _compact_gate_payload
     from accel_pipeline.tools.quick_tools import make_quick_tools
     from accel_pipeline.tools.quick_layer_tools import make_quick_layer_tool
+    from accel_pipeline.tools.data_tools import DataToolContext, make_data_tools
 
     gate_ctx = GateCtx(pipeline_config, query, workload=workload, stage=stage, workload_name=workload_name)
     request_gate, run_engine_build, run_layer_gate, gate_status = make_gate_tools(gate_ctx)
@@ -329,6 +330,7 @@ def build_mcp_tool_callables(
         "primitive_publish": primitive_publish,
         "discover_host_sdk": discover_host_sdk,
         "quick_layer": make_quick_layer_tool(GateCtx(pipeline_config, query, workload=workload, stage=stage)),
+        **make_data_tools(DataToolContext(pipeline_config, workload, query, art)),
     }
 
 
@@ -578,6 +580,37 @@ def main(argv: list[str] | None = None) -> int:
     def discover_host_sdk() -> str:
         """Describe this engine's host.sh verbs and how to connect."""
         return _call("discover_host_sdk")
+
+    @_tool(annotations=_ro)
+    def query_data(sql: str, max_rows: int | None = None) -> str:
+        """Run ONE read-only statement (SELECT/WITH/EXPLAIN/DESCRIBE/SUMMARIZE) on the iteration dataset: CSV, capped rows,
+        time-boxed, logged to data_queries.jsonl. Measure what a design depends on instead of guessing."""
+        return _call("query_data", sql, max_rows)
+
+    @_tool(annotations=_ro)
+    def column_stats(columns: list[str]) -> str:
+        """Per column ("table.column"): type, NULL fraction, ~NDV, min, p1, p50, p99, max (sampled above a size threshold)."""
+        return _call("column_stats", columns)
+
+    @_tool(annotations=_ro)
+    def join_fanout(left: str, right: str) -> str:
+        """Fan-out of a join between two key columns ("table.column"): keys, rows per key (avg/p99/max), rows with a partner."""
+        return _call("join_fanout", left, right)
+
+    @_tool(annotations=_ro)
+    def rows_qualifying(predicate_sql: str, values: list[str]) -> str:
+        """Rows qualifying for a predicate template over one table (e.g. "t.d < $1"), $1 replaced by each value."""
+        return _call("rows_qualifying", predicate_sql, values)
+
+    @_tool(annotations=_ro)
+    def column_spread(a: str, b: str, join_sql: str = "") -> str:
+        """Distribution of a - b ("table.column" each; dates in days) over joined rows; join_sql is the linking equality."""
+        return _call("column_spread", a, b, join_sql)
+
+    @_tool(annotations=_ro)
+    def query_shape() -> str:
+        """The statistics the query's own SQL implies (columns, fan-outs, parameter extremes, spreads), as tables."""
+        return _call("query_shape")
 
     @_tool(annotations=_rw)
     def quick_layer(layer: str = "") -> str:

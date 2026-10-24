@@ -71,6 +71,19 @@
         }
       }
     },
+    "evidence": {
+      "type": "array",
+      "description": "Measured figures the analysis relies on, each with the data tool call that produced it (logged in data_queries.jsonl).",
+      "items": {
+        "type": "object",
+        "required": ["figure", "value", "tool_call"],
+        "properties": {
+          "figure": { "type": "string", "minLength": 1 },
+          "value": { "type": ["string", "number"] },
+          "tool_call": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
     "correctness_facts": {
       "type": "object",
       "required": [

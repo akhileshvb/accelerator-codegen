@@ -10,6 +10,18 @@ from accel_pipeline.stages.base import run_agent_stage
 from accel_pipeline.validation import AuxAnalysisValidationError, repair_aux_analysis, validate_aux_analysis_file
 
 
+def _ensure_dataset(pipeline_config: PipelineConfig, workload_name: str) -> None:
+    """The data tools query the target engine: bring its instance up with the dataset loaded before the agent starts."""
+    from accel_pipeline.engine_host import ensure_dataset_loaded
+
+    workload = load_run_workload(pipeline_config, workload_name)
+    if workload.get("workload_kind") != "aux_state":
+        return
+    problem = ensure_dataset_loaded(workload, pipeline_config.repo_root, pipeline_config.build_dir)
+    if problem:
+        print(f"[pipeline] data tools unavailable: {problem}", file=sys.stderr, flush=True)
+
+
 def run(
     pipeline_config: PipelineConfig,
     model_config: ModelConfig,
@@ -21,6 +33,8 @@ def run(
     user_message: str | None = None,
     analysis_revision_request: str = "",
 ):
+    if not dry_run:
+        _ensure_dataset(pipeline_config, workload_name)
     result = run_agent_stage(
         stage="analysis",
         prompt_file="01_analysis.md",
