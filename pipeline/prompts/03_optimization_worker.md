@@ -16,6 +16,8 @@ The test suite (`tests/workload/`) is frozen and `quick_check` runs it: never ed
 
 {{hard_guidelines}}
 
+Pipeline files (`pipeline/`, `substrate/`, `backends/` gates and prompts, `cmake/`) are not yours: edits there are reverted and warned about in tool footers; if the task is blocked on one, call `report_blocker`.
+
 {{codex_tooling}}
 
 {{fast_loop}}
@@ -26,9 +28,9 @@ The test suite (`tests/workload/`) is frozen and `quick_check` runs it: never ed
 
 ## Flow
 
-1. `run_profile` on the CURRENT tree; read `scoreboard`, `phase_breakdown` and `freshness`. A digest that is empty or stale is not evidence.
+1. `run_profile` on the CURRENT tree; read `scoreboard`, `phase_breakdown` and `freshness`. A digest that is empty or stale is not evidence. Start every attempt from the `run_profile` output (hot functions, hardware counters, visited-state count). Name the hot spot you target (`hot_spot`), the gain you expect there (`expected_gain`) and the `strategy`: `structural` (state organization or algorithm), `low_level` (SIMD with a scalar fallback, branch-free predicates, compact columnar layout, prefetch, no allocation or indirection in the hot loop) or `other`. Then re-measure and repeat on the next hot spot.
 2. State a hypothesis citing named phases and counts from the fresh digest.
-3. Implement the coordinated edit. `begin_ab_trial` first; `quick_check` after each edit.
+3. Implement the coordinated edit. `begin_ab_trial(trial_id, hypothesis, hot_spot, expected_gain, strategy)` first; `quick_check` after each edit.
 4. `run_quick_benchmark` for direction, then `run_quick_benchmark(acceptance=True)`, then `end_ab_trial`. `keep=True` needs the acceptance run. If `ab_signal` is `regress`, `forced_discard` or `kept=false`, do not yield: form a new hypothesis.
 5. End with one marker (a task that ends without one fails the attempt):
    - Hypothesis JSON `{"bottleneck": "...", "why": "...", "expected_effect": "...", "ab_signal": "improve|regress|skipped"}` and `CANDIDATE_READY`, only after an A/B that did not regress.

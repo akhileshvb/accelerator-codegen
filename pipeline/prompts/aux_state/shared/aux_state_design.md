@@ -81,6 +81,7 @@ For each candidate and for the selected design in `state_design`, assess:
 - `read_path_bottleneck_risk`: `low` | `medium` | `high`
 - `read_path_scaling_variable`: e.g. `number_of_partitions`, `parameter_range`, `groups`, `other`
 - `estimated_state_units_read`: `{ "typical": "...", "worst_case": "..." }` — partitions, nodes, buckets, or entries touched on read
+- `read_work_ratio` (selected design): `{ "typical": N, "worst": N, "basis": "..." }` base-path work / design work per read; `typical` >= 100 or an `unmet_justification`
 - `parameter_scaling_argument`: how read cost changes across representative parameter bindings
 - `residual_read_algorithm`: exact steps to produce the answer from aux state
 

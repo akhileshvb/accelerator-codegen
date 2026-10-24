@@ -161,6 +161,7 @@ def _sample_valid_analysis() -> dict:
                 "read_path_scaling_variable": "number_of_partitions",
                 "estimated_state_units_read": {"typical": "1 partition", "worst_case": "12 partitions"},
                 "parameter_scaling_argument": "one month partition per binding",
+                "read_work_ratio": {"typical": 5000, "worst": 400, "basis": "base scans 6e6 rows; design reads 1 to 12 entries"},
                 "alternatives_considered": [
                     {"representation": "join_intermediate_cache", "selected": False},
                     {"representation": "group_partition_tree", "selected": False},
@@ -205,6 +206,31 @@ class TestAuxAnalysisValidation:
     def test_validates_slim_alternate_candidates(self):
         analysis = _sample_valid_analysis()
         validate_aux_analysis(analysis)
+
+    def test_rejects_scan_like_read_work_ratio(self):
+        analysis = _sample_valid_analysis()
+        analysis["correctness_facts"]["state_design"]["read_work_ratio"]["typical"] = 1.5
+        with pytest.raises(AuxAnalysisValidationError, match="design target unmet"):
+            validate_aux_analysis(analysis)
+
+    def test_accepts_unmet_read_work_ratio_with_justification(self):
+        analysis = _sample_valid_analysis()
+        ratio = analysis["correctness_facts"]["state_design"]["read_work_ratio"]
+        ratio["typical"] = 1.5
+        ratio["unmet_justification"] = "every candidate must visit the full qualifying range because the output is that large"
+        validate_aux_analysis(analysis)
+
+    def test_rejects_missing_read_work_ratio(self):
+        analysis = _sample_valid_analysis()
+        del analysis["correctness_facts"]["state_design"]["read_work_ratio"]
+        with pytest.raises(AuxAnalysisValidationError, match="read_work_ratio is required"):
+            validate_aux_analysis(analysis)
+
+    def test_rejects_non_numeric_read_work_ratio(self):
+        analysis = _sample_valid_analysis()
+        analysis["correctness_facts"]["state_design"]["read_work_ratio"]["worst"] = "lots"
+        with pytest.raises(AuxAnalysisValidationError, match="positive numbers"):
+            validate_aux_analysis(analysis)
 
     def test_rejects_poor_fitness(self):
         analysis = _sample_valid_analysis()

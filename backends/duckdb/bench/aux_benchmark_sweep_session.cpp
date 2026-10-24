@@ -1,5 +1,6 @@
 #include "backends/duckdb/bench/aux_benchmark_sweep_session.hpp"
 #include "eval/bench/driver/bench_cli.hpp"
+#include "eval/bench/driver/profile_window.hpp"
 
 #include "eval/harness/tpch_rf.hpp"
 #include "backends/duckdb/api/duckdb_runtime.hpp"
@@ -338,6 +339,7 @@ WorkloadTimings RunMeasuredWorkloadWallClock(
     return result;
   }
   const auto stats_before = runtime.Stats();
+  const driver::ProfileWindow profile_window;
 
   const auto start = Clock::now();
   const auto deadline =
@@ -436,6 +438,7 @@ WorkloadTimings RunMeasuredWorkload(DuckdbRuntime &runtime,
   WorkloadTimings result;
   result.num_queries = num_queries;
   const auto stats_before = runtime.Stats();
+  const driver::ProfileWindow profile_window;
 
   int write_seq = 0;
   std::size_t arg_seq = 0;

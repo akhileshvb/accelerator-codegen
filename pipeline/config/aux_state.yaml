@@ -90,9 +90,18 @@ optimization:
   skip_confirmation: true
   skip_per_attempt_correctness: true
   two_phase_hypothesis_patch: true
-  # Agent stops with OPTIMIZATION_SATURATED when stuck (no numeric floors).
+  # OPTIMIZATION_SATURATED is honored only once the read speedup over the stateless base kernel
+  # reaches the floor, or the last `saturation_required_attempts` trials were profile-guided and
+  # distinct, with one structural and one low-level change among them.
   early_stop:
     enabled: true
+    saturation_min_read_speedup: 10
+    saturation_required_attempts: 3
+  # A redesign of the state (declared as strategy=structural, or inferred from the changed lines)
+  # is kept only after the full tier of these gates and a measured read gain with the write axis held.
+  structural:
+    gates: [aux_correctness, aux_unit, aux_tsan, aux_multi_connection]
+    inferred_diff_fraction: 0.35
 
 post_implementation_gates:
   - aux_correctness

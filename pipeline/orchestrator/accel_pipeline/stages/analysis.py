@@ -5,7 +5,7 @@ import sys
 
 from accel_pipeline.config import ModelConfig, PipelineConfig, load_run_workload
 from accel_pipeline.paths import analysis_artifact_path
-from accel_pipeline.pipeline_log import log_analysis_candidates
+from accel_pipeline.pipeline_log import log_analysis_candidates, log_event
 from accel_pipeline.stages.base import run_agent_stage
 from accel_pipeline.validation import AuxAnalysisValidationError, repair_aux_analysis, validate_aux_analysis_file
 
@@ -75,6 +75,13 @@ def run(
         raise RuntimeError(f"aux analysis validation failed: {exc}") from exc
 
     analysis = json.loads(analysis_path.read_text(encoding="utf-8"))
+    ratio = analysis["correctness_facts"]["state_design"].get("read_work_ratio")
+    if isinstance(ratio, dict) and ratio.get("unmet_justification"):
+        log_event(
+            pipeline_config.repo_root, query, workload, "design_target_unmet",
+            typical=ratio.get("typical"), worst=ratio.get("worst"),
+            justification=str(ratio["unmet_justification"])[:500],
+        )
     log_analysis_candidates(
         pipeline_config.repo_root,
         query,

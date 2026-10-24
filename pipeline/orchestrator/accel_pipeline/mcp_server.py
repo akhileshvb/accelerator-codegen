@@ -11,6 +11,8 @@ from typing import Any, Callable
 
 from accel_pipeline.jsonio import read_json
 from accel_pipeline.no_progress import record_check
+from accel_pipeline.optimization_saturation import mark_profile_run
+from accel_pipeline.perf_profile import not_applicable, profile_workload_hit_path, render_for_agent
 from accel_pipeline.session import keep_alive
 
 
@@ -126,17 +128,31 @@ def build_mcp_tool_callables(
                 # Full aux_bench_sweep is too heavy mid-loop; use the same quick path as A/B.
                 out = run_quick_benchmark(True)
                 digest = get_profile_digest()
+                digest_json = json.loads(digest) if digest.startswith("{") else {"raw": digest}
+                summary = digest_json.get("profile_summary") or {}
+                try:
+                    hit_path = profile_workload_hit_path(
+                        pipeline_config, workload, query, art,
+                        diagnostics=dict(summary.get("store_diagnostics") or {}),
+                        hit_us=float(summary.get("accel_hit_median_us") or 0.0) or None,
+                    )
+                except Exception as exc:  # noqa: BLE001 - a profiler failure is reported, not fatal
+                    hit_path = not_applicable(f"{type(exc).__name__}: {exc}")
                 return json.dumps(
                     {
-                        "mode": "aux_quick_profile",
+                        "mode": "aux_hit_path_profile",
+                        "hit_path_profile": hit_path,
+                        "hit_path_profile_text": render_for_agent(hit_path),
                         "quick_benchmark": out[:12_000],
-                        "digest": json.loads(digest) if digest.startswith("{") else {"raw": digest},
+                        "digest": digest_json,
                     },
                     indent=2,
                 )[:50_000]
             return _run_named_gate("profile", env={"ACCEL_BENCH_WARMUP": "1", "ACCEL_BENCH_ITERS": "3"})
 
-        return _cached_by_code_stamp("profile", measure)
+        payload = _cached_by_code_stamp("profile", measure)
+        mark_profile_run(art)
+        return payload
 
     def run_correctness() -> str:
         """Run correctness / aux_correctness gate (smoke + SF1 differential for aux)."""
@@ -525,9 +541,12 @@ def main(argv: list[str] | None = None) -> int:
         return _call("get_store_diagnostics")
 
     @_tool(annotations=_rw)
-    def begin_ab_trial(trial_id: str, hypothesis: str) -> str:
-        """Begin exploratory A/B trial (non-binding)."""
-        return _call("begin_ab_trial", trial_id, hypothesis)
+    def begin_ab_trial(trial_id: str, hypothesis: str, hot_spot: str = "", expected_gain: str = "",
+                       strategy: str = "") -> str:
+        """Begin exploratory A/B trial (non-binding). Start from run_profile output: hot_spot names the
+        hot function or loop it targets, expected_gain the gain you expect there, strategy is
+        structural | low_level | other."""
+        return _call("begin_ab_trial", trial_id, hypothesis, hot_spot, expected_gain, strategy)
 
     @_tool(annotations=_rw)
     def run_quick_benchmark(include_profile: bool = True, acceptance: bool = False) -> str:

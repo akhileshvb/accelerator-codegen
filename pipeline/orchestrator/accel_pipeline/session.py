@@ -209,7 +209,19 @@ def budget_footer(pipeline_config: Any, stage: str, query: int) -> str:
         return ""
     from accel_pipeline.no_progress import footer
 
-    return "\n".join(filter(None, [_wall_notice(run), footer(Path(art))]))
+    return "\n".join(filter(None, [_wall_notice(run), footer(Path(art)), _frozen_edit_notice(pipeline_config)]))
+
+
+def _frozen_edit_notice(pipeline_config: Any) -> str:
+    from accel_pipeline.frozen_paths import edited
+
+    repo_root = getattr(pipeline_config, "repo_root", None)
+    paths = edited(Path(repo_root)) if repo_root else []
+    if not paths:
+        return ""
+    shown = ", ".join(paths[:5]) + (f" (+{len(paths) - 5} more)" if len(paths) > 5 else "")
+    return (f"[pipeline files are not yours: {shown} edited. They are reverted when this stage ends, so the edit "
+            "does nothing. Undo it now; if the task needs a change there, call report_blocker.]")
 
 
 def _wall_notice(run: dict[str, Any]) -> str:

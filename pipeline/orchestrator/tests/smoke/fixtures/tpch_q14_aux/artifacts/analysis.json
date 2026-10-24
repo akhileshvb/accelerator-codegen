@@ -175,6 +175,7 @@
       "mutation_to_partition_mapping": "A lineitem insert/delete/update maps old and new shipdate values to their exact day keys and updates that row's partkey/day dependency. A part insert/delete/update maps its old/new partkey to the stored per-day sums for that key and adjusts only affected day summaries."
     },
     "state_design": {
+      "read_work_ratio": {"typical": 50000, "worst": 50000, "basis": "base plan scans and joins every fact row per read; the design probes at most 31 daily entries"},
       "selected_candidate_id": "daily_join_sufficient_stats_reverse_dependencies",
       "chosen_representation": "Daily exact join-derived sufficient statistics plus a reverse (partkey,day) aggregate index and per-part dimension multiplicities, all published as immutable COW pages.",
       "state_grain": "One global summary per populated shipdate day, one dimension-count record per partkey, and one raw amount sum per distinct (partkey,shipdate day).",

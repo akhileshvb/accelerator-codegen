@@ -17,6 +17,7 @@ from accel_pipeline.kernel_hot_path_review import (
     analyze_kernel_source,
     format_kernel_review_for_prompt,
 )
+from accel_pipeline.optimization_saturation import early_stop_config
 from accel_pipeline.optimization_evidence import extract_bottleneck_evidence
 from accel_pipeline.negative_memory import (
     format_negative_memory_markdown,
@@ -158,8 +159,9 @@ def build_runtime_state(
         best_valid = load_best_valid_baseline(art)
         aux_opt = load_optimization_state(pipeline_config.repo_root, query, workload) or {}
         fair = read_json(art / "aux_bench_summary.json")
+        read_floor = early_stop_config(pipeline_config)["saturation_min_read_speedup"]
         best_read = float(
-            best_valid.get("score")
+            (best_valid.get("metrics") or {}).get("read_only_query_speedup")
             or (aux_opt.get("best_summary") or {}).get("read_only_query_speedup")
             or fair.get("read_only_query_speedup")
             or aux_profile.get("read_only_query_speedup")
@@ -250,7 +252,7 @@ def build_runtime_state(
             "Designs must scale with SF (bind-time row estimates; no SF1 hardcoding).",
             "Measure-first: run_profile on CURRENT tree; cite phase_breakdown + 0% and 10% metrics.",
         ]
-        if write_mix > 0 and write_mix < 1.0 and best_read >= 5.0:
+        if write_mix > 0 and write_mix < 1.0 and best_read >= read_floor:
             focus.insert(
                 0,
                 f"PRIORITY: write-mix cliff ({write_mix_pct}% workload={write_mix:.2f}x ≪ 1×) while "
@@ -307,6 +309,7 @@ def build_runtime_state(
             "beats_duckdb": last_read > 1.0,
             "regressed_vs_best": best_read > 0 and last_read + 0.01 < best_read,
             "scoreboard": scoreboard,
+            "read_floor": read_floor,
             "freshness": freshness,
             "phase_breakdown": aux_profile.get("phase_breakdown") or [],
             "work_counters_mean": aux_profile.get("work_counters_mean") or {},
@@ -412,6 +415,29 @@ def build_runtime_state(
     }
 
 
+def _read_axis_lines(board: dict[str, Any], floor: float) -> list[str]:
+    axes = dict((board.get("read_speedup") or {}).get("best_valid") or {})
+    last = dict((board.get("read_speedup") or {}).get("last_measured") or {})
+
+    def fmt(value: Any) -> str:
+        return f"{float(value):.2f}x" if value else "n/a"
+
+    lines = [
+        f"- **READ AXIS (best valid)**: {fmt(axes.get('vs_base_kernel'))} vs the stateless base kernel; "
+        f"{fmt(axes.get('vs_engine'))} vs the engine's own SQL",
+        f"- read axis (last measured): {fmt(last.get('vs_base_kernel'))} vs base kernel; "
+        f"{fmt(last.get('vs_engine'))} vs engine",
+    ]
+    base = axes.get("vs_base_kernel")
+    if floor > 0 and base and float(base) < floor:
+        lines.append(
+            f"- **READ FLOOR NOT MET** ({float(base):.2f}x < {floor:g}x over the base kernel): the write axis "
+            "does not excuse this. Profile first, then attack the top hot spot; restructure when the "
+            "profile shows the read visits too much state."
+        )
+    return lines
+
+
 def format_runtime_markdown(state: dict[str, Any]) -> str:
     is_aux = state.get("workload_kind") == "aux_state"
     score_label = "read_only_query_speedup" if is_aux else "speedup_median"
@@ -454,9 +480,13 @@ def format_runtime_markdown(state: dict[str, Any]) -> str:
                 "- **WRITE-MIX CLIFF** — prefer ApplyDelta / local rebuilds; do not spend the "
                 "attempt on tiny read micro-opts while this stays ≪1×."
             )
+    if is_aux:
+        lines.extend(_read_axis_lines(board, float(state.get("read_floor") or 0.0)))
     lines.append(
-        "- Early stop: be aggressive first; if stuck with no real dual-axis headroom left "
-        "(query-dependent — no target ×), yield `OPTIMIZATION_SATURATED`."
+        "- Early stop: `OPTIMIZATION_SATURATED` is honored once the read speedup over the stateless "
+        "kernel reaches the floor; below it, only after the last trials were each profile-guided "
+        "(`begin_ab_trial` with hot_spot, expected_gain, strategy), distinct, and included one "
+        "`structural` and one `low_level` change."
     )
     if state.get("regressed_vs_best"):
         lines.append("- **REGRESSION vs best** — workspace should be on restored best snapshot.")

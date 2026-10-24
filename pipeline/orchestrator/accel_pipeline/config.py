@@ -225,6 +225,9 @@ class PipelineConfig:
     optimization_checkpoint_file: str = "optimization_worker_checkpoint.json"
     # Agent may declare OPTIMIZATION_SATURATED when stuck (no numeric floors).
     optimization_early_stop: dict[str, Any] = field(default_factory=dict)
+    # Redesigns of the state inside optimization: the full-tier gates they must pass, and the
+    # changed-line fraction above which an undeclared attempt counts as one.
+    optimization_structural: dict[str, Any] = field(default_factory=dict)
     repair: RepairConfig = field(default_factory=RepairConfig)
     session: SessionConfig = field(default_factory=SessionConfig)
     data_tools: DataToolsConfig = field(default_factory=DataToolsConfig)
@@ -585,6 +588,7 @@ def load_pipeline_config(
         optimization_turn_delta_max_chars=int(opt.get("turn_delta_max_chars", 4_000)),
         optimization_checkpoint_file=str(opt.get("checkpoint_file", "optimization_worker_checkpoint.json")),
         optimization_early_stop=dict(opt.get("early_stop") or {}),
+        optimization_structural=dict(opt.get("structural") or {}),
         repair=_repair_config(data.get("repair") or {}),
         session=_session_config(data.get("session") or {}),
         data_tools=_data_tools_config(data.get("data_tools") or {}),
@@ -1121,6 +1125,11 @@ def _apply_optimization_block(pipeline_config: PipelineConfig, opt: dict[str, An
             dict(opt["early_stop"])
             if isinstance(opt.get("early_stop"), dict)
             else dict(pipeline_config.optimization_early_stop)
+        ),
+        optimization_structural=(
+            dict(opt["structural"])
+            if isinstance(opt.get("structural"), dict)
+            else dict(pipeline_config.optimization_structural)
         ),
         repair=pipeline_config.repair,
         session=pipeline_config.session,

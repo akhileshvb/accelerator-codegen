@@ -46,6 +46,8 @@ def is_relevant(path: str, query_dir: str) -> bool:
     cmake and the shared accelerators/<bench>/common are all relevant)."""
     if path.split("/", 1)[0] in IRRELEVANT_TOP_DIRS or _BUILD_OR_VCS.match(path):
         return False
+    if _QUERY_DIR.match(path) and "/scratch/" in path:  # an agent's throwaway probes: no gate judges them
+        return False
     return not (query_dir and _QUERY_DIR.match(path) and not path.startswith(query_dir.rstrip("/") + "/"))
 
 

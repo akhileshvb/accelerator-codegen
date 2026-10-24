@@ -64,6 +64,8 @@ include(VerusKits)
 set(ACCEL_TEST_DB_DIR "${CMAKE_CURRENT_BINARY_DIR}/test_dbs")
 accel_include_backends()
 accel_include_accelerators()
+include(AgentExecutables)
+accel_add_agent_executables()
 accel_register_aux_state_queries(accelerator_codegen)
 
 # Engine-neutral unit tests of the substrate and the test-support headers.

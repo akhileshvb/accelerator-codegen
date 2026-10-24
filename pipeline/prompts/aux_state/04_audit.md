@@ -10,7 +10,7 @@ Audit **Q{{query_number}}** (`{{aux_function_name}}`) against the stateful goals
 {{audit_context_json}}
 ```
 
-Full analysis: `{{full_analysis_path}}`
+Full analysis: `{{full_analysis_path}}`. Optimization may have redesigned the state: the "Design revisions" block of the user message supersedes the analysis, so judge the final design, not the original.
 
 ## What you are given
 

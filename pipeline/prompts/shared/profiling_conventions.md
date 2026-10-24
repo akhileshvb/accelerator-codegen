@@ -58,3 +58,7 @@ During optimization you may **freely invent** temporary instrumentation in edita
 - Prefer this when stock store diagnostics are too coarse; rename/split phases as needed.
 - After accept/restore, call `run_profile` again — digests marked `freshness.stale` must not drive hypotheses.
 - A/B keep/regress uses `scoreboard.best_valid_score` only.
+
+## `run_profile` on a stateful accelerator
+
+Returns the hit path's real profile, not just phase timers: self-time top functions and source lines, folded into `own_code` (`accelerators/`, prims included), `substrate` and `engine_or_other`; hardware counters per query (IPC, cache and branch misses, from the difference of two runs so setup cancels); whether the hottest own function uses wide vector instructions; and the visited-state count the read path reports through `RecordPartitionsRead`. Start every optimization from it: name the top row you attack. A function missing from `own_code` that dominates is engine or substrate time, so look at what your read asks of it. `not_applicable` with a reason means the engine's hit path cannot be sampled from the bench process; use the phase timers and counters instead.

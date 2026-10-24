@@ -26,10 +26,12 @@ from accel_pipeline.measurement import check_measurement
 from accel_pipeline.measurement_lease import lease_note, noise_warning, run_measured
 from accel_pipeline.optimization_checkpoint import load_best_valid_baseline
 from accel_pipeline.optimization_eval import aux_optimization_score, improvement_ratio
+from accel_pipeline.optimization_saturation import profile_guidance_error, record_trial_protocol
 from accel_pipeline.optimization_runtime import record_ab_trial, refresh_optimization_runtime
 from accel_pipeline.optimization_scoreboard import (
     build_scoreboard,
     primary_score_from_metrics,
+    read_speedup_vs_engine,
     write_scoreboard,
 )
 from accel_pipeline.paths import query_artifacts_dir
@@ -423,6 +425,8 @@ def _format_quick_benchmark_result(metrics: dict[str, Any], *, aux: bool) -> str
             "composite_score": metrics.get("composite_score"),
             "composite_workload_speedup": metrics.get("composite_workload_speedup"),
             "read_only_query_speedup": metrics.get("read_only_query_speedup"),
+            "read_speedup_vs_base_kernel": metrics.get("read_only_query_speedup"),
+            "read_speedup_vs_engine": read_speedup_vs_engine(metrics),
             "read_only_cold_start_workload_speedup": metrics.get(
                 "read_only_cold_start_workload_speedup"
             ),
@@ -460,10 +464,17 @@ def _format_quick_benchmark_result(metrics: dict[str, Any], *, aux: bool) -> str
 
 
 def make_ab_tools(ctx: AbToolContext):
-    def begin_ab_trial(trial_id: str, hypothesis: str) -> str:
-        """Snapshot current kernel files before an A/B trial."""
+    def begin_ab_trial(
+        trial_id: str, hypothesis: str, hot_spot: str = "", expected_gain: str = "", strategy: str = ""
+    ) -> str:
+        """Snapshot current kernel files before an A/B trial that targets a profiled hot spot."""
         if _read_active_trial(ctx):
             return "ERROR: an A/B trial is already active; call end_ab_trial first."
+        guidance_error = profile_guidance_error(
+            _art(ctx), hot_spot=hot_spot, expected_gain=expected_gain, strategy=strategy
+        )
+        if guidance_error:
+            return f"ERROR: a trial starts from the profile: {guidance_error}"
         ckpt = _checkpoint_dir(ctx)
         if ckpt.exists():
             shutil.rmtree(ckpt)
@@ -480,6 +491,9 @@ def make_ab_tools(ctx: AbToolContext):
         ref_score = _reference_score_for_trial(ctx)
         board = build_scoreboard(_art(ctx), is_aux=_is_aux_workload(ctx.workload))
         write_scoreboard(_art(ctx), board)
+        record_trial_protocol(
+            _art(ctx), trial_id=trial_id, hot_spot=hot_spot, expected_gain=expected_gain, strategy=strategy
+        )
         _write_active_trial(
             ctx,
             {

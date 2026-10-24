@@ -76,9 +76,11 @@ optimization:
   hot_path_digest_max_chars: 25000
   turn_delta_max_chars: 4000
   checkpoint_file: optimization_worker_checkpoint.json
-  # Agent may declare OPTIMIZATION_SATURATED when stuck (no numeric speedup floors).
+  # OPTIMIZATION_SATURATED below the read-speedup floor needs profile-guided, distinct attempts.
   early_stop:
     enabled: true
+    saturation_min_read_speedup: 10
+    saturation_required_attempts: 3
   # deprecated aliases
   episodes_per_iteration: 4
   max_turns_per_episode: 8

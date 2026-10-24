@@ -164,6 +164,16 @@
               }
             },
             "parameter_scaling_argument": { "type": "string", "minLength": 1 },
+            "read_work_ratio": {
+              "type": "object",
+              "required": ["typical", "worst", "basis"],
+              "properties": {
+                "typical": { "type": "number", "exclusiveMinimum": 0 },
+                "worst": { "type": "number", "exclusiveMinimum": 0 },
+                "basis": { "type": "string", "minLength": 1 },
+                "unmet_justification": { "type": "string" }
+              }
+            },
             "residual_read_algorithm": { "type": "string", "minLength": 1 },
             "alternatives_considered": {
               "type": "array",

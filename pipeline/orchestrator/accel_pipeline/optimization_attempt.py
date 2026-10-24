@@ -66,11 +66,22 @@ from accel_pipeline.optimization_fix import (
 from accel_pipeline.optimization_runtime import refresh_optimization_runtime
 from accel_pipeline.negative_memory import maybe_record_reject_trap
 from accel_pipeline.optimization_saturation import (
-    evaluate_saturation_claim,
+    REANALYSIS_MARKER_FILE,
+    Verdict,
+    judge_saturation_claim,
     parse_optimization_saturated,
+    profile_guidance_error,
+    record_trial_protocol,
 )
 from accel_pipeline.optimization_smoke import SmokeResult, run_build, run_smoke_correctness_repeated
-from accel_pipeline.paths import load_query_analysis, query_artifacts_dir
+from accel_pipeline.paths import analysis_artifact_path, load_query_analysis, query_artifacts_dir
+from accel_pipeline.optimization_structural import (
+    design_revision_error,
+    is_structural_attempt,
+    record_design_revision,
+    run_full_tier_gates,
+)
+from accel_pipeline.structural_reanalysis import write_request as write_structural_request
 from accel_pipeline.optimization_pending import format_gate_delta
 from accel_pipeline.optimization_worker import OptimizationWorker
 from accel_pipeline.optimization_worker_checkpoint import load_worker_checkpoint
@@ -96,6 +107,54 @@ class UnifiedAttemptResult:
     saturation: dict[str, Any] | None = None
 
 
+def _request_read_path_reanalysis(
+    pipeline_config: PipelineConfig,
+    workload: dict[str, Any],
+    query: int,
+    art: Path,
+    optimization_iter: int,
+    detail: str,
+) -> None:
+    """Saturated below the read floor: hand the design back to analysis once instead of stopping."""
+    (art / REANALYSIS_MARKER_FILE).write_text(detail, encoding="utf-8")
+    try:
+        analysis = json.loads(analysis_artifact_path(pipeline_config.repo_root, query, workload=workload).read_text(encoding="utf-8"))
+        candidate = str(analysis["correctness_facts"]["state_design"]["selected_candidate_id"])
+    except (OSError, KeyError, TypeError, json.JSONDecodeError):
+        candidate = "current"
+    write_structural_request(
+        pipeline_config.repo_root,
+        query,
+        workload,
+        source_stage="optimization",
+        source_iteration=optimization_iter,
+        bottleneck_type="residual_read_path",
+        evidence=f"{detail}. The profile-guided structural and low-level attempts recorded in trial_protocol.jsonl did not close the gap.",
+        proposed_direction="Choose a design whose typical read visits at least 100x less state than the base path: "
+        "finer partitioning by the predicate's columns, coarser pre-aggregation with output-sensitive refinement, "
+        "or a data-derived bound that tightens with the parameter.",
+        current_candidate_id=candidate,
+    )
+
+
+def _structural_failure(
+    pipeline_config: PipelineConfig,
+    workload: dict[str, Any],
+    query: int,
+    art: Path,
+    hypothesis: dict[str, Any] | None,
+    optimization_iter: int,
+) -> tuple[bool, str]:
+    """(is_structural, why it fails): a redesign carries its design record and passes the full-tier gates."""
+    if workload.get("workload_kind") != "aux_state" or not is_structural_attempt(pipeline_config, art, hypothesis):
+        return False, ""
+    print("[pipeline] structural attempt: full-tier gates before the benchmark", file=sys.stderr, flush=True)
+    error = design_revision_error(hypothesis) or run_full_tier_gates(
+        pipeline_config, workload, query, iteration=optimization_iter
+    )
+    return True, error
+
+
 def _try_honor_saturation(
     *,
     pipeline_config: PipelineConfig,
@@ -108,7 +167,10 @@ def _try_honor_saturation(
     worker: OptimizationWorker | None = None,
 ) -> tuple[bool, str]:
     """Return (honored, detail). On reject, push feedback / log failure."""
-    ok, detail, cfg = evaluate_saturation_claim(pipeline_config, workload, art, payload)
+    verdict, detail, cfg = judge_saturation_claim(pipeline_config, art, payload)
+    ok = verdict is not Verdict.REJECT
+    if verdict is Verdict.REANALYZE:
+        _request_read_path_reanalysis(pipeline_config, workload, query, art, optimization_iter, detail)
     log_event(
         pipeline_config.repo_root,
         query,
@@ -479,6 +541,17 @@ def _run_hypothesis_phase(
         )
     if not hypothesis:
         return UnifiedAttemptResult(status="failed", reason="missing hypothesis JSON", final_text=final_text)
+    art = query_artifacts_dir(pipeline_config.repo_root, query, workload=load_run_workload(pipeline_config, workload_name))
+    fields = {key: str(hypothesis.get(key) or "") for key in ("hot_spot", "expected_gain", "strategy")}
+    guidance_error = profile_guidance_error(art, **fields)
+    if guidance_error:
+        return UnifiedAttemptResult(
+            status="failed",
+            hypothesis=hypothesis,
+            reason=f"the hypothesis must start from the profile: {guidance_error}",
+            final_text=final_text,
+        )
+    record_trial_protocol(art, trial_id=f"iter{optimization_iter}_a{attempt}", **fields)
     return UnifiedAttemptResult(status="complete", hypothesis=hypothesis, final_text=final_text)
 
 
@@ -1218,6 +1291,26 @@ def run_optimization_iteration(
                     break
                 continue
 
+            structural, structural_error = _structural_failure(
+                pipeline_config, workload, query, art, hypothesis, optimization_iter
+            )
+            if structural_error:
+                _revert_and_rebuild(pipeline_config, workload, query)
+                consecutive_fails += 1
+                worker.pending.push(
+                    format_gate_delta(
+                        verdict="structural_gates_failed",
+                        reason=structural_error,
+                        hypothesis=hypothesis,
+                        reverted=True,
+                    )
+                )
+                worker.save_checkpoint()
+                _record_failure(art, attempt=attempt, hypothesis=hypothesis, reason=structural_error)
+                if consecutive_fails >= consecutive_fail_stop:
+                    break
+                continue
+
             candidate = run_multi_sample_benchmark(
                 pipeline_config,
                 workload,
@@ -1249,6 +1342,7 @@ def run_optimization_iteration(
                 config=eval_config,
                 correctness_ok=True,
                 measurement=pipeline_config.measurement,
+                structural=structural,
             )
             _raise_if_invalid_measurement(outcome)
             log_event(
@@ -1391,6 +1485,11 @@ def run_optimization_iteration(
                 score=candidate.median_score,
                 metrics=candidate.median_metrics,
             )
+            if structural:
+                record_design_revision(
+                    art, attempt_id=attempt_id, hypothesis=hypothesis,
+                    before=baseline.median_metrics, after=candidate.median_metrics,
+                )
             experimental_depth = 0
             clear_attempt_checkpoint(art)
             consecutive_fails = 0
@@ -1653,6 +1752,17 @@ def run_optimization_iteration(
                 break
             continue
 
+        structural, structural_error = _structural_failure(
+            pipeline_config, workload, query, art, hypothesis, optimization_iter
+        )
+        if structural_error:
+            _revert_and_rebuild(pipeline_config, workload, query)
+            consecutive_fails += 1
+            _record_failure(art, attempt=attempt, hypothesis=hypothesis, reason=structural_error)
+            if consecutive_fails >= consecutive_fail_stop:
+                break
+            continue
+
         candidate = run_multi_sample_benchmark(
             pipeline_config,
             workload,
@@ -1676,6 +1786,7 @@ def run_optimization_iteration(
             config=eval_config,
             correctness_ok=True,
             measurement=pipeline_config.measurement,
+            structural=structural,
         )
         _raise_if_invalid_measurement(outcome)
 
@@ -1747,6 +1858,11 @@ def run_optimization_iteration(
             score=candidate.median_score,
             metrics=candidate.median_metrics,
         )
+        if structural:
+            record_design_revision(
+                art, attempt_id=attempt_id, hypothesis=hypothesis,
+                before=baseline.median_metrics, after=candidate.median_metrics,
+            )
         experimental_depth = 0
         clear_attempt_checkpoint(art)
         consecutive_fails = 0

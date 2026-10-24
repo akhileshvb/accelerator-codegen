@@ -33,6 +33,7 @@ The `aux_bench_sweep` gate calls the bench once per point, for each suite (`line
 | `ACCEL_BENCH_REF_SAMPLES` | Legacy; ignored when benchmarks use warmup + measured loop |
 | `ACCEL_BENCH_BASE_WRITE_SAMPLES` | Base-path write calibration samples |
 | `ACCEL_Q{N}_MAINTENANCE_MODE` | Set `hybrid` during measured workload |
+| `ACCEL_PROFILE_CONTROL` | Comma-separated `perf --control` fifos set by `run_profile`; the bench opens the window around the measured read loop with `driver::ProfileWindow` (`eval/bench/driver/profile_window.hpp`) |
 
 Query-specific bench params (month/day_offset, segment/cutoff_date, etc.) follow the Q{N} manifest / test helpers.
 

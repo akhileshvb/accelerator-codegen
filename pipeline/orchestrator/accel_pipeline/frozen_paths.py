@@ -40,6 +40,17 @@ def _files(repo_root: Path) -> list[Path]:
     return out
 
 
+def edited(repo_root: Path) -> list[str]:
+    """Frozen paths that differ from the tree's committed version right now (empty when git cannot say)."""
+    present = [rel for rel in FROZEN if (repo_root / rel).exists()]
+    proc = subprocess.run(["git", "-C", str(repo_root), "status", "--porcelain", "--untracked-files=all", "--", *present],
+                          capture_output=True, text=True)
+    if proc.returncode != 0:
+        return []
+    paths = (line[3:] for line in proc.stdout.splitlines())
+    return [p for p in paths if not _SKIP_PARTS.intersection(Path(p).parts)]
+
+
 def snapshot(repo_root: Path) -> dict[Path, bytes]:
     return {f: f.read_bytes() for f in _files(repo_root)}
 

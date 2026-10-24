@@ -20,6 +20,9 @@ BASE_PATH_DECOMPOSITION_FIELDS = (
     "work_remaining_after_aux_replacement",
 )
 
+# Typical-binding read work of a stateful design must undercut the base path's by this factor.
+MIN_TYPICAL_READ_WORK_RATIO = 100.0
+
 STATE_DESIGN_READ_PATH_FIELDS = (
     "selected_candidate_id",
     "physical_organization",
@@ -189,6 +192,40 @@ def _validate_estimated_state_units_read(value: Any, label: str) -> None:
     for key in ("typical", "worst_case"):
         if not str(value.get(key, "")).strip():
             raise AuxAnalysisValidationError(f"{label}.estimated_state_units_read.{key} is required")
+
+
+def _positive_number(value: Any) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
+        return None
+    return float(value)
+
+
+def _validate_read_work_ratio(state_design: dict[str, Any]) -> None:
+    """The design's per-read work must be far below the base path's, or the miss must be explicit."""
+    ratio = state_design.get("read_work_ratio")
+    where = "correctness_facts.state_design.read_work_ratio"
+    if not isinstance(ratio, dict):
+        raise AuxAnalysisValidationError(
+            f"{where} is required: base-path work / design work per read, typical and worst "
+            "(numbers; `basis` names the measured figures behind them)"
+        )
+    if not str(ratio.get("basis", "")).strip():
+        raise AuxAnalysisValidationError(f"{where}.basis is required (the measured base work and design work)")
+    typical = _positive_number(ratio.get("typical"))
+    worst = _positive_number(ratio.get("worst"))
+    if typical is None or worst is None:
+        raise AuxAnalysisValidationError(f"{where}.typical and {where}.worst must be positive numbers")
+    if typical >= MIN_TYPICAL_READ_WORK_RATIO:
+        return
+    unmet = str(ratio.get("unmet_justification", "")).strip()
+    if len(unmet) < 40:
+        raise AuxAnalysisValidationError(
+            f"design target unmet: {where}.typical is {typical:g}, below the required "
+            f"{MIN_TYPICAL_READ_WORK_RATIO:g}x. Revise the design in this stage (finer partitioning by the "
+            "predicate's columns, pre-aggregation at a coarser grain with output-sensitive refinement, a "
+            "data-derived bound that tightens with the parameter) or select a candidate that meets it; if no "
+            "candidate can, set unmet_justification (at least 40 characters) naming why for each candidate"
+        )
 
 
 def _validate_base_path_cost_decomposition(decomposition: Any) -> None:
@@ -361,6 +398,7 @@ def validate_aux_analysis(
             )
         _validate_base_path_cost_decomposition(performance.get("base_path_cost_decomposition"))
         _validate_state_candidate_search(analysis)
+        _validate_read_work_ratio(state_design)
 
 
 def validate_aux_analysis_file(

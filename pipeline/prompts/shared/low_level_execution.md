@@ -2,6 +2,13 @@
 
 For every inner loop, in stateless kernels and in stateful modules. The profile says which loop matters; this guide says how to make it run at machine speed. Correctness comes first: a vectorized loop must give the same result as the scalar one.
 
+## Order of work
+
+1. `run_profile` first: hot functions, hardware counters (IPC, cache and branch misses), visited-state count. Never guess the hot spot.
+2. Attack the top hot spot with the cheapest change that removes its cost: SIMD (AVX-512/AVX2 with a scalar fallback), branch-free predicates, columnar/compact layouts, prefetch, no allocation or indirection in the loop.
+3. Re-measure with `run_profile`; the next hot spot is whatever the profile now shows. Repeat until the profile is flat or the loop is at its memory-bandwidth bound.
+4. When the profile shows the read visits too much state, or the layout defeats SIMD, no loop tuning will fix it: restructure the state (see the stage prompt on structural redesigns), then profile again.
+
 ## Vectorize
 
 - Process columns with SIMD: AVX-512 and AVX2 intrinsics behind `#if defined(__AVX512F__)` / `__AVX2__`, and a scalar fallback that is the reference. Builds use `-march=native`, so compile-time dispatch is the default; use runtime dispatch (`__builtin_cpu_supports`) only where the build target lacks the flag.

@@ -92,6 +92,21 @@ def _structural_progress_pct(
     return max(improvements) if improvements else 0.0
 
 
+def _structural_rejection(
+    baseline_metrics: dict[str, Any], candidate_metrics: dict[str, Any], config: EvalConfig
+) -> str:
+    """A redesign stays only if reads improve and the write axis holds (within the reject tolerance)."""
+    read_before = float(baseline_metrics.get("read_only_query_speedup") or 0.0)
+    read_after = float(candidate_metrics.get("read_only_query_speedup") or 0.0)
+    if read_after < read_before * (1.0 + config.improvement_threshold_pct / 100.0):
+        return f"structural_read_not_improved: read speedup {read_before:.2f}x -> {read_after:.2f}x"
+    write_before = _write_mix_from_metrics(baseline_metrics)
+    write_after = _write_mix_from_metrics(candidate_metrics)
+    if write_before > 0 and write_after < write_before * (1.0 - config.reject_threshold_pct / 100.0):
+        return f"structural_write_regressed: write mix {write_before:.2f}x -> {write_after:.2f}x"
+    return ""
+
+
 def evaluate_attempt_outcome(
     *,
     baseline_score: float,
@@ -103,6 +118,7 @@ def evaluate_attempt_outcome(
     structural_progress_threshold_pct: float = 5.0,
     severe_regress_threshold_pct: float = 10.0,
     measurement: MeasurementConfig | None = None,
+    structural: bool = False,
 ) -> AttemptOutcome:
     """Multi-axis verdict: accept / keep_explore / reject_broken / reject_regress, or
     reject_invalid_measurement when the benchmark did not measure the accelerator (the kernel is not judged)."""
@@ -149,6 +165,18 @@ def evaluate_attempt_outcome(
             measurement_failures=invalid,
         )
 
+    if structural:
+        rejection = _structural_rejection(baseline_metrics, candidate_metrics, config)
+        if rejection:
+            return AttemptOutcome(
+                verdict="reject_regress",
+                improvement_pct=improvement_pct,
+                baseline_score=baseline_score,
+                candidate_score=candidate_score,
+                diagnostic_vector=diagnostic_vector,
+                reason=rejection,
+            )
+
     if improvement_pct >= config.improvement_threshold_pct:
         return AttemptOutcome(
             verdict="accept",
@@ -170,7 +198,7 @@ def evaluate_attempt_outcome(
         )
 
     structural_pct = _structural_progress_pct(baseline_diag, candidate_diag)
-    if structural_pct >= structural_progress_threshold_pct and improvement_pct >= -config.reject_threshold_pct:
+    if not structural and structural_pct >= structural_progress_threshold_pct and improvement_pct >= -config.reject_threshold_pct:
         return AttemptOutcome(
             verdict="keep_explore",
             improvement_pct=improvement_pct,

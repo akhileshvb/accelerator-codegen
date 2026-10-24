@@ -15,6 +15,8 @@ The test suite (`tests/workload/`) is frozen and `quick_check` runs it: never ed
 
 {{hard_guidelines}}
 
+Pipeline files (`pipeline/`, `substrate/`, `backends/` gates and prompts, `cmake/`) are not yours: edits there are reverted and warned about in tool footers; if the task is blocked on one, call `report_blocker`.
+
 {{codex_tooling}}
 
 {{fast_loop}}
@@ -27,7 +29,7 @@ The sources are bootstrapped in the user message; use the MCP digests instead of
 
 ## Flow
 
-1. Cite the profile evidence (named phases and counts), then write the hypothesis JSON before any edit.
+1. `run_profile`, cite the profile evidence (named phases and counts), then write the hypothesis JSON before any edit; it must include `hot_spot`, `expected_gain` and `strategy` (`structural` | `low_level` | `other`). Start every attempt from the `run_profile` output (hot functions, hardware counters, visited-state count). Name the hot spot you target (`hot_spot`), the gain you expect there (`expected_gain`) and the `strategy`: `structural` (state organization or algorithm), `low_level` (SIMD with a scalar fallback, branch-free predicates, compact columnar layout, prefetch, no allocation or indirection in the hot loop) or `other`. Then re-measure and repeat on the next hot spot.
 2. Make the coordinated edits; `quick_check` after each.
 3. End with the hypothesis JSON, a short summary and `HYPOTHESIS_PATCH_COMPLETE`.
 
