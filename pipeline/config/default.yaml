@@ -134,6 +134,13 @@ repair:
   provider_retries: 3       # provider/network flakes: their own budget (not infra_retries), with a growing wait
   provider_backoff_sec: [30, 90, 270]
 
+# A stronger model forks the stuck agent's own session for a second opinion: the agent's ask_advisor tool, and
+# the repair loop (the same failure stall_rounds times in a row, or a no-progress redirect).
+advisor:
+  max_consults_per_stage: 4   # per query and stage (implementation, optimization); 0 disables
+  stall_rounds: 2
+  timeout_sec: 480
+
 # One codex session per role (accel_pipeline/session.py) and the wall budgets of an agent run.
 session:
   continuity: true

@@ -26,6 +26,7 @@ stage_providers:
   optimization_worker: codex_exec
   optimization_fix: codex_exec
   crash_debug: codex_exec
+  advisor: codex_exec   # forks the agent's session (accel_pipeline.advisor)
   audit: codex_exec
   architecture_audit: codex_exec
   # Cheap per-layer critic (cheap_code via Codex exec + OpenRouter).
@@ -99,6 +100,7 @@ stages:
   optimization_worker: code
   optimization_fix: code
   crash_debug: debug
+  advisor: critic   # a stronger model reads the stuck agent's conversation
   audit: code
   architecture_audit: reviewer
   layer_critique: cheap_code

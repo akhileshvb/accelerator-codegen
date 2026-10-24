@@ -17,10 +17,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from accel_pipeline import no_progress
+from accel_pipeline import advisor, no_progress
 from accel_pipeline import session as session_mod
 from accel_pipeline.backends.base import StageRunRequest, StageRunResult
 from accel_pipeline.config import ModelConfig, PipelineConfig
+from accel_pipeline.advisor import READ_ONLY_TOOLS
 from accel_pipeline.session import HEARTBEAT_FILE
 
 
@@ -218,14 +219,21 @@ class CodexExecBackend:
         log_event(self._pipeline_config.repo_root, self._query, workload, "write_policy_violation",
                   stage=self._stage, policy=policy, paths=[rel for rel, _ in bad])
 
+    def fork_stage(self, request: StageRunRequest) -> StageRunResult:
+        """The advisor's turn: a fork of the session `request.metadata["fork_session_id"]` (a new session; that one is
+        not resumed or changed). No write check: the caller undoes whatever the fork edits."""
+        return self._run_codex(request)
+
     def _run_codex(self, request: StageRunRequest) -> StageRunResult:
         started = time.monotonic()
         started_wall = time.time()
         codex_bin = self._resolve_codex_bin()
         config_path = self._config_path()
         model = str(request.agent_model or request.model_id)
-        resume = request.metadata.get("resume_session_id") or getattr(self, "resume_session_id", None)
-        task = self._task_text(request, resumed=bool(resume))
+        fork = request.metadata.get("fork_session_id")
+        resume = None if fork else request.metadata.get("resume_session_id") or getattr(self, "resume_session_id", None)
+        self._live_session = str(resume or "")
+        task = self._task_text(request, resumed=bool(resume), forked=bool(fork))
 
         env = os.environ.copy()
         env["ACCEL_PIPELINE_QUERY"] = str(self._query)
@@ -296,8 +304,8 @@ class CodexExecBackend:
             mcp_env_toml = "{" + ", ".join(mcp_env_parts) + "}"
             # resume: continue that codex session (its context kept) with this task as the
             # next message, instead of a fresh one.
-            head = [codex_bin, "exec", "resume"] if resume else [codex_bin, "exec"]
-            cmd = head + ["--skip-git-repo-check"] + ([] if resume else ["-C", str(self._pipeline_config.repo_root)]) + [
+            head = [codex_bin, "exec", "fork"] if fork else [codex_bin, "exec", "resume"] if resume else [codex_bin, "exec"]
+            cmd = head + ["--skip-git-repo-check"] + ([] if resume or fork else ["-C", str(self._pipeline_config.repo_root)]) + [
                 "-m",
                 model,
                 "-c",
@@ -314,10 +322,11 @@ class CodexExecBackend:
             if self._model_config.codex_compact_prompt_file:
                 compact = self._pipeline_config.repo_root / self._model_config.codex_compact_prompt_file
                 cmd.extend(["-c", f'experimental_compact_prompt_file="{compact}"'])
-            effort = (getattr(self._model_config, "stage_reasoning_effort", None) or {}).get(self._stage)
+            efforts = getattr(self._model_config, "stage_reasoning_effort", None) or {}
+            effort = efforts.get(request.stage) or efforts.get(self._stage)
             if effort:
                 cmd.extend(["-c", f'model_reasoning_effort="{effort}"'])
-            enabled = self._engine_impl_mcp_tools(self._stage)
+            enabled = READ_ONLY_TOOLS if fork else self._engine_impl_mcp_tools(self._stage)
             if enabled:
                 listed = ", ".join(f'"{n}"' for n in enabled)
                 cmd.extend(
@@ -329,16 +338,16 @@ class CodexExecBackend:
                 cmd.append("--dangerously-bypass-approvals-and-sandbox")
             else:
                 cmd.extend(["-s", "workspace-write", "--approve-for-me"])
-            if resume:
-                cmd.append(str(resume))
+            if resume or fork:
+                cmd.append(str(resume or fork))
             # prompt_via_stdin: the task text itself is the prompt (read from stdin), so the agent
             # does not have to read it back through a shell (whose output codex truncates).
-            via_stdin = bool(getattr(self, "prompt_via_stdin", False))
+            via_stdin = bool(fork) or bool(getattr(self, "prompt_via_stdin", False))
             cmd.append("-" if via_stdin else str(task_path))
             # An OS sandbox to run codex (and its MCP server) in, e.g. bwrap.
             cmd = list(getattr(self, "command_prefix", None) or []) + cmd
             try:
-                outcome = self._supervise(cmd, env, task if via_stdin else None, started_wall)
+                outcome = self._supervise(cmd, env, task if via_stdin else None, started_wall, **({"watched": False} if fork else {}))
             except FileNotFoundError as exc:
                 return StageRunResult(
                     backend=self.name,
@@ -381,10 +390,12 @@ class CodexExecBackend:
         )
 
     @staticmethod
-    def _task_text(request: StageRunRequest, *, resumed: bool) -> str:
+    def _task_text(request: StageRunRequest, *, resumed: bool, forked: bool = False) -> str:
         """A fresh session gets the instructions and the task; a resumed one only the new message,
-        with the instructions once when the stage is new to the session."""
+        with the instructions once when the stage is new to the session; a fork both."""
         message = request.user_message.rstrip()
+        if forked:
+            return f"{request.instructions.rstrip()}\n\n## Question\n\n{message}\n"
         if resumed and not request.metadata.get("phase_change"):
             return message + "\n"
         header = f"## NEW PHASE: {request.stage}\n\nFrom here on follow these instructions.\n\n" if resumed else ""
@@ -396,20 +407,26 @@ class CodexExecBackend:
     def _deadlines(self) -> tuple[float, float]:
         """(idle timeout, hard deadline) in seconds; 0 disables. Verus steps keep codex_timeout_sec."""
         fallback = float(getattr(self._model_config, "codex_timeout_sec", 7200) or 7200)
+        if getattr(self, "timeout_sec", None):  # the advisor's own limit
+            return 0.0, float(self.timeout_sec)
         if self._stage.startswith("verus_"):
             return 0.0, fallback
         cfg = self._pipeline_config.session
         return float(cfg.idle_timeout_sec), float(cfg.hard_deadline_sec or fallback)
 
-    def _supervise(self, cmd: list[str], env: dict[str, str], stdin: str | None, since: float) -> _Outcome:
+    def _supervise(self, cmd: list[str], env: dict[str, str], stdin: str | None, since: float,
+                   watched: bool = True) -> _Outcome:
         """Run codex, killing its process group at the hard deadline or after the idle timeout (no
-        output, rollout or heartbeat activity)."""
+        output, rollout or heartbeat activity). `watched` = an agent turn (progress clock, exit gate, blocker,
+        advisor requests); the advisor's fork is only held to its deadline."""
         idle, hard = self._deadlines()
         poll = max(0.05, min(5.0, (hard or 100.0) / 20, (idle or 100.0) / 10))
-        beat = self._art_dir / HEARTBEAT_FILE if self._art_dir is not None else None
+        art = self._art_dir if watched else None
+        beat = art / HEARTBEAT_FILE if art is not None else None
         cwd = str(self._pipeline_config.repo_root)
+        servicer = self._advisor_servicer() if watched else None
         with tempfile.TemporaryDirectory(prefix="accel_codex_out_") as tmp, \
-                session_mod.agent_run(self._art_dir, self._stage, self._pipeline_config):
+                session_mod.agent_run(art, self._stage, self._pipeline_config):
             out_path, err_path = Path(tmp) / "stdout", Path(tmp) / "stderr"
             with out_path.open("w") as out, err_path.open("w") as err:
                 proc = subprocess.Popen(cmd, cwd=cwd, stdin=subprocess.PIPE if stdin is not None else subprocess.DEVNULL,
@@ -417,7 +434,7 @@ class CodexExecBackend:
             if stdin is not None:
                 threading.Thread(target=_feed, args=(proc, stdin), daemon=True).start()
             start = last_active = time.monotonic()
-            clock = self._progress_clock(since)
+            clock = self._progress_clock(since) if watched else None
             rollout: Path | None = None
             killed = reason = detail = ""
             while True:
@@ -430,6 +447,7 @@ class CodexExecBackend:
                 if rollout is None:
                     sid = self._session_id(err_path.read_text(errors="replace"), None, since)
                     rollout = session_mod.rollout_path(Path(env["CODEX_HOME"]), sid) if sid else None
+                    self._live_session = sid or self._live_session
                 touched = [p.stat().st_mtime for p in (out_path, err_path, rollout, beat) if p is not None and p.exists()]
                 if touched:
                     last_active = max(last_active, now - (time.time() - max(touched)))
@@ -437,11 +455,11 @@ class CodexExecBackend:
                     killed, reason = f"codex exec hit the hard deadline ({hard:.0f}s)", "deadline"
                 elif idle and now - last_active >= idle:
                     killed, reason = f"codex exec idle for {idle:.0f}s (no output, session or tool activity)", "idle"
-                elif self._exit_gate_passed(since):
+                elif watched and self._exit_gate_passed(since):
                     reason = "exit_gate"
                     _kill(proc)
                     break
-                elif (blocker := self._blocker_since(since)):
+                elif watched and (blocker := self._blocker_since(since)):
                     killed, reason, detail = "the agent reported a blocker (report_blocker)", "blocker", blocker
                 elif clock is not None and clock.poll(rollout) == "redirect":
                     killed = f"codex exec made no progress for {clock.idle_sec():.0f}s"
@@ -449,8 +467,19 @@ class CodexExecBackend:
                 if killed:
                     _kill(proc)
                     break
+                if servicer is not None:
+                    servicer.poll(self._live_session)
+            if servicer is not None:
+                servicer.join()
             return _Outcome(0 if reason == "exit_gate" else proc.returncode, out_path.read_text(errors="replace"),
                             err_path.read_text(errors="replace"), killed, reason, detail)
+
+    def _advisor_servicer(self) -> advisor.Servicer | None:
+        """Serves the agent's ask_advisor calls during its turn (stages with an artifact dir only)."""
+        if self._art_dir is None or self._stage.startswith("verus_") or self._pipeline_config.advisor.max_consults_per_stage <= 0:
+            return None
+        return advisor.Servicer(self._pipeline_config, self._model_config, self._workload_name, self._query, self._stage,
+                                self._optimization_iter, self._art_dir)
 
     def _progress_clock(self, since: float) -> no_progress.ProgressClock | None:
         """The turn's progress clock, when the stage is watched (a stage with no art dir or a Verus step is not)."""

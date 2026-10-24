@@ -317,20 +317,20 @@
       {
         "table": "part",
         "mutation": "insert",
-        "behavior": "supported_delta",
-        "notes": "Increment total multiplicity and, when exact DuckDB LIKE evaluates true, promo multiplicity; reweight only stored days for the key. Duplicate p_partkey rows are counted exactly."
+        "behavior": "bounded_rebuild",
+        "notes": "The reference kernel resyncs the state on part writes (a dimension table with few writes); Increment total multiplicity and, when exact DuckDB LIKE evaluates true, promo multiplicity; reweight only stored days for the key. Duplicate p_partkey rows are counted exactly."
       },
       {
         "table": "part",
         "mutation": "update",
-        "behavior": "supported_delta",
-        "notes": "Reverse old p_partkey/p_type multiplicity and apply new values, handling key changes and NULL p_type; duplicates remain represented by counts."
+        "behavior": "bounded_rebuild",
+        "notes": "The reference kernel resyncs the state on part writes (a dimension table with few writes); Reverse old p_partkey/p_type multiplicity and apply new values, handling key changes and NULL p_type; duplicates remain represented by counts."
       },
       {
         "table": "part",
         "mutation": "delete",
-        "behavior": "supported_delta",
-        "notes": "Decrement exact multiplicities and reweight the key's dependent day aggregates; remove the dimension key record only when both counts reach zero."
+        "behavior": "bounded_rebuild",
+        "notes": "The reference kernel resyncs the state on part writes (a dimension table with few writes); Decrement exact multiplicities and reweight the key's dependent day aggregates; remove the dimension key record only when both counts reach zero."
       }
     ],
     "fallback_conditions": [

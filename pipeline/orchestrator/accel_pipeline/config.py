@@ -88,6 +88,15 @@ class RepairConfig:
 
 
 @dataclass(frozen=True)
+class AdvisorConfig:
+    """A stronger model forks the stuck agent's session for a second opinion (accel_pipeline.advisor)."""
+
+    max_consults_per_stage: int = 4  # 0 disables the advisor
+    stall_rounds: int = 2  # the same failure this many repair rounds in a row triggers an orchestrator consult
+    timeout_sec: float = 480  # under the client's 600 s limit on the agent's ask_advisor call
+
+
+@dataclass(frozen=True)
 class NoProgressConfig:
     """Seconds an agent may go without real progress (accel_pipeline.no_progress) before the
     footer asks it to state its blocker (nudge) and before its turn is ended with a directed
@@ -239,6 +248,7 @@ class PipelineConfig:
     # changed-line fraction above which an undeclared attempt counts as one.
     optimization_structural: dict[str, Any] = field(default_factory=dict)
     repair: RepairConfig = field(default_factory=RepairConfig)
+    advisor: AdvisorConfig = field(default_factory=AdvisorConfig)
     session: SessionConfig = field(default_factory=SessionConfig)
     data_tools: DataToolsConfig = field(default_factory=DataToolsConfig)
     stage_max_turns: dict[str, int] = field(default_factory=dict)
@@ -501,6 +511,15 @@ def _no_progress_config(block: dict[str, Any]) -> NoProgressConfig:
     )
 
 
+def _advisor_config(block: dict[str, Any]) -> AdvisorConfig:
+    defaults = AdvisorConfig()
+    return AdvisorConfig(
+        max_consults_per_stage=int(block.get("max_consults_per_stage", defaults.max_consults_per_stage)),
+        stall_rounds=int(block.get("stall_rounds", defaults.stall_rounds)),
+        timeout_sec=float(block.get("timeout_sec", defaults.timeout_sec)),
+    )
+
+
 def _session_config(block: dict[str, Any]) -> SessionConfig:
     defaults = SessionConfig()
     return SessionConfig(
@@ -598,6 +617,7 @@ def load_pipeline_config(
         optimization_early_stop=dict(opt.get("early_stop") or {}),
         optimization_structural=dict(opt.get("structural") or {}),
         repair=_repair_config(data.get("repair") or {}),
+        advisor=_advisor_config(data.get("advisor") or {}),
         session=_session_config(data.get("session") or {}),
         data_tools=_data_tools_config(data.get("data_tools") or {}),
         stage_max_turns=dict(data.get("stage_max_turns", {})),
@@ -1143,6 +1163,7 @@ def _apply_optimization_block(pipeline_config: PipelineConfig, opt: dict[str, An
             else dict(pipeline_config.optimization_structural)
         ),
         repair=pipeline_config.repair,
+        advisor=pipeline_config.advisor,
         session=pipeline_config.session,
         data_tools=pipeline_config.data_tools,
         measurement=pipeline_config.measurement,
@@ -1269,6 +1290,7 @@ def _apply_workload_overrides(pipeline_config: PipelineConfig, workload: dict[st
         optimization_checkpoint_file=pipeline_config.optimization_checkpoint_file,
         optimization_early_stop=dict(pipeline_config.optimization_early_stop),
         repair=pipeline_config.repair,
+        advisor=pipeline_config.advisor,
         session=pipeline_config.session,
         data_tools=pipeline_config.data_tools,
         measurement=pipeline_config.measurement,

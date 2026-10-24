@@ -6,6 +6,7 @@ the tree goes back to the best snapshot, the plan is redone once, and the run st
 from __future__ import annotations
 
 import json
+import re
 import sys
 import time
 import traceback
@@ -86,6 +87,7 @@ def run_with_repair(ctx: RepairCtx, attempt: Callable[[], T], *, gates: list[str
     flakes = 0
     quarantined: set[str] = set()
     rolled_back = False
+    stall = _Stall()
     blocker: Failure | None = None  # the agent said the obstacle is not in its files: the next check decides
     result: Any = None
     run_attempt = True
@@ -141,7 +143,7 @@ def run_with_repair(ctx: RepairCtx, attempt: Callable[[], T], *, gates: list[str
             code_left -= 1
             ctx.log(f"{failure.kind} failure in {failure.source}; round {code_rounds - code_left}/{code_rounds}, "
                     "resuming the agent's session")
-            blocker = repair_turn(ctx, failure)
+            blocker = repair_turn(ctx, _with_advice(ctx, failure, stall))
             if blocker is not None:  # infra, never code budget: re-run the failing check once
                 code_left += 1
                 ctx.log(f"the agent reported a blocker ({blocker.summary}); re-running the check once")
@@ -156,6 +158,51 @@ def run_with_repair(ctx: RepairCtx, attempt: Callable[[], T], *, gates: list[str
             code_left, rolled_back = code_rounds, False
             continue
         raise stop_stage(ctx, failure, f"{failure.kind} failure in {failure.source} survived {code_rounds} repair rounds")
+
+
+_VOLATILE = re.compile(r"0x[0-9a-fA-F]+|\d+")
+
+
+@dataclass
+class _Stall:
+    """The same failure source and summary, round after round; the advisor is consulted once per stall."""
+
+    signature: str = ""
+    rounds: int = 0
+    consulted: bool = False
+
+    def seen(self, failure: Failure) -> None:
+        signature = f"{failure.source}:{_VOLATILE.sub('#', failure.summary)}"
+        if signature == self.signature:
+            self.rounds += 1
+        else:
+            self.signature, self.rounds, self.consulted = signature, 1, False
+
+
+def _with_advice(ctx: RepairCtx, failure: Failure, stall: _Stall) -> Failure:
+    """The failure, with the advisor's diagnosis added once the same failure has stalled `advisor.stall_rounds`
+    rounds or the watchdog ended the agent's turn without progress."""
+    stall.seen(failure)
+    cfg = ctx.pipeline_config.advisor
+    if stall.consulted or not (failure.source == "no_progress" or stall.rounds >= cfg.stall_rounds):
+        return failure
+    from accel_pipeline import advisor
+
+    stall.consulted = True
+    why = ("the watchdog ended the agent's turn without progress" if failure.source == "no_progress"
+           else f"the same failure {stall.rounds} repair rounds in a row")
+    question = (f"The orchestrator is consulting you because {why}. Latest failure report:\n\n{render_failure(failure)}"[:8000])
+    try:
+        advice = advisor.consult(ctx.pipeline_config, ctx.model_config, ctx.workload_name, ctx.query, ctx.stage,
+                                 question=question, trigger="stall", optimization_iter=ctx.iteration)
+    except advisor.Unavailable as exc:
+        ctx.log(f"advisor not consulted: {exc}")
+        return failure
+    except Exception as exc:  # noqa: BLE001 - repair goes on without advice
+        ctx.log(f"advisor consult failed: {type(exc).__name__}: {exc}")
+        return failure
+    ctx.log("the advisor diagnosed the stall; its advice goes to the agent")
+    return replace(failure, diagnosis=[*failure.diagnosis, advisor.advise_message(advice)])
 
 
 def _attempt(ctx: RepairCtx, attempt: Callable[[], T]) -> tuple[T | None, Failure | None]:
