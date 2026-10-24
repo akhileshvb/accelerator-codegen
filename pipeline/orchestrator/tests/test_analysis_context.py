@@ -129,6 +129,13 @@ class TestAnalysisContextSlicing:
         assert summary["aux_bench_sweep"]["status"] == "pass"
         assert summary["aux_bench_sweep"]["composite_score"] == 12.5
 
+    def test_compact_gate_summary_skips_artifacts_that_are_not_gate_results(self, tmp_path: Path):
+        gates = tmp_path / "gates"
+        gates.mkdir()
+        (gates / "aux_bench_draws.json").write_text("[0, 1, 3]", encoding="utf-8")
+        (gates / "aux_unit.json").write_text('{"gate":"aux_unit","status":"pass"}', encoding="utf-8")
+        assert list(compact_gate_summary(gates)) == ["aux_unit"]
+
     def test_compact_optimization_state_keeps_last_only(self):
         state = {
             "active_candidate_id": "daily_partial",

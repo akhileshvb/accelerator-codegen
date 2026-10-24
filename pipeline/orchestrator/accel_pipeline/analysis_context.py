@@ -182,6 +182,8 @@ def compact_gate_summary(gates_dir: Path) -> dict[str, Any]:
             data = json.loads(path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
             continue
+        if not isinstance(data, dict):  # other artifacts share the directory (the bench's draws are a list)
+            continue
         gate = str(data.get("gate") or path.stem)
         entry: dict[str, Any] = {"status": data.get("status")}
         for key in ("composite_score", "composite_workload_speedup", "reason", "exit_code"):
