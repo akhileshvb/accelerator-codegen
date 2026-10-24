@@ -1,27 +1,33 @@
-# Stage 3: Optimization (unified, iter {{optimization_iter}} / {{optimization_max_iterations}})
+# Stage 3: Optimization, stateless (unified, iter {{optimization_iter}} / {{optimization_max_iterations}})
 
-**{{display_name}} Q{{query_number}}** — fast experiment loop with bootstrapped sources and search tools.
+**{{display_name}} Q{{query_number}}**: one hypothesis, one coordinated patch, validated by the orchestrator.
+
+## Goal
+
+**Push the kernel to machine speed: maximize `speedup_median` over the engine's own path, correctly, at SF3000.** There is no fixed ceiling.
+
+- Fix the hot phase the profile names with hardware-aware low-level execution: SIMD inner loops (AVX-512/AVX2 with a scalar fallback), cache-conscious columnar layouts, branch-free predicates, prefetch, no per-row allocation, fused passes. Guide: `pipeline/prompts/shared/low_level_execution.md`; loop and anti-patterns: `pipeline/prompts/shared/base_kernel_optimization.md`.
+- Prefer a coordinated structural bundle over micro-tweaks, and keep it correct and winning at SF3000.
+
+**Owns:** the editable files below. **Never touches:** `backends/`, `substrate/`, other queries, `accelerators/prims/`. **Judged by:** build, quick correctness and the benchmark after your handoff; `optimization_fix` rounds repair build or test failures.
 
 {{hard_guidelines}}
 
 {{codex_tooling}}
 
-## Mindset
-
-1. **Editable sources are in the user message** when bootstrapped — prefer MCP digests over re-reading everything.
-2. Search reference accelerators with the shell (`rg`, `sed -n`).
-3. **Ambitious structural changes allowed** when evidence supports them.
-4. Orchestrator runs **build → quick correctness → benchmark** after handoff. On failure, **optimization_fix** rounds debug until build/ctest pass.
+{{fast_loop}}
 
 ## Editable files
 
 {{optimization_edit_paths}}
 
-## Workflow
+The sources are bootstrapped in the user message; use the MCP digests instead of re-reading everything, and search reference accelerators with `rg` and `sed -n`.
 
-1. Use bootstrap + context packet + profile/evidence digests.
-2. Hypothesis JSON + coordinated edits.
-3. `HYPOTHESIS_PATCH_COMPLETE`.
+## Flow
+
+1. Cite the profile evidence (named phases and counts), then write the hypothesis JSON before any edit.
+2. Make the coordinated edits; `quick_check` after each.
+3. End with the hypothesis JSON, a short summary and `HYPOTHESIS_PATCH_COMPLETE`.
 
 {{measurement_trust}}
 

@@ -20,15 +20,9 @@ Under `substrate/aux/`:
 - **`state/`** — `VersionedAuxStore`, invalidation plans, partition keys
 - **`maintenance/`** — `MaintenanceAction`, `ActionCostEstimate`, `CostModelParams`, `SelectMinCostAction`
 
-## Shared primitives library (`accelerators/prims/`) — growable, but only through `primitive_publish`
+## Shared primitives library (`accelerators/prims/`)
 
-`accelerators/prims` holds the generic, workload-agnostic data structures and value helpers accelerator state is built from (copy-on-write containers, ordered and aggregate structures, stateless helpers). The catalogue is `prims/README.md` and may be empty at the start. Engine-exact value semantics (numeric text, division, collation) are not here: they come from the backend's API (role "value semantics" in its `api/README.md` index).
-
-- **Consult it first.** Read the README catalogue before writing any helper, then the header comment (PURPOSE / KEY SPACE / COMPLEXITY / MEMORY / COW/THREADS / USE WHEN) of each candidate, and reuse or extend rather than duplicate.
-- **Never edit `prims/`, `prims/README.md` or `accelerators/prims/tests/test_prims.cpp` directly** (writes are denied; they are shared by every concurrent worker). To add a primitive: stage the new header and the full updated `test_prims.cpp` under `pipeline/prims_staging/<same repo-relative path>` and call the **`primitive_publish(files, rationale)`** tool. It checks additions-only, header comment, tests, no duplicate of a published primitive and no workload vocabulary; appends the catalogue row itself; builds and runs `test_prims`; and only then makes it visible to everyone. After a successful publish your `prims/` copy is refreshed, so just `#include` it.
-- **Additions only.** New headers, or new members/lines in an existing header. Never change or remove an existing line, signature or behavior; prefer a new primitive over modifying an existing one.
-- **Generic only.** Name a primitive by what it is (`ShardedSortedMap`), never by who uses it. No table/column names, benchmark names or query numbers anywhere in it, comments included.
-- Workload-specific structures (an inverted index for one LIKE predicate, a query-specific cube layout) stay in your module, but must still be copy-on-write and built from primitives.
+Generic COW data structures and value helpers that accelerator state is built from. Query runs never write it directly (writes are denied): it grows only through `primitive_publish`. Reuse, design and publish rules: `cow_primitives.md`. Engine-exact value semantics (numeric text, division, collation) come from the backend's API (role "value semantics"), not from `prims/`.
 
 ## Engine backends (`backends/{engine}/`)
 

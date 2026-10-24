@@ -1,50 +1,56 @@
-# Stage 2: Implementation
+# Stage 2: Implementation (stateless kernel)
 
-Implement a **fast, correctness-first** accelerator for **{{display_name}}** **Q{{query_number}}** on host **`{{engine_name}}`**.
+Implement the accelerator for **{{display_name}}** **Q{{query_number}}** on host **`{{engine_name}}`**.
+
+## Goal
+
+**Correct first, then fast at the machine level, at SF3000.**
+
+1. The differential against the reference SQL passes on the **{{engine_name}}** host before anything else.
+2. The kernel then uses the hardware: SIMD inner loops (AVX-512/AVX2 with a scalar fallback), cache-conscious columnar layouts, branch-free predicates, prefetch, no per-row allocation, fused passes. The profile and the analysis pick the loops. Read `pipeline/prompts/shared/low_level_execution.md` before writing them.
+3. Capacities come from bind-time estimates, never SF1 literals (`scale_factor_contract.md`).
+
+**Owns:** this query's files under `accelerators/.../q{{query_number}}/{{engine_name}}/`. **Never touches:** `backends/`, `substrate/`, `cmake/`, other queries, `accelerators/prims/`. **Judged by:** correctness, then baseline, profile and fairness gates (`constraints.md` below).
 
 {{hard_guidelines}}
 
 {{codex_tooling}}
 
-## Context (compressed — full analysis on disk)
+{{fast_loop}}
 
-Full analysis: `{{full_analysis_path}}`
+## Context (compressed; full analysis on disk)
+
+Full analysis: `{{full_analysis_path}}` · Reference SQL: `{{reference_sql_path}}` · Artifacts: `{{artifacts_path}}/`
 
 {{analysis_json}}
 
-Reference SQL: `{{reference_sql_path}}` · Artifacts: `{{artifacts_path}}/`
-
-## Files (the scaffold creates stubs; create any that are still missing)
-
-Paths are under `accelerators/.../q{{query_number}}/{{engine_name}}/`:
+## Files (the scaffold creates stubs; create any still missing)
 
 - `{{header_path}}`, `{{kernel_path}}`, `{{package_path}}`
 - `{{test_path}}`, `{{benchmark_path}}`
 - Optional fused: `{{fused_scan_path}}`
-- Registration: the query's own registrar file(s) — `{{register_path}}`, `{{aux_register_path}}` (catalog entry + SQL entry point; the backends name no query)
+- Registration: the query's own registrar file(s) `{{register_path}}`, `{{aux_register_path}}` (catalog entry and SQL entry point; backends name no query)
 
-**Engine host:** `{{engine_name}}` (**required**, no default engine). Base kernels consume **this engine’s** native batches / rows. Shared substrate is aux/txn only (`MutationBatch`, `AuxQueryModule`, …), with no portable chunk type. Registration and differential use this host.
+The kernel consumes **{{engine_name}}**'s native batches and rows. Registration and differential use this host; there is no default engine.
 
 {{backend_api}}
 {{accelerator_engine_profile}}
 {{engine_host_discovery}}
 
-When the engine's harnesses lack the surfaces this workload needs, **shared** SQL entrypoints + differential + gate harnesses are created in the **`host_bootstrap`** stage (once per engine, before parallel query workers). Per-query implementation only adds this query's files (kernel, module, registrars) in its own directory. If bootstrap artifacts are missing, follow `pipeline/prompts/shared/query_host_bootstrap.md` and/or re-run `--stage host_bootstrap`. Do not invent a second adapter tree. Never edit a backend's registration code or registries: register from the query's directory. The root `CMakeLists.txt` and `cmake/` are never edited: a query's aux state is discovered from `accelerators/<bench>/q<N>/<engine>/aux/finalize.cpp`, its targets come from `accelerators/<bench>/build.cmake`.
+If the host's harnesses lack a surface this query needs, the **`host_bootstrap`** stage creates the shared SQL entrypoints, differential and gate harnesses once per engine. Per-query work only adds this query's files in its own directory. If bootstrap artifacts are missing, follow `pipeline/prompts/shared/query_host_bootstrap.md` or re-run `--stage host_bootstrap`. Never edit a backend's registration code or registries: register from the query's directory. The root `CMakeLists.txt` and `cmake/` are never edited; targets come from `accelerators/<bench>/build.cmake`.
 
 ## Requirements
 
-- Ordered full-result test: reference SQL vs accelerator on the **{{engine_name}}** host
-- The kernel factories the scaffolded `{{kernel_path}}` declares (`Create…Kernel` + `Create…ProfilingKernel`), with phase counters (`num_aggregate_us` on fused paths when the host uses fused APIs)
-- Benchmark: median timing, `speedup_median` CSV (templates: `{{test_template_path}}`, `{{benchmark_template_path}}`) — harness matches `{{engine_name}}`; differential correctness comes first
-- Base scans via **{{engine_name}}** native storage / host APIs (reuse `engine_backend` mutation/store adapters only; no portable chunk type)
+- Ordered full-result test: reference SQL vs accelerator on the **{{engine_name}}** host.
+- The kernel factories the scaffolded `{{kernel_path}}` declares (`Create…Kernel` and `Create…ProfilingKernel`), with phase counters (`num_aggregate_us` on fused paths).
+- Benchmark: median timing and a `speedup_median` CSV (templates `{{test_template_path}}`, `{{benchmark_template_path}}`).
+- Differential: create or register host SQL entrypoints and `test_{{engine_name}}_tpch_differential` where absent (`query_host_bootstrap.md`); never fall back to another engine's registration.
 
-**Build/smoke:** `backends/{{engine_name}}/host.sh build {{bench_target}} {{test_target}}`, then `host.sh run` the smoke tests (`ctest -R {{ctest_smoke_regex}}`). Equivalent bare form: `cmake --build build-release --target {{bench_target}} {{test_target}} -j$(nproc)` then `ctest -R {{ctest_smoke_regex}}`.
+**Build and smoke:** `backends/{{engine_name}}/host.sh build {{bench_target}} {{test_target}}`, then `host.sh run` the smoke tests (`ctest -R {{ctest_smoke_regex}}`).
 
-**Differential:** create/register host SQL entrypoints + `test_{{engine_name}}_tpch_differential` where absent (see query_host_bootstrap.md); the correctness gate runs that differential. Never fall back to another engine's registration.
+**Exit criterion:** call `run_correctness` (or `request_gate`) and do not finish until it passes. The orchestrator re-runs the gates afterward: correctness, baseline, profile.
 
-**Exit criterion:** under Codex, call MCP `run_correctness` (or `request_gate` / the engine-selected smoke/differential above) and **do not finish until it passes**. Orchestrator still re-runs gates afterward: correctness → baseline → profile.
-
-Shared docs (read only if needed): `pipeline/prompts/shared/generated_layout.md`, `engine_interfaces.md`, `query_host_bootstrap.md`, `constraints.md`, `hard_guidelines.md`, `profiling_conventions.md`, `base_kernel_optimization.md`.
+Reference docs (read when needed): `pipeline/prompts/shared/generated_layout.md`, `engine_interfaces.md`, `query_host_bootstrap.md`, `profiling_conventions.md`.
 
 {{benchmark_notes}}
 

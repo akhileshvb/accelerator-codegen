@@ -1,22 +1,16 @@
-# Aux-state project constraints
+# Stage boundaries (stateful modules)
 
-See also `pipeline/prompts/shared/hard_guidelines.md`.
+**This stage owns** the query's own files: `aux/module.{hpp,cpp}`, `aux/finalize.{hpp,cpp}`, layout, tests, benchmark, calibrator, cost-model config, and the append-only registrations listed in `agent_boundary.md` and `registration_checklist.md`. State is per query (`{{aux_function_name}}`).
 
-Multi-connection production path; parallelism comes only from the backend's thread budget through `services` (`engine_interfaces.md`).
+**It must not touch** `backends/`, `substrate/`, `cmake/`, the root `CMakeLists.txt`, other queries' files, the query's `base/**` kernel (a separate accelerator), or `accelerators/prims/` except through `primitive_publish` (`cow_primitives.md`).
 
-- Base tables: engine **native** storage/scan APIs only.
-- **Persistent partitioned aux state is allowed**; custom aux storage is preferred.
-- **Do not** store precomputed **final query results** as aux state. Intermediate structures (indexes, partial aggregates, eligibility, membership, encodings) are allowed; redesign freely when a read-path ceiling appears.
-- State is **per-query** (`{{aux_function_name}}`); no cross-query state sharing required, but accelerators must remain correct when other queries' writes run concurrently (see `concurrency_contract.md`).
-- **Fallback required**: when aux state is missing, stale, or txn-blocked, the engine answers from SQL (the runtime's `Fallback`, the **sql_fallback** role of the Backend API). The aux accelerator does not depend on a base kernel.
-- Txn-safe invalidation and staged publication are mandatory.
-- Irrelevant mutations must be **NoOp** — no epoch bump, no stale marks, no maintenance side effects.
-- Read paths must be **bounded to the query window** — do not scan all partition slots / all groups globally when the query only needs a subset.
-- Rebuild actions selected by the cost model must **resync/rebuild** state for later hits (not invalidate-only).
-- **Maintenance must be fast**: optimize bulk refresh/`Rebuild*` and point/synthetic write apply; prefer delta-local work over full rebuilds when safe.
-- **Exact for any parameter value / data / key width, compact, O(touched) writes** — see `hard_guidelines.md` §4.
-- Do not alter query semantics for implementation convenience.
-- Benchmark fairness: time the full production query path, consume all results.
-- TPC-H aux: iteration on SF1; **read, build and maintenance must stay correct, incremental and fast at high scale and sized for SF3000** (`scale_factor_contract.md` failure classes; no SF1-only designs).
+**Rules**
 
-See `profiling_conventions.md` and `scale_factor_contract.md`.
+- Reads, builds and maintenance split data-proportional work over the backend's one thread budget through `services` (`engine_interfaces.md`); the result is identical at any thread cap.
+- Fallback is required: when state is missing, stale or transaction-blocked, the engine answers from SQL (the runtime's `Fallback`, the **sql_fallback** role). The module does not depend on a base kernel.
+- Invalidation and staged publication are transaction-safe. Irrelevant mutations are NoOp: no epoch bump, no stale mark. Other queries' writes run concurrently (`concurrency_contract.md`).
+- Reads are bounded to the query window: no scan of all partitions or groups when the query needs a subset.
+- A rebuild selected by the cost model resyncs state for later hits; invalidate-only is not a rebuild.
+- Do not change query semantics for convenience. Benchmark the full production path and consume all results.
+
+**Judged by** the gates: `aux_correctness`, `aux_unit`, `prims_tests`, `aux_multi_connection`, `aux_cross_accel`, `aux_tsan`, `aux_bench_sweep`, audit.

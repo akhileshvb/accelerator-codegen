@@ -1,42 +1,32 @@
-# Base single-threaded kernel optimization (no aux-state)
+# Stateless kernel optimization
 
-Goal: **beat** the engine's own reference SQL on the benchmark dataset (reference limited to one thread, full result consumption).
+The kernel beats the engine's own reference SQL on the benchmark dataset (reference limited to the same thread budget, full result consumption). The how-to for the inner loops is `low_level_execution.md`; this file is the loop around it.
 
 ## Workflow
 
-1. Read profile counters and phase timings in `optimization_runtime.md`.
-2. Form a **hot-path hypothesis** from dominant phase + counter ratios.
-3. Pick a **coordinated bundle** (2–4 related changes) from the strategy palette — not isolated tweaks.
-4. **Verify** by reading the production path (fused prescan → consume → aggregate).
-5. **A/B test** the bundle; keep only what improves `speedup_median` and relevant counters.
+1. Read the profile counters and phase timings.
+2. Name the hot path from the dominant phase and the counter ratios.
+3. Pick a **coordinated bundle** (2-4 related changes) from: scan order and pushdown, build-time interning to dense ids, fused passes, SIMD inner loops, branch-free selection, prefetch. Not isolated tweaks.
+4. Trace the production path (fused prescan, consume, aggregate) to confirm the bundle hits the loop the profile named.
+5. A/B the bundle. Keep it only if `speedup_median` and the relevant counters improve.
 
-When speedup is far below 1.0x, prioritize structural changes (scan order, filter pushdown, build-phase interning, vector fast paths) over micro-opts.
+While the speedup is far below 1.0x, make structural changes (scan order, filter pushdown, interning, vector fast paths) before micro-optimizations.
 
-## Scale factors (SF1 iteration → SF3000 production)
+## Scale check before keeping a bundle
 
-The pipeline profiles and gates primarily on **SF1** for speed. Production TPC-H targets **SF3000**. An optimization that only works at SF1 is a regression.
+Does it still win with fact-table rows x3000 and more distinct keys? Capacities come from bind-time `row_estimate` and table counts, never SF1 literals. Aggregation structures scale with qualifying keys, not fixed maxima. No full-domain finalize unless the domain is bounded at bind time. A failing `sf10` gate (when configured) is a scaling bug (`scale_factor_contract.md`).
 
-**Before accepting a bundle, verify:**
-- Capacities come from bind-time `row_estimate` / table counts — not SF1 profile literals (`150000`, `6000000`, etc.).
-- Aggregation structures scale with **qualifying** keys/rows, not fixed SF1 maxima.
-- No full-domain finalize scans unless the domain is provably bounded at bind time for any scale factor.
-
-The `sf10` gate is a coarse scale check when `tpch_sf10` is configured — treat failures as scaling bugs. See `scale_factor_contract.md`.
-
-## Useful counter ratios
+## Counter ratios
 
 | Ratio | What it tells you |
 |-------|-------------------|
-| `pre_rows / qualifying_rows` | Scan amplification — rows touched vs rows that aggregate |
-| `generic_fallback_rows / pre_rows` | Whether vector fast paths are active |
-| `num_aggregate_us / num_scan_us` | How much of the num pass is consume (may include rejected rows) |
-
-Cross-check reference SQL and `analysis.json` for join order, filters, and GROUP BY keys.
+| `pre_rows / qualifying_rows` | Scan amplification: rows touched vs rows that aggregate |
+| `generic_fallback_rows / pre_rows` | Whether the vector fast paths are active |
+| `num_aggregate_us / num_scan_us` | Share of the scan pass that is consume (may include rejected rows) |
 
 ## Anti-patterns
 
-- One-line tweaks when the gap to the reference is large (need coordinated bundles)
-- Optimizing aggregation because a phase label says "scan" without tracing the inner loop
-- Profiling a different path than production (chunk path vs fused scan)
-- `getenv` on hot paths; SF-hardcoded capacities
-- SF1-only wins that add full-domain scans or cardinality constants from the iteration dataset
+- One-line tweaks while the gap to the reference is large.
+- Optimizing aggregation because a phase label says "scan", without tracing the inner loop.
+- Profiling a different path than production (chunk path vs fused scan).
+- `getenv` on hot paths; SF1-hardcoded capacities or full-domain scans.

@@ -42,45 +42,11 @@ If an MCP call fails, retry once; then fall back to Codex shell for build/ctest 
 
 Every tool result may end with a wall-budget notice. It is real: when it says to wrap up, checkpoint your state (leave the tree building and the last passing version in place) and finish the step you are on.
 
-## Inner loop (aux-state query accelerators)
+## Scoreboard and freshness
 
-Iterate fast, verify rigorously:
+`scoreboard.best_valid_score` is the only keep/regress target. If `freshness.stale` is true (after any accept or restore), call `run_profile` before hypothesizing.
 
-1. After **every edit**, call `quick_check`. Fix what it reports before anything else; do not run the minutes-long gates to find out whether an edit compiles or is right.
-2. Write small self-contained test binaries in your query directory for what you are building (a layout, an encoding, a maintenance path) and pass their targets to `quick_check(targets=[...])`. A brute-force checker of your own beats waiting for a gate.
-3. For performance, run `perf` (or your own timers) directly on the bench binary. `run_quick_benchmark` gives direction in seconds; it is not a measurement. Take `acceptance=True` before you rely on a number.
-4. `request_gate` is for acceptance. Start the acceptance gates in the background (`background=True`) while you keep working, and read each once with `gate_status`. Never poll a gate in a loop.
-5. The small test subset and SF1 data are for correctness and direction only. Design for SF3000 (`scale_factor_contract.md`) and never tune against the subset.
-
-## Scoreboard + freshness (optimization)
-
-1. Treat `scoreboard.best_valid_score` as the only keep/regress target.
-2. If `freshness.stale` is true, call `run_profile` before hypothesizing — prior phase breakdown is invalid.
-3. After accept/restore, always remeasure before the next hypothesis.
-
-## Exploratory A/B rules (optimization)
-
-1. `begin_ab_trial` → patch → `quick_check` → `run_quick_benchmark` for direction → `run_quick_benchmark(acceptance=True)` → inspect `ab_signal` / `improvement_pct_vs_reference` / `scoreboard` (only the acceptance run produces them).
-2. `end_ab_trial(keep=true)` only when improved vs best_valid and after an acceptance run; the server **force-discards** measured regressions and keeps without metrics.
-3. **Never** print `CANDIDATE_READY` for a change that A/B marked `regress` / `forced_discard` / `kept=false`.
-4. For large wins: optimize **both** hit-path read latency **and** incremental maintenance (ApplyDelta / local partitions, not RebuildAll-per-write). When digests show a write-mix cliff (10% workload ≪1×) while read is already strong, prioritize maintenance. Keep high-SF speedups. Never cache final query results as aux.
-
-## Custom profiling — modify freely
-
-You may **add, rewrite, split, rename, or remove** temporary profiling instrumentation whenever it helps locate the bottleneck (new phases, finer timers, extra counters, sampling, hierarchical totals). Stay inside editable sources and hard guidelines.
-
-Gate timers on `ACCEL_AUX_CUSTOM_PROFILE` (aux) / `ACCEL_BENCH_PROFILE` (base) — **no-op when unset**. Preferred digest line:
-
-`ACCEL_CUSTOM_PROFILE {"phase":"sort","us":12.3,"emitted_rows":100,"groups":100}`
-
-Require **split timers + work counts** for hypotheses. Digests merge into `phase_breakdown` / `work_counters_mean` after `run_profile` / `run_quick_benchmark`. You may also parse raw bench stdout with your own scripts if the digest is incomplete — then re-run `run_profile` so the scoreboard stays current.
-
-## Workflow
-
-1. Remeasure (`run_profile`) → read scoreboard + phase breakdown (MCP).
-2. Implement with Codex native edit/shell.
-3. Verify with MCP A/B / correctness.
-4. Hand off; the orchestrator still runs authoritative post-stage gates.
+The loop itself (edit, `quick_check`, direction bench, acceptance bench, gates in the background) is in the stage prompt's "How to work" block. Custom profiling lines: `profiling_conventions.md`.
 
 ## Optimization worker: do not exit without a marker
 
@@ -97,16 +63,15 @@ For **implementation**, do **not** finish until the acceptance gates pass (keep 
 
 ### Query / aux accelerators
 
-1. Build the smoke / unit target for this query (and the engine's `differential_binary` for TPC-H aux).
-2. Once `quick_check` passes, call MCP **`run_correctness`** (maps to `aux_correctness` for aux-state; else `correctness`). Start it with `request_gate(..., background=True)` if you have more to do meanwhile.
+1. Build the smoke or unit target for this query (and the engine's `differential_binary` for TPC-H aux).
+2. Once `quick_check` passes, call **`run_correctness`** (maps to `aux_correctness` for stateful, else `correctness`); `request_gate(..., background=True)` if you have more to do meanwhile.
 3. On fail: read `failure_summary`, fix implementation / registration, get `quick_check` green again, then re-run the gate until `status=pass`.
 4. For **aux-state**, also call MCP **`run_multi_connection`** (or `request_gate` with `aux_multi_connection`). On fail (often missing TF / shared allowlist wiring), **register the query everywhere** peer queries are registered, rebuild, retry until pass.
 5. Only after both required gates report `status=pass` (and are not `stale`) end the stage.
 
 `aux_correctness` includes **smoke fixtures + SF1 SQL-vs-aux differential**. Compile-only or smoke-only handoff is not acceptable. Orchestrator post-stage gates still re-check.
 
-Follow `pipeline/prompts/aux_state/shared/unit_test_contract.md` when writing the catalog probe and arguments.
-Register everywhere: see `pipeline/prompts/aux_state/shared/registration_checklist.md`.
+Stateful modules: `pipeline/prompts/aux_state/shared/unit_test_contract.md` (catalog probe and arguments) and `registration_checklist.md` (register everywhere).
 
 ### Engine backend (`workload_kind: engine_backend`)
 
