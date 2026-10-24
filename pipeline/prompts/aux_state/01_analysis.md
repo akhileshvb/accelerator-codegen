@@ -66,8 +66,15 @@ Read `taxonomy_index.md` first; open `aux_state_taxonomy.md` and `aux_state_desi
 - Prefer spanning different taxonomy families (e.g. pre-aggregated summaries vs compact join intermediates vs selective indexes vs dense layouts).
 - Reject near-duplicates; use `viability: rejected` with `rejection_reason` for variants you considered but ruled out.
 
+**Bound check (required for every viable candidate, before selecting):**
+- **Any binding.** For each template parameter, name the binding that maximizes read work (widest range, a value at the end of the domain, a pattern with no literal, a value matching most rows) and the one that minimizes it. Estimate state entries read for both at SF1 and SF3000 from the **Data shape** facts, and record the numbers in `estimated_state_units_read` (`typical`, `worst_case`).
+- **Pruning follows the predicate.** A bound used to skip state (max/min/count summaries, ranges) must tighten with the bound parameter values: an entry that cannot contribute for a binding is skipped without visiting it. A bound that is the same for every binding (an entry's total over all parameter values) prunes nothing where it matters. Organize state so a binding's qualifying data is a contiguous range or a few partitions.
+- **Data shape narrows the range, never assumed.** Spreads and correlations between columns the predicates combine (two date columns of joined tables, a value bounded by another) can shrink the candidate range. Derive such a bound from the state itself and maintain it under writes (a write that widens the spread widens the bound), so arbitrary data stays exact.
+- **Heavy writes.** Estimate per-commit cost at the write mix's highest write frequency and at refresh size: a commit touches state in proportion to changed rows times their real fan-out; it never re-sorts, re-scans or rebuilds unchanged data, and dimension-table writes reach only actual dependents.
+- Revise or reject a candidate whose worst-case read for some valid binding scans state in proportion to a table when another design reads in proportion to the qualifying rows or the output.
+
 **Selection:**
-- Exactly one `selected: true` — the candidate with the best **read-path** upside subject to maintainable write path.
+- Exactly one `selected: true` — the best **worst-case** read over all valid bindings (then typical), subject to cheap maintenance under the heavy write mix.
 - Flag scan-for-scan swaps on the selected design (`read_path_bottleneck_risk` should reflect this).
 
 **Tiered detail:** selected candidate = full schema fields; viable alternates = `id`, `design_family`, `state_grain`, `physical_organization`, `composition_rule`, `operators_eliminated`, `read_path_bottleneck_risk`, `best_regime` (1 sentence); rejected = `id`, `design_family`, `state_grain`, `physical_organization`, `rejection_reason`.
