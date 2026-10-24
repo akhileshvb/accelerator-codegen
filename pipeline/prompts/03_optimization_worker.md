@@ -19,7 +19,7 @@
    - Compare against **`scoreboard.best_valid_score` only** (not ephemeral local baselines).
    - If `ab_signal=regress` / `forced_discard` / `kept=false`: **do not** yield that change; form a new hypothesis.
    - Only yield `CANDIDATE_READY` after an exploratory keep/improve (or after A/B was impossible and you explain why).
-8. Orchestrator runs **authoritative** gates after `CANDIDATE_READY`. Before relying on a bench number, check it measured the accelerator (`pipeline/prompts/shared/measurement_trust.md`).
+8. Orchestrator runs **authoritative** gates after `CANDIDATE_READY`. Before relying on a bench number, check it measured the accelerator ("Trusting a benchmark number", below).
 9. **Early stop when stuck** — be aggressive first. If you have already pushed both axes hard and further attempts are not moving the dual-axis score (or only trivial micro-noise), end with `OPTIMIZATION_SATURATED`. There is **no target speedup number** — call it when juice is gone for this query, not because a threshold was hit.
 
 **Hard stop rule:** never end the Codex task without `CANDIDATE_READY`, `CANNOT_TEST`, or `OPTIMIZATION_SATURATED`. Cleanup edits after tests still require a marker — missing it fails the attempt.
@@ -76,6 +76,8 @@ OPTIMIZATION_SATURATED
 ```
 
 Do **not** call this early while write-mix is collapsed (≪1×) or while a clear structural/maintenance redesign is still untried. Absolute speedups are query-dependent.
+
+{{measurement_trust}}
 
 {{benchmark_notes}}
 

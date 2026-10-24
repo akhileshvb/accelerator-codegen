@@ -42,7 +42,19 @@ Print **one header row** and **one data row** to stdout, header first column `su
 
 `suite`, `write_frequency_pct`, `workload_speedup`, `cold_start_workload_speedup`, `query_only_speedup`,
 `blended_query_speedup`, `cold_start_accel_workload_us`, `setup_full_build_ms`,
-`accel_hit_rate`, `writes_executed`, `duckdb_workload_us` (the engine reference's workload time), `accel_workload_us`.
+`accel_hit_rate`, `writes_executed`, `duckdb_workload_us` (the engine reference's workload time), `accel_workload_us`,
+`num_queries`, `accel_fallback_reads`, `state_builds`.
+
+The four measurement columns are **required**: `accel_hit_rate`, `num_queries`, `accel_fallback_reads` and
+`state_builds` are how the orchestrator tells a bench that timed your accelerator from one that timed the fallback
+("Trusting a benchmark number" in the optimization prompt). Take them from the runtime's own statistics of the measured loop, never from an assumption:
+
+- `accel_hit_rate` = reads served from the state / all measured reads (a real ratio in [0, 1], not a constant);
+- `num_queries` = measured reads;
+- `accel_fallback_reads` = measured reads that ran the fallback SQL instead of the state;
+- `state_builds` = states built during the run (the first read builds one).
+
+The orchestrator skips the check for a column that is absent, so omitting one silently disables it: always print all four. Recommended: `accel_hit_median_us` and `fallback_median_us` (median read latency on the hit path and on the fallback).
 
 Optional `speedup_gate ...` and `#` lines may follow; the sweep parser ignores lines that are not the CSV.
 

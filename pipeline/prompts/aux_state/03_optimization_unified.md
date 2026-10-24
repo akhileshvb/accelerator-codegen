@@ -27,7 +27,7 @@ Work like a performance engineer on **two equal axes**:
 6. **Few turns** — hypothesize, implement, then `HYPOTHESIS_PATCH_COMPLETE`.
 7. **Custom profiling required for phase breakdown** — invent whatever timers/counts help; getenv(`ACCEL_AUX_CUSTOM_PROFILE`) + `ACCEL_CUSTOM_PROFILE {json}` with **phase + us + work counts**; no-op when unset. Remeasure after every accept/restore (`freshness.stale`). Own shell/scripts for ad-hoc profiling are fine.
 8. **Measure-first** — do not hypothesize from a stale digest; call `run_profile` on the CURRENT tree. Cite both 0% hit metrics **and** sampled write-mix metrics.
-9. **Trust the measurement** — before relying on a bench number, check it measured the accelerator (`pipeline/prompts/shared/measurement_trust.md`).
+9. **Trust the measurement** — before relying on a bench number, check it measured the accelerator ("Trusting a benchmark number", below).
 
 ## Editable files
 
@@ -87,6 +87,8 @@ Orchestrator: **build → smoke ctest (×2) → correctness probe → quick benc
 If impossible: `{"status": "cannot_test", "reason": "..."}` + `CANNOT_TEST`.
 
 Be aggressive on both axes. If further attempts are stuck (no real dual-axis movement left — absolute speedups are query-dependent), you may end with `OPTIMIZATION_SATURATED` + JSON reason. Do not call that early while write-mix is collapsed or a clear redesign remains.
+
+{{measurement_trust}}
 
 {{benchmark_notes}}
 

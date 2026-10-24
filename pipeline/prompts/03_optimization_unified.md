@@ -23,6 +23,8 @@
 2. Hypothesis JSON + coordinated edits.
 3. `HYPOTHESIS_PATCH_COMPLETE`.
 
+{{measurement_trust}}
+
 {{benchmark_notes}}
 
 {{constraints}}
