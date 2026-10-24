@@ -15,6 +15,7 @@ from accel_pipeline.background_gates import background_status, reusable_backgrou
 from accel_pipeline.build_stamp import build_lock, code_stamp
 from accel_pipeline.config import QuickTierConfig
 from accel_pipeline.gate_stamps import current_stamp, passed_at_current_stamp, record_pass, reusable_gate_result
+from accel_pipeline.layout import BACKENDS, PRIMS
 
 WORKLOAD = {"workload_kind": "aux_state", "benchmark_name": "demo", "engine_name": "eng"}
 GIT = ["git", "-c", "user.name=t", "-c", "user.email=t@t"]
@@ -55,7 +56,7 @@ def test_the_stamp_follows_the_query_and_shared_files_only(config):
 
 
 @pytest.mark.parametrize("shared", [
-    "accelerators/prims/ring.hpp", "accelerators/demo/common/scan.hpp", "backends/eng/host.sh",
+    f"{PRIMS}/ring.hpp", "accelerators/demo/common/scan.hpp", f"{BACKENDS}/eng/host.sh",
     "substrate/store.hpp", "cmake/Find.cmake", "CMakeLists.txt", "workloads/demo/q5.sql", "eval/run.py",
     "accelerators/demo/qregistry.cpp",
 ])
@@ -221,7 +222,7 @@ def test_a_correctness_gate_is_reused_across_stages_on_identical_code_only(confi
     path.write_text('{"status": "pass", "log": "x"}')
     record_pass(config, WORKLOAD, 5, "aux_unit", stamp, change_kind="implementation", result=path)
     assert reusable_gate_result(config, WORKLOAD, 5, "aux_unit", change_kind="audit").data["log"] == "x"
-    write(config, "accelerators/prims/ring.hpp", "// edited\n")
+    write(config, f"{PRIMS}/ring.hpp", "// edited\n")
     assert reusable_gate_result(config, WORKLOAD, 5, "aux_unit", change_kind="audit") is None
 
 
