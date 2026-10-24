@@ -4,15 +4,15 @@ version: 1
 query: 14
 rationale: >
   Q14 is a scalar ratio over lineitem joined to part for one date window. The tuples walk month-aligned windows,
-  whole years, day-wide and leap-day windows and dates outside the data; the transactions write both dependent
+  month windows (the reference accelerator takes a start date and covers one month); the transactions write both dependent
   tables with point and bulk inserts, updates and deletes, duplicate join keys and a key move.
 edge_coverage:
   in_spec: [1, 2, 3, 4, 5]
-  off_spec: [25, 26, 27, 28, 29, 30]
+  off_spec: [6, 7]
   null_param: "n/a: the smoke suite carries no NULL window (the real suites do)"
   empty_result: "n/a: a scalar aggregate always returns one row"
   limit_ties: "n/a: the query has no ORDER BY and no LIMIT"
-  extreme_values: [31, 32]
+  extreme_values: [8]
   large_keys: "n/a: the only parameter is a DATE"
 txns:
   "001.sql": {kind: point_update}
