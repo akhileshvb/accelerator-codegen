@@ -141,3 +141,19 @@ python -m accel_pipeline.run_pack --pack tpch_aux_parallel                      
 without LLM calls. Run state goes to `pipeline/artifacts/<bench>/q<N>/<engine>/`.
 The primitives catalogue is `accelerators/prims/README.md`; the runtime contracts
 backends implement are in `substrate/aux/runtime/README.md`.
+
+### Before launching real runs
+
+Run the pipeline smoke test. It makes a fresh clean tree, runs `--stage all` for one query inside the real
+sandbox with a scripted agent instead of a model (no model calls; `OPENROUTER_API_KEY` must be unset), and fails
+on any stage that did not complete, any announced gate that did not pass, or any repair round or stop: with
+known-good artifacts, those mean the pipeline's own plumbing is broken. It prints a per-stage timing table.
+
+```bash
+scripts/pipeline_smoke.sh --workload tpch_q14_aux --engine duckdb      # ~10 minutes, dominated by the builds
+ACCEL_RUN_PIPELINE_SMOKE=1 pytest pipeline/orchestrator/tests/test_pipeline_smoke.py   # the same, as a test (opt in)
+```
+
+A workload or engine is added as data: `pipeline/orchestrator/tests/smoke/fixtures/<workload>/` (analysis,
+suite, `fixture.json`) and `fixtures/engines/<engine>.json`. The known-good accelerator is taken from
+`--reference-rev` (default: the revision under test). The smoke test is not part of clean trees.
