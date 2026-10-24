@@ -41,7 +41,7 @@ def test_saturation_rejected_below_floor_names_exactly_what_is_missing(tmp_path)
     _trials(tmp_path, "other")
     verdict, detail, _ = judge_saturation_claim(CFG, tmp_path, {"reason": "stuck"})
     assert verdict is Verdict.REJECT
-    assert "1.06x" in detail and "10x floor" in detail
+    assert "1.06x" in detail and "20x floor" in detail
     assert "2 more profile-guided trial(s): only 1 of the 3 required" in detail
     assert "one trial with strategy=structural" in detail
     assert "one trial with strategy=low_level" in detail
@@ -69,7 +69,7 @@ def test_saturation_triggers_one_structural_reanalysis_then_is_honored(tmp_path)
 
 
 def test_saturation_honored_at_or_above_floor_and_without_a_read_axis(tmp_path):
-    _best_valid(tmp_path, 12.0)
+    _best_valid(tmp_path, 24.0)
     assert judge_saturation_claim(CFG, tmp_path, None)[0] is Verdict.HONOR
     other = tmp_path / "base"
     other.mkdir()

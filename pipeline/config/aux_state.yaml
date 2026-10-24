@@ -95,7 +95,7 @@ optimization:
   # distinct, with one structural and one low-level change among them.
   early_stop:
     enabled: true
-    saturation_min_read_speedup: 10
+    saturation_min_read_speedup: 20
     saturation_required_attempts: 3
   # A redesign of the state (declared as strategy=structural, or inferred from the changed lines)
   # is kept only after the full tier of these gates and a measured read gain with the write axis held.

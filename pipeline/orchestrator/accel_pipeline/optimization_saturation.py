@@ -33,7 +33,7 @@ _STRATEGY_HELP = {
     STRATEGY_LOW_LEVEL: "a low-level vectorization/layout change (SIMD with a scalar fallback, branch-free predicates, compact columnar layout, prefetch, no allocation or indirection in the hot loop)",
 }
 
-DEFAULT_MIN_READ_SPEEDUP = 10.0
+DEFAULT_MIN_READ_SPEEDUP = 20.0
 DEFAULT_REQUIRED_ATTEMPTS = 3
 
 
