@@ -110,7 +110,8 @@ def run(
     record_implementation_base(
         pipeline_config.repo_root, query_artifacts_dir(pipeline_config.repo_root, query, workload=workload))
     repair_ctx = RepairCtx(pipeline_config, model_config, workload_name, query, stage="implementation",
-                           change_kind="implementation", model_overrides=model_overrides)
+                           change_kind="implementation", model_overrides=model_overrides,
+                           quick_first=workload.get("workload_kind") == "aux_state")
     if skip_gates:
         return run_with_repair(repair_ctx, implement)
     workload = load_run_workload(pipeline_config, workload_name)

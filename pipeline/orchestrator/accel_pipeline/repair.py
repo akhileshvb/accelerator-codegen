@@ -57,6 +57,7 @@ class RepairCtx:
     max_code_rounds: int | None = None
     repair_turn: Callable[[Failure], None] | None = None  # replaces the crash-debug turn (engine flows)
     gate_runner: Callable[[list[str]], tuple[list[GateResult], GateResult | None]] | None = None
+    quick_first: bool = False  # the stage's gate batch starts with quick_check and its write-cost projection
     results: list[GateResult] = field(default_factory=list)
     workload: dict[str, Any] = field(init=False)
     art: Path = field(init=False)
@@ -192,11 +193,25 @@ def _run_gates(ctx: RepairCtx, names: list[str]) -> tuple[list[GateResult], Gate
     if ctx.gate_runner is not None:
         return ctx.gate_runner(names)
     cfg = ctx.pipeline_config
+    if ctx.quick_first and (quick := _quick_gate(ctx)) is not None:
+        return [quick], quick
     kwargs = {"change_kind": ctx.change_kind, "iteration": ctx.iteration, "reuse": True}
     if cfg.quick_tier.parallel_gates:
         results = run_gates_parallel(cfg, names, ctx.query, ctx.workload, **kwargs)
         return results, first_failure(results)
     return run_post_stage_gates_collect(cfg, ctx.workload_name, ctx.query, names, **kwargs)
+
+
+def _quick_gate(ctx: RepairCtx) -> GateResult | None:
+    """quick_check as the batch's first gate: a write the projection says would rebuild at full scale fails here,
+    before the heavy gates run for minutes on code that cannot pass them."""
+    from accel_pipeline.quick import run_quick_check
+
+    quick = run_quick_check(ctx.pipeline_config, ctx.workload, ctx.query)
+    if quick.status != "fail":
+        return None
+    text = render_failure(quick.failure) if quick.failure else quick.summary
+    return GateResult("quick_check", "fail", {"status": "fail", "reason": quick.summary, "log_tail": text})
 
 
 def _record(ctx: RepairCtx, failure: Failure) -> None:

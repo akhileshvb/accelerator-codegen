@@ -343,3 +343,22 @@ def test_a_killed_agent_is_resumed_not_restarted(tmp_path, monkeypatch):
     args = (tmp_path / "args.log").read_text().splitlines()
     assert "exec resume" not in args[0] and "exec resume" in args[1]
     assert "stopped at the deadline" in (tmp_path / "prompts.log").read_text()
+
+
+def test_quick_first_fails_the_batch_before_the_heavy_gates(tmp_path, monkeypatch):
+    from accel_pipeline.quick import QuickResult
+
+    world = World(tmp_path, monkeypatch)
+    monkeypatch.undo()  # the real _run_gates, not World's scripted one
+    monkeypatch.setattr(repair_mod, "load_run_workload", lambda cfg, name: {"benchmark_name": "toybench"})
+    heavy = []
+    monkeypatch.setattr(repair_mod, "run_gates_parallel", lambda cfg, names, *a, **k: heavy.append(names) or [])
+    monkeypatch.setattr(repair_mod, "run_post_stage_gates_collect", lambda cfg, w, q, names, **k: heavy.append(names) or ([], None))
+    verdicts = [QuickResult(status="fail", summary="quick_check: projected full-gate write time ~900 s (budget 450 s)"),
+                QuickResult(status="pass")]
+    monkeypatch.setattr("accel_pipeline.quick.run_quick_check", lambda *a, **k: verdicts.pop(0))
+    ctx = world.ctx(quick_first=True)
+    results, failed = repair_mod._run_gates(ctx, ["aux_correctness"])
+    assert failed.name == "quick_check" and "projected" in failed.data["reason"] and heavy == []
+    repair_mod._run_gates(ctx, ["aux_correctness"])
+    assert heavy == [["aux_correctness"]]
