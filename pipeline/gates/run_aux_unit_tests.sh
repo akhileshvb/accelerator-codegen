@@ -26,7 +26,7 @@ else
   EXCLUDE="^${BENCHMARK_NAME}_q${QUERY}_smoke_test$"
 fi
 
-if ! engine_ready; then
+if ! engine_ready_for_ctest "${PATTERN}" "${EXCLUDE}"; then
   emit_result "${OUT}/aux_unit.json" aux_unit fail "${ENGINE_FAIL}" "${ENGINE_LOG}" "query:=${QUERY}"
 fi
 engine_run ctest --test-dir "${ACCEL_BUILD_DIR}" --no-tests=error -j "${ACCEL_CTEST_JOBS:-$(nproc)}" --stop-on-failure -R "${PATTERN}" -E "${EXCLUDE}" --output-on-failure

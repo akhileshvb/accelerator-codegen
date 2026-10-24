@@ -4,6 +4,7 @@ the quick tier and the quick_check gate, against the fake host of test_gate_plum
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -233,6 +234,24 @@ def test_aux_unit_runs_ctest_in_parallel_and_stops_on_the_first_failure(repo):
     _, calls, *_ = run_gate(repo, "run_aux_unit_tests.sh", "5")
     ctest = next(call for call in calls if call.startswith("run ctest"))
     assert " -j " in ctest and "--stop-on-failure" in ctest
+
+
+def test_aux_unit_builds_the_binaries_of_the_tests_it_runs(repo, tmp_path):
+    """A clean tree has no test binaries yet: the gate configures, lists the matching ctest tests, builds their
+    binaries, and only then runs ctest."""
+    bin_dir = tmp_path / "fakebin"
+    bin_dir.mkdir()
+    ctest = bin_dir / "ctest"
+    ctest.write_text("#!/usr/bin/env bash\n"
+                     "if [[ \"$*\" == *--show-only=json-v1* ]]; then\n"
+                     "  echo '{\"tests\": [{\"name\": \"a\", \"command\": [\"/b/test_unit_one\"]}, "
+                     "{\"name\": \"b\", \"command\": [\"/b/test_unit_two\"]}]}'\n"
+                     "fi\n")
+    ctest.chmod(0o755)
+    _, calls, *_ = run_gate(repo, "run_aux_unit_tests.sh", "5",
+                            env_extra={"PATH": f"{bin_dir}:{os.environ['PATH']}"})
+    built = calls.index("build test_unit_one test_unit_two")
+    assert built < next(i for i, call in enumerate(calls) if call.startswith("run ctest"))
 
 
 def test_quick_check_builds_runs_smoke_then_differential(repo):

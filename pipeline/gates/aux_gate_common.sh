@@ -134,6 +134,31 @@ engine_ready() {
 	[[ -z "${stamp}" ]] || { mkdir -p "${stamp_file%/*}" && printf '%s' "${stamp}" >"${stamp_file}"; }
 }
 
+# The built binaries of the ctest tests matching a regex (and not an optional exclude regex), one per line: a
+# gate that runs `ctest` must build them first, and a configured build dir is what lists them.
+ctest_targets() {
+	local pattern="$1" exclude="${2:-}" args=()
+	[[ -z "${exclude}" ]] || args=(-E "${exclude}")
+	ctest --test-dir "${ACCEL_BUILD_DIR}" -N -R "${pattern}" "${args[@]}" --show-only=json-v1 2>/dev/null |
+		python3 -c "
+import json, os, sys
+try:
+    tests = json.load(sys.stdin).get('tests', [])
+except ValueError:
+    tests = []
+print('\\n'.join(sorted({os.path.basename(t['command'][0]) for t in tests if t.get('command')})))
+" || true
+}
+
+# engine_ready for the ctest tests matching a regex: configure first (the tests are listed once configured), then
+# build the binaries those tests run.
+engine_ready_for_ctest() {
+	local targets
+	engine_ready || return 1
+	mapfile -t targets < <(ctest_targets "$@")
+	[[ ${#targets[@]} -eq 0 ]] || engine_ready "${targets[@]}"
+}
+
 # Run a built target through the host; sets RC and LOG.
 # Run a built target through host.sh with a time limit (ACCEL_GATE_RUN_TIMEOUT seconds,
 # default 900), so a hung harness fails the gate instead of stalling the run. Sets LOG, RC and,

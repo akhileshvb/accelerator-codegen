@@ -33,15 +33,7 @@ fail_step() { # step reproduce-command
 
 # The query's other registered ctest tests (the aux smoke test is run directly below).
 PATTERN="^${BENCHMARK_NAME}_q${QUERY}_aux"
-CTEST_TARGETS="$(ctest --test-dir "${ACCEL_BUILD_DIR}" -N -R "${PATTERN}" -E smoke --show-only=json-v1 2>/dev/null |
-  python3 -c "
-import json, os, sys
-try:
-    tests = json.load(sys.stdin).get('tests', [])
-except ValueError:
-    tests = []
-print(' '.join(sorted({os.path.basename(t['command'][0]) for t in tests if t.get('command')})))
-" || true)"
+CTEST_TARGETS="$(ctest_targets "${PATTERN}" smoke | tr '\n' ' ')"
 
 TARGETS=("${AUX_TEST_TARGET}")
 [[ ${WITH_DIFF} -eq 1 ]] && TARGETS+=("${DIFF_BINARY}")
