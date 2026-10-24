@@ -28,6 +28,9 @@ import time
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
+
+import smoke_report  # noqa: E402
 SOURCE_ROOT = HERE.parents[3]
 SMOKE_HOME = Path(os.environ.get("ACCEL_SMOKE_HOME", f"/flash1/{os.environ.get('USER', 'smoke')}/smoke"))
 STAGES = ("analysis", "test_suite", "implementation", "optimization", "audit")
@@ -224,14 +227,22 @@ def sh_quote(text: str) -> str:
     return shlex.quote(text)
 
 
-def wait(proc: subprocess.Popen, timeout: float, log: Path) -> int | None:
+def wait(proc: subprocess.Popen, timeout: float, log: Path) -> tuple[int | None, list[tuple[float, str]]]:
+    """Exit status (None: timed out) and the times at which the log's stage and gate lines appeared."""
     deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        try:
-            return proc.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            continue
-    return None
+    marks: list[tuple[float, str]] = []
+    seen = 0
+    while True:
+        done = proc.poll() is not None
+        lines = log.read_text(errors="replace").splitlines()
+        now = time.monotonic()
+        marks += [(now, line) for line in lines[seen:] if line.startswith("=== stage") or "gate complete" in line]
+        seen = len(lines)
+        if done:
+            return proc.returncode, marks
+        if now >= deadline:
+            return None, marks
+        time.sleep(2)
 
 
 def stop(proc: subprocess.Popen) -> None:
@@ -284,7 +295,7 @@ def main(argv: list[str] | None = None) -> int:
         started = time.monotonic()
         proc = launch(tree, work, kit, env, args.workload, query, args.engine, models, config)
         print(f"[smoke] pipeline running: tail -f {work / 'pipeline.log'}", flush=True)
-        rc = wait(proc, args.timeout, work / "pipeline.log")
+        rc, marks = wait(proc, args.timeout, work / "pipeline.log")
         if rc is None:
             stop(proc)
         timings.append(("pipeline", time.monotonic() - started))
@@ -292,11 +303,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"[smoke] FAILED while preparing: {exc}", file=sys.stderr)
         return 1
 
-    from smoke_report import verify
-
-    return verify(tree, work, args.workload, query, args.engine, rc, timings)
+    return smoke_report.verify(tree, work, rc, timings, marks)
 
 
 if __name__ == "__main__":
-    sys.path.insert(0, str(HERE))
     raise SystemExit(main())

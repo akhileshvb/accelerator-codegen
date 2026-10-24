@@ -27,3 +27,6 @@ accel-pipeline-pack = "accel_pipeline.run_pack:main"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["accel_pipeline*"]
+
+[tool.pytest.ini_options]
+markers = ["pipeline_smoke: builds a clean tree and runs the whole pipeline with a scripted agent (minutes; opt in with ACCEL_RUN_PIPELINE_SMOKE=1)"]

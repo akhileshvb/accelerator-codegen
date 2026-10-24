@@ -140,6 +140,12 @@ generated:
   - scripts/run_validated_tpch_bench.sh
   - scripts/validate_shared_duckdb_differential.sh
 
+  # the pipeline smoke test: a scripted agent, its fixtures (analysis output, suites) and the driver; it builds its
+  # own clean trees from the source repository, so it never ships inside one
+  - pipeline/orchestrator/tests/smoke/**
+  - pipeline/orchestrator/tests/test_pipeline_smoke.py
+  - scripts/pipeline_smoke.sh
+
 drop:
   # the clean-tree machinery itself: it names every generated file (that is how it prunes them),
   # so it never ships inside a clean tree where agents would read those names
