@@ -12,6 +12,8 @@
 #   ACCEL_DUCKDB_SEED_DIRS  optional prebuilt in-container DuckDB builds, ':'-separated (read-only)
 #   ACCEL_SANDBOX_STATE     engine-state dir, read-write and at its real path so the Docker
 #                           daemon can mount it (default /flash1/$USER/engine_state, the gates' default)
+#   ACCEL_HOST_LOCK_DIR     host-wide core-slot and measurement locks, read-write and at its real path so that
+#                           concurrent sandboxes (one per tree) share one partition (the sandbox's /dev/shm is private)
 #   OPENROUTER_API_KEY      passed through for codex when set (else <clean-tree>/.env has it)
 set -euo pipefail
 TREE="$(realpath "${1:?usage: sandbox.sh <clean-tree> [command...]}")"; shift
@@ -23,6 +25,12 @@ CODEX_PKG="$(dirname "$(dirname "${CODEX_BIN}")")"
 # Secrets pass through only when set; otherwise the tree's .env supplies them.
 passenv=()
 [[ -z "${OPENROUTER_API_KEY:-}" ]] || passenv+=(--setenv OPENROUTER_API_KEY "${OPENROUTER_API_KEY}")
+
+lock=()
+if [[ -n "${ACCEL_HOST_LOCK_DIR:-}" ]]; then
+  mkdir -p "${ACCEL_HOST_LOCK_DIR}"
+  lock=(--bind "${ACCEL_HOST_LOCK_DIR}" "${ACCEL_HOST_LOCK_DIR}" --setenv ACCEL_HOST_LOCK_DIR "${ACCEL_HOST_LOCK_DIR}")
+fi
 
 ro=()
 IFS=: read -ra data <<<"${ACCEL_SANDBOX_DATA:-}:${ACCEL_DUCKDB_ROOT:-}:${ACCEL_DUCKDB_SEED_DIRS:-}"
@@ -40,7 +48,7 @@ exec bwrap --die-with-parent --unshare-pid --unshare-ipc --unshare-uts \
   --setenv PATH "/opt/bin:/usr/bin" --setenv HOME "${TREE}/.home" --setenv USER "$(id -un)" \
   --setenv TERM "${TERM:-xterm}" --setenv TMPDIR /tmp \
   --setenv ACCEL_DUCKDB_ROOT "${ACCEL_DUCKDB_ROOT:-}" \
-  "${passenv[@]}" \
+  "${passenv[@]}" "${lock[@]}" \
   --setenv ACCEL_TREE "${TREE}" \
   --chdir "${TREE}" \
   "${@:-bash}"
