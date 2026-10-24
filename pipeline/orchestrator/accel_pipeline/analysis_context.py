@@ -267,7 +267,6 @@ def analysis_for_implementation(analysis: dict[str, Any]) -> dict[str, Any]:
     state_design = (analysis.get("correctness_facts") or {}).get("state_design") or {}
     out: dict[str, Any] = {
         "accelerator_id": analysis.get("accelerator_id"),
-        "base_function_name": analysis.get("base_function_name"),
         "aux_function_name": analysis.get("aux_function_name"),
         "selected_candidate_id": state_design.get("selected_candidate_id"),
         "correctness_facts": copy.deepcopy(analysis.get("correctness_facts", {})),

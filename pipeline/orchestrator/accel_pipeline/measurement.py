@@ -19,6 +19,7 @@ _SPEEDUP_KEYS = (
     "speedup_median",
 )
 _SLOWER_THAN_FALLBACK_FACTOR = 10.0
+_READ_AXIS_TOLERANCE = (0.9, 1.1)  # the bench rounds its microsecond columns
 _SOURCE_SUFFIXES = {".cpp", ".hpp", ".h", ".inc"}
 _OTHER_TARGET_DIRS = {"tests", "bench", "config"}  # edits there do not relink the bench binary
 _EVIDENCE_KEYS = (
@@ -148,6 +149,11 @@ def _built_diagnosis(points: list[dict[str, Any]], cfg: MeasurementConfig) -> li
     ]
 
 
+def _is_engine_read_axis(reported: float, ref_us: float, hit_us: float) -> bool:
+    low, high = _READ_AXIS_TOLERANCE
+    return low <= reported * hit_us / ref_us <= high
+
+
 def _timing_diagnosis(points: list[dict[str, Any]], cfg: MeasurementConfig) -> list[str]:
     out = []
     for point in points:
@@ -165,6 +171,12 @@ def _timing_diagnosis(points: list[dict[str, Any]], cfg: MeasurementConfig) -> l
             out.append(
                 f"{label}: reference query median {ref_us:g} us is outside "
                 f"[{cfg.min_ref_us:g} us, {cfg.max_ref_s:g} s]"
+            )
+        reported = _num(point, "query_only_speedup")
+        if ref_us and hit_us and reported and not _is_engine_read_axis(reported, ref_us, hit_us):
+            out.append(
+                f"{label}: query_only_speedup {reported:g} is not the engine reference {ref_us:g} us over "
+                f"the accelerator hit {hit_us:g} us: the read axis must be measured against the engine's own SQL"
             )
         fallback_us = _num(point, "fallback_median_us") or ref_us
         if hit_us and fallback_us and hit_us > _SLOWER_THAN_FALLBACK_FACTOR * fallback_us:

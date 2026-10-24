@@ -1,6 +1,5 @@
 {
   "accelerator_id": "tpch_q14_aux",
-  "base_function_name": "tpch_q14",
   "aux_function_name": "tpch_q14_aux",
   "fitness_assessment": {
     "recommended": true,

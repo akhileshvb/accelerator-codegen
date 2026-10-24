@@ -276,10 +276,6 @@ def build_prompt_context(
         prompt_header_path = edit_paths["header"]
         prompt_package_path = edit_paths["secondary_cpp"]
         optimization_edit_paths = "\n".join(f"- `{p}`" for p in edit_paths["all_paths"])
-        if edit_paths.get("base_kernel_path"):
-            optimization_edit_paths += (
-                f"\n- `{edit_paths['base_kernel_path']}` (base kernel — **read-only**, do not edit)"
-            )
     elif stage in opt_stages:
         optimization_edit_paths = "\n".join(
             f"- `{p}`"
@@ -512,7 +508,6 @@ def build_prompt_context(
         "dependent_tables_yaml": yaml.safe_dump(workload.get("dependent_tables", [])) if stage == "analysis" else "",
         "partitioning_yaml": yaml.safe_dump(workload.get("partitioning", {})) if stage == "analysis" else "",
         "accelerator_id": str(workload.get("accelerator_id", "")),
-        "base_function_name": str(workload.get("base_function_name", "")),
         "aux_function_name": str(workload.get("aux_function_name", "")),
         "cost_model_config": paths.get("cost_model_config", ""),
         "shared_docs_reference": shared_docs,

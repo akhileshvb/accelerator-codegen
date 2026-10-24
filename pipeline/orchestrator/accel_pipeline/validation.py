@@ -331,7 +331,6 @@ def _validate_state_design_read_path(state_design: dict[str, Any]) -> None:
 def _validate_required_fields(analysis: dict[str, Any]) -> None:
     for key in (
         "accelerator_id",
-        "base_function_name",
         "aux_function_name",
         "fitness_assessment",
         "correctness_facts",

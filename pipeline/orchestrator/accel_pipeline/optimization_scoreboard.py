@@ -100,26 +100,11 @@ def latency_from_metrics(metrics: dict[str, Any] | None, *, is_aux: bool) -> flo
     return None
 
 
-def read_speedup_vs_engine(metrics: dict[str, Any] | None) -> float | None:
-    """Engine's own SQL median over the accelerator hit median, on the read-only (0% write) row."""
-    if not metrics:
-        return None
-    rows = dict(metrics.get("by_write_frequency_pct") or {})
-    row = dict(rows.get("0") or next(iter(rows.values()), {}))
-    ref_us = _as_float(row.get("ref_query_median_us"))
-    hit_us = _as_float(row.get("accel_hit_median_us")) or _as_float(metrics.get("accel_hit_median_us"))
-    if ref_us and hit_us and ref_us > 0 and hit_us > 0:
-        return round(ref_us / hit_us, 3)
-    return None
-
-
 def read_axes(metrics: dict[str, Any] | None) -> dict[str, float | None]:
-    """The read axis on its own, against both references (the write axis never masks it)."""
-    base_kernel = _as_float((metrics or {}).get("read_only_query_speedup"))
-    return {
-        "vs_base_kernel": base_kernel if base_kernel and base_kernel > 0 else None,
-        "vs_engine": read_speedup_vs_engine(metrics),
-    }
+    """The read axis on its own (the write axis never masks it): the engine's own SQL for the same
+    binding over the accelerator hit, wall clock, as the bench reports it."""
+    value = _as_float((metrics or {}).get("read_only_query_speedup"))
+    return {"vs_engine": value if value and value > 0 else None}
 
 
 def aggregate_custom_profile_events(events: list[dict[str, Any]]) -> dict[str, Any]:

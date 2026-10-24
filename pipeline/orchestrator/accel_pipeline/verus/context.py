@@ -173,7 +173,6 @@ IGNORED_WORKLOAD_FIELDS = (
     "optimization_guidance",
     "requires_base_accelerator",
     "prerequisite_workload",
-    "base_function_name",
     "cost_model_config",
     "agent_boundary",
 )

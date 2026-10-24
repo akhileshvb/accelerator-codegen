@@ -92,14 +92,12 @@ def _parse_sweep_reader(reader: csv.DictReader) -> list[dict[str, Any]]:
                 "workload_speedup",
                 "cold_start_workload_speedup",
                 "query_only_speedup",
-                "query_only_speedup_profiler",
                 "blended_query_speedup",
                 "oracle_regret_pct",
                 "validity_slots_scanned_median",
                 "validity_scan_us_median",
                 "partitions_read_per_query_median",
                 "accel_hit_median_us",
-                "accel_profiler_query_median_us",
             }:
                 coerced = coerce_diagnostic_field(key, value)
                 if coerced is None or isinstance(coerced, str):
@@ -208,9 +206,6 @@ def summarize_sweep_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
                 "workload_speedup": float(row.get("workload_speedup", 0.0) or 0.0),
                 "cold_start_workload_speedup": float(row.get("cold_start_workload_speedup", 0.0) or 0.0),
                 "query_only_speedup": float(row.get("query_only_speedup", 0.0) or 0.0),
-                "query_only_speedup_profiler": float(
-                    row.get("query_only_speedup_profiler", 0.0) or 0.0
-                ),
                 "blended_query_speedup": float(row.get("blended_query_speedup", 0.0) or 0.0),
                 "duckdb_workload_us": float(row.get("duckdb_workload_us", 0.0) or 0.0),
                 "accel_workload_us": float(row.get("accel_workload_us", 0.0) or 0.0),
@@ -219,9 +214,6 @@ def summarize_sweep_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
                 "aux_state_bytes": int(float(row.get("aux_state_bytes", 0) or 0)),
                 "accel_hit_rate": float(row.get("accel_hit_rate", 0.0) or 0.0),
                 "accel_hit_median_us": float(row.get("accel_hit_median_us", 0.0) or 0.0),
-                "accel_profiler_query_median_us": float(
-                    row.get("accel_profiler_query_median_us", 0.0) or 0.0
-                ),
                 "writes_executed": int(row.get("writes_executed", 0) or 0),
             }
         )
@@ -249,7 +241,6 @@ def summarize_sweep_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
             for speedup_key in (
                 "workload_speedup",
                 "query_only_speedup",
-                "query_only_speedup_profiler",
                 "blended_query_speedup",
                 "cold_start_workload_speedup",
             ):
@@ -265,12 +256,6 @@ def summarize_sweep_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
                 merged["accel_hit_median_us"] = max(old_hit, new_hit)
             elif new_hit > 0:
                 merged["accel_hit_median_us"] = new_hit
-            old_prof = float(existing.get("accel_profiler_query_median_us") or 0.0)
-            new_prof = float(point.get("accel_profiler_query_median_us") or 0.0)
-            if old_prof > 0 and new_prof > 0:
-                merged["accel_profiler_query_median_us"] = max(old_prof, new_prof)
-            elif new_prof > 0:
-                merged["accel_profiler_query_median_us"] = new_prof
             merged["accel_hit_rate"] = min(
                 float(existing.get("accel_hit_rate") or 0.0), float(point.get("accel_hit_rate") or 0.0)
             )
@@ -361,7 +346,7 @@ def thread_scaling(at_n_csv: Path, at_1_csv: Path, threads: int, suite: str | No
 
     at_n, at_1 = point(at_n_csv), point(at_1_csv)
     out: dict[str, Any] = {"threads": threads}
-    for metric in ("accel_hit_median_us", "accel_profiler_query_median_us", "accel_workload_us"):
+    for metric in ("accel_hit_median_us", "accel_workload_us"):
         if at_n.get(metric, 0) > 0 and at_1.get(metric, 0) > 0:
             out.update({"read_metric": metric, "read_us_at_1": at_1[metric], "read_us_at_N": at_n[metric],
                         "read_speedup_at_N_vs_1": round(at_1[metric] / at_n[metric], 3)})

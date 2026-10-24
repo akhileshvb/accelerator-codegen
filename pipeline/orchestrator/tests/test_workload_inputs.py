@@ -22,7 +22,7 @@ QUERY_WORKLOADS = sorted(
 )
 # Keys that follow from bench + query + engine, or from the SQL and schema: never hand-written.
 DERIVED_KEYS = {
-    "query_id", "function_name", "create_fn", "base_function_name", "aux_function_name", "accelerator_id",
+    "query_id", "function_name", "create_fn", "aux_function_name", "accelerator_id",
     "prerequisite_workload", "cmake", "reference_accelerators", "seed_manifest_root", "output_schema",
     "dependent_tables", "tables", "engine_name",
 }
@@ -62,7 +62,8 @@ def test_workload_yaml_holds_only_inputs(name):
 
 def test_names_follow_the_convention_and_the_engine_profile():
     duck = load_workload("tpch_q3_aux", REPO_ROOT, engine="duckdb")
-    assert duck["function_name"] == duck["base_function_name"] == "accel_tpch_q3"
+    assert duck["function_name"] == "accel_tpch_q3"
+    assert "base_function_name" not in duck  # an aux workload has no stateless kernel to name
     assert duck["aux_function_name"] == "accel_tpch_q3_aux"
     assert duck["accelerator_id"] == "tpch_q3_aux"
     assert duck["prerequisite_workload"] == "tpch_q3"

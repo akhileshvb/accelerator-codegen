@@ -93,6 +93,11 @@ def test_implausible_timings(over, needle):
     assert any(needle in d for d in diagnoses([row(0, **over)]))
 
 
+def test_read_axis_must_be_the_engine_reference_over_the_hit():
+    assert any("against the engine's own SQL" in d for d in diagnoses([row(0, query_only_speedup=1.06)]))
+    assert check([row(0, query_only_speedup=100.4)]) == []
+
+
 def test_unmeasured_reference_is_not_implausible():
     assert check([row(0, ref_query_median_us=0.0)]) == []
 

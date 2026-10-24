@@ -13,15 +13,11 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
-#include <cstdio>
 #include <cstdlib>
-#include <fstream>
 #include <iomanip>
 #include <iostream>
-#include <sstream>
 #include <stdexcept>
 #include <string>
-#include <unistd.h>
 #include <vector>
 
 #include "duckdb.hpp"
@@ -29,6 +25,9 @@
 
 namespace accelerator_codegen::benchmarks::aux_sweep {
 namespace {
+
+// Threads for the engine reference and for the accelerator alike.
+constexpr int kThreadBudget = 1;
 
 namespace catalog_ns = accelerator_codegen::aux_state::engine;
 namespace bench_diag = accelerator_codegen::benchmarks;
@@ -54,25 +53,6 @@ void ExecuteAndConsume(duckdb::Connection &connection, const std::string &sql) {
       (void)materialized.GetValue(col, row);
     }
   }
-}
-
-// Root "latency" from DuckDB JSON profiling output (seconds → µs).
-double ParseJsonProfileLatencyUs(const std::string &path) {
-  std::ifstream in(path);
-  Require(in.good(), "cannot open DuckDB profile json: " + path);
-  std::ostringstream buf;
-  buf << in.rdbuf();
-  const std::string text = buf.str();
-  const auto key_pos = text.find("\"latency\"");
-  Require(key_pos != std::string::npos, "latency missing in profile json");
-  const auto colon_pos = text.find(':', key_pos);
-  Require(colon_pos != std::string::npos, "latency value missing in profile json");
-  char *end = nullptr;
-  const double seconds = std::strtod(text.c_str() + colon_pos + 1, &end);
-  Require(end != text.c_str() + colon_pos + 1 && std::isfinite(seconds) &&
-              seconds >= 0.0,
-          "failed to parse profile latency");
-  return seconds * 1e6;
 }
 
 double ExpectedQueriesBeforeWrite(int write_frequency_pct) {
@@ -234,67 +214,38 @@ double MeasureReaderQps(duckdb::Connection &connection,
   return 1e6 / median_us;
 }
 
-enum class TimedQueryKind { Base, Kernel, Aux };
+struct PairedMedianUs {
+  double engine_ref = 0.0;
+  double accel_hit = 0.0;
+};
 
-const std::string &SqlForKind(const TpchArgVariant &variant, TimedQueryKind kind) {
-  switch (kind) {
-  case TimedQueryKind::Base:
-    return variant.base_sql;
-  case TimedQueryKind::Kernel:
-    return variant.kernel_sql;
-  case TimedQueryKind::Aux:
-    return variant.aux_sql;
-  }
-  throw std::logic_error("unknown TimedQueryKind");
-}
-
-const char *ProfileSuffix(TimedQueryKind kind) {
-  switch (kind) {
-  case TimedQueryKind::Base:
-    return "_base";
-  case TimedQueryKind::Kernel:
-    return "_kernel";
-  case TimedQueryKind::Aux:
-    return "_aux";
-  }
-  return "";
-}
-
-double MeasureQueryMedianUs(duckdb::Connection &connection,
-                            const std::vector<TpchArgVariant> &arg_pool,
-                            TimedQueryKind kind, int samples) {
+// Wall-clock medians of the engine's own SQL and the accelerator hit for the same bindings, both
+// on the same database with the same thread setting and fully consumed results. Samples are
+// paired and alternate which side runs first, so background load and cache state affect both.
+PairedMedianUs MeasurePairedMedianUs(duckdb::Connection &engine_connection,
+                                     duckdb::Connection &accel_connection,
+                                     const std::vector<TpchArgVariant> &arg_pool, int samples) {
   if (samples <= 0 || arg_pool.empty()) {
-    return 0.0;
+    return {};
   }
-
-  // DuckDB JSON profiler root "latency" (query execution time reported by
-  // DuckDB), not outer wall-clock around connection.Query. Used for base
-  // DuckDB SQL, the generated kernel SQL, and the aux table-function path.
-  const std::string profile_path = "/tmp/accel_aux_bench_profile_" +
-                                   std::to_string(static_cast<long long>(::getpid())) +
-                                   ProfileSuffix(kind) + ".json";
-  {
-    auto enabled = connection.Query("PRAGMA enable_profiling='json'");
-    Require(enabled != nullptr && !enabled->HasError(),
-            enabled ? enabled->GetError() : "enable_profiling failed");
-  }
-  {
-    auto out = connection.Query("PRAGMA profiling_output='" + profile_path + "'");
-    Require(out != nullptr && !out->HasError(),
-            out ? out->GetError() : "profiling_output failed");
-  }
-
-  std::vector<double> query_samples;
-  query_samples.reserve(samples);
+  std::vector<double> engine_samples;
+  std::vector<double> accel_samples;
   for (int i = 0; i < samples; i++) {
-    const auto &variant =
-        arg_pool[static_cast<std::size_t>(i) % arg_pool.size()];
-    ExecuteAndConsume(connection, SqlForKind(variant, kind));
-    query_samples.push_back(ParseJsonProfileLatencyUs(profile_path));
+    const auto &variant = arg_pool[static_cast<std::size_t>(i) % arg_pool.size()];
+    const auto time_us = [](duckdb::Connection &connection, const std::string &sql) {
+      const auto start = Clock::now();
+      ExecuteAndConsume(connection, sql);
+      return ElapsedUs(start, Clock::now());
+    };
+    if (i % 2 == 0) {
+      engine_samples.push_back(time_us(engine_connection, variant.base_sql));
+      accel_samples.push_back(time_us(accel_connection, variant.aux_sql));
+    } else {
+      accel_samples.push_back(time_us(accel_connection, variant.aux_sql));
+      engine_samples.push_back(time_us(engine_connection, variant.base_sql));
+    }
   }
-  connection.Query("PRAGMA disable_profiling");
-  std::remove(profile_path.c_str());
-  return driver::Median(std::move(query_samples));
+  return {driver::Median(std::move(engine_samples)), driver::Median(std::move(accel_samples))};
 }
 
 struct WorkloadTimings {
@@ -477,14 +428,14 @@ WorkloadTimings RunMeasuredWorkload(DuckdbRuntime &runtime,
 void PrintCsvHeader(std::ostream &out) {
   out << "suite,write_mode,write_policy,locality,write_frequency_pct,write_interval_sec,"
          "measured_duration_sec,reader_qps,query_num,"
-         "num_queries,writes_executed,duckdb_ref_query_median_us,"
-         "base_kernel_median_us,base_write_median_us,accel_write_median_us,"
-         "accel_hit_median_us,accel_profiler_query_median_us,fallback_median_us,"
+         "num_queries,writes_executed,engine_ref_query_median_us,"
+         "base_write_median_us,accel_write_median_us,"
+         "accel_hit_median_us,fallback_median_us,"
          "accel_hit_rate,fallback_rate,"
          "total_duckdb_query_us,total_accel_query_us,total_base_write_us,"
          "total_accel_write_us,duckdb_workload_us,accel_workload_us,"
          "workload_speedup,cold_start_workload_speedup,query_only_speedup,"
-         "query_only_speedup_profiler,blended_query_speedup,"
+         "blended_query_speedup,"
          "cold_start_accel_workload_us,setup_full_build_ms,accel_fallback_reads,state_builds,"
       << bench_diag::kAuxStoreDiagnosticsCsvHeader << "\n";
 }
@@ -500,9 +451,7 @@ struct BenchSession {
   WriteMode write_mode = WriteMode::Point;
   int rf_chunk_orders = 1;
   double base_write_median_us = 0.0;
-  double duckdb_ref_query_median_us = 0.0;
-  double base_kernel_median_us = 0.0;
-  double accel_profiler_query_median_us = 0.0;
+  double engine_ref_query_median_us = 0.0;
   double setup_full_build_ms = 0.0;
   uint64_t aux_state_bytes = 0;
   double reader_qps = 1.0;
@@ -516,8 +465,11 @@ struct BenchSession {
 
   void Initialize(int warmup_queries, int ref_samples, int base_write_samples) {
     Require(suiteSupported(), "unsupported bench suite for multi-frequency sweep");
-    Require(base_connection.Query("PRAGMA threads=1") != nullptr, "pragma failed");
-    Require(accel_connection.Query("PRAGMA threads=1") != nullptr, "pragma failed");
+    // The engine reference and the accelerator get the same thread budget.
+    for (auto *connection : {&base_connection, &accel_connection}) {
+      Require(connection->Query("PRAGMA threads=" + std::to_string(kThreadBudget)) != nullptr,
+              "pragma failed");
+    }
     // DuckDB defaults to ~80% of RAM. On a busy box that reservation OOMs
     // Q18's GROUP BY during Build (SIGKILL, ~60 GiB peak). Cap the pool.
     {
@@ -572,27 +524,17 @@ struct BenchSession {
       if (ref_samples > 0) {
         ExecuteAndConsume(base_connection, variant.base_sql);
       }
-      // The generated base kernel densely resizes by max(orderkey). DuckDB
-      // TPC-H can emit sparse keys like 9e9; one EnsureOrderCapacity then
-      // SIGKILLs the process. Skip kernel warmup unless we measure it.
-      if (ref_samples > 0 && i < std::min(warmup_queries, 2)) {
-        ExecuteAndConsume(base_connection, variant.kernel_sql);
-      }
       // Warm the DuckDB aux TF path (bind/schema + hit) used by measured queries.
       ExecuteAndConsume(accel_connection, variant.aux_sql);
     }
 
-    duckdb_ref_query_median_us =
-        MeasureQueryMedianUs(base_connection, arg_pool, TimedQueryKind::Base,
-                             ref_samples);
-    base_kernel_median_us = MeasureQueryMedianUs(
-        base_connection, arg_pool, TimedQueryKind::Kernel,
-        ref_samples > 0 ? std::min(ref_samples, 2) : 0);
-    accel_profiler_query_median_us = MeasureQueryMedianUs(
-        accel_connection, arg_pool, TimedQueryKind::Aux, ref_samples);
+    const auto paired =
+        MeasurePairedMedianUs(base_connection, accel_connection, arg_pool, ref_samples);
+    engine_ref_query_median_us = paired.engine_ref;
     std::cerr << "tpch_q" << query_num
-              << "_aux_bench: duckdb_ref and accel_profiler use JSON profile "
-                 "latency; accel_hit_median_us remains wall-clock TF SQL\n"
+              << "_aux_bench: engine_ref and accel_hit are paired wall-clock medians of the "
+                 "same bindings at threads="
+              << kThreadBudget << "\n"
               << std::flush;
     reader_qps = MeasureReaderQps(accel_connection, arg_pool,
                                   std::max(1, std::min(warmup_queries, 3)));
@@ -660,7 +602,7 @@ private:
         measured_queries > 0 ? static_cast<int64_t>(measured_queries)
                              : workload.num_queries;
     const double total_duckdb_query_us =
-        duckdb_ref_query_median_us * static_cast<double>(query_count);
+        engine_ref_query_median_us * static_cast<double>(query_count);
     const double total_base_write_us =
         base_write_median_us * static_cast<double>(workload.writes_executed);
     const double duckdb_workload_us = total_duckdb_query_us + total_base_write_us;
@@ -670,19 +612,15 @@ private:
         accel_workload_us > 0.0 ? duckdb_workload_us / accel_workload_us : 0.0;
     const double query_only_speedup =
         workload.accel_hit_median_us > 0.0
-            ? base_kernel_median_us / workload.accel_hit_median_us
-            : 0.0;
-    const double query_only_speedup_profiler =
-        accel_profiler_query_median_us > 0.0
-            ? duckdb_ref_query_median_us / accel_profiler_query_median_us
+            ? engine_ref_query_median_us / workload.accel_hit_median_us
             : 0.0;
     const double blended_query_us =
         workload.accel_hit_rate * workload.accel_hit_median_us +
         workload.fallback_rate *
             (workload.fallback_median_us > 0.0 ? workload.fallback_median_us
-                                               : base_kernel_median_us);
+                                               : engine_ref_query_median_us);
     const double blended_query_speedup =
-        blended_query_us > 0.0 ? base_kernel_median_us / blended_query_us : 0.0;
+        blended_query_us > 0.0 ? engine_ref_query_median_us / blended_query_us : 0.0;
     const double cold_start_accel_workload_us =
         setup_full_build_ms * 1000.0 + accel_workload_us;
     const double cold_start_workload_speedup =
@@ -705,17 +643,17 @@ private:
               << write_interval_sec << ',' << measured_duration_sec << ','
               << reader_qps << ',' << query_num << ',' << workload.num_queries
               << ',' << workload.writes_executed << ',' << std::fixed
-              << std::setprecision(2) << duckdb_ref_query_median_us << ','
-              << base_kernel_median_us << ',' << base_write_median_us << ','
+              << std::setprecision(2) << engine_ref_query_median_us << ','
+              << base_write_median_us << ','
               << accel_write_median_us << ',' << workload.accel_hit_median_us
-              << ',' << accel_profiler_query_median_us << ','
+              << ','
               << workload.fallback_median_us << ','
               << workload.accel_hit_rate << ',' << workload.fallback_rate << ','
               << total_duckdb_query_us << ',' << workload.total_accel_query_us
               << ',' << total_base_write_us << ',' << workload.total_accel_write_us
               << ',' << duckdb_workload_us << ',' << accel_workload_us << ','
               << workload_speedup << ',' << cold_start_workload_speedup << ','
-              << query_only_speedup << ',' << query_only_speedup_profiler << ','
+              << query_only_speedup << ','
               << blended_query_speedup << ','
               << cold_start_accel_workload_us << ',' << setup_full_build_ms << ','
               << workload.accel_fallback_reads << ',' << workload.state_builds << ',';
