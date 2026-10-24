@@ -129,7 +129,6 @@ repair:
   max_orchestrator_retries: 1
   load_factor: 1.5          # a gate timeout under loadavg > load_factor * cores is infra
   never_quarantine: [aux_correctness, aux_unit]
-  parallel_gates: true
 
 # One codex session per role (accel_pipeline/session.py) and the wall budgets of an agent run.
 session:

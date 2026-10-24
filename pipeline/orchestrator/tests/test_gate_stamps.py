@@ -14,7 +14,7 @@ from accel_pipeline import background_gates
 from accel_pipeline.background_gates import background_status, reusable_background_result, start_background_gate
 from accel_pipeline.build_stamp import build_lock, code_stamp
 from accel_pipeline.config import QuickTierConfig
-from accel_pipeline.gate_stamps import current_stamp, passed_at_current_stamp, record_pass
+from accel_pipeline.gate_stamps import current_stamp, passed_at_current_stamp, record_pass, reusable_gate_result
 
 WORKLOAD = {"workload_kind": "aux_state", "benchmark_name": "demo", "engine_name": "eng"}
 GIT = ["git", "-c", "user.name=t", "-c", "user.email=t@t"]
@@ -52,6 +52,27 @@ def test_the_stamp_follows_the_query_and_shared_files_only(config):
     assert own != base
     write(config, "substrate/shared.hpp", "// shared\n")
     assert code_stamp(root, query_dir="accelerators/demo/q5") != own
+
+
+@pytest.mark.parametrize("shared", [
+    "accelerators/prims/ring.hpp", "accelerators/demo/common/scan.hpp", "backends/eng/host.sh",
+    "substrate/store.hpp", "cmake/Find.cmake", "CMakeLists.txt", "workloads/demo/q5.sql", "eval/run.py",
+    "accelerators/demo/qregistry.cpp",
+])
+def test_a_shared_file_changes_every_querys_stamp(config, shared):
+    base = {q: code_stamp(config.repo_root, query_dir=f"accelerators/demo/q{q}") for q in (5, 6)}
+    write(config, shared, "// changed\n")
+    assert all(code_stamp(config.repo_root, query_dir=f"accelerators/demo/q{q}") != base[q] for q in (5, 6))
+
+
+@pytest.mark.parametrize("excluded", [
+    "pipeline/prompts/a.md", "scripts/x.py", "docs/y.md", "build-release/z.o", "build/z.o",
+    "accelerators/demo/q50/module.cpp", "accelerators/other/q5/module.cpp",
+])
+def test_only_pipeline_scripts_docs_build_and_other_queries_are_excluded(config, excluded):
+    base = code_stamp(config.repo_root, query_dir="accelerators/demo/q5")
+    write(config, excluded, "// changed\n")
+    assert code_stamp(config.repo_root, query_dir="accelerators/demo/q5") == base
 
 
 def test_the_stamp_follows_content_not_timestamps(config):
@@ -180,3 +201,35 @@ def test_starting_a_background_gate_records_it_running_and_does_not_start_it_twi
     assert again["pid"] == 4242 and len(spawned) == 1
     status = background_status(config, WORKLOAD, 5, "aux_unit")
     assert status["status"] == "running" and "elapsed_sec" in status
+
+
+def test_a_timing_gate_is_reused_only_from_the_same_stages_acceptance_run(config):
+    stamp = current_stamp(config, WORKLOAD, 5)
+    path = config.repo_root / "pipeline" / "artifacts" / "sweep.json"
+    path.write_text('{"status": "pass"}')
+    record_pass(config, WORKLOAD, 5, "aux_bench_sweep", stamp, change_kind="audit", result=path)
+    assert reusable_gate_result(config, WORKLOAD, 5, "aux_bench_sweep", change_kind="audit").data["reused"] is True
+    assert reusable_gate_result(config, WORKLOAD, 5, "aux_bench_sweep", change_kind="implementation") is None
+    assert reusable_gate_result(config, WORKLOAD, 5, "aux_bench_sweep") is None
+    record_pass(config, WORKLOAD, 5, "aux_bench_sweep", stamp, change_kind="optimization", result=path)
+    assert reusable_gate_result(config, WORKLOAD, 5, "aux_bench_sweep", change_kind="optimization") is None
+
+
+def test_a_correctness_gate_is_reused_across_stages_on_identical_code_only(config):
+    stamp = current_stamp(config, WORKLOAD, 5)
+    path = config.repo_root / "pipeline" / "artifacts" / "unit.json"
+    path.write_text('{"status": "pass", "log": "x"}')
+    record_pass(config, WORKLOAD, 5, "aux_unit", stamp, change_kind="implementation", result=path)
+    assert reusable_gate_result(config, WORKLOAD, 5, "aux_unit", change_kind="audit").data["log"] == "x"
+    write(config, "accelerators/prims/ring.hpp", "// edited\n")
+    assert reusable_gate_result(config, WORKLOAD, 5, "aux_unit", change_kind="audit") is None
+
+
+def test_a_gate_without_a_readable_passing_result_is_not_reused(config):
+    record_pass(config, WORKLOAD, 5, "aux_unit", current_stamp(config, WORKLOAD, 5), result=config.repo_root / "gone.json")
+    assert reusable_gate_result(config, WORKLOAD, 5, "aux_unit") is None
+
+
+def test_a_background_pass_is_reused_for_a_non_timing_gate(config):
+    finished(config, "aux_correctness")
+    assert reusable_gate_result(config, WORKLOAD, 5, "aux_correctness").data["reused"] == "background"

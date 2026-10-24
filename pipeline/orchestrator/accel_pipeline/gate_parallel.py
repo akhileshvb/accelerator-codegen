@@ -9,16 +9,16 @@ returns one GateResult per name, in the order given. The caller decides what a r
 from __future__ import annotations
 
 import os
+import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any, Literal, Sequence
 
 from accel_pipeline.config import PipelineConfig
-from accel_pipeline.gate_stamps import passed_at_current_stamp
+from accel_pipeline.gate_stamps import reusable_gate_result
 from accel_pipeline.gates import GATES_ALLOW_SKIP, GateResult, run_gate
-from accel_pipeline.jsonio import read_json
-from accel_pipeline.paths import gates_dir_for_query, query_artifacts_dir
+from accel_pipeline.pipeline_log import log_gate_batch_start
 
 
 @dataclass(frozen=True)
@@ -42,15 +42,13 @@ def _ok(result: GateResult) -> bool:
     return result.status == "pass" or (result.status == "skip" and result.name in GATES_ALLOW_SKIP)
 
 
+def first_failure(results: Sequence[GateResult]) -> GateResult | None:
+    """The first result that is neither a pass nor cancelled: what a batch failed on."""
+    return next((r for r in results if not _ok(r) and r.status != "cancelled"), None)
+
+
 def _cancelled(name: str, culprit: str) -> GateResult:
     return GateResult(name=name, status="cancelled", data={"status": "cancelled", "reason": f"not run: {culprit} failed"})
-
-
-def _reused(pipeline_config: PipelineConfig, name: str, query: int, workload: dict[str, Any]) -> GateResult:
-    art = query_artifacts_dir(pipeline_config.repo_root, query, workload=workload)
-    path = gates_dir_for_query(art) / f"{name}.json"
-    data = {**read_json(path), "status": "pass", "reused": True}
-    return GateResult(name=name, status="pass", data=data, path=path if path.is_file() else None)
 
 
 def _instance_env(workload: dict[str, Any], worker_id: str, name: str) -> dict[str, str]:
@@ -80,8 +78,8 @@ def run_gates_parallel(
     jobs: concurrent gates in a "parallel" group (default quick_tier.gate_jobs, 0 = one per gate).
     fail_fast: after the first failing gate, running siblings are killed and the rest are not
       started (status "cancelled"); the failing result is the first non-pass in the returned list.
-    reuse: a gate that already passed on the code as it is now (gate_stamps) is not run again;
-      its result carries reused=True.
+    reuse: a gate that already passed on the code as it is now (gate_stamps, background gates) is not
+      run again; its result carries reused. Timing gates only count from this stage's acceptance tier.
     """
     grouped = {name for group in groups for name in group.names}
     wanted = list(dict.fromkeys(names))
@@ -90,12 +88,14 @@ def run_gates_parallel(
     limit = jobs if jobs is not None else pipeline_config.quick_tier.gate_jobs
     cancel = threading.Event()
     failed: list[str] = []
+    log_gate_batch_start(query, wanted, change_kind=change_kind, iteration=iteration)
 
     def run_one(name: str, *, isolated: bool) -> GateResult:
         if cancel.is_set():
             return _cancelled(name, failed[0])
-        if reuse and passed_at_current_stamp(pipeline_config, workload, query, name):
-            return _reused(pipeline_config, name, query, workload)
+        if reuse and (reused := reusable_gate_result(pipeline_config, workload, query, name, change_kind=change_kind)):
+            print(f"[pipeline] gate {name}: reused (passed on identical code)", file=sys.stderr, flush=True)
+            return reused
         result = run_gate(
             pipeline_config, name, query, workload,
             change_kind=change_kind, iteration=iteration, gate_index=wanted.index(name) + 1, gate_count=len(wanted),

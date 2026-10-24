@@ -15,11 +15,13 @@ from typing import Any, Callable, TypeVar
 
 from accel_pipeline.config import ModelConfig, PipelineConfig, load_run_workload
 from accel_pipeline.failure import Failure, StageFailure, failure_from_gate, render_failure
+from accel_pipeline.gate_parallel import first_failure, run_gates_parallel
 from accel_pipeline.gates import GateFailure, GateResult
 from accel_pipeline.layout import query_dir
 from accel_pipeline.paths import query_artifacts_dir
 from accel_pipeline.playbook import append_experiment_log
 from accel_pipeline.session import MAIN, SessionStore
+from accel_pipeline.stages.gate_plan import run_post_stage_gates_collect
 from accel_pipeline.triage import classify, failure_text
 
 T = TypeVar("T")
@@ -169,17 +171,13 @@ def _check_gates(ctx: RepairCtx, gates: list[str], quarantined: set[str]) -> Fai
 
 
 def _run_gates(ctx: RepairCtx, names: list[str]) -> tuple[list[GateResult], GateResult | None]:
-    kwargs = {"change_kind": ctx.change_kind, "iteration": ctx.iteration}
-    if ctx.pipeline_config.repair.parallel_gates:
-        try:
-            from accel_pipeline.gate_parallel import run_gates_parallel
-        except ImportError:
-            pass
-        else:
-            return run_gates_parallel(ctx.pipeline_config, ctx.workload_name, ctx.query, names, **kwargs)
-    from accel_pipeline.stages.gate_plan import run_post_stage_gates_collect
-
-    return run_post_stage_gates_collect(ctx.pipeline_config, ctx.workload_name, ctx.query, names, **kwargs)
+    """The gates, skipping any that already passed on identical code; the results and the failing one."""
+    cfg = ctx.pipeline_config
+    kwargs = {"change_kind": ctx.change_kind, "iteration": ctx.iteration, "reuse": True}
+    if cfg.quick_tier.parallel_gates:
+        results = run_gates_parallel(cfg, names, ctx.query, ctx.workload, **kwargs)
+        return results, first_failure(results)
+    return run_post_stage_gates_collect(cfg, ctx.workload_name, ctx.query, names, **kwargs)
 
 
 def _record(ctx: RepairCtx, failure: Failure) -> None:

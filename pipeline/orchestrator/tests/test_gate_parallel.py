@@ -27,8 +27,11 @@ class Fake:
         self.hold = hold
         self.stamped = set(stamped)
         monkeypatch.setattr(gate_parallel, "run_gate", self.run_gate)
-        monkeypatch.setattr(gate_parallel, "passed_at_current_stamp", lambda cfg, wl, q, name: name in self.stamped)
-        monkeypatch.setattr(gate_parallel, "_reused", lambda cfg, name, q, wl: GateResult(name, "pass", {"reused": True}))
+        monkeypatch.setattr(
+            gate_parallel, "reusable_gate_result",
+            lambda cfg, wl, q, name, change_kind="": GateResult(name, "pass", {"reused": True}) if name in self.stamped else None,
+        )
+        monkeypatch.setattr(gate_parallel, "log_gate_batch_start", lambda *a, **k: None)
 
     def run_gate(self, config, name, query, workload, *, env=None, cancel=None, **kwargs):
         with self.lock:
@@ -176,3 +179,12 @@ def test_jobs_bounds_the_parallel_group(monkeypatch):
         CONFIG, ["aux_multi_connection", "aux_cross_accel", "aux_cost_model_calibrate"], 6, WORKLOAD, jobs=1
     )
     assert max(fake.max_running_when.values()) == 1
+
+
+def test_first_failure_skips_cancelled_gates_and_allowed_skips(monkeypatch):
+    results = [GateResult("aux_unit", "pass", {}), GateResult("aux_cost_model_calibrate", "skip", {}),
+               GateResult("aux_cross_accel", "cancelled", {}), GateResult("aux_correctness", "fail", {}),
+               GateResult("prims_tests", "fail", {})]
+    assert gate_parallel.first_failure(results[:3]) is None
+    assert gate_parallel.first_failure(results).name == "aux_correctness"
+    assert gate_parallel.first_failure([GateResult("aux_unit", "skip", {})]).name == "aux_unit"

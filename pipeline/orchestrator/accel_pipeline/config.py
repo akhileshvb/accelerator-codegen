@@ -72,7 +72,6 @@ class RepairConfig:
     max_orchestrator_retries: int = 1
     load_factor: float = 1.5
     never_quarantine: tuple[str, ...] = ("aux_correctness", "aux_unit")
-    parallel_gates: bool = True
 
 
 @dataclass(frozen=True)
@@ -405,7 +404,6 @@ def _repair_config(block: dict[str, Any]) -> RepairConfig:
         max_orchestrator_retries=int(block.get("max_orchestrator_retries", defaults.max_orchestrator_retries)),
         load_factor=float(block.get("load_factor", defaults.load_factor)),
         never_quarantine=tuple(str(g) for g in block.get("never_quarantine", defaults.never_quarantine)),
-        parallel_gates=bool(block.get("parallel_gates", defaults.parallel_gates)),
     )
 
 

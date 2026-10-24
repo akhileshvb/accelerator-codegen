@@ -199,7 +199,7 @@ def run_gate(
     ACCEL_ENGINE_INSTANCE per gate); once `cancel` is set the gate is killed and reports "cancelled".
     `out_dir` puts the result files there instead of <artifacts>/gates (background gates, so a run on
     code that moves on never overwrites the canonical result); `timeout_s` replaces GATE_TIMEOUT_S.
-    A passing gate is recorded in gate_stamps against the code it ran on."""
+    A passing foreground gate is recorded in gate_stamps against the code it ran on."""
     if gate_name not in GATE_SCRIPTS:
         raise ValueError(f"unknown gate: {gate_name}")
 
@@ -334,8 +334,9 @@ def run_gate(
         phase_timings=data["phase_timings"],
     )
     result = GateResult(name=gate_name, status=status, data=data, path=out_json if out_json.is_file() else None)
-    if status == "pass" and stamp_before and current_stamp(pipeline_config, workload, query) == stamp_before:
-        record_pass(pipeline_config, workload, query, gate_name, stamp_before)
+    unchanged = bool(stamp_before) and current_stamp(pipeline_config, workload, query) == stamp_before
+    if status == "pass" and unchanged and out_dir is None:
+        record_pass(pipeline_config, workload, query, gate_name, stamp_before, change_kind=change_kind, result=out_json)
     if gate_name == "aux_bench_sweep":
         from accel_pipeline.pipeline_log import log_bench_sweep_results
 

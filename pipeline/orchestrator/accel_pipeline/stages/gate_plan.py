@@ -54,8 +54,11 @@ def run_post_stage_gates_collect(
     *,
     change_kind: str = "",
     iteration: int = 0,
+    reuse: bool = False,
 ) -> tuple[list[GateResult], GateResult | None]:
+    """Run `gate_names` in order until one fails. reuse: skip a gate that already passed on identical code."""
     from accel_pipeline.config import load_run_workload
+    from accel_pipeline.gate_stamps import reusable_gate_result
 
     workload = load_run_workload(pipeline_config, workload_name)
     from accel_pipeline.pipeline_log import log_gate_batch_start
@@ -70,7 +73,8 @@ def run_post_stage_gates_collect(
     total = len(gate_names)
     for idx, gate_name in enumerate(gate_names, start=1):
         allow_skip = gate_name in GATES_ALLOW_SKIP
-        result = run_gate(
+        reused = reuse and reusable_gate_result(pipeline_config, workload, query, gate_name, change_kind=change_kind)
+        result = reused or run_gate(
             pipeline_config,
             gate_name,
             query,

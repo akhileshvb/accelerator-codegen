@@ -12,13 +12,16 @@ from __future__ import annotations
 
 import fcntl
 import hashlib
+import re
 import subprocess
 import sys
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator, Sequence
 
-IRRELEVANT_PREFIXES = ("pipeline/", "scripts/", "docs/", "build", ".git")
+IRRELEVANT_TOP_DIRS = frozenset({"pipeline", "scripts", "docs"})
+_BUILD_OR_VCS_DIR = re.compile(r"^(\.git(/|$)|build(-[^/]*)?/)")
+_QUERY_DIR = re.compile(r"^accelerators/[A-Za-z0-9_]+/q\d+/")
 
 
 def _git(repo_root: Path, *args: str) -> bytes:
@@ -38,12 +41,12 @@ def _uncommitted_files(repo_root: Path) -> list[str]:
 
 
 def _relevant(path: str, query_dir: str) -> bool:
-    if path.startswith(IRRELEVANT_PREFIXES):
+    """Whether `path` can change this query's build or behaviour: everything but pipeline code, scripts,
+    docs, build output and the other queries' directories (accelerators, prims, backends, substrate,
+    cmake and the shared accelerators/<bench>/common are all relevant)."""
+    if path.split("/", 1)[0] in IRRELEVANT_TOP_DIRS or _BUILD_OR_VCS_DIR.match(path):
         return False
-    if query_dir:
-        other_queries = query_dir.rsplit("/q", 1)[0] + "/q"
-        return not path.startswith(other_queries) or path.startswith(query_dir.rstrip("/") + "/")
-    return True
+    return not (query_dir and _QUERY_DIR.match(path) and not path.startswith(query_dir.rstrip("/") + "/"))
 
 
 def code_stamp(repo_root: Path, *, query_dir: str = "", extra: Sequence[str] = ()) -> str:
