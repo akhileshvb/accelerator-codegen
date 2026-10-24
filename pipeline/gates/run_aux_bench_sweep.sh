@@ -20,8 +20,8 @@ mkdir -p "${OUT}"
 
 write_skip() {
   local reason="$1"
-  python3 - <<PY
-import json, pathlib
+  REASON_TEXT="${reason}" python3 - <<PY
+import os, json, pathlib
 out = pathlib.Path("${OUT}/aux_bench_sweep.json")
 out.write_text(json.dumps({
     "gate": "aux_bench_sweep",
@@ -29,7 +29,7 @@ out.write_text(json.dumps({
     "benchmark": "${BENCHMARK_NAME}",
     "engine_name": "${ENGINE_NAME}",
     "status": "skip",
-    "reason": """${reason}""",
+    "reason": os.environ["REASON_TEXT"],
 }, indent=2))
 print(out.read_text())
 PY

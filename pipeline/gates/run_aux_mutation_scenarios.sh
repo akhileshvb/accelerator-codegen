@@ -32,8 +32,8 @@ if [[ ${RC} -ne 0 ]]; then
   STATUS="fail"
 fi
 
-python3 - <<PY
-import json, pathlib
+GATE_LOG_TEXT="${ENGINE_LOG}${LOG}" python3 - <<PY
+import os, json, pathlib
 path = pathlib.Path("${OUT}/aux_mutation_scenarios.json")
 path.write_text(json.dumps({
     "gate": "aux_mutation_scenarios",
@@ -41,7 +41,7 @@ path.write_text(json.dumps({
     "benchmark": "${BENCHMARK_NAME}",
     "status": "${STATUS}",
     "exit_code": int("${RC}"),
-    "log_tail": """${ENGINE_LOG}${LOG}"""[-4000:],
+    "log_tail": os.environ["GATE_LOG_TEXT"][-4000:],
 }, indent=2))
 print(path.read_text())
 PY

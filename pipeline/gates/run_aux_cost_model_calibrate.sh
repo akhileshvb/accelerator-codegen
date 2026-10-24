@@ -19,15 +19,15 @@ CONFIG="${ROOT}/${COST_MODEL_CONFIG}"
 
 write_skip() {
   local reason="$1"
-  python3 - <<PY
-import json, pathlib
+  SKIP_REASON="${reason}" python3 - <<PY
+import json, os, pathlib
 path = pathlib.Path("${OUT}/aux_cost_model_calibrate.json")
 payload = {
     "gate": "aux_cost_model_calibrate",
     "query": int("${QUERY}"),
     "benchmark": "${BENCHMARK_NAME}",
     "status": "skip",
-    "reason": """${reason}""",
+    "reason": os.environ["SKIP_REASON"],
     "config_path": "${CONFIG}",
 }
 path.write_text(json.dumps(payload, indent=2))
@@ -57,8 +57,9 @@ engine_measure "${TARGET}" --query "${QUERY}" "${CONFIG}"
 RC_RUN=${RC}
 BUILD_LOG="${ENGINE_LOG}"
 
-python3 - <<PY
-import json, pathlib, sys
+# logs and reasons go through the environment: pasted into the heredoc, a quote in them broke the Python
+GATE_LOG="${BUILD_LOG}${LOG}" python3 - <<PY
+import json, os, pathlib, sys
 path = pathlib.Path("${OUT}/aux_cost_model_calibrate.json")
 config_path = pathlib.Path("${CONFIG}")
 status = "pass"
@@ -94,7 +95,7 @@ payload = {
     "config_path": str(config_path),
     "interference": interference,
     "reason": reason,
-    "log_tail": """${BUILD_LOG}${LOG}"""[-4000:],
+    "log_tail": os.environ["GATE_LOG"][-4000:],
 }
 path.write_text(json.dumps(payload, indent=2))
 print(path.read_text())

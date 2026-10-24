@@ -39,8 +39,8 @@ engine_measure "${BENCH_AUX}"
 AUX_LOG="${LOG}"
 AUX_RC=${RC}
 
-python3 - <<PY
-import json
+BASE_LOG_TEXT="${BASE_LOG}" AUX_LOG_TEXT="${AUX_LOG}" python3 - <<PY
+import os, json
 import pathlib
 import re
 import sys
@@ -78,8 +78,8 @@ def parse_aux_us(text: str) -> float | None:
         return float(m.group(1))
     return parse_us(text)
 
-base_us = parse_base_us("""${BASE_LOG}""", """${AUX_LOG}""")
-aux_us = parse_aux_us("""${AUX_LOG}""")
+base_us = parse_base_us(os.environ["BASE_LOG_TEXT"], os.environ["AUX_LOG_TEXT"])
+aux_us = parse_aux_us(os.environ["AUX_LOG_TEXT"])
 
 status = "fail"
 speedup = None
@@ -118,8 +118,8 @@ out = {
     "min_work_reduction_pct": float("${MIN_REDUCTION_PCT}"),
     "operators_eliminated_confirmed": aux_us is not None and base_us is not None and aux_us < base_us,
     "notes": "; ".join(notes) if notes else "benchmark comparison complete",
-    "base_log_tail": """${BASE_LOG}"""[-2000:],
-    "aux_log_tail": """${AUX_LOG}"""[-2000:],
+    "base_log_tail": os.environ["BASE_LOG_TEXT"][-2000:],
+    "aux_log_tail": os.environ["AUX_LOG_TEXT"][-2000:],
 }
 path = pathlib.Path("${OUT}/aux_speedup_verification.json")
 path.write_text(json.dumps(out, indent=2))
