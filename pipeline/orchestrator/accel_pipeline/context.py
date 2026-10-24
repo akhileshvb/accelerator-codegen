@@ -207,7 +207,7 @@ def build_prompt_context(
                 "-- Regenerate with: python3 scripts/generate_tpch_sf1_instances.py"
             )
         data_shape_section = build_data_shape_markdown(
-            workload, paths.get("dataset_db")
+            workload, paths.get("dataset_db"), repo=repo, query=query
         )
         workload_reference_section = "\n".join(
             [

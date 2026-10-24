@@ -67,9 +67,9 @@ def _dependent_tables(sql: str, schema: dict[str, dict[str, str]]) -> list[dict[
     ]
 
 
-def scratch_connection(path: str = ":memory:") -> Any:
+def scratch_connection(path: str = ":memory:", read_only: bool = False) -> Any:
     """The embedded SQL engine the orchestrator derives facts and test subsets with."""
-    return duckdb.connect(path)
+    return duckdb.connect(path, read_only=read_only)
 
 
 def derive_query_facts(sql: str, schema_sql: str) -> dict[str, Any]:
