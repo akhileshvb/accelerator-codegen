@@ -13,7 +13,7 @@ from accel_pipeline.repair import RepairCtx, run_with_repair
 from accel_pipeline.session import MAIN
 from accel_pipeline.stages.gate_plan import workload_post_implementation_gates
 from accel_pipeline.stages.base import run_agent_stage
-from accel_pipeline.validation import AuxAnalysisValidationError, validate_aux_analysis_file
+from accel_pipeline.stages.analysis import validate_with_repair
 
 
 def _implementation_user_message(
@@ -85,14 +85,10 @@ def run(
         run_gate(pipeline_config, "scaffold", query, workload=workload)
     else:
         analysis_path = analysis_artifact_path(pipeline_config.repo_root, query, workload=workload)
-        if analysis_path.is_file():
-            try:
-                validate_aux_analysis_file(
-                    analysis_path,
-                    allow_poor_fitness=bool(workload.get("allow_poor_fitness", False)),
-                )
-            except AuxAnalysisValidationError as exc:
-                raise RuntimeError(f"aux analysis validation failed before implementation: {exc}") from exc
+        if analysis_path.is_file() and not dry_run:
+            # An analysis written under older rules goes back to its session rather than stopping the run.
+            validate_with_repair(pipeline_config, model_config, workload_name, query, model_overrides,
+                                 analysis_path, bool(workload.get("allow_poor_fitness", False)))
 
     def implement():
         return run_agent_stage(
