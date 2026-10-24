@@ -39,7 +39,7 @@ for p in "${data[@]}"; do [[ -n "${p}" ]] && ro+=(--ro-bind "${p}" "${p}"); done
 exec bwrap --die-with-parent --unshare-pid --unshare-ipc --unshare-uts \
   --ro-bind /usr /usr --symlink usr/lib /lib --symlink usr/lib /lib64 \
   --symlink usr/bin /bin --symlink usr/bin /sbin --ro-bind /etc /etc \
-  --dev /dev --proc /proc --tmpfs /tmp --tmpfs /dev/shm --tmpfs /home --tmpfs /flash1 \
+  --dev /dev --proc /proc --ro-bind /sys /sys --tmpfs /tmp --tmpfs /dev/shm --tmpfs /home --tmpfs /flash1 \
   --bind "${TREE}" "${TREE}" --bind "${STATE}" "${STATE}" \
   --ro-bind "${CODEX_PKG}" "${CODEX_PKG}" --symlink "${CODEX_BIN}" /opt/bin/codex \
   --bind /var/run/docker.sock /var/run/docker.sock \
