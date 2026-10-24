@@ -66,7 +66,7 @@ Taxonomy: `taxonomy_index.md`, then `aux_state_taxonomy.md` / `aux_state_design.
 
 ### 4. Hypotheses and files
 
-`performance_hypotheses`: maintenance fan-out, likely actions, initial cost model, eligibility rules, and the low-level plan for the read path (vector width and fallback, layout, prefetch). `files_to_create` per `module_layout.md`.
+`performance_hypotheses`: maintenance fan-out, likely actions, initial cost model, eligibility rules, and the low-level plan for the read path (vector width and fallback, layout, prefetch). `files_to_create` per `generated_layout.md`.
 
 {{agent_boundary}}
 
