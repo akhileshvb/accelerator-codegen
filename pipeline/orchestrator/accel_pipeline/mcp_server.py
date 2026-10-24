@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from accel_pipeline.jsonio import read_json
+from accel_pipeline.session import keep_alive
 
 
 def _env_int(name: str, default: int = 0) -> int:
@@ -365,7 +366,9 @@ def main(argv: list[str] | None = None) -> int:
             tools = build_mcp_tool_callables(
                 pipeline_config, workload, workload_name, q, stage, optimization_iter, art
             )
-            return tools[name](*a, **kw) + _budget_footer(pipeline_config, stage, q)
+            with keep_alive(art):  # a long tool call (gate, bench, build) is agent activity, not idleness
+                result = tools[name](*a, **kw)
+            return result + _budget_footer(pipeline_config, stage, q)
         except Exception as exc:  # noqa: BLE001 — surface to MCP client
             return json.dumps({"error": str(exc), "tool": name})
 

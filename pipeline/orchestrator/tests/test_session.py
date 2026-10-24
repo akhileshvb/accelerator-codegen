@@ -5,7 +5,7 @@ from types import SimpleNamespace
 from accel_pipeline.backends.base import StageRunRequest, StageRunResult
 from accel_pipeline.config import SessionConfig
 from accel_pipeline.session import (
-    MAIN, SessionStore, budget_footer, build_handoff, context_tokens, run_in_session,
+    HEARTBEAT_FILE, MAIN, SessionStore, budget_footer, build_handoff, context_tokens, keep_alive, run_in_session,
 )
 
 
@@ -132,3 +132,21 @@ def test_budget_footer_is_silent_then_asks_to_wrap_up_then_to_checkpoint(tmp_pat
 def test_budget_footer_without_an_art_dir_is_empty(monkeypatch):
     monkeypatch.delenv("ACCEL_PIPELINE_ART_DIR", raising=False)
     assert budget_footer(None, "x", 1) == ""
+
+
+def test_keep_alive_beats_while_a_tool_call_blocks_and_stops_after(tmp_path):
+    beat = tmp_path / HEARTBEAT_FILE
+    with keep_alive(tmp_path, every_sec=0.05):
+        time.sleep(0.2)
+        assert beat.is_file()
+        first = beat.stat().st_mtime
+        time.sleep(0.2)
+        assert beat.stat().st_mtime > first
+    last = beat.stat().st_mtime
+    time.sleep(0.2)
+    assert beat.stat().st_mtime == last
+
+
+def test_keep_alive_without_an_art_dir_is_a_no_op():
+    with keep_alive(None):
+        pass

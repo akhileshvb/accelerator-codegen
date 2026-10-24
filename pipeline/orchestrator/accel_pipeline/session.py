@@ -204,9 +204,9 @@ def budget_footer(pipeline_config: Any, stage: str, query: int) -> str:
     elapsed = time.time() - float(run.get("started", time.time()))
     soft, hard = float(run.get("soft_deadline_sec") or 0), float(run.get("hard_deadline_sec") or 0)
     if hard and elapsed >= hard - min(600.0, hard / 10):
-        return (f"\n\n[wall budget: {elapsed / 60:.0f} of {hard / 60:.0f} min used. This run is about to be stopped: "
+        return (f"[wall budget: {elapsed / 60:.0f} of {hard / 60:.0f} min used. This run is about to be stopped: "
                 "checkpoint now (leave the tree building, note status in the experiment log) and finish.]")
     if soft and elapsed >= soft:
-        return (f"\n\n[wall budget: {elapsed / 60:.0f} min used (soft limit {soft / 60:.0f}). Wrap up: "
+        return (f"[wall budget: {elapsed / 60:.0f} min used (soft limit {soft / 60:.0f}). Wrap up: "
                 "finish or revert the current change, checkpoint the state of the tree, and end your turn.]")
     return ""
