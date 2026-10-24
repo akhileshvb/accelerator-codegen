@@ -6,8 +6,12 @@ from accel_pipeline.backends.base import AgentBackend, StageRunRequest, StageRun
 from accel_pipeline.config import ModelConfig, PipelineConfig, load_run_workload
 from accel_pipeline.paths import query_artifacts_dir
 
+# Stages that work on one query's artifacts: they get its artifact directory (the progress clock, deadline and
+# blocker files, tool footers). Engine-level stages (host_bootstrap, validation, architecture_audit) have none.
 _ARTIFACT_STAGES = frozenset(
     {
+        "analysis",
+        "test_suite",
         "implementation",
         "optimization_unified",
         "optimization_unified_hypothesis",

@@ -456,3 +456,22 @@ def test_agent_run_file_marks_the_run_for_the_budget_footer(tmp_path, monkeypatc
     backend._supervise = spy
     backend.run_stage(_request())
     assert seen == [True] and not (tmp_path / "art" / "agent_run.json").exists()
+
+
+def test_query_stages_get_the_artifact_dir_so_their_progress_clock_runs(monkeypatch, tmp_path):
+    """analysis and test_suite are watched like the implementation stages: the backend knows the query's artifact dir."""
+    from types import SimpleNamespace
+
+    from accel_pipeline import backends
+
+    monkeypatch.setattr(backends, "load_run_workload", lambda cfg, name: "wl")
+    monkeypatch.setattr(backends, "query_artifacts_dir", lambda root, q, workload=None: tmp_path / f"q{q}")
+    cfg = SimpleNamespace(repo_root=tmp_path, sandbox="none")
+    for stage in ("analysis", "test_suite", "implementation", "audit"):
+        b = backends.create_agent_backend(provider="codex_exec", pipeline_config=cfg, query=3, stage=stage,
+                                          model_config=SimpleNamespace(), workload_name="w")
+        assert b._art_dir == tmp_path / "q3", stage
+    for stage in ("host_bootstrap", "validation", "architecture_audit"):
+        b = backends.create_agent_backend(provider="codex_exec", pipeline_config=cfg, query=3, stage=stage,
+                                          model_config=SimpleNamespace(), workload_name="w")
+        assert b._art_dir is None, stage
