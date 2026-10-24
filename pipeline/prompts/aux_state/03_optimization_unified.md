@@ -12,6 +12,8 @@
 
 **Owns:** the editable files below. **Never touches:** `backends/`, `substrate/`, other queries, the query's `base/**` kernel, `accelerators/prims/` except through `primitive_publish`. **Judged by:** build, smoke ctest x2, a correctness probe and the quick bench with a graded verdict (accept / keep_explore / reject) after your handoff; `optimization_fix` rounds repair build or smoke failures; the heavy gates run once at the end of the iteration.
 
+The test suite (`tests/workload/`) is frozen and `quick_check` runs it: never edit it; a test you can show is wrong goes into `{{artifacts_path}}/test_suite_change_request.md`.
+
 {{hard_guidelines}}
 
 {{codex_tooling}}

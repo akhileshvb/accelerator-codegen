@@ -20,6 +20,7 @@ from accel_pipeline.engine_profile import (
 from accel_pipeline.layout import backend_glob, query_dir, query_glob
 from accel_pipeline.paths import find_repo_root, pipeline_root
 from accel_pipeline.shared_file_lease import DEFAULT_SHARED_PATH_GLOBS
+from accel_pipeline.test_suite import SuiteConfig
 
 
 @dataclass
@@ -215,6 +216,7 @@ class PipelineConfig:
     measurement: MeasurementConfig = field(default_factory=MeasurementConfig)
     quick_tier: QuickTierConfig = field(default_factory=QuickTierConfig)
     concurrency: ConcurrencyConfig = field(default_factory=ConcurrencyConfig)
+    test_suite: SuiteConfig = field(default_factory=SuiteConfig)
 
 
 def _load_yaml(path: Path) -> dict[str, Any]:
@@ -541,6 +543,7 @@ def load_pipeline_config(
         measurement=MeasurementConfig.from_dict(data.get("measurement")),
         quick_tier=_quick_tier_config(data),
         concurrency=ConcurrencyConfig.from_dict(data.get("concurrency")),
+        test_suite=SuiteConfig.from_dict(data.get("test_suite")),
     )
 
     env_build = os.environ.get("ACCEL_PIPELINE_BUILD_DIR")
@@ -1080,6 +1083,7 @@ def _apply_optimization_block(pipeline_config: PipelineConfig, opt: dict[str, An
         write_policy=pipeline_config.write_policy,
         quick_tier=pipeline_config.quick_tier,
         concurrency=pipeline_config.concurrency,
+        test_suite=pipeline_config.test_suite,
     )
 
 
@@ -1204,6 +1208,7 @@ def _apply_workload_overrides(pipeline_config: PipelineConfig, workload: dict[st
         write_policy=pipeline_config.write_policy,
         quick_tier=pipeline_config.quick_tier,
         concurrency=pipeline_config.concurrency,
+        test_suite=pipeline_config.test_suite,
     )
     if has_opt:
         return _apply_optimization_block(merged, opt_block)

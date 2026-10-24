@@ -17,6 +17,24 @@ container, plugin or data layout.
 | `ACCEL_DATASET_DIR` | engine-neutral dataset: one `<table>.tbl` (`|`-separated, TPC-H dbgen format) per table |
 | `ACCEL_CMAKE_ARGS` | the arguments the build dir is configured with (generator, build type, this backend's switch, the engine's query sources) |
 
+## Test suite
+
+A query's frozen test suite reaches the engine's differential harness through the environment of `run` (format: `pipeline/prompts/shared/test_suite.md`). When `ACCEL_SUITE_DIR` is set the harness, after its own phases, runs the suite on a writable copy of the database:
+
+| variable | meaning |
+|---|---|
+| `ACCEL_SUITE_DIR` | the suite directory (`params.sql`, `txns/`, `setup.sql`) |
+| `ACCEL_SUITE_PARAMS_FILE` | fresh random tuples of this run, one per line: checked besides `params.sql` |
+| `ACCEL_SUITE_SEED` | the run's seed: it seeds every random choice of the run, is printed, and is in the report |
+| `ACCEL_SUITE_QUERY_SQL`, `ACCEL_SUITE_FUNCTION`, `ACCEL_SUITE_ARITY` | the reference SQL (`$n` parameters), the accelerated path's SQL entry, and how many leading tuple values it takes (it derives the rest) |
+| `ACCEL_SUITE_TXNS` | optional comma-separated transaction file names: apply only these (the quick tier) |
+| `ACCEL_SUITE_EVERY` | compare every tuple every N transactions (else two random ones), and after the build and at the end |
+| `ACCEL_SUITE_SCHEMA_SQL` | constraints applied before `setup.sql` (NOT NULL columns of the declared schema) |
+| `ACCEL_SUITE_REPORT` | where to write the JSON report: `ok`, `seed`, tuples, `checks`, `mismatches`, `write_errors`, `executes`, examples |
+| `ACCEL_SUITE_MODE=validate` | no accelerator: every tuple evaluates, every transaction applies, rolls back and applies again; report per transaction how many tuples' answers it changes (`txn_effects`), the row count per tuple (`tuple_rows`), `errors` |
+
+After the build and after each committed transaction the accelerated answer must equal the reference's at the same snapshot (ties at the order and LIMIT cut are open); a transaction starting `-- rollback` is applied then aborted. A failure exits non-zero naming the seed, tuple and transaction.
+
 ## Verbs
 
 | verb | args | does |

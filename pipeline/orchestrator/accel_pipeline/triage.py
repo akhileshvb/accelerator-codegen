@@ -21,8 +21,8 @@ _TIMEOUT_RC = frozenset({124, 137})
 _LEASE_BUSY = measurement_lease.BUSY
 _QUEUED_SEC = 5.0  # a wait for the measurement lease this long means other benchmarks were running
 _MISSING_PRODUCER = re.compile(
-    r"(?:analysis\.json|adversarial_write_scenarios\.json)[^\n]*(?:not found|missing|no such file)"
-    r"|(?:not found|missing|no such file)[^\n]*(?:analysis\.json|adversarial_write_scenarios\.json)"
+    r"(?:analysis\.json|suite\.yaml)[^\n]*(?:not found|missing|no such file)"
+    r"|(?:not found|missing|no such file)[^\n]*(?:analysis\.json|suite\.yaml)"
     r"|target missing from the gate context",
     re.IGNORECASE,
 )

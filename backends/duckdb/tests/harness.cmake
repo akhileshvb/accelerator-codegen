@@ -51,6 +51,9 @@ set(_accel_tpch_test_db "${ACCEL_TEST_DB_DIR}/tpch_test.duckdb")
 set(ACCEL_TPCH_TEST_DB_PATH "${_accel_tpch_test_db}")
 set(_accel_sec_edgar_test_db "${ACCEL_TEST_DB_DIR}/sec_edgar_test.duckdb")
 
+# The test-suite format (eval/harness/suite.hpp): loading and its small pieces.
+accel_add_backend_exe(duckdb test_suite_format eval/tests/test_suite_format.cpp)
+
 add_executable(test_registration
     eval/tests/test_registration.cpp
 )
@@ -338,6 +341,7 @@ if(BUILD_TESTING)
     # work on private copies (eval/tests/test_support/db_paths.hpp), so they
     # run concurrently (ctest -j, several checkouts) without lock conflicts.
     add_test(NAME registration_smoke_test COMMAND test_registration)
+    add_test(NAME test_suite_format COMMAND test_suite_format)
     add_test(NAME shared_aux_state_unit_test COMMAND test_shared_aux_state)
     add_test(NAME aux_calibration_unit_test COMMAND test_aux_calibration)
     # The test works on private copies of its DBs. TPC-H: the fixture's DB.

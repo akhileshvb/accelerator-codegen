@@ -187,15 +187,33 @@ def test_the_full_tier_ignores_the_subset(repo):
     assert "data=/data/tbl" in log.read_text().splitlines()[0]
 
 
+def suite_ctx(repo, suite_yaml: str) -> dict:
+    """A frozen one-tuple suite in the fake repo and the gate-context entry that points at it."""
+    from dataclasses import asdict
+
+    orchestrator = repo / "pipeline" / "orchestrator"
+    orchestrator.symlink_to(GATES.parents[0] / "orchestrator")
+    sys.path.insert(0, str(orchestrator))
+    from accel_pipeline import test_suite as ts
+
+    suite = repo / "suite"
+    suite.mkdir()
+    (suite / "suite.yaml").write_text(suite_yaml)
+    (suite / "params.sql").write_text("1\n")
+    (repo / "q.sql").write_text("SELECT $1\n")
+    (repo / "art").mkdir(exist_ok=True)
+    ts.freeze(repo / "art", suite, query=5)
+    return {"test_suite": {"dir": str(suite), "query_sql": str(repo / "q.sql"), "function": "f", "arity": 1,
+                           "schema_sql": "", "config": asdict(ts.SuiteConfig()), "param_names": [], "aux": True}}
+
+
 def test_the_quick_tier_caps_the_differential_probes(repo):
-    scenarios = repo / "art" / "adversarial_write_scenarios.json"
-    scenarios.parent.mkdir(parents=True)
-    scenarios.write_text(json.dumps({"point_writes": {"max_probes": 9, "min_count": 6}}))
+    ctx = suite_ctx(repo, "point_writes: {max_probes: 9, min_count: 6}\n")
     host = repo / "backends" / "fake" / "host.sh"
     host.write_text('#!/usr/bin/env bash\n[[ "$1" != run ]] || echo "$2 probes=${ACCEL_ADV_MAX_PROBES:-unset}" >> "${FAKE_LOG}.probes"\n')
     seen = {}
     for tier in ("quick", "full"):
-        proc, *_ = run_gate(repo, "run_aux_correctness.sh", "5", env_extra={"ACCEL_GATE_TIER": tier})
+        proc, *_ = run_gate(repo, "run_aux_correctness.sh", "5", ctx_extra=ctx, env_extra={"ACCEL_GATE_TIER": tier})
         assert proc.returncode == 0, proc.stdout + proc.stderr
         probes = (repo / "host.log.probes").read_text().splitlines()
         seen[tier] = next(line for line in probes if line.startswith("diff_bin")).split("=")[1]

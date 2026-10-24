@@ -182,11 +182,11 @@ def process_after_stage(
     run_implementation,
     run_optimization,
     dry_run: bool,
-    run_adversarial_tests=None,
+    run_test_suite=None,
 ) -> tuple[int, int] | None:
     """
     If a valid structural reanalysis request is pending and budget remains, re-run analysis
-    (adversarial scenarios, implementation, plus optimization when triggered from optimization).
+    (the test suite, implementation, plus optimization when triggered from optimization).
 
     Returns (new_structural_reanalysis_count, next_stage_index) or None if no reanalysis ran.
     """
@@ -277,8 +277,8 @@ def process_after_stage(
     clear_request(repo_root, query, workload)
 
     run_analysis(user_message=user_message, analysis_revision_request=revision_request)
-    if run_adversarial_tests is not None:
-        run_adversarial_tests()
+    if run_test_suite is not None:
+        run_test_suite()
     run_implementation()
     if triggered_after == "optimization":
         run_optimization()

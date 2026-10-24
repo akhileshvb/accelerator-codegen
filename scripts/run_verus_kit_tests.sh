@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Correctness tests of the TPC-H Verus kits (accel_tpch_qN_vgen) from the repo's own inputs:
 # per kit, verus_kit_runner differential + snapshots on a private copy of the test database,
-# with the kit's workload (accelerators/tpch/qN/tests/verus_workload: setup.sql, params.sql,
+# with the kit's workload (accelerators/tpch/qN/tests/workload: setup.sql, params.sql,
 # txns/) and the declared schema's NOT NULL constraints (workloads/tpch/schema_constraints.sql).
 # validate (no accelerator) first checks the workload itself against the query
 # (workloads/tpch/qN.sql): setup runs, every tuple evaluates, every txn applies in sequence.
@@ -41,7 +41,7 @@ TIMEOUT="${TIMEOUT:-900}"
 mkdir -p "${OUT}/dbs"
 
 run_one() {  # q mode
-  local q=$1 mode=$2 spec="${ROOT}/accelerators/tpch/q$1/tests/verus_workload" db="${OUT}/dbs/q$1_$2.duckdb" args
+  local q=$1 mode=$2 spec="${ROOT}/accelerators/tpch/q$1/tests/workload" db="${OUT}/dbs/q$1_$2.duckdb" args
   if [[ ! -d "${spec}/txns" ]]; then echo "missing" > "${OUT}/q${q}_${mode}.rc"; return; fi
   case ${mode} in
     validate)     args=("${db}" "${spec}" "${ROOT}/workloads/tpch/q${q}.sql") ;;

@@ -109,9 +109,14 @@ read-only, and after every stage the paths it changed are checked against each l
 Run test and benchmark binaries from the repository root: cost-model paths
 (`accelerators/<bench>/q<N>/config/...`) are relative to the working directory.
 
+The per-query test suite (`accelerators/<bench>/q<N>/tests/workload/`: fixed tuples, a parameter
+domain, write transactions, a write mix; written by the pipeline's `test_suite` stage and frozen after it)
+is one format for the C++ and the Verus pipelines (`pipeline/prompts/shared/test_suite.md`). The C++ gates
+(`aux_correctness`, `quick_check`) run it with a fresh seed each time, printed and kept in the gate result;
+`ACCEL_SUITE_SEED=<seed>` repeats a run.
+
 Verus kit correctness (differential + concurrent snapshots, per kit, from the
-repo's own inputs: `accelerators/tpch/q<N>/tests/verus_workload/` and
-`workloads/tpch/schema_constraints.sql`):
+suite and `workloads/tpch/schema_constraints.sql`):
 
 ```bash
 TEST_DB=<tpch_test.duckdb> scripts/run_verus_kit_tests.sh <build_dir> [queries]

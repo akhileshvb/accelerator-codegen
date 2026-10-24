@@ -29,6 +29,7 @@ from accel_pipeline.config import PipelineConfig, resolve_optimization_edit_path
 from accel_pipeline.engine_host import format_host_block
 from accel_pipeline.engine_profile import render_engine_profile
 from accel_pipeline.implementation_bootstrap import build_implementation_bootstrap
+from accel_pipeline.layout import suite_dir
 from accel_pipeline.models import is_critique_stage, is_implementation_stage
 from accel_pipeline.optimization_runtime import runtime_path_for_prompt
 from accel_pipeline.workload_facts import with_facts
@@ -365,7 +366,7 @@ def build_prompt_context(
         "optimization_unified_patch",
         "crash_debug",
         "implementation",
-        "adversarial_tests",
+        "test_suite",
         "audit",
     )
     profile_summary_path = art / "profile_summary.json"
@@ -436,6 +437,7 @@ def build_prompt_context(
             "audit",
             "architecture_audit",
             "validation",
+            "test_suite",
         )
         else ""
     )
@@ -443,7 +445,7 @@ def build_prompt_context(
     codex_tooling = ""
     if is_implementation_stage(stage) or is_critique_stage(stage) or stage in (
         "validation",
-        "adversarial_tests",
+        "test_suite",
         "architecture_audit",
         "optimization_unified",
         "optimization_unified_hypothesis",
@@ -484,6 +486,8 @@ def build_prompt_context(
         "dataset_db": paths["dataset_db"],
         "db_env_var": paths["db_env_var"],
         "artifacts_path": artifacts_rel,
+        "suite_path": suite_dir(benchmark, query),
+        "change_request": "",
         "bootstrap_artifacts_path": f"pipeline/artifacts/engines/{engine_name}/host_bootstrap"
         if engine_name
         else "pipeline/artifacts/engines/host_bootstrap",

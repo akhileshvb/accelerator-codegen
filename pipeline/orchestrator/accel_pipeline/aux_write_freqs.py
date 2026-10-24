@@ -15,6 +15,9 @@ import random
 from pathlib import Path
 from typing import Any
 
+from accel_pipeline.paths import find_repo_root
+from accel_pipeline.test_suite import draw_write_frequencies, read_write_mix, suite_path
+
 LOCK_FILENAME = "optimization_write_frequencies.json"
 
 _DEFAULT_WRITE_MIX_CHOICES = (1, 5, 10, 15, 20, 25, 33, 40, 50)
@@ -69,6 +72,21 @@ def lock_per_attempt_enabled(workload: dict[str, Any]) -> bool:
     return True
 
 
+def _suite_write_mix(workload: dict[str, Any]) -> dict[str, Any] | None:
+    """The query's own write-frequency distribution (its test suite's write_mix.yaml), capped at the
+    optimization bench's `max_pct`; None when the query has no suite."""
+    try:
+        path = suite_path(find_repo_root(), str(workload.get("benchmark_name", "tpch")), int(workload["query_number"]))
+        mix = read_write_mix(path)
+    except (FileNotFoundError, KeyError, ValueError):
+        return None
+    spec = dict(mix["frequency_pct"])
+    cap = _sample_cfg(workload).get("max_pct")
+    if cap is not None:
+        spec["max"] = max(int(spec["min"]), min(int(spec["max"]), int(cap)))
+    return {**mix, "frequency_pct": spec}
+
+
 def _sample_write_mix_freqs(
     workload: dict[str, Any],
     *,
@@ -79,12 +97,15 @@ def _sample_write_mix_freqs(
     count = max(0, int(cfg.get("count", 1)))
     if count <= 0:
         return []
+    if mix := _suite_write_mix(workload):
+        return [f for f in draw_write_frequencies(mix, count, rng.getrandbits(31))[1:] if f not in already]
     choices_raw = cfg.get("choices")
     if choices_raw is None:
         choices = list(_DEFAULT_WRITE_MIX_CHOICES)
     else:
         choices = [int(x) for x in _parse_freq_list(choices_raw)]
-    pool = [c for c in choices if c > 0 and c not in already]
+    cap = int(cfg.get("max_pct") or max(choices))
+    pool = [c for c in choices if 0 < c <= cap and c not in already]
     if not pool:
         return []
     k = min(count, len(pool))

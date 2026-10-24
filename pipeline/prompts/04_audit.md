@@ -20,7 +20,7 @@ The user message carries a deterministic query digest (file map with roles, publ
 4. Fused kernels: `pre_scan_us` may include aggregation unless `num_aggregate_us` is separate — check aggregation share before blaming scan.
 5. Hot loops: report a scalar loop over data that a vector path would speed up, per-row allocation, and branchy predicates, as risks with file:line.
 6. `request_gate` with `fairness`{{audit_gate_suffix}}.
-7. Check `hard_guidelines.md` §4 (exact for any parameter value incl. NULL, off-spec data, 64-bit keys) where it applies to this kernel.
+7. Check `hard_guidelines.md` §4 (exact for any parameter value incl. NULL, off-spec data, 64-bit keys) where it applies to this kernel, and that the frozen suite (`tests/workload/`: `params.sql`, `domain.yaml`, `suite.yaml`) covers every parameter of the query; list gaps as findings.
 8. Write `{{artifacts_path}}/final_audit.md` (10-section report).
 
 Read-only code changes only for clear fairness bugs.

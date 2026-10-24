@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import copy
 import csv
 import json
+import statistics
 from pathlib import Path
 from typing import Any
 
@@ -313,6 +315,38 @@ def summarize_sweep_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "read_only_cold_start_workload_speedup": round(read_only_cold_start_workload_speedup, 4),
         "by_write_frequency_pct": by_freq,
     }
+
+
+def _spread(values: list[float]) -> dict[str, float]:
+    return {"median": round(statistics.median(values), 4), "min": round(min(values), 4), "max": round(max(values), 4)}
+
+
+def aggregate_sweep_repeats(summaries: list[dict[str, Any]], draws: list[dict[str, Any]]) -> dict[str, Any]:
+    """One summary of repeated sweeps, each at its own random write frequencies (`draws`: {seed, frequencies}
+    per repeat): every score is the median over the repeats, with [min, max]; a write point reports the
+    median over the repeats that drew it."""
+    runs = [s for s in summaries if s.get("status") == "ok"]
+    if not runs:
+        return summaries[0]
+    out = copy.deepcopy(sorted(runs, key=lambda s: s["composite_score"])[(len(runs) - 1) // 2])  # the median repeat: its points, as measured
+    for key in ("composite_score", "composite_workload_speedup", "composite_query_speedup", "read_only_query_speedup",
+                "read_only_cold_start_workload_speedup"):
+        values = [float(s.get(key) or 0.0) for s in runs]
+        out[key] = _spread(values)["median"]
+        out.setdefault("score_spread", {})[key] = _spread(values)
+    points: dict[str, list[dict[str, Any]]] = {}
+    for run in runs:
+        for key, point in run["by_write_frequency_pct"].items():
+            points.setdefault(key, []).append(point)
+    for key, seen in points.items():
+        point = out["by_write_frequency_pct"].setdefault(key, copy.deepcopy(seen[0]))
+        speedups = [float(p["workload_speedup"]) for p in seen if float(p.get("workload_speedup") or 0) > 0]
+        if speedups:
+            point["workload_speedup"] = _spread(speedups)["median"]
+            point["repeats"] = {"n": len(seen), "workload_speedup": _spread(speedups)}
+    out["row_count"] = sum(int(s.get("row_count", 0)) for s in runs)
+    out["repeats"] = [{**d, "composite_score": s["composite_score"]} for d, s in zip(draws, summaries) if s.get("status") == "ok"]
+    return out
 
 
 def summarize_sweep_csv(path: Path) -> dict[str, Any]:

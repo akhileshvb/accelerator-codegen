@@ -7,7 +7,8 @@
   engine's backend (the workload harnesses), nothing else in it and no other backend;
 * ``accelerators/<bench>/q<N>/**`` is owned by that query's run (kernels, aux
   module, registration, tests, bench, cost-model config, Verus kit);
-  other queries' directories are never writable;
+  other queries' directories are never writable; its ``tests/workload/`` (the test suite) is
+  written only by the test_suite stage, which writes nothing else;
 * ``accelerators/prims/**`` changes only through ``primitive_publish`` (agents
   stage candidates under ``pipeline/prims_staging/``);
 * ``accelerators/prooflib/**`` changes only through ``prooflib_publish``;
@@ -176,6 +177,13 @@ def layer_write_verdict(
             return False, (
                 f"cross-query write denied: {rel} belongs to {lay.bench} Q{lay.query}, "
                 f"worker owns {benchmark} Q{query}"
+            )
+        if layout.is_suite_path(rel) != (stage == "test_suite"):
+            return False, (
+                f"write denied: {rel}. The test suite of a query is written by the test_suite stage and frozen "
+                "after it; to change a test, write a test_suite_change_request in the artifacts instead"
+                if layout.is_suite_path(rel) else
+                f"write denied: {rel}. The test_suite stage writes only the query's tests/workload directory"
             )
         return True, "owned"
     return None

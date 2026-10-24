@@ -1,0 +1,4 @@
+version: 1
+params:
+  - {name: market_segment, type: choice, values: ["'AUTOMOBILE'", "'BUILDING'", "'FURNITURE'", "'HOUSEHOLD'", "'MACHINERY'"]}
+  - {name: cutoff_date, type: date, min: 1992-01-02, max: 1998-12-01}

@@ -18,6 +18,7 @@ HEARTBEAT_FILE = "agent_heartbeat"
 
 MAIN = "main"
 READONLY = "readonly"
+TESTER = "tester"  # the test_suite stage: its own session, never the implementer's
 
 
 def _read(path: Path) -> dict[str, Any]:

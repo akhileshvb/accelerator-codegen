@@ -42,7 +42,7 @@ mkdir -p "${WORK}" "${OUT}"
 echo "db=${DB} out=${OUT} queries=[${QUERIES}] reps=${REPS} mixes=${MIXES} ops=${OPS} write_mode=${VERUS_KIT_WRITE_MODE} rf_chunk=${VERUS_KIT_RF_CHUNK} store=${ACCEL_AUX_STORE}"
 
 for q in ${QUERIES}; do
-  spec="${ROOT}/accelerators/tpch/q${q}/tests/verus_workload"
+  spec="${ROOT}/accelerators/tpch/q${q}/tests/workload"
   copy="${WORK}/sweep_q${q}.duckdb"
   # each kit's own SF20 cost model (scripts/calibrate_verus_sf20_cost_models.sh)
   model="${ROOT}/accelerators/tpch/q${q}/config/verus/q${q}_aux_cost_model_sf20.json"

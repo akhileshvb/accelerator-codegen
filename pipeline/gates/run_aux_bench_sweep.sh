@@ -11,6 +11,7 @@ fi
 
 # shellcheck source=aux_gate_common.sh
 source "$(dirname "${BASH_SOURCE[0]}")/aux_gate_common.sh"
+source "$(dirname "${BASH_SOURCE[0]}")/suite_gate_common.sh"
 load_aux_gate_context "${ROOT}" "${QUERY}"
 
 OUT="${GATE_OUT}"
@@ -85,30 +86,57 @@ export ACCEL_BENCH_SKIP_PARTITION_REBUILD_CALIB="${ACCEL_BENCH_SKIP_PARTITION_RE
 export ACCEL_REPO_ROOT="${ACCEL_REPO_ROOT:-${ROOT}}"
 export ACCEL_AUX_BENCH_BASELINE_CACHE="${ACCEL_AUX_BENCH_BASELINE_CACHE:-${ROOT}/accelerators/${BENCHMARK_NAME}/q${QUERY}/config/q${QUERY}_aux_benchmark_baseline.json}"
 
-EXPECTED_FREQS="${ACCEL_AUX_WRITE_FREQUENCIES}"
-
+# The acceptance sweep draws its write frequencies from the suite's write_mix.yaml (0% always), anew for each of
+# bench_repeats repeats; the seeds are recorded. Optimization sweeps and trees without a suite use the fixed list.
 SWEEP_LOG="${OUT}/aux_bench_sweep.log"
-RESULTS_CSV="${ACCEL_AUX_BENCH_WORK_DIR}/results.csv"
 mkdir -p "${ACCEL_AUX_BENCH_WORK_DIR}"
-: > "${RESULTS_CSV}"
 : > "${SWEEP_LOG}"
 SWEEP_RC=0
+DRAWS_JSON="${OUT}/aux_bench_draws.json"
+RESULT_CSVS=()
+FREQ_COUNTS=()
+DRAWS=()
+REPEATS=1
+if [[ "${CHANGE_KIND}" != "optimization" ]]; then
+  REPEATS="$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('test_suite', {}).get('config', {}).get('bench_repeats', 1))" "${CTX}")"
+fi
 IFS=',' read -r -a SUITE_LIST <<< "${ACCEL_AUX_BENCH_SUITES}"
-IFS=',' read -r -a FREQ_LIST <<< "${EXPECTED_FREQS}"
 unset "ACCEL_Q${QUERY}_WRITE_FREQUENCY_PCT"   # the point is the CLI argument (query_host_bootstrap.md)
-for suite in "${SUITE_LIST[@]}"; do
-  export "ACCEL_Q${QUERY}_BENCH_SUITE=${suite}"
-  for pct in "${FREQ_LIST[@]}"; do
-    engine_measure "${BENCH_TARGET}" --query "${QUERY}" "${pct// /}"
-    printf '%s\n' "${LOG}" >> "${SWEEP_LOG}"
-    [[ ${RC} -eq 0 ]] || SWEEP_RC=${RC}
-    # keep the CSV rows (one header), drop banners
-    printf '%s\n' "${LOG}" | awk -F, -v hdr="$([[ -s "${RESULTS_CSV}" ]] && echo 1 || echo 0)" '
-      /^suite,/ { if (!hdr) { print; hdr = 1 }; next }
-      /^speedup_gate/ || /^#/ { next }
-      NF >= 10 { print }' >> "${RESULTS_CSV}"
+for ((repeat = 1; repeat <= REPEATS; repeat++)); do
+  DRAW=""
+  if [[ "${CHANGE_KIND}" != "optimization" ]]; then
+    DRAW="$(python3 "${SUITE_GATE}" "${ROOT}" mix acceptance)"
+    [[ -n "${DRAW}" || ${repeat} -eq 1 ]] || break   # no suite: the fixed list, once
+  fi
+  if [[ -n "${DRAW}" ]]; then
+    EXPECTED_FREQS="$(python3 -c "import json,sys; print(','.join(map(str, json.loads(sys.argv[1])['frequencies'])))" "${DRAW}")"
+  else
+    EXPECTED_FREQS="${ACCEL_AUX_WRITE_FREQUENCIES}"
+    DRAW="{\"frequencies\": [${EXPECTED_FREQS}]}"
+  fi
+  echo "sweep ${repeat}/${REPEATS}: write frequencies ${EXPECTED_FREQS} (${DRAW})" | tee -a "${SWEEP_LOG}"
+  RESULTS_CSV="${ACCEL_AUX_BENCH_WORK_DIR}/results_${repeat}.csv"
+  : > "${RESULTS_CSV}"
+  IFS=',' read -r -a FREQ_LIST <<< "${EXPECTED_FREQS}"
+  for suite in "${SUITE_LIST[@]}"; do
+    export "ACCEL_Q${QUERY}_BENCH_SUITE=${suite}"
+    for pct in "${FREQ_LIST[@]}"; do
+      export ACCEL_AUX_WRITE_FREQUENCIES="${pct// /}"   # the harness runs the frequencies of this variable: one point per call
+      engine_measure "${BENCH_TARGET}" --query "${QUERY}" "${pct// /}"
+      printf '%s\n' "${LOG}" >> "${SWEEP_LOG}"
+      [[ ${RC} -eq 0 ]] || SWEEP_RC=${RC}
+      # keep the CSV rows (one header), drop banners
+      printf '%s\n' "${LOG}" | awk -F, -v hdr="$([[ -s "${RESULTS_CSV}" ]] && echo 1 || echo 0)" '
+        /^suite,/ { if (!hdr) { print; hdr = 1 }; next }
+        /^speedup_gate/ || /^#/ { next }
+        NF >= 10 { print }' >> "${RESULTS_CSV}"
+    done
   done
+  RESULT_CSVS+=("${RESULTS_CSV}")
+  FREQ_COUNTS+=("${#FREQ_LIST[@]}")
+  DRAWS+=("${DRAW}")
 done
+printf '[%s]' "$(IFS=,; echo "${DRAWS[*]}")" > "${DRAWS_JSON}"
 
 python3 - <<PY
 import json
@@ -117,34 +145,37 @@ import pathlib
 import sys
 
 sys.path.insert(0, "${ROOT}/pipeline/orchestrator")
-from accel_pipeline.aux_bench import record_aux_bench_sweep_outcome, summarize_sweep_csv
+from accel_pipeline.aux_bench import aggregate_sweep_repeats, record_aux_bench_sweep_outcome, summarize_sweep_csv
 from accel_pipeline.config import load_workload
 
-results_csv = pathlib.Path("${RESULTS_CSV}")
+results_csvs = [pathlib.Path(p) for p in "${RESULT_CSVS[*]}".split()]
+results_csv = results_csvs[0]
 log_path = pathlib.Path("${SWEEP_LOG}")
 log_tail = log_path.read_text(encoding="utf-8")[-3000:] if log_path.is_file() else ""
 
-summary = summarize_sweep_csv(results_csv) if results_csv.is_file() else {
-    "status": "missing_csv",
-    "row_count": 0,
-    "composite_score": 0.0,
-}
+summaries = [
+    summarize_sweep_csv(p) if p.is_file() else {"status": "missing_csv", "row_count": 0, "composite_score": 0.0}
+    for p in results_csvs
+]
+draws = json.loads(pathlib.Path("${DRAWS_JSON}").read_text(encoding="utf-8"))
+summary = aggregate_sweep_repeats(summaries, draws) if len(summaries) > 1 else summaries[0]
 
 status = "pass"
 notes = []
-expected_rows = len([f for f in "${EXPECTED_FREQS}".split(",") if f.strip()])
+expected_rows = [int(n) for n in "${FREQ_COUNTS[*]}".split()]
 if int("${SWEEP_RC}") != 0:
     status = "fail"
     notes.append("bench sweep script failed")
-if summary.get("status") in ("empty", "missing_csv"):
-    status = "fail"
-    notes.append(f"sweep status={summary.get('status')}")
-elif summary.get("row_count", 0) < expected_rows:
-    status = "fail"
-    notes.append(
-        f"expected {expected_rows} sweep rows, got {summary.get('row_count', 0)} "
-        "(benchmark must emit CSV with workload_speedup per write frequency)"
-    )
+for one, expected in zip(summaries, expected_rows):
+    if one.get("status") in ("empty", "missing_csv"):
+        status = "fail"
+        notes.append(f"sweep status={one.get('status')}")
+    elif one.get("row_count", 0) < expected:
+        status = "fail"
+        notes.append(
+            f"expected {expected} sweep rows, got {one.get('row_count', 0)} "
+            "(benchmark must emit CSV with workload_speedup per write frequency)"
+        )
 
 gate = {
     "gate": "aux_bench_sweep",
@@ -157,6 +188,8 @@ gate = {
     "read_only_cold_start_workload_speedup": summary.get("read_only_cold_start_workload_speedup", 0.0),
     "by_write_frequency_pct": summary.get("by_write_frequency_pct", {}),
     "results_csv": str(results_csv),
+    "repeats": summary.get("repeats") or draws,
+    "score_spread": summary.get("score_spread", {}),
     "notes": "; ".join(notes) if notes else "sweep complete",
     "log_tail": log_tail,
 }

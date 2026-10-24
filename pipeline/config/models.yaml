@@ -10,7 +10,7 @@ codex_bypass_approvals_and_sandbox: true
 
 stage_providers:
   analysis: codex_exec
-  adversarial_tests: codex_exec
+  test_suite: codex_exec
   host_bootstrap: codex_exec
   implementation: codex_exec
   validation: codex_exec
@@ -80,7 +80,7 @@ stages:
   verus_opt_worker: verus_code
   verus_audit: verus_review
   analysis: reasoning
-  adversarial_tests: code
+  test_suite: code
   host_bootstrap: code
   implementation: code
   validation: code

@@ -16,6 +16,7 @@ fi
 
 # shellcheck source=aux_gate_common.sh
 source "$(dirname "${BASH_SOURCE[0]}")/aux_gate_common.sh"
+source "$(dirname "${BASH_SOURCE[0]}")/suite_gate_common.sh"
 load_aux_gate_context "${ROOT}" "${QUERY}"
 
 JSON="${GATE_OUT}/${ACCEL_GATE_NAME:-aux_correctness}.json"
@@ -41,11 +42,12 @@ fi
 
 DIFF_RC=0
 if [[ ${WITH_DIFF} -eq 1 ]]; then
-  SCENARIOS="${GATE_ART}/adversarial_write_scenarios.json"
+  suite_prepare "${ACCEL_GATE_TIER:-full}" "${JSON}" "${ACCEL_GATE_NAME:-aux_correctness}"
+  SCENARIOS="${ACCEL_SUITE_DIR:-}/suite.yaml"
   if [[ -f "${SCENARIOS}" ]]; then
     eval "$(QUICK_PROBES="${ACCEL_QUICK_PROBES:-3}" python3 - "${SCENARIOS}" <<'PY'
-import json, os, sys
-d = json.load(open(sys.argv[1]))
+import os, sys, yaml
+d = yaml.safe_load(open(sys.argv[1]))
 p, b = d.get("point_writes") or {}, d.get("bulk_writes") or {}
 cap = int(os.environ["QUICK_PROBES"]) if os.environ.get("ACCEL_GATE_TIER") == "quick" else 1 << 30
 print(f"export ACCEL_ADV_MAX_PROBES={min(cap, int(p.get('max_probes') or p.get('min_count') or 5))}")
@@ -59,9 +61,10 @@ PY
   engine_run "${DIFF_BINARY}" "${QUERY}"
   DIFF_RC=${RC}
   LOG_ALL="${LOG_ALL}"$'\n'"${LOG}"
+  suite_extras run_aux_correctness.sh
   if [[ ${DIFF_RC} -ne 0 ]]; then
     emit_result "${JSON}" aux_correctness fail "SQL-vs-aux differential failed (${DIFF_BINARY})" "${LOG_ALL}" \
-      "differential_binary=${DIFF_BINARY}" "smoke_exit_code:=${SMOKE_RC}" "differential_exit_code:=${DIFF_RC}"
+      "differential_binary=${DIFF_BINARY}" "smoke_exit_code:=${SMOKE_RC}" "differential_exit_code:=${DIFF_RC}" "${SUITE_EXTRAS[@]}"
   fi
 fi
 
@@ -76,4 +79,4 @@ if [[ ${BACKEND_RC} -ne 0 ]]; then
     "${BACKEND_LOG}" "differential_binary=${DIFF_BINARY}"
 fi
 emit_result "${JSON}" aux_correctness pass "" "${LOG_ALL}" "differential_binary=${DIFF_BINARY}" \
-  "smoke_exit_code:=${SMOKE_RC}" "differential_exit_code:=${DIFF_RC}"
+  "smoke_exit_code:=${SMOKE_RC}" "differential_exit_code:=${DIFF_RC}" "${SUITE_EXTRAS[@]}"

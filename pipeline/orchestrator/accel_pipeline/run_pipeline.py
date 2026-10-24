@@ -16,9 +16,9 @@ from accel_pipeline.paths import find_repo_root, query_artifacts_dir
 from accel_pipeline.prerequisites import ensure_base_accelerator_prerequisite
 from accel_pipeline.failure import Failure
 from accel_pipeline.repair import EXIT_STOPPED, REPAIR_STATE_FILE, RepairCtx, StageStopped, stop_stage
-from accel_pipeline.state import STAGES, PipelineState, advance_stage, load_or_create, state_path
+from accel_pipeline.state import STAGE_ALIASES, STAGES, PipelineState, advance_stage, load_or_create, state_path
 from accel_pipeline.verus.stages import STAGES as VERUS_STAGES
-from accel_pipeline.stages import analysis, adversarial_tests, audit, implementation, optimization
+from accel_pipeline.stages import analysis, audit, implementation, optimization, test_suite
 from accel_pipeline.structural_reanalysis import process_after_stage
 from accel_pipeline.pipeline_log import log_event, log_pipeline_summary
 
@@ -61,10 +61,8 @@ def _maybe_process_structural_reanalysis(
             analysis_revision_request=kwargs.get("analysis_revision_request", ""),
         )
 
-    def run_adv():
-        adversarial_tests.run(
-            pipeline_config, model_config, workload_name, query, model_overrides, dry_run
-        )
+    def run_suite():
+        test_suite.run(pipeline_config, model_config, workload_name, query, model_overrides, dry_run)
 
     def run_impl():
         implementation.run(
@@ -89,7 +87,7 @@ def _maybe_process_structural_reanalysis(
         triggered_after=triggered_after,
         structural_reanalysis_count=state.structural_reanalysis_count,
         run_analysis=run_analysis,
-        run_adversarial_tests=run_adv,
+        run_test_suite=run_suite,
         run_implementation=run_impl,
         run_optimization=run_opt,
         dry_run=dry_run,
@@ -126,10 +124,8 @@ def _run_stage_once(
 ) -> None:
     if stage == "analysis":
         analysis.run(pipeline_config, model_config, workload_name, query, model_overrides, dry_run)
-    elif stage == "adversarial_tests":
-        adversarial_tests.run(
-            pipeline_config, model_config, workload_name, query, model_overrides, dry_run
-        )
+    elif stage == "test_suite":
+        test_suite.run(pipeline_config, model_config, workload_name, query, model_overrides, dry_run)
     elif stage == "implementation":
         implementation.run(
             pipeline_config,
@@ -244,6 +240,7 @@ def _main(argv: list[str] | None = None) -> int:
         "--stage",
         choices=[
             *STAGES,
+            *STAGE_ALIASES,
             *VERUS_STAGES,
             "host_bootstrap",
             "validation",
@@ -282,6 +279,7 @@ def _main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--model", action="append", dest="models", default=[])
     args = parser.parse_args(argv)
+    args.stage = STAGE_ALIASES.get(args.stage, args.stage)
 
     if args.dry_run:
         os.environ["ACCEL_PIPELINE_DRY_RUN"] = "1"

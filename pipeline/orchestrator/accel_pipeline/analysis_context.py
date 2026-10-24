@@ -21,12 +21,11 @@ _STAGE_SHARED_DOCS: dict[str, list[tuple[str, str]]] = {
         ("Design families", "aux_state_design.md"),
         ("Mutation coverage", "mutation_coverage.md"),
     ],
-    "adversarial_tests": [
+    "test_suite": [
+        ("Test suite format", "../../shared/test_suite.md"),
         ("Scale factors", "../../shared/scale_factor_contract.md"),
-        ("Unit-test contract", "unit_test_contract.md"),
         ("Mutation coverage", "mutation_coverage.md"),
         ("Bench sweep contract", "bench_sweep_contract.md"),
-        ("Registration", "registration_checklist.md"),
     ],
     "implementation": [
         ("Low-level execution", "../../shared/low_level_execution.md"),
@@ -313,7 +312,7 @@ def analysis_for_optimization(analysis: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
-def analysis_for_adversarial(analysis: dict[str, Any]) -> dict[str, Any]:
+def analysis_for_test_suite(analysis: dict[str, Any]) -> dict[str, Any]:
     facts = analysis.get("correctness_facts") or {}
     return {
         "accelerator_id": analysis.get("accelerator_id"),
@@ -366,8 +365,8 @@ def stage_analysis_json(analysis: dict[str, Any], stage: str) -> str:
         return "{}"
     if stage == "implementation":
         payload = analysis_for_implementation(analysis)
-    elif stage == "adversarial_tests":
-        payload = analysis_for_adversarial(analysis)
+    elif stage == "test_suite":
+        payload = analysis_for_test_suite(analysis)
     elif stage == "optimization":
         payload = analysis_for_optimization(analysis)
     elif stage == "audit":
