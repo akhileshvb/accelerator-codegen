@@ -426,6 +426,10 @@ def test_recorded_defects_reach_their_owner_once(tmp_path):
     assert [r["helper"] for r in br.pending(tmp_path, "anyengine", "backend")] == ["a new one"]
 
 
+def _any_engine() -> str:
+    return sorted(p.parent.name for p in (REPO_ROOT / "backends").glob("*/host.sh"))[0]
+
+
 def test_an_existing_harness_that_passes_the_gate_needs_no_agent_run(tmp_path, monkeypatch):
     pc = load_pipeline_config(repo_root=REPO_ROOT)
     _patch_bootstrap_dirs(tmp_path, monkeypatch)
@@ -441,7 +445,7 @@ def test_an_existing_harness_that_passes_the_gate_needs_no_agent_run(tmp_path, m
     monkeypatch.setattr("accel_pipeline.stages.host_bootstrap.run", fake_stage)
     monkeypatch.setattr("accel_pipeline.gates.run_gate", fake_gate)
     monkeypatch.setattr("accel_pipeline.host_bootstrap.pending_harness_requests", lambda *a: "")
-    out = run_host_bootstrap(pc, load_model_config(repo_root=REPO_ROOT), engine_name="postgres",
+    out = run_host_bootstrap(pc, load_model_config(repo_root=REPO_ROOT), engine_name=_any_engine(),
                              representative_workload="tpch_q1_aux")
     assert out == {**out, "status": "pass", "skipped": True}
     assert calls == {"stage": 0, "gates": 1}
@@ -453,6 +457,6 @@ def test_pending_harness_requests_still_run_the_agent(tmp_path, monkeypatch):
     ran = []
     monkeypatch.setattr("accel_pipeline.host_bootstrap.pending_harness_requests", lambda *a: "add a bench column")
     monkeypatch.setattr("accel_pipeline.host_bootstrap._bootstrap_under_repair", lambda *a, **k: ran.append(1) or {"status": "pass"})
-    run_host_bootstrap(pc, load_model_config(repo_root=REPO_ROOT), engine_name="postgres",
+    run_host_bootstrap(pc, load_model_config(repo_root=REPO_ROOT), engine_name=_any_engine(),
                        representative_workload="tpch_q1_aux")
     assert ran == [1]
