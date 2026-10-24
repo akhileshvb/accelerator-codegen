@@ -117,10 +117,15 @@ if(TARGET duckdb_sibling)
         target_link_libraries(make_${_workload}_test_db PRIVATE accelerator_codegen duckdb_sibling)
         target_include_directories(make_${_workload}_test_db PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/accelerators)
         if(BUILD_TESTING)
+            # Builds the maker first: a build that only produced the backend's own targets still has it.
+            add_test(NAME ${_workload}_test_db_maker
+                     COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target make_${_workload}_test_db)
+            set_tests_properties(${_workload}_test_db_maker PROPERTIES FIXTURES_SETUP ${_workload}_test_db_maker)
             add_test(NAME ${_workload}_test_db_fixture
                      COMMAND make_${_workload}_test_db "${_subset}" "${ACCEL_TEST_DB_DIR}/${_workload}_test.duckdb")
             set_tests_properties(${_workload}_test_db_fixture PROPERTIES
-                FIXTURES_SETUP ${_workload}_test_db SKIP_RETURN_CODE 77)
+                FIXTURES_SETUP ${_workload}_test_db FIXTURES_REQUIRED ${_workload}_test_db_maker
+                SKIP_RETURN_CODE 77)
         endif()
     endforeach()
 endif()

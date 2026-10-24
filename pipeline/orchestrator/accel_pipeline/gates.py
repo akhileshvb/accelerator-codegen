@@ -230,6 +230,7 @@ def run_gate(
     if change_kind:
         gate_env["ACCEL_GATE_CHANGE_KIND"] = change_kind
     gate_env["ACCEL_GATE_ITERATION"] = str(iteration)
+    gate_env["ACCEL_PIPELINE_PYTHONPATH"] = str(Path(__file__).resolve().parents[1])
     # Per-worker build dir for concurrent packs (shared tree + separate builds).
     build_dir = str(pipeline_config.build_dir)
     gate_env["ACCEL_PIPELINE_BUILD_DIR"] = build_dir

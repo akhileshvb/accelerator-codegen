@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 GATES = Path(__file__).resolve().parents[1]
+ORCHESTRATOR = GATES.parent / "orchestrator"
 
 FAKE_HOST = r"""#!/usr/bin/env bash
 echo "$* | instance=${ACCEL_ENGINE_INSTANCE} state=${ACCEL_ENGINE_STATE_DIR} build=${ACCEL_BUILD_DIR} data=${ACCEL_DATASET_DIR}" >> "${FAKE_LOG}"
@@ -78,7 +79,8 @@ def run_gate(repo, script, *args, ctx_extra=None, env_extra=None, kind="aux_stat
         **os.environ, "ACCEL_GATE_CONTEXT": str(ctx_path), "FAKE_LOG": str(log),
         "ACCEL_GATE_OUT": str(out_json), "ACCEL_PIPELINE_WORKER_ID": "w7",
         "ACCEL_ENGINE_STATE_ROOT": str(repo / "state"), "FAKE_COST_MODEL": str(repo / "cost_model.json"),
-        "ACCEL_PIPELINE_BUILD_DIR": str(repo / "build-release"), **(env_extra or {}),
+        "ACCEL_PIPELINE_BUILD_DIR": str(repo / "build-release"),
+        "ACCEL_PIPELINE_PYTHONPATH": str(ORCHESTRATOR), **(env_extra or {}),
     }
     for pinned in ("ACCEL_ENGINE_INSTANCE", "ACCEL_ENGINE_STATE_DIR", "ACCEL_CMAKE_ARGS"):
         if pinned not in (env_extra or {}):
