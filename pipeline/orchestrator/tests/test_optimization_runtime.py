@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import pytest
 
 from accel_pipeline.config import load_pipeline_config, load_workload
 from accel_pipeline.optimization_runtime import (
@@ -14,11 +13,25 @@ from accel_pipeline.optimization_runtime import (
 )
 
 
-def test_build_runtime_state_includes_profile_guidance():
+PROFILE_SUMMARY = {
+    "source": "profile_gate",
+    "speedup_median": 2.26,
+    "phases_us": {"pre_scan_us": 46293.0, "pre_consume_us": 142962.0, "finalize_us": 16.0},
+    "counters": {"qualifying_rows": 9599726, "pre_rows": 9599726, "output_groups": 14, "distinct_inserts": 379461},
+    "raw": {"label": "profile", "reference_median_us": 432572.5, "accelerator_median_us": 191552.5,
+            "speedup_median": 2.26, "pre_scan_us": 46293.0, "pre_consume_us": 142962.0, "finalize_us": 16.0,
+            "qualifying_rows": 9599726, "pre_rows": 9599726},
+}
+
+
+def test_build_runtime_state_includes_profile_guidance(tmp_path, monkeypatch):
+    """Runs on artifacts written here, never on whatever a developer's earlier runs left in the tree."""
     repo = Path(__file__).resolve().parents[3]
-    art = repo / "pipeline" / "artifacts" / "sec_edgar" / "q1"
-    if not (art / "profile_summary.json").is_file():
-        pytest.skip("sec_edgar q1 profile artifacts not present")
+    art = tmp_path / "art"
+    art.mkdir()
+    (art / "optimization_state.json").write_text(json.dumps({"best_speedup_median": 2.26, "iterations": []}))
+    (art / "profile_summary.json").write_text(json.dumps(PROFILE_SUMMARY))
+    monkeypatch.setattr("accel_pipeline.optimization_runtime.query_artifacts_dir", lambda root, q, workload=None: art)
     pipeline_config = load_pipeline_config(repo_root=repo)
     workload = load_workload("sec_edgar_q1", repo)
     state = build_runtime_state(pipeline_config, workload, 1, optimization_iter=3, episode=1)
@@ -30,13 +43,15 @@ def test_build_runtime_state_includes_profile_guidance():
     assert "Investigate" in md
 
 
-def test_refresh_writes_runtime_files():
+def test_refresh_writes_runtime_files(tmp_path, monkeypatch):
     repo = Path(__file__).resolve().parents[3]
+    art = tmp_path / "art"
+    art.mkdir()
+    monkeypatch.setattr("accel_pipeline.optimization_runtime.query_artifacts_dir", lambda root, q, workload=None: art)
     pipeline_config = load_pipeline_config(repo_root=repo)
     workload = load_workload("sec_edgar_q1", repo)
     path = refresh_optimization_runtime(pipeline_config, workload, 1, optimization_iter=2, episode=1)
     assert path.is_file()
-    art = repo / "pipeline" / "artifacts" / "sec_edgar" / "q1" / "duckdb"
     assert (art / "optimization_runtime.json").is_file()
 
 
