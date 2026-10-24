@@ -272,23 +272,39 @@ def test_quick_check_builds_runs_smoke_then_differential(repo):
     proc, calls, _, gj, _ = run_gate(repo, "run_aux_quick_check.sh", "5", env_extra={"ACCEL_GATE_NAME": "quick_check", "ACCEL_AUX_THREADS": "1"})
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert calls[:2] == ["up", "load workloads/tpch/schema.sql"]
-    assert calls[2] == "build aux_unit_bin diff_bin"
+    assert calls[2] == "build aux_unit_bin diff_bin bench_aux"
     assert calls[3:] == ["run aux_unit_bin", "run diff_bin 5"]
-    assert result(gj, "quick_check")["status"] == "pass"
+    passed = result(gj, "quick_check")
+    assert passed["status"] == "pass" and passed["engine_instance"] and passed["engine_state_dir"]  # what the measurements run in
 
 
 def test_quick_check_builds_and_runs_the_agents_own_targets(repo):
     proc, calls, *_ = run_gate(repo, "run_aux_quick_check.sh", "5",
                                env_extra={"ACCEL_GATE_NAME": "quick_check", "ACCEL_QUICK_TARGETS": "my_test other_test", "ACCEL_AUX_THREADS": "1"})
     assert proc.returncode == 0, proc.stdout + proc.stderr
-    assert calls[2] == "build aux_unit_bin diff_bin my_test other_test"
+    assert calls[2] == "build aux_unit_bin diff_bin bench_aux my_test other_test"
     assert calls[3:] == ["run aux_unit_bin", "run my_test", "run other_test", "run diff_bin 5"]
 
 
 def test_quick_check_without_the_differential(repo):
     _, calls, *_ = run_gate(repo, "run_aux_quick_check.sh", "5",
                             env_extra={"ACCEL_GATE_NAME": "quick_check", "ACCEL_QUICK_DIFFERENTIAL": "0"})
-    assert calls[2:] == ["build aux_unit_bin", "run aux_unit_bin"]
+    assert calls[2:] == ["build aux_unit_bin bench_aux", "run aux_unit_bin"]
+
+
+def test_a_sanitizer_check_builds_and_runs_only_the_differential_and_the_agents_targets(repo):
+    proc, calls, *_ = run_gate(repo, "run_aux_quick_check.sh", "5", env_extra={
+        "ACCEL_GATE_NAME": "quick_check", "ACCEL_QUICK_SANITIZER": "thread", "ACCEL_QUICK_TARGETS": "my_test", "ACCEL_AUX_THREADS": "1",
+        "FAKE_EMBEDDED": "true"})
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert calls[3:] == ["build diff_bin my_test", "run my_test", "run diff_bin 5"]  # after the embedded check (info)  # the unit smoke and the bench stay out of it
+
+
+def test_a_sanitizer_prebuild_builds_the_harness_and_nothing_else(repo):
+    proc, calls, _, gj, _ = run_gate(repo, "run_aux_quick_check.sh", "5", env_extra={
+        "ACCEL_GATE_NAME": "quick_check", "ACCEL_QUICK_SANITIZER": "thread", "ACCEL_QUICK_PREBUILD": "1", "FAKE_EMBEDDED": "true"})
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert calls[3:] == ["build diff_bin"] and result(gj, "quick_check")["status"] == "pass"
 
 
 def test_a_failing_quick_check_names_the_step_and_how_to_reproduce_it(repo):

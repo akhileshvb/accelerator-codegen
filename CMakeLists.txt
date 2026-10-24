@@ -12,7 +12,11 @@ option(ACCEL_CALIBRATE_AT_BUILD
        "Run shared aux cost-model calibration during the default build (requires DBs)" OFF)
 
 # ACCEL_SANITIZE=thread|address instruments our targets (address: with UBSan); the sibling DuckDB stays uninstrumented.
+# Instrumented builds compile at -O1 with line tables: half the compile time of -O2 -g, and the reports keep file:line.
 set(ACCEL_SANITIZE "" CACHE STRING "Sanitizer for our targets (thread, address)")
+if(ACCEL_SANITIZE)
+    add_compile_options(-O1 -g1)
+endif()
 if(ACCEL_SANITIZE STREQUAL "thread")
     add_compile_options(-fsanitize=thread -fno-omit-frame-pointer)
     add_link_options(-fsanitize=thread)
