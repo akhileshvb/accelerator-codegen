@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import sys
+from pathlib import Path
 
 from test_gate_plumbing import GATES, repo, result, run_gate  # noqa: F401  (repo is a fixture)
 
@@ -80,6 +81,25 @@ def test_bench_sweep_reports_the_read_speedup_of_n_threads_over_one(repo, tmp_pa
     summary = json.loads((repo / "art" / "aux_bench_summary.json").read_text())
     assert summary["thread_scaling"] == scaling
     assert gate["status"] == "pass"
+
+
+def bench_calls(log):
+    return [l for l in log.read_text().splitlines() if l.startswith("run bench_aux")]
+
+
+def test_a_multi_point_bench_measures_every_frequency_in_one_call(repo, tmp_path):
+    proc, _, log, gj, _ = sweep(repo, tmp_path, FAKE_MULTI_POINT="1", ACCEL_AUX_THREAD_POINT="0")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert len(bench_calls(log)) == 1
+    csv = Path(result(gj, "aux_bench_sweep")["results_csv"]).read_text().splitlines()
+    assert [row.split(",")[1] for row in csv[1:]] == ["0", "10"]
+
+
+def test_a_single_point_bench_is_called_once_per_frequency(repo, tmp_path):
+    proc, _, log, gj, _ = sweep(repo, tmp_path, ACCEL_AUX_THREAD_POINT="0")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert len(bench_calls(log)) == 2
+    assert len(Path(result(gj, "aux_bench_sweep")["results_csv"]).read_text().splitlines()) == 3
 
 
 def test_the_thread_point_is_report_only(repo, tmp_path):

@@ -21,7 +21,7 @@ echo "$* | instance=${ACCEL_ENGINE_INSTANCE} state=${ACCEL_ENGINE_STATE_DIR} bui
 verb="$1"; shift
 rc_var="FAKE_RC_${verb}"
 case "${verb}" in
-  info) echo "{\"engine\": \"fake\", \"embedded\": ${FAKE_EMBEDDED:-false}, \"verbs\": []}" ;;
+  info) echo "{\"engine\": \"fake\", \"embedded\": ${FAKE_EMBEDDED:-false}, \"verbs\": []${FAKE_MULTI_POINT:+, \"bench_multi_point\": true}}" ;;
   run)
     [[ -z "${FAKE_RUN_HANG:-}" ]] || sleep 30
     if [[ -n "${FAKE_TSAN_REPORT:-}" && "$1" == diff_bin ]]; then  # a TSAN report whose stack has FAKE_TSAN_REPORT as a frame
@@ -33,7 +33,9 @@ case "${verb}" in
     if [[ -n "${FAKE_SWEEP:-}" && "$1" == bench_aux ]]; then  # a sweep point: reads and builds scale with the thread budget
       t="${ACCEL_AUX_THREADS:-4}"
       echo "suite,write_frequency_pct,workload_speedup,cold_start_workload_speedup,query_only_speedup,accel_hit_median_us,accel_workload_us,setup_full_build_ms,accel_hit_rate,writes_executed"
-      echo "lineitem_only,$4,3.0,2.0,4.0,$((400 / t)),$((500 / t)),$((800 / t)),1.0,0"
+      for pct in ${ACCEL_AUX_WRITE_FREQUENCIES//,/ }; do
+        echo "lineitem_only,${pct},3.0,2.0,4.0,$((400 / t)),$((500 / t)),$((800 / t)),1.0,0"
+      done
     elif [[ "$1" == benchmark* && "$2" == --query ]]; then  # a bench that counts hits (or, FAKE_BENCH_CONSTANT, one that assumes them)
       echo "suite,accel_hit_rate"
       if [[ -n "${FAKE_BENCH_CONSTANT:-}" || -z "${ACCEL_AUX_FORCE_FALLBACK:-}" ]]; then echo "lineitem_only,1.0"; else echo "lineitem_only,0.0"; fi
