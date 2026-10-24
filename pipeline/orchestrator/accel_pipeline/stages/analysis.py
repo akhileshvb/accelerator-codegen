@@ -66,6 +66,33 @@ def _validate(analysis_path: Path, allow_poor: bool) -> None:
         raise RuntimeError(f"aux analysis validation failed: {exc}") from exc
 
 
+def _revise(pipeline_config, model_config, workload_name, query, model_overrides, message: str) -> None:
+    run_agent_stage(
+        stage="analysis",
+        prompt_file="01_analysis.md",
+        pipeline_config=pipeline_config,
+        model_config=model_config,
+        workload_name=workload_name,
+        query=query,
+        user_message=message,
+        model_overrides=model_overrides,
+        session_role=MAIN,
+    )
+
+
+def validate_with_repair(pipeline_config, model_config, workload_name, query, model_overrides,
+                         analysis_path: Path, allow_poor: bool) -> None:
+    """Validation failures go back to the analysis session, which can fix what it wrote."""
+    for attempt in range(VALIDATION_REPAIR_ROUNDS + 1):
+        try:
+            return _validate(analysis_path, allow_poor)
+        except RuntimeError as exc:
+            if attempt == VALIDATION_REPAIR_ROUNDS:
+                raise
+            _revise(pipeline_config, model_config, workload_name, query, model_overrides,
+                    VALIDATION_MESSAGE.format(error=exc))
+
+
 def _asks_revision(critique: dict[str, Any]) -> bool:
     failed = [c for c in critique.get("checks") or [] if isinstance(c, dict) and c.get("ok") is False]
     better = bool((critique.get("alternative") or {}).get("better"))
@@ -138,27 +165,11 @@ def run(
     analysis_path = analysis_artifact_path(pipeline_config.repo_root, query, workload=workload)
     allow_poor = bool(workload.get("allow_poor_fitness", False))
     def revise(message: str) -> None:
-        run_agent_stage(
-            stage="analysis",
-            prompt_file="01_analysis.md",
-            pipeline_config=pipeline_config,
-            model_config=model_config,
-            workload_name=workload_name,
-            query=query,
-            user_message=message,
-            model_overrides=model_overrides,
-            session_role=MAIN,
-        )
+        _revise(pipeline_config, model_config, workload_name, query, model_overrides, message)
 
     def validated() -> None:
-        """Validation failures go back to the analysis session, which can fix what it wrote."""
-        for attempt in range(VALIDATION_REPAIR_ROUNDS + 1):
-            try:
-                return _validate(analysis_path, allow_poor)
-            except RuntimeError as exc:
-                if attempt == VALIDATION_REPAIR_ROUNDS:
-                    raise
-                revise(VALIDATION_MESSAGE.format(error=exc))
+        validate_with_repair(pipeline_config, model_config, workload_name, query, model_overrides,
+                             analysis_path, allow_poor)
 
     validated()
     for round_ in range(max(0, int(workload.get("analysis_critique_max_rounds", 1)))):
