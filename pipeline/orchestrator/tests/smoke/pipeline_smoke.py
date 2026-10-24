@@ -9,6 +9,11 @@ orchestrator, the MCP tooling, the gates, the builds, host.sh, the sandboxes, th
 measurement lease.
 
     pipeline_smoke.sh --workload <fixtures/NAME> --engine <fixtures/engines/NAME> [--rev HEAD] [--work DIR]
+                      [--case NAME | --adversarial [--jobs N]]
+
+--case runs one adversarial case (fixtures/cases.json): the scripted agent misbehaves in one way and the run has
+to be stopped by the guardrail meant for it, with the expected message in the log or the tools' answers.
+--adversarial runs them all, several at a time.
 
 Exit status 0: the run passed; 1: a stage, gate or assertion failed (reported with the log tail); 2: the
 environment cannot run it.
@@ -26,6 +31,8 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+
+import yaml
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
@@ -177,9 +184,13 @@ def make_kit(work: Path, reference_rev: str, workload: str, fixture: dict, query
     return kit
 
 
-def write_configs(tree: Path, kit: Path) -> tuple[Path, Path]:
-    """The model and pipeline configs of the run: the tree's own, with the scripted agent as `codex` and the
-    kit mounted into the agents' sandbox."""
+def merged(base: dict, overrides: dict) -> dict:
+    return {k: merged(base[k], v) if isinstance(v, dict) and isinstance(base.get(k), dict) else v for k, v in {**base, **overrides}.items()}
+
+
+def write_configs(tree: Path, kit: Path, overrides: dict | None = None) -> tuple[Path, Path]:
+    """The model and pipeline configs of the run: the tree's own, with the scripted agent as `codex`, the
+    kit mounted into the agents' sandbox and the case's `overrides` of the pipeline config."""
     models = (tree / "pipeline/config/models.yaml").read_text()
     models, n = re.subn(r"^codex_bin:.*$", f"codex_bin: {kit / 'scripted_agent.py'}", models, flags=re.M)
     models, k = re.subn(r"^api_key_env:.*$", f"api_key_env: {NO_MODEL_ENV}", models, flags=re.M)
@@ -187,6 +198,8 @@ def write_configs(tree: Path, kit: Path) -> tuple[Path, Path]:
     pipeline, m = re.subn(r"^sandbox_extra_ro:.*$", f"sandbox_extra_ro: [{kit}]", pipeline, flags=re.M)
     if n != 1 or m != 1 or k != 1:
         raise SmokeError("pipeline/config no longer has the api_key_env / codex_bin / sandbox_extra_ro lines the smoke test overrides")
+    if overrides:
+        pipeline = yaml.safe_dump(merged(yaml.safe_load(pipeline), overrides), sort_keys=False)
     (kit / "models.yaml").write_text(models)
     (kit / "pipeline.yaml").write_text(pipeline)
     return kit / "models.yaml", kit / "pipeline.yaml"
@@ -194,11 +207,13 @@ def write_configs(tree: Path, kit: Path) -> tuple[Path, Path]:
 
 # ---------------------------------------------------------------- the run
 
-def launch(tree: Path, work: Path, kit: Path, env: dict[str, str], workload: str, query: int, engine: str,
-           models: Path, config: Path) -> subprocess.Popen:
+def launch(tree: Path, work: Path, env: dict[str, str], module_args: list[str], *, inside: dict[str, str] | None = None,
+           data: tuple[Path, ...] = (), log_name: str = "pipeline.log") -> subprocess.Popen:
+    """`python -m <module_args>` from the tree, in the real sandbox. `inside` is more environment for the run,
+    `data` more read-only paths."""
     python = tree / "pipeline/orchestrator/.venv/bin/python"
     state = work / "state"
-    state.mkdir()
+    state.mkdir(exist_ok=True)
     locks = Path(os.environ.get("ACCEL_HOST_LOCK_DIR") or SMOKE_HOME / "locks")
     instance = f"smoke_{os.getpid()}"
     inside = {
@@ -206,23 +221,26 @@ def launch(tree: Path, work: Path, kit: Path, env: dict[str, str], workload: str
         **env, "ACCEL_ENGINE_INSTANCE": instance, "ACCEL_ENGINE_STATE_DIR": str(state),
         "ACCEL_CONCURRENT_WORKERS": os.environ.get("ACCEL_CONCURRENT_WORKERS", "4"),
         "CMAKE_BUILD_PARALLEL_LEVEL": BUILD_JOBS,
-        **{k: os.environ[k] for k in PASSED_THROUGH if k in os.environ},
-        NO_MODEL_ENV: "scripted", "ACCEL_SMOKE_KIT": str(kit), "ACCEL_SMOKE_REFERENCE": str(kit / "reference"),
-        "ACCEL_SMOKE_CALLS": str(state / "agent_calls.jsonl"),
+        **{k: os.environ[k] for k in PASSED_THROUGH if k in os.environ}, **(inside or {}),
     }
     exports = " ".join(f"{k}={sh_quote(v)}" for k, v in inside.items())
-    command = (f"export {exports}; cd {tree} && exec {python} -m accel_pipeline.run_pipeline --workload {workload} "
-               f"--query {query} --engine {engine} --stage all --models-config {models} --config {config}")
+    command = f"export {exports}; cd {tree} && exec {python} -m " + " ".join(map(sh_quote, module_args))
     outer = {k: v for k, v in os.environ.items() if k != "OPENROUTER_API_KEY"}
     outer.update({
         "ACCEL_ENGINE_INSTANCE": instance, "ACCEL_ENGINE_STATE_DIR": str(state), "ACCEL_HOST_LOCK_DIR": str(locks),
-        "ACCEL_SANDBOX_DATA": ":".join([*(v for v in env.values() if v.startswith("/") and not v.startswith(str(tree))), str(kit)]),
+        "ACCEL_SANDBOX_DATA": ":".join([*(v for v in env.values() if v.startswith("/") and not v.startswith(str(tree))),
+                                        *map(str, data)]),
         "ACCEL_SANDBOX_STATE": str(state), **env,
     })
-    log = (work / "pipeline.log").open("w")
+    log = (work / log_name).open("w")
     return subprocess.Popen([str(tree / "pipeline/clean_tree/sandbox.sh"), str(tree), "bash", "-c", command],
                             env=outer, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
                             start_new_session=True)
+
+
+def pipeline_args(workload: str, query: int, engine: str, models: Path, config: Path, stage: str = "all") -> list[str]:
+    return ["accel_pipeline.run_pipeline", "--workload", workload, "--query", str(query), "--engine", engine, "--stage", stage,
+            "--models-config", str(models), "--config", str(config)]
 
 
 def sh_quote(text: str) -> str:
@@ -231,8 +249,9 @@ def sh_quote(text: str) -> str:
     return shlex.quote(text)
 
 
-def wait(proc: subprocess.Popen, timeout: float, log: Path) -> tuple[int | None, list[tuple[float, str]]]:
-    """Exit status (None: timed out) and the times at which the log's stage and gate lines appeared."""
+def wait(proc: subprocess.Popen, timeout: float, log: Path, finished=lambda: False) -> tuple[int | None, list[tuple[float, str]]]:
+    """Exit status (None: still running when `finished()` said so or the time ran out) and the times at which the
+    log's stage and gate lines appeared."""
     deadline = time.monotonic() + timeout
     marks: list[tuple[float, str]] = [(time.monotonic(), "launch")]
     seen = 0
@@ -244,7 +263,7 @@ def wait(proc: subprocess.Popen, timeout: float, log: Path) -> tuple[int | None,
         seen = len(lines)
         if done:
             return proc.returncode, marks
-        if now >= deadline:
+        if now >= deadline or finished():
             return None, marks
         time.sleep(2)
 
@@ -262,6 +281,71 @@ def stop(proc: subprocess.Popen) -> None:
             pass
 
 
+def run_case(args, fixture: dict, env: dict[str, str], name: str | None) -> int:
+    """One run in a fresh tree: the always-behaving agent (`name` None) or an adversarial case."""
+    case = read_fixture("cases.json")[name] if name else {}
+    query = int(fixture["query"])
+    work = args.work or SMOKE_HOME / "runs" / time.strftime("%Y%m%d-%H%M%S")
+    work.mkdir(parents=True)
+    timings: list[tuple[str, float]] = []
+
+    def step(label: str, fn, *a):
+        started = time.monotonic()
+        value = fn(*a)
+        timings.append((label, time.monotonic() - started))
+        print(f"[smoke] {label}: {timings[-1][1]:.0f}s", flush=True)
+        return value
+
+    try:
+        base = step("base tree", base_tree, args.rev, args.engine, fixture, env)
+        tree = step("fresh tree", new_tree, base, work, fixture, env)
+        kit = step("kit", make_kit, work, args.reference_rev or args.rev, args.workload, fixture, query)
+        models, config = write_configs(tree, kit, case.get("config"))
+        state = work / "state"
+        inside = {NO_MODEL_ENV: "scripted", "ACCEL_SMOKE_KIT": str(kit), "ACCEL_SMOKE_REFERENCE": str(kit / "reference"),
+                  "ACCEL_SMOKE_CALLS": str(state / "agent_calls.jsonl"), "ACCEL_SMOKE_TOOLS": str(state / "agent_tools.log"),
+                  **({"ACCEL_SMOKE_CASE": name} if name else {})}
+        started = time.monotonic()
+        proc = launch(tree, work, env, pipeline_args(args.workload, query, args.engine, models, config, case.get("stage", "all")),
+                      inside=inside, data=(kit,))
+        print(f"[smoke] pipeline running: tail -f {work / 'pipeline.log'}", flush=True)
+        finished = (lambda: smoke_report.case_decided(case, smoke_report.evidence(work, tree))) if name else (lambda: False)
+        rc, marks = wait(proc, float(case.get("timeout", 1200 if name else args.timeout)), work / "pipeline.log", finished)
+        stop(proc)  # a no-op once it has exited
+        timings.append(("pipeline", time.monotonic() - started))
+    except (SmokeError, subprocess.CalledProcessError) as exc:
+        print(f"[smoke] FAILED while preparing: {exc}", file=sys.stderr)
+        return 1
+    if name:
+        return smoke_report.verify_case(name, case, work, tree, timings)
+    return smoke_report.verify(tree, work, rc, timings, marks)
+
+
+def run_adversarial(args, fixture: dict, env: dict[str, str]) -> int:
+    """Every case in its own process (the base tree is made once, first); a table of the verdicts."""
+    cases = read_fixture("cases.json")
+    base_tree(args.rev, args.engine, fixture, env)
+    root = args.work or SMOKE_HOME / "runs" / time.strftime("%Y%m%d-%H%M%S")
+    root.mkdir(parents=True)
+    common = ["--workload", args.workload, "--engine", args.engine, "--rev", args.rev]
+    waiting, running, verdicts = list(cases), {}, {}
+    while waiting or running:
+        while waiting and len(running) < args.jobs:
+            name = waiting.pop(0)
+            out = (root / f"{name}.out").open("w")
+            running[name] = subprocess.Popen([sys.executable, __file__, *common, "--case", name, "--work", str(root / name)], stdout=out, stderr=subprocess.STDOUT)
+        for name, proc in list(running.items()):
+            if proc.poll() is not None:
+                verdicts[name] = proc.returncode
+                del running[name]
+        time.sleep(2)
+    for name, rc in verdicts.items():
+        lines = (root / f"{name}.out").read_text().splitlines()
+        verdict = next((l for l in lines if l.startswith("case ")), lines[-1] if lines else "")
+        print(f"{'ok  ' if rc == 0 else 'FAIL'} {verdict}")
+    return 1 if any(verdicts.values()) else 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--workload", required=True)
@@ -270,6 +354,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--reference-rev", default="", help="where the known-good accelerator comes from (default: --rev)")
     parser.add_argument("--work", type=Path, default=None, help="run directory (default: a new one under the smoke home)")
     parser.add_argument("--timeout", type=float, default=float(os.environ.get("ACCEL_SMOKE_TIMEOUT_SEC", 3600)))
+    parser.add_argument("--case", default=None, choices=sorted(read_fixture("cases.json")), help="one adversarial case")
+    parser.add_argument("--adversarial", action="store_true", help="every adversarial case")
+    parser.add_argument("--jobs", type=int, default=3, help="adversarial cases run at a time")
     args = parser.parse_args(argv)
 
     try:
@@ -279,35 +366,13 @@ def main(argv: list[str] | None = None) -> int:
     except (EnvironmentUnavailable, OSError) as exc:
         print(f"smoke test cannot run: {exc}", file=sys.stderr)
         return 2
-    query = int(fixture["query"])
-    work = args.work or SMOKE_HOME / "runs" / time.strftime("%Y%m%d-%H%M%S")
-    work.mkdir(parents=True)
-    timings: list[tuple[str, float]] = []
-
-    def step(name: str, fn, *a):
-        started = time.monotonic()
-        value = fn(*a)
-        timings.append((name, time.monotonic() - started))
-        print(f"[smoke] {name}: {timings[-1][1]:.0f}s", flush=True)
-        return value
-
     try:
-        base = step("base tree", base_tree, args.rev, args.engine, fixture, env)
-        tree = step("fresh tree", new_tree, base, work, fixture, env)
-        kit = step("kit", make_kit, work, args.reference_rev or args.rev, args.workload, fixture, query)
-        models, config = write_configs(tree, kit)
-        started = time.monotonic()
-        proc = launch(tree, work, kit, env, args.workload, query, args.engine, models, config)
-        print(f"[smoke] pipeline running: tail -f {work / 'pipeline.log'}", flush=True)
-        rc, marks = wait(proc, args.timeout, work / "pipeline.log")
-        if rc is None:
-            stop(proc)
-        timings.append(("pipeline", time.monotonic() - started))
-    except (SmokeError, subprocess.CalledProcessError) as exc:
+        if args.adversarial:
+            return run_adversarial(args, fixture, env)
+        return run_case(args, fixture, env, args.case)
+    except SmokeError as exc:
         print(f"[smoke] FAILED while preparing: {exc}", file=sys.stderr)
         return 1
-
-    return smoke_report.verify(tree, work, rc, timings, marks)
 
 
 if __name__ == "__main__":

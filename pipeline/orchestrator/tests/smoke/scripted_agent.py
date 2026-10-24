@@ -12,11 +12,15 @@ banner); per stage it writes known-good artifacts instead of calling a model:
     audit         a passing audit
     critique      a passing critique
 
+With ACCEL_SMOKE_CASE set it misbehaves in one named way (the adversarial smoke cases, see fixtures/cases.json and
+the BEHAVIOURS table below); the pipeline's guardrails have to catch it.
+
 A stage without a script fails loudly: in a smoke run an agent that is asked for work nobody planned for
 means the pipeline's own plumbing needed repairing. Every launch is appended to $ACCEL_SMOKE_CALLS.
 
 Environment (set by the driver): ACCEL_SMOKE_KIT (fixtures), ACCEL_SMOKE_REFERENCE (known-good tree),
-ACCEL_SMOKE_CALLS (launch log). The orchestrator sets ACCEL_PIPELINE_{STAGE,WORKLOAD,QUERY,ENGINE,REPO_ROOT}.
+ACCEL_SMOKE_CALLS (launch log), ACCEL_SMOKE_TOOLS (what the tools answered, for the case assertions),
+ACCEL_SMOKE_CASE (the misbehaviour). The orchestrator sets ACCEL_PIPELINE_{STAGE,WORKLOAD,QUERY,ENGINE,REPO_ROOT}.
 """
 
 from __future__ import annotations
@@ -27,6 +31,7 @@ import os
 import re
 import shutil
 import sys
+import time
 import uuid
 from pathlib import Path
 
@@ -39,6 +44,7 @@ QUERY = ENV["ACCEL_PIPELINE_QUERY"]
 ROOT = Path(ENV["ACCEL_PIPELINE_REPO_ROOT"])
 KIT = Path(ENV["ACCEL_SMOKE_KIT"]) / "fixtures" / WORKLOAD
 REFERENCE = Path(ENV["ACCEL_SMOKE_REFERENCE"])
+PROMPT, RESUMED = "", False  # of this launch (set by main)
 SHARED_QUERY_DIRS = {"config", "bench", "tests"}  # besides the engine's own directory and loose files
 
 
@@ -62,8 +68,13 @@ def copy_tree(src: Path, dst: Path, *, skip: tuple[str, ...] = ()) -> None:
             shutil.copyfile(path, dst / rel)
 
 
-def analysis() -> str:
+def analysis(mutate=None) -> str:
     copy_tree(KIT / "artifacts", artifacts_dir())
+    if mutate:
+        path = artifacts_dir() / "analysis.json"
+        design = json.loads(path.read_text())
+        mutate(design)
+        path.write_text(json.dumps(design, indent=2))
     return "analysis written"
 
 
@@ -74,6 +85,13 @@ def test_suite() -> str:
 
 def leaves(exc: BaseException) -> list[BaseException]:
     return [leaf for sub in exc.exceptions for leaf in leaves(sub)] if isinstance(exc, BaseExceptionGroup) else [exc]
+
+
+def note(text: str) -> None:
+    """What the agent saw, for the adversarial cases to assert on."""
+    if path := ENV.get("ACCEL_SMOKE_TOOLS"):
+        with open(path, "a", encoding="utf-8") as log:
+            log.write(text + "\n")
 
 
 def call_tool(name: str, arguments: dict) -> dict:
@@ -90,6 +108,7 @@ def call_tool(name: str, arguments: dict) -> dict:
                 await session.initialize()
                 result = await session.call_tool(name, arguments)
                 text = result.content[0].text
+                note(f"[tool {name}] {text}")
                 try:
                     return json.loads(text)
                 except ValueError:
@@ -183,7 +202,8 @@ def copy_benchmark_common(query_dir_: Path) -> None:
                 pending.append(common / name)
 
 
-def implementation() -> str:
+def implementation(edit=None, then=None) -> str:
+    """The reference accelerator, `edit`ed (given module.cpp) before the primitives are published; `then` runs last."""
     reference = REFERENCE / "accelerators" / benchmark() / f"q{QUERY}"
     for entry in sorted(reference.iterdir()):
         if entry.is_dir() and entry.name != ENGINE and entry.name not in SHARED_QUERY_DIRS:
@@ -193,12 +213,118 @@ def implementation() -> str:
         else:
             shutil.copyfile(entry, query_dir() / entry.name)
     copy_benchmark_common(query_dir())
+    if edit:
+        edit(query_dir() / ENGINE / "aux" / "module.cpp")
     call_tool("discover_host_sdk", {})
     advice = call_tool("ask_advisor", {"question": "scripted agent: a second opinion on the copied implementation?"})
     if SCRIPTED_ADVICE not in advice.get("text", ""):
         raise SystemExit(f"ask_advisor gave no advice: {json.dumps(advice)[:2000]}")
     publish_primitives(query_dir())
+    if then:
+        then()
     return "implementation copied from the reference"
+
+
+# ---------------------------------------------------------------- misbehaviours (ACCEL_SMOKE_CASE)
+
+def replace_once(path: Path, old: str, new: str) -> None:
+    text = path.read_text()
+    if text.count(old) != 1:
+        raise SystemExit(f"scripted agent: {path.name} no longer contains exactly one {old!r} (the reference kernel changed)")
+    path.write_text(text.replace(old, new))
+
+
+def rebuild_every_write(module: Path) -> None:
+    """Every write with changes rebuilds the whole state (the module's own rebuild path), though the analysis
+    maintains lineitem writes incrementally."""
+    replace_once(module, "  if (deltas.empty() && events.empty())\n    return outcome;\n",
+                 "  if (deltas.empty() && events.empty())\n    return outcome;\n"
+                 "  core::FinishRebuildAll(outcome, services.ChooseMaintenance(core::MaintenanceRequest::RebuildOnly(\n"
+                 "                                      services.ExpectedQueriesBeforeNextWrite())));\n  return outcome;\n")
+
+
+def one_slice_fold(module: Path) -> None:
+    """A parallel section run as one slice: serial work where the plan is parallel."""
+    replace_once(module, "services, deltas.size(), kDeltaGrain, pass,", "services, deltas.size(), deltas.size() + 1, pass,")
+
+
+def racy_maintenance(module: Path) -> None:
+    """Two threads bump a shared counter without synchronisation in the maintenance path (in a function of the
+    module, not an inlined lambda: the sanitizer check attributes a race to the query by the frames it finds)."""
+    replace_once(module, "core::StagedMaintenanceOutcome outcome;\n  if (buffer.RequiresRebuild()) {",
+                 "core::StagedMaintenanceOutcome outcome;\n  {\n    static int racy = 0;\n"
+                 "    std::thread a([] { RacyBump(racy); });\n"
+                 "    std::thread b([] { RacyBump(racy); });\n    a.join();\n    b.join();\n  }\n"
+                 "  if (buffer.RequiresRebuild()) {")
+    replace_once(module, '#include "substrate/aux/core/parallel_slices.hpp"',
+                 '#include <thread>\n#include "substrate/aux/core/parallel_slices.hpp"\n'
+                 "__attribute__((noinline)) static void RacyBump(int &n) { for (int i = 0; i < 1000; ++i) ++n; }")
+
+
+def dismiss_failed_check() -> None:
+    call_tool("quick_check", {})
+    note("[agent] the check failed, but it only concerns the budget: done")
+
+
+def stall() -> str:
+    """No edits and no tool calls (thinking), one read-only call that shows the nudge, then more of the same: the
+    watchdog nudges, then ends the turn."""
+    time.sleep(10)
+    call_tool("discover_host_sdk", {})
+    time.sleep(150)
+    return implementation()
+
+
+def blocker_then_linger() -> None:
+    """Reports a slow gate as a blocker, but does not stop as told."""
+    call_tool("report_blocker", {"summary": "aux_correctness has been running for minutes, it must be hung",
+                                 "evidence": "gate_status: running"})
+    time.sleep(60)
+
+
+def drop_units_probes(design: dict) -> None:
+    for candidate in design["state_candidate_search"]["candidates"]:
+        candidate.pop("units_probe", None)
+
+
+def one_primitive_for_everything(design: dict) -> None:
+    storage = design["correctness_facts"]["state_design"]["state_storage"]
+    storage.append(dict(storage[0]))
+    for entry in storage:
+        entry["primitive"] = storage[0]["primitive"]
+
+
+def simulate_every_candidate(design: dict) -> None:
+    """Each candidate cites its own simulated read (queries the data log holds)."""
+    for i, candidate in enumerate(design["state_candidate_search"]["candidates"]):
+        candidate["units_probe"], candidate["measured_units"] = f"SELECT {i + 1}", "1"
+
+
+def broken_analysis(mutate) -> str:
+    """The first launch writes a design the validation refuses; the repair turn it resumes writes a valid one.
+    With a log of data queries the validation demands a logged simulation behind every candidate's units_probe."""
+    artifacts_dir().mkdir(parents=True, exist_ok=True)
+    queries = (json.dumps({"tool": "query_data", "args": {"sql": f"SELECT {i}"}, "error": None}) for i in range(1, 9))
+    (artifacts_dir() / "data_queries.jsonl").write_text("\n".join(queries) + "\n")
+    if RESUMED:
+        note(f"[prompt resumed {STAGE}] {PROMPT[-2500:]}")
+        return analysis(simulate_every_candidate)
+    return analysis(lambda design: (simulate_every_candidate(design), mutate(design)))
+
+
+BEHAVIOURS = {
+    "rebuild_on_write": {"implementation": lambda: implementation(rebuild_every_write)},
+    "serial_fold": {"implementation": lambda: implementation(one_slice_fold)},
+    "data_race": {"implementation": lambda: implementation(
+        racy_maintenance, lambda: call_tool("quick_check", {"sanitizer": "thread", "threads": 4}))},
+    "heavy_gate_first": {"implementation": lambda: implementation(
+        then=lambda: call_tool("request_gate", {"gate_name": "aux_correctness"}))},
+    "dismissed_check": {"implementation": lambda: implementation(rebuild_every_write, dismiss_failed_check)},
+    "false_blocker": {"implementation": lambda: implementation(then=blocker_then_linger)},
+    "stalled": {"implementation": stall},
+    "no_units_probe": {"analysis": lambda: broken_analysis(drop_units_probes)},
+    "one_primitive": {"analysis": lambda: broken_analysis(one_primitive_for_everything)},
+}
 
 
 def optimization() -> str:
@@ -236,14 +362,15 @@ PREFIX_SCRIPTS = {"optimization": optimization}
 
 
 def script_for(stage: str):
-    return SCRIPTS.get(stage) or next((fn for prefix, fn in PREFIX_SCRIPTS.items() if stage.startswith(prefix)), None)
+    return BEHAVIOURS.get(ENV.get("ACCEL_SMOKE_CASE", ""), {}).get(stage) or SCRIPTS.get(stage) or next((fn for prefix, fn in PREFIX_SCRIPTS.items() if stage.startswith(prefix)), None)
 
 
 def main() -> int:
     args = sys.argv[1:]
     resumed = "resume" in args[:2]
     sid = next((a for a in reversed(args) if len(a) == 36 and a.count("-") == 4), str(uuid.uuid4()))
-    sys.stdin.read()  # the prompt
+    global PROMPT, RESUMED
+    PROMPT, RESUMED = sys.stdin.read(), resumed
     home = Path(ENV.get("CODEX_HOME", ""))
     if home.name:
         (home / "sessions").mkdir(parents=True, exist_ok=True)
