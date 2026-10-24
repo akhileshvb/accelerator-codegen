@@ -32,7 +32,7 @@ Targets are declared in `backends/{{engine_name}}/tests/harness.cmake`. The modu
 ## Gates
 
 - `host_bootstrap`: builds the five targets through `host.sh build`, checks that `harness.cmake` declares the module test by that glob, runs the differential on one registered query (or `--help` when none exists yet), `--help` on the others, and checks the harness files name no query.
-- Per query: `aux_correctness` (differential, reads and writes including RF chunks: this is the sweep over the pack's queries), `aux_multi_connection`, `aux_cross_accel`, `aux_cost_model_calibrate`, the bench gates.
+- Per query: `aux_correctness` (differential, reads and writes including refresh chunks: this is the sweep over the pack's queries), `aux_multi_connection`, `aux_cross_accel`, `aux_cost_model_calibrate`, the bench gates.
 
 ## Exit criterion
 

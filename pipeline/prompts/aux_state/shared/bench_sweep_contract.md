@@ -14,20 +14,20 @@ Write-frequency / write-interval points must exercise **query-specific maintenan
 
 1. Catalog `probe_select_sql` + `build_probe` must produce updates that **change the engine's `base_sql` result** for this query (same bar as incremental differential).
 2. The shared sweep builds the write pool from the catalog probes, keeping only invalidating ones — candidates whose `update_sql` does not change the answer are dropped; **zero survivors fails the bench**.
-3. Do **not** hardcode a non-catalog SELECT of arbitrary rows, or bump columns this query ignores (e.g. `l_extendedprice` on Q4). Use the shared invalidating-probe helper for any local precompute of write probes.
+3. Do **not** hardcode a non-catalog SELECT of arbitrary rows, or bump columns this query ignores (e.g. a column of another table that the query ignores). Use the shared invalidating-probe helper for any local precompute of write probes.
 4. Multi-connection “invalidating writer” SQL in helpers is a separate stress path; the **bench write pool** is the catalog probe path above.
 
 ## Sweep protocol
 
-The `aux_bench_sweep` gate calls the bench once per point, for each suite (`lineitem_only` by default), each run on a fresh DB copy. The write frequencies are drawn on every run from the query's frozen `write_mix.yaml` (0% always, then its sampled range; seed recorded in the gate result) and the sweep repeats `test_suite.bench_repeats` times with fresh draws: each call is one point (the percent is its argument and `ACCEL_AUX_WRITE_FREQUENCIES`), and the score is the median over the repeats with [min-max]. Without a suite, `ACCEL_AUX_WRITE_FREQUENCIES` (0, 1, 10, 50) is the fixed list.
+The `aux_bench_sweep` gate calls the bench once per point, for each suite (the workload's `aux_bench_sweep.suites`), each run on a fresh DB copy. The write frequencies are drawn on every run from the query's frozen `write_mix.yaml` (0% always, then its sampled range; seed recorded in the gate result) and the sweep repeats `test_suite.bench_repeats` times with fresh draws: each call is one point (the percent is its argument and `ACCEL_AUX_WRITE_FREQUENCIES`), and the score is the median over the repeats with [min-max]. Without a suite, `ACCEL_AUX_WRITE_FREQUENCIES` (0, 1, 10, 50) is the fixed list.
 
 ### Env vars (read in benchmark)
 
 | Variable | Purpose |
 |----------|---------|
-| `ACCEL_TPCH_DB` | Path or connection string of the SF1 dataset copy for this point |
-| `ACCEL_Q{N}_BENCH_SUITE` | e.g. `lineitem_only` |
-| `ACCEL_Q{N}_WRITE_LOCALITY` | e.g. `single_month` / `single_segment` |
+| the dataset env var of the host contract (`dataset_env`) | Path or connection string of the iteration dataset copy for this point |
+| `ACCEL_Q{N}_BENCH_SUITE` | a suite name from `aux_bench_sweep.suites` |
+| `ACCEL_Q{N}_WRITE_LOCALITY` | a locality name of the query's write mix |
 | `ACCEL_BENCH_WARMUP` | Warmup queries before measured loop (engine reference SQL and aux) |
 | `ACCEL_BENCH_QUERIES` | Measured queries per point (used for all timed paths) |
 | `ACCEL_BENCH_REF_SAMPLES` | Legacy; ignored when benchmarks use warmup + measured loop |
@@ -35,7 +35,7 @@ The `aux_bench_sweep` gate calls the bench once per point, for each suite (`line
 | `ACCEL_Q{N}_MAINTENANCE_MODE` | Set `hybrid` during measured workload |
 | `ACCEL_PROFILE_CONTROL` | Comma-separated `perf --control` fifos set by `run_profile`; the bench opens the window around the measured read loop with `driver::ProfileWindow` (`eval/bench/driver/profile_window.hpp`) |
 
-Query-specific bench params (month/day_offset, segment/cutoff_date, etc.) follow the Q{N} manifest / test helpers.
+Query-specific bench params (the template's own parameters) follow the Q{N} manifest / test helpers.
 
 ## Required stdout (CSV)
 

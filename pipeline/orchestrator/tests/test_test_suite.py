@@ -512,9 +512,9 @@ def test_the_format_docs_worked_example_passes_the_static_checks(tmp_path):
     suite = tmp_path / "workload"
     (suite / "txns").mkdir(parents=True)
     (suite / "params.sql").write_text(sql[0], encoding="utf-8")
-    txns = {"001": sql[1], "002": sql[2], "003": "INSERT INTO orders SELECT * FROM orders LIMIT 1;",
-            "004": "DELETE FROM orders WHERE o_orderkey = 1;", "005": "UPDATE orders SET o_custkey = o_custkey + 1;",
-            "006": "INSERT INTO orders SELECT * FROM orders LIMIT 5;"}
+    txns = {"001": sql[1], "002": sql[2], "003": "INSERT INTO events SELECT * FROM events LIMIT 1;",
+            "004": "DELETE FROM events WHERE event_id = 1;", "005": "UPDATE events SET account_id = account_id + 1;",
+            "006": "INSERT INTO events SELECT * FROM events LIMIT 5;"}
     for name, text in txns.items():
         (suite / "txns" / f"{name}.sql").write_text(text, encoding="utf-8")
     (suite / "suite.yaml").write_text([b for lang, b in blocks if lang == "yaml"][-1], encoding="utf-8")
@@ -523,6 +523,5 @@ def test_the_format_docs_worked_example_passes_the_static_checks(tmp_path):
                                        encoding="utf-8")
     (suite / "write_mix.yaml").write_text("version: 1\nfrequency_pct: {min: 1, max: 50, samples: 3, distribution: log}\n"
                                           "kinds: {point_update: 5, point_insert: 2, point_delete: 2, bulk_insert: 1}\n", encoding="utf-8")
-    query = ("SELECT o_orderpriority, count(*) FROM orders WHERE o_orderdate >= $1 AND o_orderdate < $2 "
-             "AND o_orderstatus = $3 GROUP BY 1 ORDER BY 1")
-    assert ts.validate_static(suite, query_sql=query, param_names=["a", "b", "c"], dependent_tables=["orders"], aux=True) == []
+    query = "SELECT kind, count(*) FROM events WHERE ts >= $1 AND ts < $2 AND status = $3 GROUP BY 1 ORDER BY 1"
+    assert ts.validate_static(suite, query_sql=query, param_names=["a", "b", "c"], dependent_tables=["events"], aux=True) == []

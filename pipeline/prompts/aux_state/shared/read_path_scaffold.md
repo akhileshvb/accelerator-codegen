@@ -1,6 +1,6 @@
 # Read-path scaffold (agent-generated `aux/module.cpp`)
 
-Port from shipped peer modules under `accelerators/{bench}/q*/<engine>/aux/module.cpp` (the workload's reference accelerators). Every aux query implements the same `AuxQueryModule` surface.
+Port from shipped peer modules under `accelerators/<bench>/q*/<engine>/aux/module.cpp` (the workload's reference accelerators). Every aux query implements the same `AuxQueryModule` surface.
 
 ## Module methods (required)
 
@@ -11,17 +11,17 @@ Port from shipped peer modules under `accelerators/{bench}/q*/<engine>/aux/modul
 | `ExecuteFallback` | Recompute from base tables when state is missing, stale, or txn-blocked |
 | `StageMaintenance` | Build `MaintenanceRequest`, call `services.ChooseMaintenance(...)`, materialize updates |
 
-## Single-partition pattern (Q14)
+## Single-partition pattern
 
 ```cpp
-bool TpchQ14Module::CheckValidity(core::AuxEngineServices &services,
+bool ExampleModule::CheckValidity(core::AuxEngineServices &services,
                                   const core::QueryArguments &) const {
   return services.StateStore()
       .CheckValidity({Id(), {}}, services.CurrentVisibility())
       .IsValid();
 }
 
-void TpchQ14Module::Execute(core::AuxEngineServices &services,
+void ExampleModule::Execute(core::AuxEngineServices &services,
                             const core::QueryArguments &arguments,
                             core::AuxRowSink &sink) {
   if (!services.StateStore()
@@ -36,7 +36,7 @@ void TpchQ14Module::Execute(core::AuxEngineServices &services,
 
 ## Window / prefix gates (multi-partition queries)
 
-When the query spans multiple partitions (Q1 prefix, Q10/Q12 date windows):
+When the query spans multiple partitions (prefix state, date windows):
 
 1. Compute the partition ID set for the query window only.
 2. Pass that set to `CheckValidity` / `ReadPartitions` — never scan all slots.

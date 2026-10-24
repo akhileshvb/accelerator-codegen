@@ -134,7 +134,7 @@ def _accelerator_engine_host_block(workload: dict[str, Any], repo_root: Path, bu
         )
     lines.extend(
         [
-            f"- **Dataset env:** `{host.get('dataset_env', 'ACCEL_TPCH_DB')}`",
+            f"- **Dataset env:** `{host.get('dataset_env', '')}`",
             f"- **Differential:** `{host.get('differential_binary', '')}` — "
             f"{host.get('differential_command', '')}",
         ]
@@ -208,7 +208,7 @@ def build_prompt_context(
         if not reference_sql.strip():
             reference_sql = (
                 f"-- MISSING reference SQL at {reference_sql_path or '(unset)'}\n"
-                "-- Regenerate with: python3 scripts/generate_tpch_sf1_instances.py"
+                "-- Regenerate the workload's reference SQL (see the workload config)"
             )
         data_section = build_data_section(
             str(workload.get("engine_name") or ""),
@@ -313,7 +313,7 @@ def build_prompt_context(
             benchmark_notes += (
                 f"\n- SEC EDGAR aux state: `accelerators/sec_edgar/q{query}/{engine_name}/aux/module.hpp` "
                 f"(base API: `accelerators/sec_edgar/q{query}/{engine_name}/base/query.hpp`).\n"
-                "- Write workload suite is **`filing_append`** / **`value_append`**, not TPC-H `lineitem` point updates.\n"
+                "- Write workload suite is **`filing_append`** / **`value_append`**.\n"
                 "- Partition by filing semantics (`stmt`, `adsh`, `cik`+`fy`) — see `pipeline/prompts/sec_edgar/aux_state_notes.md`.\n"
                 "- The aux state is discovered from `aux/finalize.cpp`; no CMake registration.\n"
                 "- Scale: SF3 is both iteration and production scale here — still size from `row_estimate`, not profile snapshots."

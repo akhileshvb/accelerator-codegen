@@ -51,7 +51,7 @@ A grain is `k<Unit>Grain` with a singular unit (`kDeltaGrain`, `kGroupGrain`, `k
 
 ## Naming scans
 
-An `InitialScan` method that reads a whole table is named for the table: `Scan<Table>(services, partitions, sink)` is partitioned (`sink(partition, row)`, one thread per partition, partitions merged in order); `Scan<Table>Serial(consumer)` delivers rows one at a time on the calling thread (small dimension tables). Point lookups and SQL aggregate pushdowns are named for what they read (`ScanLineitemsByOrder`, `ScanMonthAggregates`), never `Serial`. A query with no `Scan<Table>` of its own scans through `PartitionedTableScan::ScanTable` and `CollectTable`. Delete a scan method nothing calls.
+An `InitialScan` method that reads a whole table is named for the table: `Scan<Table>(services, partitions, sink)` is partitioned (`sink(partition, row)`, one thread per partition, partitions merged in order); `Scan<Table>Serial(consumer)` delivers rows one at a time on the calling thread (small dimension tables). Point lookups and SQL aggregate pushdowns are named for what they read (`ScanEventsByAccount`, `ScanDailyAggregates`), never `Serial`. A query with no `Scan<Table>` of its own scans through `PartitionedTableScan::ScanTable` and `CollectTable`. Delete a scan method nothing calls.
 
 ## Containers (copy-on-write)
 
@@ -60,5 +60,5 @@ All of `accelerators/prims/`: the catalogue is `accelerators/prims/README.md` (i
 ## Calibration
 
 - Cost-model JSON `<stem>[_<engine>][_<scale>].json` in the directory named by the query's `AuxCostModelLocation`; `LoadAuxCostModelJson`, `ResolveAuxCostModelPath` (a missing `sf3000` file falls back to the nearest smaller scale). Record `calibrated_scale_rows` in every model.
-- `AuxQueryModule::CalibrationWrites()` / `CalibrationWritesRegistrar` (`core/aux_calibration.hpp`): writes of increasing size and spread over the partitions, each with revert and control. `accelerators/tpch/common/calibration_shapes.hpp` builds them from per-table range shapes. Calibrate on refresh-shaped writes (bulk, keys spread), not tiny updates.
+- `AuxQueryModule::CalibrationWrites()` / `CalibrationWritesRegistrar` (`core/aux_calibration.hpp`): writes of increasing size and spread over the partitions, each with revert and control. `accelerators/<bench>/common/calibration_shapes.hpp` builds them from per-table range shapes. Calibrate on refresh-shaped writes (bulk, keys spread), not tiny updates.
 - `CalibrateFromWrites` fits ApplyDelta = overhead + per row, RebuildPartition = base + per partition, RebuildAll = mean (`maintenance_framework.md` for how the policy uses them).

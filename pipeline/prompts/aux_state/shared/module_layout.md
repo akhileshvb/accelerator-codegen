@@ -11,7 +11,7 @@ Use `{{query_number}}` / `q{{query_number}}` placeholders and the run's `{bench}
 | Cost-model location | `accelerators/{bench}/q{{query_number}}/cost_model.hpp` (scaffold writes it); pass it to the registration (see the **registration** role of the Backend API) |
 | Module unit test | none per query: the shared module test is built per query once the query's registration file exists (see `unit_test_contract.md`) |
 
-`aux_correctness` also runs the SF1 differential against the engine's own results.
+`aux_correctness` also runs the iteration-scale differential against the engine's own results.
 
 | Write-freq benchmark | `accelerators/{bench}/q{{query_number}}/bench/benchmark_q{{query_number}}_aux.cpp` |
 | Cost calibration | `accelerators/{bench}/q{{query_number}}/bench/calibrate_q{{query_number}}_aux_cost_model.cpp` — **thin wrapper only** (see below) |

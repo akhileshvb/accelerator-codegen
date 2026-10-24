@@ -36,7 +36,7 @@ Compare `pre_rows` to `qualifying_rows` — large gaps often mean scan amplifica
 ## Benchmark
 
 - Default: timed reference SQL vs `{{function_name}}()` (or parameterized equivalent).
-- `ACCEL_BENCH_PROFILE=1`: direct native scan + profiling kernel on the **same path as production** (fused scan for SEC-EDGAR and TPC-H Q1; chunk path only when production uses chunks).
+- `ACCEL_BENCH_PROFILE=1`: direct native scan + profiling kernel on the **same path as production** (fused scan when the host has one; chunk path only when production uses chunks).
 - Profile CSV should include `num_aggregate_us` when the kernel defines it.
 
 ## Experiments

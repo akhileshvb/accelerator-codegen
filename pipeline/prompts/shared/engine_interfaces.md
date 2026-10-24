@@ -25,7 +25,7 @@ accelerators/{benchmark}/q{N}/{engine}/base/...
 accelerators/{benchmark}/q{N}/{engine}/aux/...
 ```
 
-Optional: `fused.hpp` + `fused_scan.cpp` for SEC-EDGAR or TPC-H fused paths when **this** host supports them. Fused micro-APIs are optional host paths (the index and profile say whether the engine has one), not required for every engine.
+Optional: `fused.hpp` + `fused_scan.cpp` for fused paths when **this** host supports them. Fused micro-APIs are optional host paths (the index and profile say whether the engine has one), not required for every engine.
 
 Host registration: **the query registers itself from its own directory** with static
 registrars against the backend's registries (see `generated_layout.md`, "Registration").
@@ -68,8 +68,8 @@ using namespace accelerator_codegen::aux_state;
 Partial state = core::PartitionedBuild<Partial>(
     services, [] { return Partial{}; },
     [&](std::size_t parts, auto &&sink) {  // the scan role's partitioned scan; its signature is in the index
-      scan::ScanPartitioned(services, /*engine scan handle*/ scan_handle, "lineitem",
-                            {DateColumn("l_shipdate"), DecimalColumn("l_quantity", 2), TextColumn("l_returnflag")},
+      scan::ScanPartitioned(services, /*engine scan handle*/ scan_handle, "events",
+                            {DateColumn("ts"), DecimalColumn("amount", 2), TextColumn("status")},
                             parts, sink);
     },
     [](Partial &p, const auto &row) { p.Add(row.Date(0), row.Decimal(1), row.Char(2)); },
@@ -110,7 +110,7 @@ Per slot, what the backend must guarantee. How each engine meets it is in the en
 
 **S8 engine scans.** `RunBuild(accelerator, snapshot, builder)` runs the module's `Build` through the engine's native typed scans **inside the build snapshot**, partitioned and chunked, parallel on the thread budget, and calls `builder.Finish()`. No shared scan format.
 
-Also supplied: `CostModel(accelerator)` (cost model resolved by engine and scale factor, nearest smaller scale when the exact one is absent), `ExpectedQueriesBeforeNextWrite`, and `TableRows(table)` (cheap row count from engine statistics, 64-bit; the runtime sums it per accelerator as `DataScaleRows`, which scales the ApplyDelta cap and rebuild costs against the model's `calibrated_scale_rows`; left at 0 the cap stays at its SF1 value and RF-sized refreshes rebuild). Store: `VersionedAuxStore` by default (substrate); a backend never writes a store or a coordinator.
+Also supplied: `CostModel(accelerator)` (cost model resolved by engine and scale factor, nearest smaller scale when the exact one is absent), `ExpectedQueriesBeforeNextWrite`, and `TableRows(table)` (cheap row count from engine statistics, 64-bit; the runtime sums it per accelerator as `DataScaleRows`, which scales the ApplyDelta cap and rebuild costs against the model's `calibrated_scale_rows`; left at 0 the cap stays at its SF1 value and refresh-sized refreshes rebuild). Store: `VersionedAuxStore` by default (substrate); a backend never writes a store or a coordinator.
 
 #### Backend scale expectations
 
@@ -135,7 +135,7 @@ Agents own partition layouts (`accelerators/{bench}/q{N}/layout.hpp`), payload s
 
 ### Base kernels
 
-1. Match production path for **this** host (fused scan for SEC; native batch / fused for TPC-H where the host supports it)
+1. Match production path for **this** host (fused scan or native batch, whichever the host supports)
 2. Filter pushdown, scan order, vector/batch fast paths, bind-time sizing
 3. Coordinated bundles — not one-line micro-opts when far from the reference engine
 
