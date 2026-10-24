@@ -232,6 +232,37 @@ def _validate_read_work_ratio(state_design: dict[str, Any]) -> None:
         )
 
 
+STATE_STORAGE_TEXT_FIELDS = ("component", "primitive", "key", "value", "read_access", "write_access", "cow_unit")
+STATE_STORAGE_NUMBER_FIELDS = ("entries", "bytes_per_entry", "target_bytes")
+
+
+def _validate_state_storage(analysis: dict[str, Any]) -> None:
+    """Each component of the selected state names the COW primitive that holds it, how it is accessed, and its size."""
+    where = "correctness_facts.state_design.state_storage"
+    storage = analysis["correctness_facts"]["state_design"].get("state_storage")
+    if not isinstance(storage, list) or not storage:
+        raise AuxAnalysisValidationError(
+            f"{where} is required: one entry per state component with {', '.join(STATE_STORAGE_TEXT_FIELDS)} and "
+            f"numeric {', '.join(STATE_STORAGE_NUMBER_FIELDS)}"
+        )
+    primitives = {str(p.get("name", "")).strip() for key in ("primitives_used", "primitives_proposed")
+                  for p in analysis.get(key) or [] if isinstance(p, dict)}
+    for index, entry in enumerate(storage):
+        label = f"{where}[{index}]"
+        if not isinstance(entry, dict):
+            raise AuxAnalysisValidationError(f"{label} must be an object")
+        for key in STATE_STORAGE_TEXT_FIELDS:
+            if not str(entry.get(key) or "").strip():
+                raise AuxAnalysisValidationError(f"{label}.{key} is required")
+        for key in STATE_STORAGE_NUMBER_FIELDS:
+            if not isinstance(entry.get(key), (int, float)) or isinstance(entry.get(key), bool) or entry[key] < 0:
+                raise AuxAnalysisValidationError(f"{label}.{key} must be a non-negative number")
+        if str(entry["primitive"]).strip() not in primitives:
+            raise AuxAnalysisValidationError(
+                f"{label}.primitive {entry['primitive']!r} is not listed in primitives_used or primitives_proposed"
+            )
+
+
 def _validate_base_path_cost_decomposition(decomposition: Any) -> None:
     if not isinstance(decomposition, dict):
         raise AuxAnalysisValidationError(
@@ -402,6 +433,7 @@ def validate_aux_analysis(
         _validate_base_path_cost_decomposition(performance.get("base_path_cost_decomposition"))
         _validate_state_candidate_search(analysis)
         _validate_read_work_ratio(state_design)
+        _validate_state_storage(analysis)
 
 
 def validate_aux_analysis_file(

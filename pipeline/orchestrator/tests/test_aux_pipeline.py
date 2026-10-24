@@ -102,6 +102,7 @@ def _sample_valid_analysis() -> dict:
     return {
         "accelerator_id": "tpch_q14_aux",
         "aux_function_name": "accel_tpch_q14_aux",
+        "primitives_used": [{"name": "CowOrderedMap", "why": "ordered month keys with COW leaves"}],
         "fitness_assessment": {
             "recommended": True,
             "confidence": "high",
@@ -167,6 +168,12 @@ def _sample_valid_analysis() -> dict:
                 ],
                 "correctness_argument": "sums are sufficient for promo ratio",
                 "speedup_argument": "eliminates dominant scan+join",
+                "state_storage": [
+                    {"component": "month totals", "primitive": "CowOrderedMap", "key": "int64 month",
+                     "value": "two int128 sums", "read_access": "range fold over months",
+                     "write_access": "add a delta to one month", "cow_unit": "one leaf page",
+                     "entries": 84, "bytes_per_entry": 48, "target_bytes": 4032},
+                ],
             },
             "state_payload": {"struct_name": "MonthTotals", "fields": [], "what_is_cached": "sums"},
             "mutation_coverage": [
@@ -280,6 +287,19 @@ class TestAuxAnalysisValidation:
         path = self._write(tmp_path, analysis, [(probes[0], None)])
         with pytest.raises(AuxAnalysisValidationError, match="distinct units_probe"):
             validate_aux_analysis_file(path)
+
+    def test_state_storage_names_a_listed_primitive_and_sizes(self):
+        analysis = _sample_valid_analysis()
+        entry = analysis["correctness_facts"]["state_design"]["state_storage"][0]
+        entry["primitive"] = "SomeUnlistedMap"
+        with pytest.raises(AuxAnalysisValidationError, match="not listed in primitives_used"):
+            validate_aux_analysis(analysis)
+        entry["primitive"], entry["bytes_per_entry"] = "CowOrderedMap", "about 48"
+        with pytest.raises(AuxAnalysisValidationError, match="bytes_per_entry must be a non-negative number"):
+            validate_aux_analysis(analysis)
+        del analysis["correctness_facts"]["state_design"]["state_storage"]
+        with pytest.raises(AuxAnalysisValidationError, match="state_storage is required"):
+            validate_aux_analysis(analysis)
 
     def test_rejects_poor_fitness(self):
         analysis = _sample_valid_analysis()

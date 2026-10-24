@@ -209,6 +209,12 @@ def audit() -> str:
     return "audit written"
 
 
+def analysis_critic() -> str:
+    review = {"estimates": {}, "checks": [], "verdict": "accept", "alternative": {"better": False}}
+    (artifacts_dir() / "analysis_critique.json").write_text(json.dumps(review, indent=2) + "\n")
+    return "critique written"
+
+
 def critique() -> str:
     art = ROOT / "pipeline" / "artifacts" / "engines" / ENGINE / "host_bootstrap"
     art.mkdir(parents=True, exist_ok=True)
@@ -219,7 +225,7 @@ def critique() -> str:
     return "critique written"
 
 
-SCRIPTS = {"analysis": analysis, "test_suite": test_suite, "implementation": implementation, "audit": audit,
+SCRIPTS = {"analysis": analysis, "analysis_critic": analysis_critic, "test_suite": test_suite, "implementation": implementation, "audit": audit,
            "critique_host_bootstrap": critique}
 PREFIX_SCRIPTS = {"optimization": optimization}
 
