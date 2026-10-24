@@ -5,8 +5,11 @@ from __future__ import annotations
 import os
 import subprocess
 from dataclasses import dataclass
+from pathlib import Path
 
+from accel_pipeline.build_stamp import build_lock, code_stamp
 from accel_pipeline.config import PipelineConfig, resolve_workload_paths
+from accel_pipeline.layout import query_dir
 
 
 @dataclass
@@ -122,17 +125,45 @@ def run_build(
     else:
         targets = [paths["bench_target"], paths["test_target"]]
     targets = [t for t in targets if t]
+    build_dir = Path(pipeline_config.build_dir)
+    stamp = _build_stamp(pipeline_config, workload, query, targets)
+    stamp_file = build_dir / ".build_stamps" / f"run_build_q{query}"
+    if stamp and (build_dir / "CMakeCache.txt").is_file() and _read_text(stamp_file) == stamp:
+        return True, "build skipped: the code is unchanged since the last successful build"
     combined: list[str] = []
-    for target in targets:
-        proc = subprocess.run(
-            ["cmake", "--build", str(pipeline_config.build_dir), "--target", target, "-j", "4"],
-            cwd=pipeline_config.repo_root,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        out = (proc.stdout or "") + (proc.stderr or "")
-        combined.append(out[-1500:])
-        if proc.returncode != 0:
-            return False, "\n".join(combined)
+    with build_lock(build_dir):
+        for target in targets:
+            proc = subprocess.run(
+                ["cmake", "--build", str(build_dir), "--target", target, "-j", "4"],
+                cwd=pipeline_config.repo_root,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            out = (proc.stdout or "") + (proc.stderr or "")
+            combined.append(out[-1500:])
+            if proc.returncode != 0:
+                return False, "\n".join(combined)
+    if stamp:
+        stamp_file.parent.mkdir(parents=True, exist_ok=True)
+        stamp_file.write_text(stamp, encoding="utf-8")
     return True, "\n".join(combined)
+
+
+def _build_stamp(pipeline_config: PipelineConfig, workload: dict, query: int, targets: list[str]) -> str:
+    """Code stamp of a build of `targets`; "" when the build-stamp cache is off."""
+    if not pipeline_config.quick_tier.build_stamp_cache:
+        return ""
+    bench = str(workload.get("benchmark_name") or "")
+    return code_stamp(
+        pipeline_config.repo_root,
+        query_dir=query_dir(bench, query) if bench else "",
+        extra=["run_build", *targets, str(pipeline_config.build_dir)],
+    )
+
+
+def _read_text(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8")
+    except OSError:
+        return ""

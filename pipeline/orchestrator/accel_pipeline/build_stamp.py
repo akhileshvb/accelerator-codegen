@@ -70,6 +70,7 @@ def build_lock(build_dir: Path) -> Iterator[None]:
     """Exclusive lock on a build directory: concurrent gates and tools serialize their builds on it.
     The lock file is the one the gate scripts' flock uses (aux_gate_common.sh engine_steps)."""
     lock_path = Path(f"{build_dir}.build.lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
     with lock_path.open("a") as handle:
         fcntl.flock(handle, fcntl.LOCK_EX)
         try:
