@@ -88,3 +88,38 @@ def test_materialize_workload_stubs_writes_missing_files(tmp_path):
     assert "SecEdgarQ1" in header.read_text(encoding="utf-8")
     assert "query.hpp" in result["created"][0]
 
+
+
+def test_materialize_registration_fills_the_engines_template_once(tmp_path, monkeypatch):
+    import json
+
+    from accel_pipeline.scaffold_stubs import materialize_registration
+
+    repo = tmp_path / "repo"
+    files = {
+        "workloads/toybench/schema.sql": "CREATE TABLE t (a INTEGER, b INTEGER);\nCREATE TABLE u (a INTEGER, c INTEGER);\n",
+        "workloads/toybench/q1.sql": "SELECT SUM(t.b) FROM t, u WHERE t.a = u.a AND u.c > $1\n",
+        "workloads/toybench/instances/seed_1/1.sql": "SELECT SUM(t.b) FROM t, u WHERE t.a = u.a AND u.c > 5;\n",
+        "backends/toyengine/api/scaffold/register.cpp.tpl":
+            "{{query_number}} {{accelerator_id}} {{table_function}} {{argument_types}} {{tables}}\n{{fallback_sql}}\n",
+    }
+    for rel, text in files.items():
+        (repo / rel).parent.mkdir(parents=True, exist_ok=True)
+        (repo / rel).write_text(text)
+    analysis = tmp_path / "analysis.json"
+    analysis.write_text(json.dumps({"accelerator_id": "toybench_q1_aux"}))
+    monkeypatch.setattr("accel_pipeline.paths.analysis_artifact_path", lambda *a, **k: analysis)
+    (tmp_path / "art").mkdir()
+    monkeypatch.setattr("accel_pipeline.workload_facts.query_artifacts_dir", lambda *a, **k: tmp_path / "art")
+    register = "accelerators/toybench/q1/toyengine/aux/register.cpp"
+    workload = {"benchmark_name": "toybench", "engine_name": "toyengine", "parameters": [{"name": "c", "type": "integer"}],
+                "engine_host": {"aux_register_path": register},
+                "reference_sql_path": str(repo / "workloads/toybench/instances/seed_1/1.sql")}
+    config = type("Cfg", (), {"repo_root": repo})()
+
+    assert materialize_registration(config, workload, 1) == {"created": [register]}
+    text = (repo / register).read_text()
+    assert '1 toybench_q1_aux accel_toybench_q1_aux {"INTEGER"} {"t", "u"}' in text and "u.c > $1" in text
+    (repo / register).write_text("// the implementation's registration")
+    assert materialize_registration(config, workload, 1) == {"created": [], "skipped_existing": 1}
+    assert (repo / register).read_text() == "// the implementation's registration"

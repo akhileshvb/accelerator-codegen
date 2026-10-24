@@ -190,3 +190,44 @@ def _workload_name_from_gate(repo_root: Path, query: int, engine: str) -> str:
         return str(workload_name)
     benchmark = str(ctx.get("benchmark_name", "tpch"))
     return f"{benchmark}_q{query}"
+
+
+def _cpp_string_list(items: list[str]) -> str:
+    return "{" + ", ".join('"' + item.replace("\\", "\\\\").replace('"', '\\"') + '"' for item in items) + "}"
+
+
+def materialize_registration(pipeline_config: PipelineConfig, workload: dict[str, Any], query: int) -> dict[str, Any]:
+    """The query's registration before any test is written: the engine's scaffold (`backends/<engine>/api/scaffold/
+    register.cpp.tpl`) filled with the query's SQL and facts, so the query is registered with a module that declines
+    every call and the fallback SQL answers. Written only when missing: the implementation replaces it in place."""
+    import json
+
+    from accel_pipeline.paths import analysis_artifact_path
+
+    repo = pipeline_config.repo_root
+    engine = str(workload.get("engine_name") or "")
+    host = workload.get("engine_host") or {}
+    destination = str(host.get("aux_register_path") or "")
+    template = repo / "backends" / engine / "api" / "scaffold" / "register.cpp.tpl"
+    if not destination or not template.is_file():
+        return {"created": [], "skipped": f"engine {engine!r} has no registration scaffold"}
+    if (repo / destination).is_file():
+        return {"created": [], "skipped_existing": 1}
+    benchmark = str(workload.get("benchmark_name", "tpch"))
+    analysis = json.loads(analysis_artifact_path(repo, query, workload=workload).read_text(encoding="utf-8"))
+    facts = with_facts(repo, workload, query)
+    accelerator_id = str(analysis["accelerator_id"])
+    values = {
+        "benchmark_name": benchmark,
+        "engine_name": engine,
+        "query_number": str(query),
+        "accelerator_id": accelerator_id,
+        "table_function": "accel_" + accelerator_id,
+        "argument_types": _cpp_string_list([str(p["type"]).upper() for p in workload.get("parameters", [])]),
+        "base_sql": Path(workload["reference_sql_path"]).read_text(encoding="utf-8").strip().rstrip(";"),
+        "fallback_sql": (repo / "workloads" / benchmark / f"q{query}.sql").read_text(encoding="utf-8").strip().rstrip(";"),
+        "tables": _cpp_string_list([t["name"] for t in facts["dependent_tables"]]),
+    }
+    content = _substitute(template.read_text(encoding="utf-8"), values)
+    _write_if_missing(repo / destination, content)
+    return {"created": [destination]}

@@ -85,10 +85,14 @@ class RepairConfig:
 class SessionConfig:
     continuity: bool = True
     soft_deadline_sec: int = 5400
+    stage_soft_deadline_sec: tuple[tuple[str, int], ...] = ()  # per stage, overriding soft_deadline_sec
     idle_timeout_sec: int = 2400
     hard_deadline_sec: int = 14400
     max_resumes: int = 25
     max_context_tokens: int = 0
+
+    def soft_deadline_for(self, stage: str) -> int:
+        return dict(self.stage_soft_deadline_sec).get(stage, self.soft_deadline_sec)
 
 
 # ---- quick tier (workstream C): the fast inner loop and parallel gates ----
@@ -450,6 +454,7 @@ def _session_config(block: dict[str, Any]) -> SessionConfig:
     return SessionConfig(
         continuity=bool(block.get("continuity", defaults.continuity)),
         soft_deadline_sec=int(block.get("soft_deadline_sec", defaults.soft_deadline_sec)),
+        stage_soft_deadline_sec=tuple((str(k), int(v)) for k, v in (block.get("stage_soft_deadline_sec") or {}).items()),
         idle_timeout_sec=int(block.get("idle_timeout_sec", defaults.idle_timeout_sec)),
         hard_deadline_sec=int(block.get("hard_deadline_sec", defaults.hard_deadline_sec)),
         max_resumes=int(block.get("max_resumes", defaults.max_resumes)),

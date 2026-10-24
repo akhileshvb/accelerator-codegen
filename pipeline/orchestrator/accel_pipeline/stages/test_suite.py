@@ -17,6 +17,7 @@ from accel_pipeline.failure import render_failure
 from accel_pipeline.paths import analysis_artifact_path, query_artifacts_dir
 from accel_pipeline.playbook import append_experiment_log
 from accel_pipeline.repair import RepairCtx, run_with_repair
+from accel_pipeline.scaffold_stubs import materialize_registration
 from accel_pipeline.session import TESTER
 from accel_pipeline.stages.base import run_agent_stage
 
@@ -65,6 +66,12 @@ def run(
                 f"the suite must stay valid.\n\n{change_request}")
     if dry_run:
         return author(task)
+
+    # The pipeline registers the query (declining module, the reference SQL as its fallback) before any test: the
+    # tester owns tests/workload only, and the validation runs through the engine's normal entry point.
+    created = materialize_registration(pipeline_config, workload, query)["created"]
+    if created:
+        print(f"[pipeline] {STAGE}: scaffolded the registration {created}", file=sys.stderr, flush=True)
 
     ctx = RepairCtx(pipeline_config, model_config, workload_name, query, stage=STAGE, change_kind=STAGE,
                     model_overrides=model_overrides)

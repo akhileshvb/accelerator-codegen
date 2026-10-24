@@ -150,3 +150,10 @@ def test_keep_alive_beats_while_a_tool_call_blocks_and_stops_after(tmp_path):
 def test_keep_alive_without_an_art_dir_is_a_no_op():
     with keep_alive(None):
         pass
+
+
+def test_stage_soft_deadline_overrides_the_default():
+    from accel_pipeline.config import SessionConfig
+
+    cfg = SessionConfig(soft_deadline_sec=5400, stage_soft_deadline_sec=(("test_suite", 900),))
+    assert cfg.soft_deadline_for("test_suite") == 900 and cfg.soft_deadline_for("implementation") == 5400

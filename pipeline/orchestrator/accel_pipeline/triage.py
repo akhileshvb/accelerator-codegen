@@ -32,6 +32,9 @@ _HARNESS_ERROR = re.compile(
     r"|host\.sh[^\n]*(?:exit(?:ed)?(?: with)?(?: code| status)?[ =:]+2\b|returned 2\b)",
     re.IGNORECASE,
 )
+# The test_suite validation runs on the registration the pipeline scaffolded: a failure to find or serve it is the
+# pipeline's, never the tester's (who owns tests/workload only).
+_REGISTRATION_ERROR = re.compile(r"unsupported shared query|Table Function with name \S+ does not exist", re.IGNORECASE)
 _TRANSIENT_PROVIDER = (
     "stream disconnected", "error sending request", "connection refused", "cannot connect to host",
     "timed out", "timeout", "temporarily unavailable", "503", "502", "429", "rate limit", "reconnecting...",
@@ -136,6 +139,8 @@ def classify(
         return "infra", "harness_error"
     if _MISSING_PRODUCER.search(text):
         return "infra", "missing_producer"
+    if gate_name == "test_suite_validate" and _REGISTRATION_ERROR.search(text):
+        return "infra", "harness_error"
     from accel_pipeline.infra_fail_fast import classify_infra_failure
 
     shared = classify_infra_failure(text, query=query if query is not None else -1)

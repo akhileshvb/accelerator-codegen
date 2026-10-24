@@ -165,7 +165,7 @@ def agent_run(art: Path | None, stage: str, pipeline_config: Any) -> Iterator[No
         return
     cfg = pipeline_config.session
     _write(art / RUN_FILE, {"stage": stage, "started": time.time(),
-                            "soft_deadline_sec": cfg.soft_deadline_sec, "hard_deadline_sec": cfg.hard_deadline_sec})
+                            "soft_deadline_sec": cfg.soft_deadline_for(stage), "hard_deadline_sec": cfg.hard_deadline_sec})
     try:
         yield
     finally:

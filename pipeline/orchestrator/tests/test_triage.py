@@ -118,3 +118,11 @@ def test_the_failure_report_of_a_racy_gate_says_it_is_a_race():
     result = GateResult("engine_scan", "fail", {"reason": "t failed on run 4 after passing 3 times: a race"})
     failure = failure_from_gate(result, stage="impl_scan", workload=ENGINE_WORKLOAD)
     assert failure.kind == "code" and "passed 3 of 4 repeats" in failure.diagnosis[0]
+
+
+def test_registration_errors_in_suite_validation_are_infra(repo):
+    from accel_pipeline.triage import classify as gate_classify
+
+    text = "aux warmup failed for Q1: Catalog Error: Table Function with name accel_x_q1_aux does not exist!"
+    assert gate_classify("test_suite_validate", {"log_tail": text}, {}, repo)[0] == "infra"
+    assert gate_classify("aux_correctness", {"log_tail": text}, {}, repo)[0] == "code"

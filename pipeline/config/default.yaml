@@ -136,6 +136,7 @@ repair:
 session:
   continuity: true
   soft_deadline_sec: 5400    # MCP tool results start asking the agent to wrap up
+  stage_soft_deadline_sec: {test_suite: 900, analysis: 900}   # per stage, instead of soft_deadline_sec
   idle_timeout_sec: 2400     # no rollout, tool or heartbeat activity: killed, then resumed
   hard_deadline_sec: 14400
   max_resumes: 25            # past this (or max_context_tokens > 0), a fresh session with a handoff
