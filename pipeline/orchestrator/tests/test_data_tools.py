@@ -182,6 +182,10 @@ def test_no_code_path_names_an_engine_or_benchmark():
     import re
     from pathlib import Path
 
+    package = Path(data_tools.__file__).parent.parent
+    repo = package.parents[2]
+    names = [p.name for p in (repo / "backends").iterdir() if p.is_dir()]
+    names += [p.name for p in (repo / "workloads").iterdir() if p.is_dir()]
+    forbidden = re.compile(r"\b(" + "|".join(map(re.escape, names)) + r")\b")
     for name in ("tools/data_tools.py", "data_shape.py", "data_shape_stats.py"):
-        text = (Path(data_tools.__file__).parent.parent / name).read_text().lower()
-        assert not re.search(r"duckdb|tpch|lineitem|scratch", text), name
+        assert not forbidden.search((package / name).read_text().lower()), name

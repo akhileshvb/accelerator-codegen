@@ -46,7 +46,7 @@ _FORBIDDEN = {
 }
 # Table and scalar functions that reach files, other databases or arbitrary SQL text.
 _REACHING_FUNCTIONS = re.compile(
-    r"^(read_\w*|glob|load_file|pg_\w*file\w*|lo_\w+|dblink\w*|\w+_scan|query|query_table|copy_\w+|sniff_csv)$", re.I
+    r"^(read_\w*|glob|\w*file\w*|lo_\w+|dblink\w*|\w+_scan|query|query_table|copy_\w+|sniff_csv)$", re.I
 )
 
 
