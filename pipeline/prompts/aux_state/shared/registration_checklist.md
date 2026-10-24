@@ -1,43 +1,29 @@
-# Registration checklist — register everywhere
+# Registration checklist: register everywhere
 
-New aux queries must be wired into **every** registration / helper surface that existing aux queries use. Do **not** stop after creating `module.{hpp,cpp}` or a single catalog entry.
+A new aux query is wired into every registration and helper surface that existing aux queries use. Creating `module.{hpp,cpp}` or one catalog entry is not enough. Registration happens from the query's own directory through static registrars (`generated_layout.md`, "Registration"). Backends are never edited: a missing backend registry or helper is logged as a backend-addition request (format in `generated_layout.md`).
 
-Registration happens **from the query's own directory** through static registrars (see `pipeline/prompts/shared/generated_layout.md`, "Registration"). Backends (`backends/{engine}/**`) name no query and are never written by a query run: if a backend registry or generic helper is missing, log a request to `pipeline/artifacts/backend_additions/{engine}.jsonl` (one JSON line: `benchmark`, `query`, `scope`, `helper`, `reason`; format in `pipeline/prompts/shared/query_host_bootstrap.md`, Ownership) and report it.
+## Discover
 
-## How to discover (preferred)
+1. Pick a neighboring query that passes the gates.
+2. `rg` its query id, `accel_*_q{N}_aux` and factory name across the tree.
+3. For each hit in the peer's own directory (registrars, `cost_model.hpp`, SQL-function fragment) add the same for this query under `accelerators/<bench>/q{N}/`. For hits in shared eval helpers (cross-accel helpers, bench arg variants under `eval/`) append the same kind of entry (append-only, never rewrite a file). Hits under `backends/` are registries: do not edit.
+4. Rebuild, then `run_correctness` and `run_multi_connection` until both pass.
 
-1. Pick a neighboring query that already passes gates (e.g. a reference accelerator from the workload).
-2. `rg` for that query id / `accel_*_q{N}_aux` / factory name across the tree.
-3. For **each** hit in the peer's own directory (registrars, `cost_model.hpp`, SQL-function fragment), add the same for **this** query in `accelerators/<bench>/q{N}/`. For hits in shared eval helpers (cross-accel helpers, bench arg variants under `eval/`) append the same kind of entry (append-only; do not rewrite whole files). Hits under `backends/` are registries, not lists: never edit them.
-4. Rebuild, then verify with MCP `run_correctness` and `run_multi_connection` until both pass.
+## Surfaces (outcomes; find files via peers)
 
-## Surfaces you must cover (outcomes, not a closed file list)
+| Outcome | Done means | Missing it gives |
+|---|---|---|
+| Module + factory | `AuxQueryModule` with exported `Make...Module` | link/compile errors |
+| Catalog entry | The query's catalog registrar (registration role, in `q{N}/<engine>/aux/`) is used by differential and host bindings; `probe_select` + `build_probe` invalidate `base_sql` (write benches collect invalidating probes) | `unsupported shared query`; bench finds no invalidating probes |
+| Cost-model location | `q{N}/cost_model.hpp` declares `AuxCostModelLocation`, passed to the registration (catalog entry or runtime constructor) | default coefficients, calibrated JSON ignored |
+| Host SQL entry point | The registration role's SQL-entry registrars (from this query's directory) expose `{{aux_function_name}}` on the workload `engine_name` (call syntax: profile `entry_points`) | `Table Function ... does not exist` |
+| Cross-accel / multi-conn helpers | Aux SQL, reference SQL and an invalidating writer for this query id | `unsupported ... invalidating writer SQL`; warmup failures |
+| Bench arg / SQL formatters | The sweep samples arguments and formats engine and accelerator SQL for this query | `unsupported query_id` |
+| CMake targets | Smoke test, bench, calibrator build (auto-discovery) | missing `test_<bench>_q*_aux` / bench targets |
 
-Treat these as **classes of wiring** — find the current files by searching peer queries:
+## Verification (implementation stage)
 
-| Outcome | What “done” looks like | Typical failure if missing |
-|---------|------------------------|----------------------------|
-| Module + factory | `AuxQueryModule` + exported `Make…Module` for this query | link / compile errors |
-| Catalog entry (registrar) | The query's own registrar (the **registration** role's catalog registrar, in the query's `q{N}/<engine>/aux/`) used by differential / host bindings; **`probe_select` + `build_probe` must invalidate `base_sql`** (write benches collect invalidating probes) | `unsupported shared query` / bench: no invalidating probes |
-| Cost-model location | `accelerators/<bench>/q{N}/cost_model.hpp` declares the query's `AuxCostModelLocation`; passed to the registration (catalog entry or runtime constructor, per the index) | maintenance runs on default coefficients; calibrated JSON ignored |
-| Host SQL entrypoint (workload `engine_name`) | Query callable via that engine’s SQL function surface after rebuild (call syntax: engine profile `entry_points`) | `Table Function … does not exist` / host-equivalent missing symbol |
-| Cross-accel / multi-conn helpers | Aux SQL, reference SQL, and an invalidating writer for this query id | `unsupported … invalidating writer SQL` / multi-conn warmup fail |
-| Bench arg / SQL formatters | Sweep can sample args and format the engine SQL and the accelerator SQL for this query | `unsupported query_id` from the arg sampler (or equiv.) |
-| CMake targets | Smoke test, bench, calibrator targets build (auto-discovery usually enough) | missing `test_<bench>_q*_aux` / bench targets |
-
-Catalog entry alone is **not** enough: the host SQL entry point (the **registration** role's SQL-entry registrars) must be registered from this query's directory too, or the selected engine host never exposes `{{aux_function_name}}`.
-
-## Module contract (once sources exist)
-
-- `Id()`, `Dependencies()` — accelerator identity and watched tables
-- `CreateTxnBuffer()`, `Build()`, `InterpretMutation()`, `AccumulateMutation()`, `StageMaintenance()`
-- `CheckValidity()`, `Execute()`, `ExecuteFallback()`
-
-Concurrency: read `concurrency_contract.md` — irrelevant mutations NoOp, bounded read path, per-accelerator epochs.
-
-## Verification loop (implementation stage)
-
-1. Build smoke + shared differential targets for this query (use this worker’s build dir).
-2. MCP **`run_correctness`** → fix until `status=pass` (smoke fixtures + iteration-scale SQL-vs-aux).
-3. MCP **`run_multi_connection`** → fix registration / TF / concurrency until `status=pass`.
-4. Only then end the stage. Orchestrator still re-runs post-stage gates.
+1. Build the smoke and shared differential targets in this worker's build dir.
+2. MCP `run_correctness` until `status=pass` (smoke fixtures plus iteration-scale SQL-vs-aux).
+3. MCP `run_multi_connection` until `status=pass`.
+4. Only then end the stage; the orchestrator re-runs the post-stage gates.

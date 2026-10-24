@@ -1,36 +1,9 @@
-# Aux-state fitness criteria
+# Aux-state fitness
 
-Evaluate **per-query** suitability using **signals**, not hard requirements. Partition keys may come from bind parameters, grouping attributes, join keys, or other attributes.
+Judge fit per query (`{{aux_function_name}}`) by signals, none mandatory. Partition keys may come from bind parameters, grouping attributes, join keys or other attributes. Design for this query only; note incidental reuse in `fitness_assessment.incidental_reuse`.
 
-## Good fit signals (any combination; none mandatory)
+- For: stable partition grain with a clear mutation-to-partition map; reusable compact partial aggregate; bounded invalidation; plausible incremental maintenance (deltas or bounded rebuilds); read-heavy or mixed workload; a fallback that is correct while state is missing, stale or txn-blocked.
+- Against: predicate-dominated filtering with little reuse; unbounded or global state needing raw data; high-cardinality partition space; frequent whole-state invalidation; no stable mutation-to-partition grain; semantics needing full re-execution (volatile UDFs, non-determinism); full-result cache; negligible speedup.
+- Concurrent correctness is still required: classify irrelevant mutations as NoOp and bound reads to the query window (`concurrency_contract.md`).
 
-- **Stable partition grain**: Clear mapping from mutations to affected partitions.
-- **Reusable partial aggregate**: Compact per-partition summary maintainable incrementally.
-- **Bounded invalidation**: Mutations affect a predictable subset of partitions.
-- **Incremental maintenance is plausible**: Deltas or bounded rebuilds for typical writes.
-- **Read-heavy or mixed workload**: Repeated reads amortize maintenance cost.
-- **Clear fallback story**: SQL answers correctly while state is missing/stale/txn-blocked.
-
-## Weak / poor fit signals
-
-- Predicate-dominated filtering with little cross-run reuse.
-- Unbounded or global state requiring essentially raw data.
-- High-cardinality partition space.
-- Frequent whole-state invalidation.
-- No stable grain for mutation → partition mapping.
-- Semantics require full re-execution (volatile UDFs, non-deterministic logic).
-- **Full-result cache** at output row grain (see `aux_state_design.md`).
-- **Negligible-speedup state** that still does most of the query's work on the fast path.
-
-## Per-query scope
-
-- Design for **this query only** (`{{aux_function_name}}`).
-- Do not optimize for cross-query state sharing.
-- Note incidental reuse under `fitness_assessment.incidental_reuse` only.
-- **Concurrent correctness** is still required: unrelated accelerators may be active while this query reads aux state. Classify irrelevant mutations as NoOp; bound read iteration to the query window (`concurrency_contract.md`).
-
-## Analysis output
-
-Produce `fitness_assessment` with `recommended`, `confidence`, `signals_for`, `signals_against`, `partition_key_source`, `rationale`.
-
-If `recommended: false`, document why. Stop unless workload allows override (`allow_poor_fitness: true`).
+Output `fitness_assessment`: `recommended`, `confidence`, `signals_for`, `signals_against`, `partition_key_source`, `rationale`. If `recommended: false`, say why and stop unless the workload sets `allow_poor_fitness: true`.
