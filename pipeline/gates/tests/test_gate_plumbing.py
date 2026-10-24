@@ -8,6 +8,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -87,7 +88,8 @@ def run_gate(repo, script, *args, ctx_extra=None, env_extra=None, kind="aux_stat
     log = repo / "host.log"
     out_json = repo / "gate_out.json"
     env = {
-        **os.environ, "ACCEL_GATE_CONTEXT": str(ctx_path), "FAKE_LOG": str(log),
+        **os.environ, "PATH": f"{Path(sys.executable).parent}{os.pathsep}{os.environ['PATH']}",
+        "ACCEL_GATE_CONTEXT": str(ctx_path), "FAKE_LOG": str(log),
         "ACCEL_GATE_OUT": str(out_json), "ACCEL_PIPELINE_WORKER_ID": "w7",
         "ACCEL_ENGINE_STATE_ROOT": str(repo / "state"), "FAKE_COST_MODEL": str(repo / "cost_model.json"),
         "ACCEL_PIPELINE_BUILD_DIR": str(repo / "build-release"),
