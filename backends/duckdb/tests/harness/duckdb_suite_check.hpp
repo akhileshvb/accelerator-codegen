@@ -15,7 +15,9 @@
 #include "backends/duckdb/api/register.hpp"
 #include "catalog/query_catalog.hpp"
 #include "duckdb.hpp"
+#include "eval/harness/differential.hpp"
 #include "eval/harness/suite.hpp"
+#include "substrate/aux/runtime/thread_budget.hpp"
 #include "substrate/aux/core/aux_execute_stats.hpp"
 
 namespace accelerator_codegen::aux_state::harness {
@@ -41,79 +43,128 @@ inline bool RunSuiteValidation(const std::string &db_path) {
                          suite::SchemaSql("ACCEL_SUITE_SCHEMA_SQL"), report) == 0;
 }
 
-// Differential of the suite on a writable copy of the database: the fixed tuples plus the run's random ones, after
-// the build and after each transaction. Throws when the accelerated path disagrees with the query.
-inline void RunSuiteDifferential(const std::string &db_path, const engine::SharedQueryCatalogEntry &entry) {
-  namespace suite = ::accelerator_codegen::suite;
-  namespace core = ::accelerator_codegen::aux_state::core;
-  suite::Spec spec = suite::LoadSpec(SuiteEnv("ACCEL_SUITE_DIR"), "ACCEL_SUITE_REPLACE_PARAMS_FILE",
-                                     "ACCEL_SUITE_PARAMS_FILE");
+// The suite (ACCEL_SUITE_*) as the run's environment gives it.
+inline suite::Spec LoadSuiteSpec() {
+  suite::Spec spec = suite::LoadSpec(SuiteEnv("ACCEL_SUITE_DIR"), "ACCEL_SUITE_REPLACE_PARAMS_FILE", "ACCEL_SUITE_PARAMS_FILE");
   if (const auto txns = SuiteEnv("ACCEL_SUITE_TXNS"); !txns.empty())
     suite::KeepTxns(spec, txns);
-  const std::string query_sql = suite::ReadFile(SuiteEnv("ACCEL_SUITE_QUERY_SQL"));
-  const std::string function = SuiteEnv("ACCEL_SUITE_FUNCTION");
-  suite::Require(!function.empty() && !query_sql.empty(), "ACCEL_SUITE_FUNCTION and ACCEL_SUITE_QUERY_SQL are required");
-  const std::size_t arity = std::stoul(SuiteEnv("ACCEL_SUITE_ARITY", "1000"));
-  const uint64_t seed = std::stoull(SuiteEnv("ACCEL_SUITE_SEED", "1"));
-  const int every = std::stoi(SuiteEnv("ACCEL_SUITE_EVERY", "10"));
-  const bool stateful = !spec.txns.empty();
-
-  duckdb::DuckDB db(db_path);
-  duckdb::Connection wc(db), qc(db);
-  if (const auto schema = suite::SchemaSql("ACCEL_SUITE_SCHEMA_SQL"); !schema.empty())
-    suite::Q(qc, schema);
-  if (!spec.setup.empty())
-    suite::Q(qc, spec.setup);
-  ::accelerator_codegen::RegisterAcceleratorFunctions(qc);
-  const auto ordering = suite::MakeOrdering(qc, query_sql, spec.params);
-  engine::duckdb::DuckdbRuntime runtime(wc, entry, 10.0);
-  core::ResetAuxExecuteCounts();
-  const auto started = std::chrono::steady_clock::now();
-  if (stateful)
-    runtime.Build();
-  const double build_seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
-
-  suite::Tally tally;
-  const auto accel = [&](const std::string &, const std::string &tuple) {
-    return suite::RunAccel(qc, function, suite::Project(tuple, arity));
-  };
-  const auto apply = [&](const std::string &sql) { runtime.ApplyWrite(sql); };
-  const auto abort = [&](const std::string &sql) {
-    runtime.BeginWrite();
-    for (auto &statement : wc.ExtractStatements(sql))
-      suite::Require(!wc.Query(std::move(statement))->HasError(), "a rollback transaction failed");
-    runtime.RollbackWrite();
-  };
-  const auto maintenance_us = [&] {
-    const auto stats = runtime.Stats();
-    return stats.apply_us + stats.build_us;
-  };
-  const auto run = suite::RunDifferentialLoop(tally, spec, query_sql, ordering, qc, every, seed, accel, apply, abort, maintenance_us);
-  const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
-
-  const auto counts = core::ReadAuxExecuteCounts();
-  const bool compared = tally.checks > 0 && tally.reference_errors <= tally.checks;
-  const bool ok = compared && run.write_errors == 0 && tally.mismatches + tally.order_mismatches == 0;
-  std::string params = "[";
-  for (std::size_t i = 0; i < spec.params.size(); ++i)
-    params += (i ? "," : "") + suite::Json(spec.params[i]);
-  const std::string report = "{\"ok\":" + std::string(ok ? "true" : "false") + ",\"seed\":" + std::to_string(seed) +
-                             ",\"params\":" + std::to_string(spec.params.size()) + ",\"param_tuples\":" + params +
-                             "],\"txns\":" + std::to_string(spec.txns.size()) + ",\"write_errors\":" +
-                             std::to_string(run.write_errors) + ",\"write_error_examples\":" + run.write_error_examples +
-                             "],\"build_seconds\":" + std::to_string(build_seconds) + "," + run.CostFields() + ",\"executes\":{\"hit\":" + std::to_string(counts.hit) + ",\"fallback\":" +
-                             std::to_string(counts.fallback) + "},\"seconds\":" + std::to_string(seconds) + "," +
-                             tally.Fields() + "}";
-  if (const auto path = SuiteEnv("ACCEL_SUITE_REPORT"); !path.empty())
-    std::ofstream(path) << report << '\n';
-  std::cerr << "suite seed=" << seed << " tuples=" << spec.params.size() << " txns=" << spec.txns.size()
-            << " checks=" << tally.checks << " mismatches=" << tally.mismatches + tally.order_mismatches
-            << " write_errors=" << run.write_errors << " seconds=" << seconds << '\n';
-  if (!ok)
-    throw std::runtime_error("test suite failed (seed " + std::to_string(seed) + "): " +
-                             (tally.examples.empty() ? "see the report" : tally.examples.front()) +
-                             (run.write_errors ? " write_errors=" + std::to_string(run.write_errors) : "") +
-                             (compared ? "" : " nothing compared"));
+  return spec;
 }
+
+// The suite's differential on a session (eval/harness/differential.hpp): the fixed tuples plus the run's random ones, after
+// the build and after each transaction. The transactions stay committed, so run it after the checks that need the data as it was.
+class SuiteCheck {
+public:
+  // The suite's constraints and setup.sql, on the database before a session opens it (the accelerator is built on them).
+  static void PrepareDatabase(const std::string &db_path) {
+    duckdb::DuckDB database(db_path);
+    duckdb::Connection connection(database);
+    if (const auto schema = suite::SchemaSql("ACCEL_SUITE_SCHEMA_SQL"); !schema.empty())
+      suite::Q(connection, schema);
+    if (const auto setup = LoadSuiteSpec().setup; !setup.empty())
+      suite::Q(connection, setup);
+  }
+
+  explicit SuiteCheck(DifferentialSession &session)
+      : session_(session), query_(session.database), spec_(LoadSuiteSpec()), query_sql_(suite::ReadFile(SuiteEnv("ACCEL_SUITE_QUERY_SQL"))),
+        function_(SuiteEnv("ACCEL_SUITE_FUNCTION")), arity_(std::stoul(SuiteEnv("ACCEL_SUITE_ARITY", "1000"))),
+        seed_(std::stoull(SuiteEnv("ACCEL_SUITE_SEED", "1"))) {
+    suite::Require(!function_.empty() && !query_sql_.empty(), "ACCEL_SUITE_FUNCTION and ACCEL_SUITE_QUERY_SQL are required");
+    ::accelerator_codegen::RegisterAcceleratorFunctions(query_);
+    ordering_ = suite::MakeOrdering(query_, query_sql_, spec_.params);
+  }
+
+  // Throws when the accelerated path disagrees with the query; the report is written either way.
+  void Run(double build_seconds) {
+    namespace core = ::accelerator_codegen::aux_state::core;
+    auto &runtime = session_.runtime;
+    build_seconds_ = build_seconds;
+    core::ResetAuxExecuteCounts();
+    const auto started = std::chrono::steady_clock::now();
+    const auto apply = [&](const std::string &sql) { runtime.ApplyWrite(sql); };
+    const auto abort = [&](const std::string &sql) {
+      runtime.BeginWrite();
+      for (auto &statement : session_.connection.ExtractStatements(sql))
+        suite::Require(!session_.connection.Query(std::move(statement))->HasError(), "a rollback transaction failed");
+      runtime.RollbackWrite();
+    };
+    const auto maintenance_us = [&] {
+      const auto stats = runtime.Stats();
+      return stats.apply_us + stats.build_us;
+    };
+    const auto last_action = [&, stale = runtime.Stats().commits_stale]() mutable {
+      const auto stats = runtime.Stats();
+      const bool rebuilt = std::exchange(stale, stats.commits_stale) != stats.commits_stale;
+      if (rebuilt)
+        return std::string("RebuildAll");
+      return stats.last_decision ? std::string(maintenance::MaintenanceActionName(stats.last_decision->staged_action))
+                                 : std::string("module");
+    };
+    run_ = suite::RunDifferentialLoop(tally_, spec_, query_sql_, ordering_, query_, std::stoi(SuiteEnv("ACCEL_SUITE_EVERY", "10")), seed_,
+                                      [&](const std::string &, const std::string &tuple) { return Answer(tuple); }, apply, abort,
+                                      maintenance_us, last_action);
+    seconds_ = std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
+    counts_ = core::ReadAuxExecuteCounts();
+    ok_ = tally_.checks > 0 && tally_.reference_errors <= tally_.checks && run_.write_errors == 0 &&
+          tally_.mismatches + tally_.order_mismatches == 0;
+    WriteReport();
+    std::cerr << "suite seed=" << seed_ << " tuples=" << spec_.params.size() << " txns=" << spec_.txns.size()
+              << " checks=" << tally_.checks << " mismatches=" << tally_.mismatches + tally_.order_mismatches
+              << " write_errors=" << run_.write_errors << " seconds=" << seconds_ << '\n';
+    if (!ok_)
+      throw std::runtime_error("test suite failed (seed " + std::to_string(seed_) + "): " +
+                               (tally_.examples.empty() ? "see the report" : tally_.examples.front()) +
+                               (run_.write_errors ? " write_errors=" + std::to_string(run_.write_errors) : "") +
+                               (tally_.checks > 0 ? "" : " nothing compared"));
+  }
+
+  // The accelerated answer to every tuple on the data as it stands, one after the other (the drift check's input).
+  suite::Rows Answers() {
+    suite::Rows all;
+    for (const auto &tuple : spec_.params) {
+      auto rows = Answer(tuple);
+      all.insert(all.end(), std::make_move_iterator(rows.begin()), std::make_move_iterator(rows.end()));
+      all.push_back({"--"});
+    }
+    return all;
+  }
+
+  // ACCEL_SUITE_REPORT, if set: the run's counts, write costs and, so far, the seconds of each phase.
+  void WriteReport() const {
+    const auto path = SuiteEnv("ACCEL_SUITE_REPORT");
+    if (path.empty())
+      return;
+    std::string params = "[";
+    for (std::size_t i = 0; i < spec_.params.size(); ++i)
+      params += (i ? "," : "") + suite::Json(spec_.params[i]);
+    const std::size_t budget = runtime::ResolveThreadBudget(0);
+    std::ofstream(path) << "{\"ok\":" << (ok_ ? "true" : "false") << ",\"seed\":" << seed_
+                        << ",\"params\":" << spec_.params.size() << ",\"param_tuples\":" << params
+                        << "],\"txns\":" << spec_.txns.size() << ",\"write_errors\":" << run_.write_errors
+                        << ",\"write_error_examples\":" << run_.write_error_examples
+                        << "],\"threads\":" << budget << ",\"build_threads\":" << runtime::ResolveBuildThreads(0, budget)
+                        << ",\"build_seconds\":" << build_seconds_ << "," << run_.CostFields() << "," << suite::PhaseFields()
+                        << ",\"executes\":{\"hit\":" << counts_.hit << ",\"fallback\":" << counts_.fallback
+                        << "},\"seconds\":" << seconds_ << "," << tally_.Fields() << "}\n";
+  }
+
+private:
+  suite::Rows Answer(const std::string &tuple) {
+    return suite::RunAccel(query_, function_, suite::Project(tuple, arity_));
+  }
+
+  DifferentialSession &session_;
+  duckdb::Connection query_;
+  suite::Spec spec_;
+  std::string query_sql_, function_;
+  std::size_t arity_ = 0;
+  uint64_t seed_ = 1;
+  suite::Ordering ordering_;
+  suite::Tally tally_;
+  suite::DifferentialRun run_;
+  ::accelerator_codegen::aux_state::core::AuxExecuteCounts counts_;
+  double build_seconds_ = 0, seconds_ = 0;
+  bool ok_ = false;
+};
 
 } // namespace accelerator_codegen::aux_state::harness

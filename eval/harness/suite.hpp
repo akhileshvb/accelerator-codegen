@@ -500,7 +500,32 @@ inline std::string Project(const std::string &tuple, std::size_t n) {
 struct WriteCost {
   std::string txn;
   double write_ms = 0, read_ms = 0, maint_ms = -1;
+  std::string action = "unknown"; // what the module did for the write (the engine's last_action), when it tells
 };
+
+// Seconds of each phase of a harness run, in order (the report's `phases`), printed as they end.
+inline std::vector<std::pair<std::string, double>> &PhaseSeconds() {
+  static std::vector<std::pair<std::string, double>> phases;
+  return phases;
+}
+
+struct Phase {
+  explicit Phase(std::string name_p) : name(std::move(name_p)) {}
+  ~Phase() {
+    const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
+    PhaseSeconds().emplace_back(name, seconds);
+    std::cerr << "phase " << name << ": " << seconds << " s\n";
+  }
+  std::string name;
+  std::chrono::steady_clock::time_point started = std::chrono::steady_clock::now();
+};
+
+inline std::string PhaseFields() {
+  std::string out = "\"phases\":{";
+  for (const auto &[name, seconds] : PhaseSeconds())
+    out += (out.size() > 10 ? "," : "") + Json(name) + ":" + std::to_string(seconds);
+  return out + "}";
+}
 
 // Milliseconds of accelerator maintenance of each adversarial-phase probe (eval/harness/differential.cpp), for the
 // suite report.
@@ -521,7 +546,7 @@ struct DifferentialRun {
     for (std::size_t i = 0; i < costs.size(); ++i)
       out += (i ? "," : "") + std::string("{\"txn\":") + Json(costs[i].txn) + ",\"write_ms\":" +
              std::to_string(costs[i].write_ms) + ",\"read_ms\":" + std::to_string(costs[i].read_ms) +
-             ",\"maint_ms\":" + std::to_string(costs[i].maint_ms) + "}";
+             ",\"maint_ms\":" + std::to_string(costs[i].maint_ms) + ",\"action\":" + Json(costs[i].action) + "}";
     out += "],\"probe_costs_ms\":[";
     for (std::size_t i = 0; i < ProbeCostsMs().size(); ++i)
       out += (i ? "," : "") + std::to_string(ProbeCostsMs()[i]);
@@ -544,7 +569,8 @@ inline DifferentialRun RunDifferentialLoop(
     int every, uint64_t seed, const std::function<Rows(const std::string &, const std::string &)> &accel,
     const std::function<void(const std::string &)> &apply,
     const std::function<void(const std::string &)> &abort = {},
-    const std::function<double()> &maintenance_us = {}) { // cumulative accelerator maintenance (apply + build) time
+    const std::function<double()> &maintenance_us = {},   // cumulative accelerator maintenance (apply + build) time
+    const std::function<std::string()> &last_action = {}) { // the maintenance action the last write took
   DifferentialRun run;
   std::mt19937_64 rng(seed);
   using Clock = std::chrono::steady_clock;
@@ -596,6 +622,8 @@ inline DifferentialRun RunDifferentialLoop(
     unread = run.costs.size() - 1;
     const auto d = core::LastMaintenanceDecision();
     run.actions[d ? std::to_string(static_cast<int>(d->staged_action)) : "none"]++;
+    if (last_action)
+      run.costs.back().action = last_action();
     const std::string where = "txn " + std::to_string(i) + " (" + spec.txn_names[i] + ")";
     if (every > 0 && (i + 1) % static_cast<std::size_t>(every) == 0) {
       check_all(where);
