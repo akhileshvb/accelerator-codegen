@@ -41,8 +41,13 @@ what goes wrong) or when the analysis leaves the cost unbounded and your estimat
   reach only actual dependents. Check the heaviest write mix and a refresh-sized batch.
 * **W2 bounds stay exact under writes.** Every bound, extremum and partition the read relies on is
   maintained incrementally, including deletes that remove the current extremum.
-* **S1 size and build.** State at SF3000 in bytes (entries times real bytes per entry), transient build
-  peak, one streaming pass with O(1) work per scanned row.
+* **S1 storage.** Every component in `state_storage` is held in a named COW primitive whose `cow_unit` is
+  small (no write copies a whole map, partition or run array), and the read and write access listed for it
+  is what the design's read and maintenance actually do.
+* **S2 size and build.** State at SF3000 in bytes (your own entries times real bytes per entry, not the
+  analysis's), transient build peak, one streaming pass with O(1) work per scanned row. Speed comes first:
+  fail on size only for a component that stores data no read or write needs, duplicates another, or
+  could be materially smaller at the same read and write speed, and name the smaller layout.
 * **E1 exactness.** Multiplicity (duplicate join keys), NULLs, numeric widths at SF3000 (keys beyond
   2^31, sums beyond 64 bits), the engine's comparison semantics.
 * **C1 no answer cache.** The state is not a cache of final answers per binding.
