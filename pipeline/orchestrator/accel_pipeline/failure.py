@@ -97,5 +97,17 @@ def failure_from_gate(
         evidence=tail,
         reproduce=reproduce,
         infra_reason=reason,
-        diagnosis=[f"`{line}`" for line in extract_crash_highlights(tail, max_lines=15)],
+        diagnosis=_racy_diagnosis(result.data) + [f"`{line}`" for line in extract_crash_highlights(tail, max_lines=15)],
     )
+
+
+def _racy_diagnosis(data: dict[str, Any]) -> list[str]:
+    from accel_pipeline.triage import racy_repeats
+
+    repeats = racy_repeats(data)
+    if repeats is None:
+        return []
+    passed, failed_on = repeats
+    return [f"racy: the harness passed {passed} of {failed_on} repeats. A timing-dependent failure is a real "
+            "defect (a missing lock, a wait with no bound, an unsynchronised read), not infrastructure: find the "
+            "shared state and fix it. Rerunning until it passes proves nothing."]

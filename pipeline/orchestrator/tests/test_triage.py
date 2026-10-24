@@ -81,3 +81,40 @@ def test_transient_provider_failure():
     assert triage.is_transient_provider_failure("stream disconnected before completion")
     assert not triage.is_transient_provider_failure("assertion failed in kernel")
     assert not triage.is_transient_provider_failure(None)
+
+
+ENGINE_WORKLOAD = {"workload_kind": "engine_backend", "engine_name": "toydb"}
+ASAN_BACKEND = """==1==ERROR: AddressSanitizer: stack-use-after-return on address 0x1
+READ of size 3 at 0x1 thread T0
+    #0 0x1 in toydb::TextAccessor::TextView /repo/backends/toydb/api/scan.hpp:99
+    #1 0x2 in main /repo/pipeline/canary/canary_mirror.hpp:7
+"""
+ASAN_ENGINE = """==1==ERROR: AddressSanitizer: heap-use-after-free on address 0x1
+    #0 0x1 in engine::Pool::Run /engine/src/pool.cc:88
+    #1 0x2 in engine::Pool::Loop /engine/src/pool.cc:90
+"""
+
+
+def test_an_engine_backend_report_in_the_backends_tree_is_code(repo):
+    assert triage.classify("engine_canary_asan", {"log_tail": ASAN_BACKEND}, ENGINE_WORKLOAD, repo) == ("code", None)
+
+
+def test_an_engine_backend_report_without_a_backend_frame_is_infra(repo):
+    assert triage.classify("engine_canary_asan", {"log_tail": ASAN_ENGINE}, ENGINE_WORKLOAD, repo) == (
+        "infra", "engine_internal_sanitizer")
+
+
+def test_a_harness_that_fails_a_later_repeat_is_a_race_and_code():
+    data = {"log_tail": "test_x failed on run 4 after passing 3 times: a race (the harness or the backend depends on timing)"}
+    assert triage.racy_repeats(data) == (3, 4)
+    assert triage.racy_repeats({"log_tail": "failed on run 1"}) is None
+    assert triage.classify("engine_scan", data, ENGINE_WORKLOAD, None) == ("code", None)
+
+
+def test_the_failure_report_of_a_racy_gate_says_it_is_a_race():
+    from accel_pipeline.failure import failure_from_gate
+    from accel_pipeline.gates import GateResult
+
+    result = GateResult("engine_scan", "fail", {"reason": "t failed on run 4 after passing 3 times: a race"})
+    failure = failure_from_gate(result, stage="impl_scan", workload=ENGINE_WORKLOAD)
+    assert failure.kind == "code" and "passed 3 of 4 repeats" in failure.diagnosis[0]

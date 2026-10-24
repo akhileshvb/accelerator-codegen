@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from accel_pipeline.backends import StageRunRequest, create_agent_backend
 from accel_pipeline.config import ModelConfig, PipelineConfig, load_run_workload, apply_workload_overrides
@@ -64,6 +64,7 @@ def run_agent_stage(
     must_change: Path | None = None,
     session_role: str | None = None,
     resume: bool = True,
+    handoff: Callable[[], str] | None = None,
 ) -> Any:
     """Run one agent stage. With `must_change`, a run that leaves every file under that
     directory as it was is re-invoked (twice at most): agents run unattended, so a turn that
@@ -158,7 +159,8 @@ def run_agent_stage(
 
     def run(req: StageRunRequest) -> Any:
         if session_role and resume:
-            return run_in_session(backend, req, pipeline_config=pipeline_config, art=art, query=query, role=session_role)
+            return run_in_session(backend, req, pipeline_config=pipeline_config, art=art, query=query, role=session_role,
+                                  handoff=handoff)
         return backend.run_stage(req)
 
     result = run(request)

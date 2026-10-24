@@ -36,3 +36,11 @@ An engine with no partitioned scan yet keeps a serial scan and says so in `scan_
 ## Aux storage
 
 Auxiliary state images are **not** stored in the engine: the substrate keeps them (`VersionedAuxStore`) in the process that hosts the runtime.
+
+## Text views
+
+`TextView(i)` of every row of a batch stays valid, together with the views of the batch's other rows,
+until the sink call that received the batch returns: a module may take the views of all its rows first
+and read them last. A view into a temporary (an inlined short string copied by the accessor), into a
+buffer the next row overwrites, or into a chunk the scan has already released breaks this. The canary
+suite checks it (`canary_contract.md`, `text_views_short_and_long`).

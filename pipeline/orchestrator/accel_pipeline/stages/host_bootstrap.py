@@ -39,4 +39,5 @@ def run(
         user_message=user_message,
         model_overrides=model_overrides,
         dry_run=dry_run,
+        session_role="host_bootstrap",
     )

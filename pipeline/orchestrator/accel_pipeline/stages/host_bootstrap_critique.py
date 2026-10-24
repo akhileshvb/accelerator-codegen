@@ -7,16 +7,15 @@ On fail, the orchestrator re-invokes host_bootstrap with the feedback.
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any
 
 from accel_pipeline.config import ModelConfig, PipelineConfig
-from accel_pipeline.gates import GateFailure
 from accel_pipeline.stages.base import run_agent_stage
-from accel_pipeline.stages.engine_layer_critique import run_until_artifact
+from accel_pipeline.stages.engine_layer_critique import read_review, run_until_artifact
 
 CRITIQUE_STAGE = "critique_host_bootstrap"
+CRITIQUE_ROLE = "critic:host_bootstrap"
 
 
 def host_bootstrap_critique_path(art: Path) -> Path:
@@ -24,25 +23,7 @@ def host_bootstrap_critique_path(art: Path) -> Path:
 
 
 def load_host_bootstrap_critique(art: Path) -> dict[str, Any]:
-    path = host_bootstrap_critique_path(art)
-    if not path.is_file():
-        raise GateFailure(
-            f"host_bootstrap critique agent did not write {path.name} — "
-            "cannot accept this query host"
-        )
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as exc:
-        raise GateFailure(f"{path.name} is not valid JSON: {exc}") from exc
-    if not isinstance(data, dict):
-        raise GateFailure(f"{path.name} must be a JSON object")
-    status = str(data.get("status") or "").strip().lower()
-    if status not in {"pass", "fail"}:
-        raise GateFailure(
-            f"{path.name} missing status pass|fail — got {data.get('status')!r}"
-        )
-    data["status"] = status
-    return data
+    return read_review(host_bootstrap_critique_path(art), what="host_bootstrap critique")
 
 
 def format_host_bootstrap_critique_feedback(
@@ -103,6 +84,7 @@ def run_host_bootstrap_critique_agent(
 
     art = host_bootstrap_dir(pipeline_config.repo_root, engine_name)
     json_path = host_bootstrap_critique_path(art)
+    json_path.unlink(missing_ok=True)
     md_path = art / "host_bootstrap_critique.md"
     rel_art = str(art.relative_to(pipeline_config.repo_root))
     extra_context = {"bootstrap_artifacts_path": rel_art}
@@ -126,8 +108,7 @@ def run_host_bootstrap_critique_agent(
             model_overrides=model_overrides,
             dry_run=dry_run,
             extra_context=extra_context,
+            session_role=CRITIQUE_ROLE,
         )
 
-    return run_until_artifact(
-        artifact=json_path, invoke=invoke, attempts=2, dry_run=dry_run
-    )
+    return run_until_artifact(artifact=json_path, invoke=invoke, attempts=2, dry_run=dry_run)

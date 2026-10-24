@@ -1,50 +1,40 @@
-"""Architecture-audit agent loop for engine_backend workloads.
+"""Architecture audit for engine_backend workloads.
 
-A read-only audit agent judges hard constraints (native scan, real mutation
-hooks, fail-closed harnesses, host glue). On failure it re-invokes
-implementation with actionable feedback. No regex heuristics.
+One read-only audit session judges the hard constraints (native scan, real mutation hooks,
+fail-closed harnesses, host glue) and writes a report. Each required fix goes to the main session of
+the layer that owns it, through that layer's repair loop. A report that cannot be read is recorded as
+status `error`, never raised. No regex heuristics.
 """
 
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from accel_pipeline.backend_digest import backend_digest
 from accel_pipeline.config import ModelConfig, PipelineConfig, load_run_workload
-from accel_pipeline.gates import GateFailure
 from accel_pipeline.paths import query_artifacts_dir
 from accel_pipeline.playbook import append_experiment_log
 from accel_pipeline.stages.base import run_agent_stage
-from accel_pipeline.stages.engine_layer_critique import run_until_artifact
+from accel_pipeline.stages.engine_layer_critique import read_review, run_until_artifact
+
+
+AUDIT_ROLE = "audit"
 
 
 def load_architecture_audit(art: Path) -> dict[str, Any]:
-    path = art / "architecture_audit.json"
-    if not path.is_file():
-        raise GateFailure(
-            "architecture audit agent did not write architecture_audit.json — "
-            "cannot accept implementation"
-        )
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as exc:
-        raise GateFailure(f"architecture_audit.json is not valid JSON: {exc}") from exc
-    if not isinstance(data, dict):
-        raise GateFailure("architecture_audit.json must be a JSON object")
-    status = str(data.get("status") or "").strip().lower()
-    if status not in {"pass", "fail"}:
-        raise GateFailure(
-            "architecture_audit.json missing status pass|fail — "
-            f"got {data.get('status')!r}"
-        )
-    data["status"] = status
-    return data
+    return read_review(art / "architecture_audit.json", what="architecture audit")
 
 
-def format_implementation_feedback(audit: dict[str, Any], *, round_idx: int) -> str:
+def format_implementation_feedback(audit: dict[str, Any], *, round_idx: int, layer: str = "") -> str:
+    """The report as feedback; with `layer`, only the violations that layer owns."""
     feedback = str(audit.get("feedback_for_implementation") or "").strip()
-    violations = audit.get("violations") or []
+    violations = [
+        v for v in audit.get("violations") or []
+        if not layer or not isinstance(v, dict) or str(v.get("layer") or layer) == layer
+    ]
     lines = [
         "## Architecture audit FAILED — fix before validation",
         "",
@@ -77,28 +67,24 @@ def format_implementation_feedback(audit: dict[str, Any], *, round_idx: int) -> 
         "placement is built now, not deferred. A gate that passes without exercising a "
         "violation does not resolve it: first add the harness assertion that fails on it, "
         "then make it pass. Do not weaken the harness to greenwash. Mid-loop MCP "
-        "`engine_build` plus that layer's gate until green. The orchestrator re-runs only "
-        "layers named in `violations[].layer` (pipeline order), then re-audits."
+        "`engine_build` plus this layer's gate until green."
     )
     return "\n".join(lines)
 
 
-def failing_layer_ids(audit: dict[str, Any], workload: dict[str, Any]) -> list[str]:
-    """Owning layers named in audit violations, in implementation order (unique)."""
+def owning_layer_ids(audit: dict[str, Any], workload: dict[str, Any]) -> list[str]:
+    """The layers that own the violations, in implementation order. A violation that names no
+    layer belongs to the last one (the accelerator-facing surface sees every layer's work)."""
     order = [
         str(layer.get("id") or "")
         for layer in (workload.get("implementation_layers") or [])
-        if isinstance(layer, dict)
+        if isinstance(layer, dict) and layer.get("id")
     ]
-    order = [lid for lid in order if lid]
-    mentioned: set[str] = set()
+    owners: set[str] = set()
     for item in audit.get("violations") or []:
-        if not isinstance(item, dict):
-            continue
-        lid = str(item.get("layer") or "").strip()
-        if lid in order:
-            mentioned.add(lid)
-    return [lid for lid in order if lid in mentioned]
+        lid = str(item.get("layer") or "").strip() if isinstance(item, dict) else ""
+        owners.add(lid if lid in order else order[-1])
+    return [lid for lid in order if lid in owners]
 
 
 def run_architecture_audit_agent(
@@ -130,6 +116,8 @@ def run_architecture_audit_agent(
         )
     ) + write_rule
 
+    json_path.unlink(missing_ok=True)
+
     def invoke(extra: str) -> Any:
         msg = base_msg if not extra else extra
         return run_agent_stage(
@@ -142,14 +130,13 @@ def run_architecture_audit_agent(
             user_message=msg,
             model_overrides=model_overrides,
             dry_run=dry_run,
+            session_role=AUDIT_ROLE,
         )
 
-    return run_until_artifact(
-        artifact=json_path, invoke=invoke, attempts=2, dry_run=dry_run
-    )
+    return run_until_artifact(artifact=json_path, invoke=invoke, attempts=2, dry_run=dry_run)
 
 
-def run_architecture_audit_with_impl_retry(
+def run_architecture_audit(
     pipeline_config: PipelineConfig,
     model_config: ModelConfig,
     workload_name: str,
@@ -157,128 +144,53 @@ def run_architecture_audit_with_impl_retry(
     model_overrides: dict[str, str] | None,
     dry_run: bool,
     *,
-    skip_gates: bool = False,
-    run_implementation_fn,
+    repair_layer: Callable[[str, str], None],
 ) -> dict[str, Any]:
-    """Audit after implementation; on fail, re-run implementation with feedback.
-
-    ``run_implementation_fn`` is injected to avoid circular imports
-    (``stages.engine_backend.run_implementation``).
-    """
+    """Audit once (`architecture_audit_max_rounds` passes at most, each after the fixes of the one
+    before); the owning layers fix their violations through `repair_layer(layer_id, feedback)`."""
     workload = load_run_workload(pipeline_config, workload_name)
     art = query_artifacts_dir(pipeline_config.repo_root, query, workload=workload)
     art.mkdir(parents=True, exist_ok=True)
-
-    max_rounds = int(workload.get("architecture_audit_max_rounds") or 3)
-    max_rounds = max(1, max_rounds)
+    max_rounds = max(1, int(workload.get("architecture_audit_max_rounds") or 1))
     engine = str(workload.get("engine_name") or "")
 
-    last_audit: dict[str, Any] = {}
-    for round_idx in range(1, max_rounds + 1):
-        append_experiment_log(
-            pipeline_config.repo_root,
-            query,
-            f"- architecture audit round {round_idx}/{max_rounds}",
-            workload=workload,
-        )
+    def log(line: str) -> None:
+        append_experiment_log(pipeline_config.repo_root, query, f"- architecture audit {line}", workload=workload)
 
+    audit: dict[str, Any] = {}
+    for round_idx in range(1, max_rounds + 1):
+        log(f"round {round_idx}/{max_rounds}")
         if dry_run:
-            last_audit = {
-                "engine_name": engine,
-                "status": "pass",
-                "summary": "dry-run skip",
-                "violations": [],
-                "feedback_for_implementation": "",
-                "round": round_idx,
-            }
-            (art / "architecture_audit.json").write_text(
-                json.dumps(last_audit, indent=2) + "\n", encoding="utf-8"
-            )
-            return last_audit
+            audit = {"engine_name": engine, "status": "pass", "summary": "dry-run skip", "violations": [],
+                     "feedback_for_implementation": "", "round": round_idx}
+            (art / "architecture_audit.json").write_text(json.dumps(audit, indent=2) + "\n", encoding="utf-8")
+            return audit
 
         run_architecture_audit_agent(
-            pipeline_config,
-            model_config,
-            workload_name,
-            query,
-            model_overrides,
-            dry_run,
+            pipeline_config, model_config, workload_name, query, model_overrides, dry_run,
             round_idx=round_idx,
             user_message=(
-                f"Architecture audit round={round_idx}/{max_rounds} engine={engine}. "
-                "Read layers.md, acceptance_checklist.md, adapter sources, and each "
-                "layer harness. On fail set violations[].layer. Write architecture_audit.json."
-            ),
+                backend_digest(pipeline_config.repo_root, engine, art)
+                + f"Layer diffs: `{art}/layer_diffs/<layer>.diff`.\n\n"
+                + f"Architecture audit round={round_idx}/{max_rounds} engine={engine}. "
+                if round_idx == 1
+                else f"Architecture audit round={round_idx}/{max_rounds}: the layers named in your last "
+                "report were fixed. Re-check those violations and what the fixes touched. "
+            ) + "On fail set violations[].layer. Write architecture_audit.json.",
         )
-        last_audit = load_architecture_audit(art)
-        last_audit["round"] = round_idx
-        (art / "architecture_audit.json").write_text(
-            json.dumps(last_audit, indent=2) + "\n", encoding="utf-8"
-        )
+        audit = load_architecture_audit(art)
+        audit["round"] = round_idx
+        (art / "architecture_audit.json").write_text(json.dumps(audit, indent=2) + "\n", encoding="utf-8")
+        if audit["status"] != "fail":
+            log(f"round {round_idx}: {audit['status'].upper()}" + (f" ({audit['summary']})" if audit["status"] == "error" else ""))
+            return audit
 
-        if last_audit["status"] == "pass":
-            append_experiment_log(
-                pipeline_config.repo_root,
-                query,
-                f"- architecture audit round {round_idx}: PASS",
-                workload=workload,
-            )
-            return last_audit
+        owners = owning_layer_ids(audit, workload)
+        log(f"round {round_idx}: FAIL, fixes routed to layers {', '.join(owners)}")
+        for lid in owners:
+            feedback = format_implementation_feedback(audit, round_idx=round_idx, layer=lid)
+            (art / f"architecture_audit_feedback_round{round_idx}_{lid}.md").write_text(feedback + "\n", encoding="utf-8")
+            repair_layer(lid, feedback)
 
-        feedback = format_implementation_feedback(last_audit, round_idx=round_idx)
-        feedback_path = art / f"architecture_audit_feedback_round{round_idx}.md"
-        feedback_path.write_text(feedback + "\n", encoding="utf-8")
-        append_experiment_log(
-            pipeline_config.repo_root,
-            query,
-            f"- architecture audit round {round_idx}: FAIL — "
-            f"re-invoking implementation (see {feedback_path.name})",
-            workload=workload,
-        )
-
-        if round_idx >= max_rounds:
-            break
-
-        named = failing_layer_ids(last_audit, workload)
-        if named:
-            append_experiment_log(
-                pipeline_config.repo_root,
-                query,
-                f"- architecture audit fix-up: re-running impl layers {', '.join(named)}",
-                workload=workload,
-            )
-            for lid in named:
-                run_implementation_fn(
-                    pipeline_config,
-                    model_config,
-                    workload_name,
-                    query,
-                    model_overrides or {},
-                    dry_run,
-                    skip_gates=skip_gates,
-                    extra_user_message=feedback,
-                    only_layer_id=lid,
-                )
-        else:
-            run_implementation_fn(
-                pipeline_config,
-                model_config,
-                workload_name,
-                query,
-                model_overrides or {},
-                dry_run,
-                skip_gates=skip_gates,
-                extra_user_message=feedback,
-            )
-
-    # Every layer gate passes; what the audit still asks moves to validation (a required fix
-    # there, next to the adversarial tests and slot gates) instead of stopping the backend run.
-    art = query_artifacts_dir(pipeline_config.repo_root, query, workload=workload)
-    (art / "architecture_audit.open_findings.md").write_text(feedback + "\n", encoding="utf-8")
-    append_experiment_log(
-        pipeline_config.repo_root,
-        query,
-        f"- architecture audit: open findings after {max_rounds} round(s) handed to validation "
-        "(architecture_audit.open_findings.md)",
-        workload=workload,
-    )
+    log(f"fixes of round {max_rounds} routed; validation judges them")
+    return audit

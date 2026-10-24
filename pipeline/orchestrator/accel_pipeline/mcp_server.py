@@ -75,6 +75,7 @@ def build_mcp_tool_callables(
     from accel_pipeline.tools.shell_tools import make_shell_tools
     from accel_pipeline.tools.gate_tools import _compact_gate_payload
     from accel_pipeline.tools.quick_tools import make_quick_tools
+    from accel_pipeline.tools.quick_layer_tools import make_quick_layer_tool
 
     gate_ctx = GateCtx(pipeline_config, query, workload=workload, stage=stage, workload_name=workload_name)
     request_gate, run_engine_build, run_layer_gate, gate_status = make_gate_tools(gate_ctx)
@@ -327,6 +328,7 @@ def build_mcp_tool_callables(
         "release_shared_lease": release_shared_lease,
         "primitive_publish": primitive_publish,
         "discover_host_sdk": discover_host_sdk,
+        "quick_layer": make_quick_layer_tool(GateCtx(pipeline_config, query, workload=workload, stage=stage)),
     }
 
 
@@ -576,6 +578,11 @@ def main(argv: list[str] | None = None) -> int:
     def discover_host_sdk() -> str:
         """Describe this engine's host.sh verbs and how to connect."""
         return _call("discover_host_sdk")
+
+    @_tool(annotations=_rw)
+    def quick_layer(layer: str = "") -> str:
+        """MCP TOOL. Seconds-long inner loop of an engine_backend layer: incremental build, one harness run, the canary checks the layer owns."""
+        return _call("quick_layer", layer)
 
     # ---- Verus pipeline (--mode verus); context from ACCEL_VERUS_CONTEXT ----
     def _verus(name: str, *a, **kw) -> str:

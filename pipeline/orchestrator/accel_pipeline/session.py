@@ -9,7 +9,7 @@ import time
 from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator
 
 SESSIONS_FILE = "sessions.json"
 META_FILE = "session_meta.json"
@@ -131,9 +131,11 @@ def _retired(pipeline_config: Any, store: SessionStore, query: int, role: str,
     return bool(cfg.max_context_tokens and context_tokens(codex_home, session_id) >= cfg.max_context_tokens)
 
 
-def run_in_session(backend: Any, request: Any, *, pipeline_config: Any, art: Path, query: int, role: str) -> Any:
+def run_in_session(backend: Any, request: Any, *, pipeline_config: Any, art: Path, query: int, role: str,
+                   handoff: Callable[[], str] | None = None) -> Any:
     """Run a stage request in the role's session: resume it (the message only, plus the stage's
-    instructions the first time the session sees that stage), or start fresh with a handoff."""
+    instructions the first time the session sees that stage), or start fresh with a handoff
+    (`handoff()` when given, else the generic one from the run's artifacts)."""
     if not pipeline_config.session.continuity:
         return backend.run_stage(request)
     store = SessionStore(art)
@@ -142,7 +144,7 @@ def run_in_session(backend: Any, request: Any, *, pipeline_config: Any, art: Pat
     sid = store.session_id(query, role)
     message = request.user_message
     if sid and _retired(pipeline_config, store, query, role, codex_home, sid):
-        message, sid = build_handoff(art) + message, ""
+        message, sid = (handoff() if handoff else build_handoff(art)) + message, ""
         store.reset(query, role)
     metadata = dict(request.metadata)
     if sid:

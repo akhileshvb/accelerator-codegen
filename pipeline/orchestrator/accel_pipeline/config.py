@@ -770,6 +770,8 @@ def _normalize_engine_backend_workload(data: dict[str, Any], repo_root: Path) ->
         "architecture_audit_max_rounds",
         "layer_critique_max_rounds",
         "layer_gate_max_rounds",
+        "main_session_max_context_tokens",
+        "validation_gate_owners",
         "implementation_layers",
     ):
         if key not in data and key in defaults:

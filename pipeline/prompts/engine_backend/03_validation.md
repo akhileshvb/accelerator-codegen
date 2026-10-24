@@ -5,8 +5,6 @@ Implementation already shipped sequential layer harnesses. Your job is to
 **attack** that backend's slots with **new** tests it has not seen, then fix any
 real bugs until those tests pass.
 
-{{hard_guidelines}}
-
 {{codex_tooling}}
 
 {{engine_host_discovery}}
@@ -28,6 +26,9 @@ A profile field given as `{na: reason}` declares that mechanic absent on this en
 - Analysis (context only): `{{artifacts_path}}/backend_analysis.json`
 - Open audit findings, if present: `{{artifacts_path}}/architecture_audit.open_findings.md`. Each one
   is a required fix of this stage, alongside the adversarial tests.
+- The pipeline's canary suite already covers scan text views, dictionary and NULL cells, DML without
+  rebuilds, concurrent bulk inserts, multi-table registration, fallback snapshot and order, and commit/build
+  concurrency (`canary_contract.md`): write adversarial cases it does not.
 
 ## Mandates
 
@@ -64,7 +65,9 @@ A profile field given as `{na: reason}` declares that mechanic absent on this en
 ## Gates the orchestrator will re-run
 
 `engine_build`, every layer gate in `layers.md`, **`engine_adversarial`**, **`engine_hit_contract`**
-(the layer `api` hit contract: `host_contract.md`), then the backend-generic slot gates (`slot_epoch_stress`, `slot_hits_under_writes`,
+(the layer `api` hit contract: `host_contract.md`), the pipeline-owned canary gates (`engine_canary`,
+`engine_canary_asan`, `engine_canary_tsan`; `canary_contract.md`: a failure goes to the owning layer's
+session, not to you), then the backend-generic slot gates (`slot_epoch_stress`, `slot_hits_under_writes`,
 `slot_read_after_commit`, `slot_txn_edges`, `slot_restart`, `slot_own_writes`,
 `slot_ddl_events`, `slot_tsan`;
 `pipeline/gates/README_runtime_gates.md`). A slot gate failure is a backend bug:

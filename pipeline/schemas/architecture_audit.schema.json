@@ -25,6 +25,11 @@
             "description": "Owning implementation layer id from layers.md"
           },
           "evidence": { "type": "string" },
+          "severity": { "type": "string", "enum": ["blocking", "advisory"] },
+          "location": { "type": "string", "description": "path:line" },
+          "contract_item": { "type": "string", "description": "The clause of the contract or checklist violated" },
+          "expected": { "type": "string", "description": "The concrete behaviour that must hold" },
+          "kind": { "type": "string", "enum": ["code_fix", "needs_canary"] },
           "paths": {
             "type": "array",
             "items": { "type": "string" }

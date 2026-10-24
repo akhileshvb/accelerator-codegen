@@ -22,7 +22,12 @@ case "${verb}" in
   info) echo "{\"engine\": \"fake\", \"embedded\": ${FAKE_EMBEDDED:-false}, \"verbs\": []}" ;;
   run)
     [[ -z "${FAKE_RUN_HANG:-}" ]] || sleep 30
-    echo "${FAKE_RUN_OUT:-ran $*}"
+    if [[ "$1" == benchmark* && "$2" == --query ]]; then  # a bench that counts hits (or, FAKE_BENCH_CONSTANT, one that assumes them)
+      echo "suite,accel_hit_rate"
+      if [[ -n "${FAKE_BENCH_CONSTANT:-}" || -z "${ACCEL_AUX_FORCE_FALLBACK:-}" ]]; then echo "lineitem_only,1.0"; else echo "lineitem_only,0.0"; fi
+    else
+      echo "${FAKE_RUN_OUT:-ran $*}"
+    fi
     if [[ "$1" == "calibrator" ]]; then
       echo '{"interference_delta_per_query_us": 3, "interference_rebuild_per_query_us": 4}' > "${FAKE_COST_MODEL}"
     fi ;;
@@ -314,6 +319,17 @@ def test_host_bootstrap_smokes_the_differential_on_a_registered_query(repo):
     proc, calls, _, _, _ = run_gate(repo, "run_host_bootstrap.sh", "0", ctx_extra={"engine_host": HARNESS_HOST})
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert "run test_fake_tpch_differential 6" in calls
+
+
+def test_host_bootstrap_fails_a_bench_that_reports_the_same_hit_rate_when_forced_to_fall_back(repo):
+    host_bootstrap_repo(repo)
+    register = repo / "accelerators" / "tpch" / "q6" / "fake" / "aux"
+    register.mkdir(parents=True)
+    (register / "register.cpp").write_text("// q6\n")
+    proc, calls, _, gj, _ = run_gate(repo, "run_host_bootstrap.sh", "0", ctx_extra={"engine_host": HARNESS_HOST},
+                                     env_extra={"FAKE_BENCH_CONSTANT": "1"})
+    assert proc.returncode == 1
+    assert "does not count hits" in result(gj, "host_bootstrap")["reason"]
 
 
 def test_host_bootstrap_fails_without_the_harness_sources(repo):

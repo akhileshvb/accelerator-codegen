@@ -2,9 +2,9 @@
 
 You are a **separate architecture auditor** for **{{display_name}}** (`{{engine_name}}`).
 Implementation has shipped sequential layers + harnesses. Judge whether they
-violate the hard constraints — do not rewrite the backend yourself.
-
-{{hard_guidelines}}
+violate the hard constraints — do not rewrite the backend yourself. The first message carries
+the backend digest and where each layer's diff is (`{{artifacts_path}}/layer_diffs/<layer>.diff`):
+review from those, opening a file only to check a concrete suspicion.
 
 {{codex_tooling}}
 
@@ -36,7 +36,10 @@ A profile field given as `{na: reason}` declares that mechanic absent on this en
   harness, or show in the report why it does not hold.
 - Backend trees:
 {{engine_target_paths}}
-- Layer harnesses under `backends/{{engine_name}}/tests/test_{{engine_name}}_*.cpp`
+- The deterministic floor, already enforced by gates: every layer harness, the pipeline's canary suite
+  (`canary_contract.md`: scan text views and NULLs, DML without rebuilds, concurrent capture, registration by
+  table name, fallback snapshot and order, commit/build concurrency) and the slot gates. Do not report
+  missing coverage of what they check; report a violation they cannot see.
 
 ## Hard constraints to verify (engine-agnostic)
 
@@ -73,13 +76,14 @@ SQL shims or never calls a native storage path.
 ## Output rules
 
 - `status` must be `"pass"` or `"fail"`.
-- On `"fail"`, populate `violations` (each with checklist `rule`, optional `layer`,
-  `evidence`, `paths`) and concrete `feedback_for_implementation`.
-- On `"pass"`, `violations` must be `[]` and `feedback_for_implementation` empty.
+- On `"fail"`, populate `violations` (each with checklist `rule`, `layer`, `severity`
+  `blocking|advisory`, `location` `path:line`, `contract_item`, `expected`, `kind`
+  `code_fix|needs_canary`, `evidence`, optional `paths`) and concrete `feedback_for_implementation`.
+- On `"pass"`, `violations` must hold no blocking item and `feedback_for_implementation` is empty.
 - **Do not** invent new rules, modify sources, or reintroduce a portable chunk IR.
 
 ## Orchestrator behavior
 
-If `status` is `"fail"`, the pipeline re-invokes **only the layers named in
-`violations[].layer`** (small fix-up, pipeline order), then re-audits
-(bounded retries). Always set `layer` on each violation.
+If `status` is `"fail"`, each owning layer's main session gets its violations (the ones whose `layer`
+names it) in one batched repair round and re-runs its gates; there is no second audit pass. Always set
+`layer` on each violation.

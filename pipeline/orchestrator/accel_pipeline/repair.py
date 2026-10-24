@@ -55,6 +55,8 @@ class RepairCtx:
     iteration: int = 0
     model_overrides: dict[str, str] | None = None
     max_code_rounds: int | None = None
+    repair_turn: Callable[[Failure], None] | None = None  # replaces the crash-debug turn (engine flows)
+    gate_runner: Callable[[list[str]], tuple[list[GateResult], GateResult | None]] | None = None
     results: list[GateResult] = field(default_factory=list)
     workload: dict[str, Any] = field(init=False)
     art: Path = field(init=False)
@@ -179,6 +181,8 @@ def _check_gates(ctx: RepairCtx, gates: list[str], quarantined: set[str]) -> Fai
 
 def _run_gates(ctx: RepairCtx, names: list[str]) -> tuple[list[GateResult], GateResult | None]:
     """The gates, skipping any that already passed on identical code; the results and the failing one."""
+    if ctx.gate_runner is not None:
+        return ctx.gate_runner(names)
     cfg = ctx.pipeline_config
     kwargs = {"change_kind": ctx.change_kind, "iteration": ctx.iteration, "reuse": True}
     if cfg.quick_tier.parallel_gates:
@@ -219,28 +223,14 @@ def _quarantine(ctx: RepairCtx, gate: str, failure: Failure) -> None:
 def repair_turn(ctx: RepairCtx, failure: Failure, *, must_change: bool | None = None) -> None:
     """One agent turn, in the stage's own session, on the failure report; a provider flake re-runs it.
     must_change: the turn has to edit the query's files (default: when the failure is a code failure)."""
-    from accel_pipeline.stages.base import run_agent_stage
-
-    bench = str(ctx.workload.get("benchmark_name", "tpch"))
-    if must_change is None:
-        must_change = failure.kind == "code"
+    turn = ctx.repair_turn or _crash_debug_turn(ctx, failure.kind == "code" if must_change is None else must_change)
     retries = ctx.pipeline_config.repair.provider_retries
     for flake in range(1, retries + 2):
         try:
-            run_agent_stage(
-                stage="crash_debug",
-                prompt_file="04_crash_debug.md",
-                pipeline_config=ctx.pipeline_config,
-                model_config=ctx.model_config,
-                workload_name=ctx.workload_name,
-                query=ctx.query,
-                user_message=render_failure(failure),
-                model_overrides=ctx.model_overrides,
-                optimization_iter=ctx.iteration,
-                must_change=ctx.pipeline_config.repo_root / query_dir(bench, ctx.query) if must_change else None,
-                session_role=MAIN,
-            )
+            turn(failure)
             return
+        except StageStopped:
+            raise
         except StageFailure as exc:
             if exc.failure.infra_reason == PROVIDER_FLAKE and flake <= retries:
                 _wait_out_flake(ctx, flake)
@@ -250,6 +240,29 @@ def repair_turn(ctx: RepairCtx, failure: Failure, *, must_change: bool | None = 
         except Exception as exc:  # noqa: BLE001
             ctx.log(f"the repair turn raised {type(exc).__name__}: {exc}; the next check judges the tree")
         return
+
+
+def _crash_debug_turn(ctx: RepairCtx, must_change: bool) -> Callable[[Failure], None]:
+    from accel_pipeline.stages.base import run_agent_stage
+
+    bench = str(ctx.workload.get("benchmark_name", "tpch"))
+
+    def turn(failure: Failure) -> None:
+        run_agent_stage(
+            stage="crash_debug",
+            prompt_file="04_crash_debug.md",
+            pipeline_config=ctx.pipeline_config,
+            model_config=ctx.model_config,
+            workload_name=ctx.workload_name,
+            query=ctx.query,
+            user_message=render_failure(failure),
+            model_overrides=ctx.model_overrides,
+            optimization_iter=ctx.iteration,
+            must_change=ctx.pipeline_config.repo_root / query_dir(bench, ctx.query) if must_change else None,
+            session_role=MAIN,
+        )
+
+    return turn
 
 
 def _rollback(ctx: RepairCtx) -> None:

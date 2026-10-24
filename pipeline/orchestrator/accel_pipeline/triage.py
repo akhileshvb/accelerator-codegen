@@ -14,6 +14,7 @@ _TEXT_KEYS = ("log_tail", "stderr", "stdout", "notes", "reason")
 
 _SANITIZER_REPORT = re.compile(r"(?:WARNING: ThreadSanitizer|ERROR: AddressSanitizer|ERROR: LeakSanitizer)")
 _STACK_FRAME = re.compile(r"^\s*#\d+ .*? (?:in )?\S*?(/\S+?\.(?:c|cc|cpp|cxx|h|hh|hpp|rs)):\d+", re.MULTILINE)
+_RACY = re.compile(r"failed on run (\d+) after passing (\d+) times")
 _TIMEOUT = re.compile(r"did not finish within|timed out after")
 _TIMEOUT_RC = frozenset({124, 137})
 _MISSING_PRODUCER = re.compile(
@@ -61,16 +62,34 @@ def _changed_files(repo_root: Path) -> set[str]:
     return changed
 
 
+def racy_repeats(data: Mapping[str, Any]) -> tuple[int, int] | None:
+    """(passed, total) of a gate that repeats its harness and failed on a later repeat, else None."""
+    match = _RACY.search(failure_text(data))
+    if match is None:
+        return None
+    failed_on, passed = int(match.group(1)), int(match.group(2))
+    return passed, failed_on
+
+
+def _own_paths(workload: Mapping[str, Any], query: int | None, repo_root: Path) -> set[str]:
+    """What counts as the failing code's own: files changed this stage plus the stage's home, a
+    query's directory or an engine backend's tree."""
+    ours = set(_changed_files(repo_root))
+    if workload.get("workload_kind") == "engine_backend":
+        ours.add(f"backends/{workload.get('engine_name') or ''}/")
+    elif query is not None:
+        ours.add(query_dir(str(workload.get("benchmark_name") or "tpch"), query) + "/")
+    return ours
+
+
 def _engine_internal_sanitizer(text: str, workload: Mapping[str, Any], query: int | None, repo_root: Path | None) -> bool:
-    """A sanitizer report none of whose frames is in this query's directory or in a file changed this stage."""
+    """A sanitizer report none of whose frames is in the failing code's own files."""
     if repo_root is None or not _SANITIZER_REPORT.search(text):
         return False
     frames = _STACK_FRAME.findall(text)
     if not frames:
         return False
-    ours = set(_changed_files(repo_root))
-    if query is not None:
-        ours.add(query_dir(str(workload.get("benchmark_name") or "tpch"), query) + "/")
+    ours = _own_paths(workload, query, repo_root)
     return not any(rel in frame for frame in frames for rel in ours)
 
 
