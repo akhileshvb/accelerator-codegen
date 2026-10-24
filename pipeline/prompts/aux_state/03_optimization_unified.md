@@ -27,6 +27,7 @@ Work like a performance engineer on **two equal axes**:
 6. **Few turns** — hypothesize, implement, then `HYPOTHESIS_PATCH_COMPLETE`.
 7. **Custom profiling required for phase breakdown** — invent whatever timers/counts help; getenv(`ACCEL_AUX_CUSTOM_PROFILE`) + `ACCEL_CUSTOM_PROFILE {json}` with **phase + us + work counts**; no-op when unset. Remeasure after every accept/restore (`freshness.stale`). Own shell/scripts for ad-hoc profiling are fine.
 8. **Measure-first** — do not hypothesize from a stale digest; call `run_profile` on the CURRENT tree. Cite both 0% hit metrics **and** sampled write-mix metrics.
+9. **Trust the measurement** — before relying on a bench number, check it measured the accelerator (`pipeline/prompts/shared/measurement_trust.md`).
 
 ## Editable files
 
@@ -73,6 +74,7 @@ Retrieved precedents are **non-binding** — adapt, combine, or reject based on 
 
 - Rewrite a whole file for large/coordinated changes; make targeted patches for localized edits.
 - Bump encode/decode version constants when aux blob layout changes.
+- Run `quick_check` after every edit (inner loop in the tooling guide): build, the query's tests and the subset differential in seconds. Write small test binaries in your query directory for what you change, and use `perf` on the bench binary directly. `run_quick_benchmark` is direction only; the orchestrator's graded verdict is the measurement. The subset and SF1 are for correctness and direction: design for SF3000, never tune against them.
 
 ### 5. Hand off
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -114,5 +115,8 @@ def write_gate_context(
     gates = gates_dir_for_query(art)
     gates.mkdir(parents=True, exist_ok=True)
     path = gates / "_gate_context.json"
-    path.write_text(json.dumps(build_gate_context(pipeline_config, workload, query), indent=2), encoding="utf-8")
+    # Gates run in parallel rewrite it: a reader never sees a half-written file.
+    scratch = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}")
+    scratch.write_text(json.dumps(build_gate_context(pipeline_config, workload, query), indent=2), encoding="utf-8")
+    os.replace(scratch, path)
     return path

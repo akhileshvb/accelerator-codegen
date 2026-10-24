@@ -13,6 +13,7 @@ from typing import Any
 from accel_pipeline.aux_bench import parse_aux_benchmark_output, summarize_sweep_rows
 from accel_pipeline.aux_profile import write_aux_profile_artifacts
 from accel_pipeline.base_bench import parse_benchmark_log
+from accel_pipeline.build_stamp import build_lock
 from accel_pipeline.config import (
     PipelineConfig,
     resolve_optimization_edit_paths,
@@ -87,15 +88,33 @@ def _benchmark_build_target(paths: dict[str, str], workload: dict[str, Any]) -> 
     return paths["bench_target"]
 
 
+QUICK_TIER_DEFAULTS = {
+    "write_frequencies": [0],
+    "bench_warmup": 1,
+    "bench_queries": 5,
+    "bench_ref_samples": 1,
+    "bench_base_write_samples": 1,
+    "bench_timeout_sec": 120,
+}
+
+
+def _quick_tier_settings(workload: dict[str, Any]) -> dict[str, Any]:
+    """aux_bench_sweep_quick: the repetitions of an agent's direction-only bench call."""
+    return {**QUICK_TIER_DEFAULTS, **(workload.get("aux_bench_sweep_quick") or {})}
+
+
 def _aux_quick_write_frequencies(
     workload: dict[str, Any],
     *,
     art_dir: Path | None = None,
     optimization_iter: int | None = None,
     attempt: int | None = None,
+    acceptance: bool = True,
 ) -> list[int]:
     from accel_pipeline.aux_write_freqs import resolve_optimization_write_frequencies
 
+    if not acceptance:
+        return [int(f) for f in _quick_tier_settings(workload)["write_frequencies"]]
     return resolve_optimization_write_frequencies(
         workload,
         art_dir=art_dir,
@@ -115,6 +134,7 @@ def _aux_quick_benchmark_env(
     optimization_iter: int | None = None,
     attempt: int | None = None,
     freqs: list[int] | None = None,
+    acceptance: bool = True,
 ) -> dict[str, str]:
     opt = workload.get("aux_bench_sweep_optimization") or {}
     resolved = freqs if freqs is not None else _aux_quick_write_frequencies(
@@ -122,15 +142,28 @@ def _aux_quick_benchmark_env(
         art_dir=art_dir,
         optimization_iter=optimization_iter,
         attempt=attempt,
+        acceptance=acceptance,
     )
+    if acceptance:
+        reps = {
+            "ACCEL_BENCH_WARMUP": int(opt.get("bench_warmup", 1)),
+            "ACCEL_BENCH_QUERIES": int(opt.get("quick_bench_queries", opt.get("bench_queries", 3))),
+            "ACCEL_BENCH_REF_SAMPLES": int(opt.get("bench_ref_samples", 2)),
+            "ACCEL_BENCH_BASE_WRITE_SAMPLES": int(opt.get("bench_base_write_samples", 1)),
+        }
+    else:
+        quick = _quick_tier_settings(workload)
+        reps = {
+            "ACCEL_BENCH_WARMUP": int(quick["bench_warmup"]),
+            "ACCEL_BENCH_QUERIES": int(quick["bench_queries"]),
+            "ACCEL_BENCH_REF_SAMPLES": int(quick["bench_ref_samples"]),
+            "ACCEL_BENCH_BASE_WRITE_SAMPLES": int(quick["bench_base_write_samples"]),
+        }
     env = {
         paths["db_env_var"]: str(paths["dataset_db"]),
         f"ACCEL_Q{query}_BENCH_SUITE": paths.get("aux_bench_suites", "lineitem_only"),
         "ACCEL_AUX_WRITE_FREQUENCIES": ",".join(str(f) for f in resolved),
-        "ACCEL_BENCH_WARMUP": str(int(opt.get("bench_warmup", 1))),
-        "ACCEL_BENCH_QUERIES": str(int(opt.get("quick_bench_queries", opt.get("bench_queries", 3)))),
-        "ACCEL_BENCH_REF_SAMPLES": str(int(opt.get("bench_ref_samples", 2))),
-        "ACCEL_BENCH_BASE_WRITE_SAMPLES": str(int(opt.get("bench_base_write_samples", 1))),
+        **{name: str(value) for name, value in reps.items()},
         "ACCEL_BENCH_SKIP_PARTITION_REBUILD_CALIB": "1",
     }
     if include_profile:
@@ -148,6 +181,7 @@ def _quick_benchmark_env(
     art_dir: Path | None = None,
     optimization_iter: int | None = None,
     attempt: int | None = None,
+    acceptance: bool = True,
 ) -> dict[str, str]:
     env = {paths["db_env_var"]: str(paths["dataset_db"])}
     if _is_aux_workload(workload):
@@ -159,6 +193,7 @@ def _quick_benchmark_env(
             art_dir=art_dir,
             optimization_iter=optimization_iter,
             attempt=attempt,
+            acceptance=acceptance,
         )
 
     env.update(
@@ -225,12 +260,14 @@ def _run_aux_quick_sweep(
     art_dir: Path | None = None,
     optimization_iter: int | None = None,
     attempt: int | None = None,
+    acceptance: bool = True,
 ) -> tuple[list[dict[str, Any]], str]:
     freqs = _aux_quick_write_frequencies(
         workload,
         art_dir=art_dir,
         optimization_iter=optimization_iter,
         attempt=attempt,
+        acceptance=acceptance,
     )
     env = {
         **os.environ,
@@ -243,22 +280,29 @@ def _run_aux_quick_sweep(
             optimization_iter=optimization_iter,
             attempt=attempt,
             freqs=freqs,
+            acceptance=acceptance,
         ),
     }
+    timeout = None if acceptance else float(_quick_tier_settings(workload)["bench_timeout_sec"])
     # The bench CLI (bench_sweep_contract.md): one write-frequency point per run, as the sweep gate calls it.
     from accel_pipeline.optimization_eval import _sweep_csv
 
     env.pop(f"ACCEL_Q{query}_WRITE_FREQUENCY_PCT", None)
     outputs: list[str] = []
     for pct in freqs:
-        proc = subprocess.run(
-            [str(bin_path), "--query", str(query), str(pct)],
-            cwd=repo,
-            capture_output=True,
-            text=True,
-            env=env,
-            check=False,
-        )
+        try:
+            proc = subprocess.run(
+                [str(bin_path), "--query", str(query), str(pct)],
+                cwd=repo,
+                capture_output=True,
+                text=True,
+                env=env,
+                check=False,
+                timeout=timeout,
+            )
+        except subprocess.TimeoutExpired:
+            outputs.append(f"bench did not finish within {timeout:.0f}s (quick tier; acceptance=True lifts the limit)")
+            return [], "\n".join(outputs)
         outputs.append((proc.stdout or "") + (proc.stderr or ""))
         if proc.returncode != 0:
             return [], "\n".join(outputs)
@@ -444,15 +488,18 @@ def make_ab_tools(ctx: AbToolContext):
                 "scoreboard": board,
                 "guidance": (
                     "A/B keep/regress vs scoreboard.best_valid_score only. "
-                    "After edits: run_quick_benchmark, then end_ab_trial."
+                    "After edits: quick_check, then run_quick_benchmark(acceptance=True), then end_ab_trial."
                 ),
             },
             indent=2,
         )
 
-    def run_quick_benchmark(include_profile: bool | None = True) -> str:
-        """Run a fast benchmark aligned with gate scoring and return compact metrics."""
+    def run_quick_benchmark(include_profile: bool | None = True, acceptance: bool | None = False) -> str:
+        """Run a benchmark and return compact metrics. Default: the quick tier (a few queries, read
+        axis only: direction, not a measurement). acceptance=True: the full optimization tier
+        the accept/reject decision uses."""
         include_profile = bool(_none_default(include_profile, True))
+        acceptance = bool(_none_default(acceptance, False))
         paths = resolve_workload_paths(ctx.pipeline_config, ctx.workload, ctx.query)
         from accel_pipeline.worker_isolation import ensure_private_dataset_db
 
@@ -469,13 +516,14 @@ def make_ab_tools(ctx: AbToolContext):
         repo = ctx.pipeline_config.repo_root
         bin_path = build_dir / bench_target
 
-        build = subprocess.run(
-            ["cmake", "--build", str(build_dir), "--target", bench_target, "-j", "4"],
-            cwd=repo,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
+        with build_lock(build_dir):
+            build = subprocess.run(
+                ["cmake", "--build", str(build_dir), "--target", bench_target, "-j", "4"],
+                cwd=repo,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
         if build.returncode != 0:
             return f"ERROR: build failed\n{(build.stdout or '') + (build.stderr or '')[-2000:]}"
 
@@ -490,6 +538,7 @@ def make_ab_tools(ctx: AbToolContext):
                 art_dir=_art(ctx),
                 optimization_iter=ctx.optimization_iter,
                 attempt=ctx.attempt,
+                acceptance=acceptance,
             )
             if not rows:
                 return f"ERROR: aux quick sweep produced no CSV rows\n{output[-4000:]}"
@@ -522,7 +571,7 @@ def make_ab_tools(ctx: AbToolContext):
                 return f"ERROR: benchmark exit={proc.returncode}\n{output[-2000:]}"
             metrics = parse_benchmark_log(output)
 
-        active = _read_active_trial(ctx)
+        active = _read_active_trial(ctx) if acceptance else {}
         if active:
             active["last_metrics"] = metrics
             cand = (
@@ -549,6 +598,11 @@ def make_ab_tools(ctx: AbToolContext):
         except json.JSONDecodeError:
             return formatted
         payload["scoreboard"] = board
+        payload["tier"] = (
+            "acceptance"
+            if acceptance
+            else "quick: direction only, never kept or discarded on this; end_ab_trial(keep=True) needs an acceptance=True run"
+        )
         if active and active.get("last_improvement_pct") is not None:
             # Surface A/B signal explicitly so agents cannot ignore regressions.
             payload["vs_reference_score"] = active.get("reference_score")
@@ -608,24 +662,25 @@ def make_ab_tools(ctx: AbToolContext):
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(src, dest)
                 restored.append(rel)
-            rebuild = subprocess.run(
-                [
-                    "cmake",
-                    "--build",
-                    str(ctx.pipeline_config.build_dir),
-                    "--target",
-                    _benchmark_build_target(
-                        resolve_workload_paths(ctx.pipeline_config, ctx.workload, ctx.query),
-                        ctx.workload,
-                    ),
-                    "-j",
-                    "4",
-                ],
-                cwd=ctx.pipeline_config.repo_root,
-                capture_output=True,
-                text=True,
-                check=False,
-            )
+            with build_lock(ctx.pipeline_config.build_dir):
+                rebuild = subprocess.run(
+                    [
+                        "cmake",
+                        "--build",
+                        str(ctx.pipeline_config.build_dir),
+                        "--target",
+                        _benchmark_build_target(
+                            resolve_workload_paths(ctx.pipeline_config, ctx.workload, ctx.query),
+                            ctx.workload,
+                        ),
+                        "-j",
+                        "4",
+                    ],
+                    cwd=ctx.pipeline_config.repo_root,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
             if rebuild.returncode != 0:
                 return f"ERROR: rebuild after restore failed\n{(rebuild.stdout or '') + (rebuild.stderr or '')[-1500:]}"
 

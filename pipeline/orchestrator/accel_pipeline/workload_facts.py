@@ -67,10 +67,15 @@ def _dependent_tables(sql: str, schema: dict[str, dict[str, str]]) -> list[dict[
     ]
 
 
+def scratch_connection(path: str = ":memory:") -> Any:
+    """The embedded SQL engine the orchestrator derives facts and test subsets with."""
+    return duckdb.connect(path)
+
+
 def derive_query_facts(sql: str, schema_sql: str) -> dict[str, Any]:
     """output_schema and dependent_tables (with watched_columns) of `sql` over `schema_sql`."""
     sql = sql.strip().rstrip(";")
-    con = duckdb.connect(":memory:")
+    con = scratch_connection()
     try:
         con.execute(schema_sql)
         return {

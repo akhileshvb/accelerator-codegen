@@ -30,13 +30,27 @@ Call these **by tool name** on server `accel_pipeline`. Do **not** use `list_mcp
 | `get_optimization_evidence` | Bottleneck evidence + runtime markdown |
 | `get_store_diagnostics` | Aux store diagnostics (`partitions_read`, `accel_hit_*`, …) |
 | `run_profile` | Remeasure CURRENT tree (aux: quick instrumented bench). Clears stale digests |
-| `run_correctness` / `run_multi_connection` / `run_baseline` / `run_fairness` / `request_gate` | Mid-loop gates (impl: correctness + multi-conn) |
-| `begin_ab_trial` / `run_quick_benchmark` / `end_ab_trial` | Exploratory A/B vs **best_valid_score** — **honor the signal** |
+| `quick_check` | Seconds-level check after **every edit**: incremental build, the query's own tests, the differential on the small test subset. Pass/fail with seconds per phase; a failure names the step and how to reproduce it |
+| `run_correctness` / `run_multi_connection` / `run_baseline` / `run_fairness` / `request_gate` | Acceptance gates (minutes; impl: correctness + multi-conn). `request_gate(gate, background=True)` starts aux_correctness / aux_unit / prims_tests / aux_multi_connection / aux_cross_accel in their own process and returns at once |
+| `gate_status` | Read a background gate once, when you need the answer (never poll it in a loop). `stale: true` means you edited after it ran: the orchestrator reruns it at stage exit |
+| `begin_ab_trial` / `run_quick_benchmark` / `end_ab_trial` | Exploratory A/B vs **best_valid_score** — **honor the signal**. `run_quick_benchmark` gives direction in seconds; `acceptance=True` is the full tier `end_ab_trial(keep=True)` needs |
 | `request_structural_reanalysis` | Aux structural redesign escape hatch |
 | `primitive_publish` | Add a generic primitive to the shared `accelerators/prims/` library (stage files under `pipeline/prims_staging/`; additions only) |
 | `run_pipeline_command` | Allowlisted cmake/ctest only |
 
 If an MCP call fails, retry once; then fall back to Codex shell for build/ctest only — still prefer MCP for digests / A/B / correctness when the server is up.
+
+Every tool result may end with a wall-budget notice. It is real: when it says to wrap up, checkpoint your state (leave the tree building and the last passing version in place) and finish the step you are on.
+
+## Inner loop (aux-state query accelerators)
+
+Iterate fast, verify rigorously:
+
+1. After **every edit**, call `quick_check`. Fix what it reports before anything else; do not run the minutes-long gates to find out whether an edit compiles or is right.
+2. Write small self-contained test binaries in your query directory for what you are building (a layout, an encoding, a maintenance path) and pass their targets to `quick_check(targets=[...])`. A brute-force checker of your own beats waiting for a gate.
+3. For performance, run `perf` (or your own timers) directly on the bench binary. `run_quick_benchmark` gives direction in seconds; it is not a measurement. Take `acceptance=True` before you rely on a number.
+4. `request_gate` is for acceptance. Start the acceptance gates in the background (`background=True`) while you keep working, and read each once with `gate_status`. Never poll a gate in a loop.
+5. The small test subset and SF1 data are for correctness and direction only. Design for SF3000 (`scale_factor_contract.md`) and never tune against the subset.
 
 ## Scoreboard + freshness (optimization)
 
@@ -46,8 +60,8 @@ If an MCP call fails, retry once; then fall back to Codex shell for build/ctest 
 
 ## Exploratory A/B rules (optimization)
 
-1. `begin_ab_trial` → patch → `run_quick_benchmark` → inspect `ab_signal` / `improvement_pct_vs_reference` / `scoreboard`.
-2. `end_ab_trial(keep=true)` only when improved vs best_valid; the server **force-discards** measured regressions.
+1. `begin_ab_trial` → patch → `quick_check` → `run_quick_benchmark` for direction → `run_quick_benchmark(acceptance=True)` → inspect `ab_signal` / `improvement_pct_vs_reference` / `scoreboard` (only the acceptance run produces them).
+2. `end_ab_trial(keep=true)` only when improved vs best_valid and after an acceptance run; the server **force-discards** measured regressions and keeps without metrics.
 3. **Never** print `CANDIDATE_READY` for a change that A/B marked `regress` / `forced_discard` / `kept=false`.
 4. For large wins: optimize **both** hit-path read latency **and** incremental maintenance (ApplyDelta / local partitions, not RebuildAll-per-write). When digests show a write-mix cliff (10% workload ≪1×) while read is already strong, prioritize maintenance. Keep high-SF speedups. Never cache final query results as aux.
 
@@ -79,15 +93,15 @@ Exiting after edits/tests without that marker **fails the attempt** and discards
 
 ## Implementation stage (mandatory mid-loop gates)
 
-For **implementation**, do **not** finish until these pass (keep iterating — a failed gate is a fix signal, not a stop):
+For **implementation**, do **not** finish until the acceptance gates pass (keep iterating — a failed gate is a fix signal, not a stop). Between edits use `quick_check` (see "Inner loop"); the gates below are the acceptance run.
 
 ### Query / aux accelerators
 
 1. Build the smoke / unit target for this query (and the engine's `differential_binary` for TPC-H aux).
-2. Call MCP **`run_correctness`** (maps to `aux_correctness` for aux-state; else `correctness`).
-3. On fail: read `failure_summary`, fix implementation / registration, rebuild, re-run until `status=pass`.
+2. Once `quick_check` passes, call MCP **`run_correctness`** (maps to `aux_correctness` for aux-state; else `correctness`). Start it with `request_gate(..., background=True)` if you have more to do meanwhile.
+3. On fail: read `failure_summary`, fix implementation / registration, get `quick_check` green again, then re-run the gate until `status=pass`.
 4. For **aux-state**, also call MCP **`run_multi_connection`** (or `request_gate` with `aux_multi_connection`). On fail (often missing TF / shared allowlist wiring), **register the query everywhere** peer queries are registered, rebuild, retry until pass.
-5. Only after both required gates report `status=pass` end the stage.
+5. Only after both required gates report `status=pass` (and are not `stale`) end the stage.
 
 `aux_correctness` includes **smoke fixtures + SF1 SQL-vs-aux differential**. Compile-only or smoke-only handoff is not acceptable. Orchestrator post-stage gates still re-check.
 

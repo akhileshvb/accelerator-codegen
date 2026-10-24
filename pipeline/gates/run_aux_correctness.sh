@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # Aux-state correctness: the aux smoke test, then the SQL-vs-aux differential (tpch),
-# both built and run through the engine host.
+# both built and run through the engine host. ACCEL_GATE_TIER=quick runs it on the subset
+# dataset (ACCEL_SUBSET_DATASET_DIR) with at most ACCEL_QUICK_PROBES write probes; the default
+# full tier is the stage-exit check. Run as the gate aux_correctness_quick, its result never overwrites
+# aux_correctness.json.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -15,7 +18,7 @@ fi
 source "$(dirname "${BASH_SOURCE[0]}")/aux_gate_common.sh"
 load_aux_gate_context "${ROOT}" "${QUERY}"
 
-JSON="${GATE_OUT}/aux_correctness.json"
+JSON="${GATE_OUT}/${ACCEL_GATE_NAME:-aux_correctness}.json"
 WITH_DIFF=0
 [[ "${BENCHMARK_NAME}" == "tpch" ]] && WITH_DIFF=1
 if [[ -z "${AUX_TEST_TARGET}" ]] || { [[ ${WITH_DIFF} -eq 1 && -z "${DIFF_BINARY}" ]]; }; then
@@ -40,17 +43,19 @@ DIFF_RC=0
 if [[ ${WITH_DIFF} -eq 1 ]]; then
   SCENARIOS="${GATE_ART}/adversarial_write_scenarios.json"
   if [[ -f "${SCENARIOS}" ]]; then
-    eval "$(python3 - "${SCENARIOS}" <<'PY'
-import json, sys
+    eval "$(QUICK_PROBES="${ACCEL_QUICK_PROBES:-3}" python3 - "${SCENARIOS}" <<'PY'
+import json, os, sys
 d = json.load(open(sys.argv[1]))
 p, b = d.get("point_writes") or {}, d.get("bulk_writes") or {}
-print(f"export ACCEL_ADV_MAX_PROBES={int(p.get('max_probes') or p.get('min_count') or 5)}")
-print(f"export ACCEL_ADV_MIN_PROBES={int(p.get('min_count') or 2)}")
+cap = int(os.environ["QUICK_PROBES"]) if os.environ.get("ACCEL_GATE_TIER") == "quick" else 1 << 30
+print(f"export ACCEL_ADV_MAX_PROBES={min(cap, int(p.get('max_probes') or p.get('min_count') or 5))}")
+print(f"export ACCEL_ADV_MIN_PROBES={min(cap, int(p.get('min_count') or 2))}")
 print(f"export ACCEL_ADV_MIN_CHUNKS={int(b.get('min_chunks') or 0)}")
 print(f"export ACCEL_ADV_REQUIRE_BULK={1 if b.get('required') else 0}")
 PY
 )"
   fi
+  [[ "${ACCEL_GATE_TIER:-full}" != quick ]] || export ACCEL_ADV_MAX_PROBES="${ACCEL_ADV_MAX_PROBES:-${ACCEL_QUICK_PROBES:-3}}"
   engine_run "${DIFF_BINARY}" "${QUERY}"
   DIFF_RC=${RC}
   LOG_ALL="${LOG_ALL}"$'\n'"${LOG}"
@@ -61,7 +66,11 @@ PY
 fi
 
 # The query must register from its own directory: the engine backend names no query.
-if ! BACKEND_LOG="$(python3 "${ROOT}/scripts/check_backend_query_free.py" --engine "${ENGINE_NAME}" 2>&1)"; then
+CHECK_STARTED="$(now_us)"
+BACKEND_RC=0
+BACKEND_LOG="$(python3 "${ROOT}/scripts/check_backend_query_free.py" --engine "${ENGINE_NAME}" 2>&1)" || BACKEND_RC=$?
+record_phase checker "${CHECK_STARTED}"
+if [[ ${BACKEND_RC} -ne 0 ]]; then
   emit_result "${JSON}" aux_correctness fail \
     "per-query code in the ${ENGINE_NAME} backend: register from accelerators/${BENCHMARK_NAME}/q${QUERY}/ instead" \
     "${BACKEND_LOG}" "differential_binary=${DIFF_BINARY}"

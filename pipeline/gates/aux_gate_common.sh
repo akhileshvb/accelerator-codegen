@@ -2,58 +2,71 @@
 # Shared gate-context loader for aux-state gate scripts.
 # Usage: source aux_gate_common.sh; load_aux_gate_context "${ROOT}" "${QUERY}"
 
-# Gate context only: CTX and ENGINE_NAME (gates that need no workload fields).
-load_engine_gate_context() {
-	local root="$1"
-	local query="$2"
-	local gates_dir
-	gates_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-	CTX="$(python3 "${gates_dir}/read_gate_context.py" "${root}" "${query}")"
-	ENGINE_NAME="$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['engine_name'])" "${CTX}")"
-	SCHEMA_SQL="$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('schema_sql',''))" "${CTX}")"
-	DATASET_DIR="$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('dataset_dir',''))" "${CTX}")"
-	export CTX ENGINE_NAME SCHEMA_SQL DATASET_DIR ACCEL_ENGINE_NAME="${ENGINE_NAME}"
-	setup_engine_host "${root}"
+# Wall seconds of each phase, one "name=seconds" line each. The EXIT trap leaves them in
+# <gate json>.phases, which gates.run_gate folds into the result's phase_timings.
+PHASE_LOG=""
+flush_phase_log() {
+	[[ -z "${ACCEL_GATE_OUT:-}" ]] || printf '%s' "${PHASE_LOG}" >"${ACCEL_GATE_OUT%.json}.phases"
+}
+trap flush_phase_log EXIT
+now_us() { echo "${EPOCHREALTIME/./}"; }
+
+# record_phase <name> <start_us>: add the seconds since start_us to <name>.
+record_phase() {
+	local us=$(($(now_us) - $2))
+	PHASE_LOG+="$1=$((us / 1000000)).$(printf '%03d' $((us % 1000000 / 1000)))"$'\n'
 }
 
+# time_phase <name> <command...>: run in this shell, record its seconds, keep its status.
+time_phase() {
+	local name="$1" start rc=0
+	shift
+	start="$(now_us)"
+	"$@" || rc=$?
+	record_phase "${name}" "${start}"
+	return "${rc}"
+}
+
+# Load the gate context in one python process: CTX, ENGINE_NAME, SCHEMA_SQL, DATASET_DIR
+# and (aux gates) the query's targets and bench settings, all exported.
+_load_gate_context() {
+	local root="$1" query="$2" exports started gates_dir
+	shift 2
+	started="$(now_us)"
+	gates_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+	exports="$(python3 "${gates_dir}/read_gate_context.py" --shell "$@" "${root}" "${query}")"
+	eval "${exports}"
+	export ACCEL_ENGINE_NAME="${ENGINE_NAME}"
+	GATE_ROOT="${root}"
+	GATE_QUERY="${query}"
+	setup_engine_host "${root}"
+	record_phase load_context "${started}"
+}
+
+# Gate context only: CTX and ENGINE_NAME (gates that need no workload fields).
+load_engine_gate_context() { _load_gate_context "$1" "$2" --engine-only; }
+
 load_aux_gate_context() {
-	local root="$1"
-	local query="$2"
-	load_engine_gate_context "${root}" "${query}"
-	GATE_ART="$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['artifacts_dir'])" "${CTX}")"
-	BENCHMARK_NAME="$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['benchmark_name'])" "${CTX}")"
-	DIFF_BINARY="$(python3 -c "import json,sys; h=json.loads(sys.argv[1]).get('engine_host') or {}; print(h.get('differential_binary') or '')" "${CTX}")"
-	DIFF_SOURCE="$(python3 -c "import json,sys; h=json.loads(sys.argv[1]).get('engine_host') or {}; print(h.get('differential_source') or '')" "${CTX}")"
-	SMOKE_READY="$(python3 -c "import json,sys; h=json.loads(sys.argv[1]).get('engine_host') or {}; print('1' if h.get('smoke_ready', True) else '0')" "${CTX}")"
-	HOST_HINT="$(python3 -c "import json,sys; h=json.loads(sys.argv[1]).get('engine_host') or {}; print(h.get('query_host_ready_hint') or '')" "${CTX}")"
-	MULTI_CONN_TARGET="$(python3 -c "import json,sys; h=json.loads(sys.argv[1]).get('engine_host') or {}; print(h.get('multi_conn_target') or '')" "${CTX}")"
-	CROSS_ACCEL_TARGET="$(python3 -c "import json,sys; h=json.loads(sys.argv[1]).get('engine_host') or {}; print(h.get('cross_accel_target') or '')" "${CTX}")"
-	AUX_TEST_TARGET="$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('aux_test_target',''))" "${CTX}")"
-	AUX_BENCH_TARGET="$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('aux_bench_target',''))" "${CTX}")"
-	AUX_CALIBRATE_TARGET="$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('aux_calibrate_target',''))" "${CTX}")"
-	AUX_CTEST_SMOKE_REGEX="$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('aux_ctest_smoke_regex',''))" "${CTX}")"
-	BENCH_TARGET="$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['bench_target'])" "${CTX}")"
-	COST_MODEL_CONFIG="$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('cost_model_config',''))" "${CTX}")"
-	AUX_BENCH_SUITES="$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('aux_bench_suites','lineitem_only'))" "${CTX}")"
-	AUX_BENCH_WORK_DIR_SUFFIX="$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('aux_bench_work_dir_suffix',''))" "${CTX}")"
-	AUX_WRITE_FREQUENCIES_CTX="$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('aux_write_frequencies',''))" "${CTX}")"
-	GATE_OUT="${GATE_ART}/gates"
+	_load_gate_context "$1" "$2"
+	GATE_OUT="${ACCEL_GATE_OUT_DIR:-${GATE_ART}/gates}"
 	mkdir -p "${GATE_OUT}"
-	export BENCHMARK_NAME DIFF_BINARY DIFF_SOURCE
-	HARNESS_BENCH_TARGET="$(python3 -c "import json,sys; h=json.loads(sys.argv[1]).get('engine_host') or {}; print(h.get('bench_target') or '')" "${CTX}")"
-	HARNESS_CALIBRATE_TARGET="$(python3 -c "import json,sys; h=json.loads(sys.argv[1]).get('engine_host') or {}; print(h.get('calibrate_target') or '')" "${CTX}")"
-	export SMOKE_READY HOST_HINT HARNESS_BENCH_TARGET HARNESS_CALIBRATE_TARGET MULTI_CONN_TARGET CROSS_ACCEL_TARGET
-	export AUX_TEST_TARGET AUX_BENCH_TARGET AUX_CALIBRATE_TARGET
-	export BENCH_TARGET COST_MODEL_CONFIG AUX_CTEST_SMOKE_REGEX
-	export AUX_BENCH_SUITES AUX_BENCH_WORK_DIR_SUFFIX AUX_WRITE_FREQUENCIES_CTX GATE_OUT GATE_ART
+	export GATE_OUT
 }
 
 # Point the gate at its engine's host.sh. One instance per run and engine, so
 # parallel runs never collide. Sets ENGINE_HOST; exports the host contract env.
+# ACCEL_GATE_TIER=quick with ACCEL_SUBSET_DATASET_DIR set loads that small dataset into
+# its own instance (<instance>-quick), so the full instance stays loaded and warm.
 setup_engine_host() {
-	local root="$1"
+	local root="$1" tier_suffix=""
+	if [[ "${ACCEL_GATE_TIER:-full}" == quick && -n "${ACCEL_SUBSET_DATASET_DIR:-}" ]]; then
+		tier_suffix="-quick"
+		DATASET_DIR="${ACCEL_SUBSET_DATASET_DIR}"
+		export ACCEL_DATASET_DIR="${DATASET_DIR}"
+	fi
 	ENGINE_HOST="${root}/backends/${ENGINE_NAME}/host.sh"
-	export ACCEL_ENGINE_INSTANCE="${ACCEL_ENGINE_INSTANCE:-${ACCEL_PIPELINE_WORKER_ID:-w0}-${ENGINE_NAME}}"
+	[[ -z "${tier_suffix}" || -z "${ACCEL_ENGINE_STATE_DIR:-}" ]] || ACCEL_ENGINE_STATE_DIR+="${tier_suffix}"
+	export ACCEL_ENGINE_INSTANCE="${ACCEL_ENGINE_INSTANCE:-${ACCEL_PIPELINE_WORKER_ID:-w0}-${ENGINE_NAME}${tier_suffix}}"
 	export ACCEL_ENGINE_STATE_DIR="${ACCEL_ENGINE_STATE_DIR:-/flash1/$(id -un)/engine_state/${ACCEL_ENGINE_INSTANCE}}"
 	export ACCEL_BUILD_DIR="${ACCEL_PIPELINE_BUILD_DIR:-${ACCEL_BUILD_DIR:-${root}/build-release}}"
 	export ACCEL_DATASET_DIR="${ACCEL_DATASET_DIR:-${DATASET_DIR:-}}"
@@ -72,13 +85,18 @@ engine_trait() {
 }
 
 # Run host.sh steps in order (each argument is one "verb args" string). On failure
-# sets ENGINE_FAIL and returns 1; ENGINE_LOG collects every step's output.
+# sets ENGINE_FAIL and returns 1; ENGINE_LOG collects every step's output. Builds of one
+# build dir run one at a time (build_stamp.build_lock takes the same lock).
 engine_steps() {
 	ENGINE_LOG=""
-	local step out rc
+	local step out rc started runner
 	for step in "$@"; do
+		started="$(now_us)"
+		runner=("${ENGINE_HOST}")
+		[[ "${step%% *}" != build ]] || runner=(flock "${ACCEL_BUILD_DIR}.build.lock" "${ENGINE_HOST}")
 		# shellcheck disable=SC2086
-		out="$(engine_host ${step} 2>&1)" && rc=0 || rc=$?
+		out="$("${runner[@]}" ${step} 2>&1)" && rc=0 || rc=$?
+		record_phase "host_${step%% *}" "${started}"
 		ENGINE_LOG+="[host.sh ${step}] rc=${rc}"$'\n'"${out}"$'\n'
 		if [[ ${rc} -ne 0 && ${rc} -ne 77 ]]; then
 			ENGINE_FAIL="host.sh ${step%% *} failed (exit ${rc})"
@@ -87,16 +105,43 @@ engine_steps() {
 	done
 }
 
-# up + load + build for the targets.
-engine_ready() { engine_steps "up" "load ${SCHEMA_SQL}" "build $*"; }
+# Stamp of the code a build of these targets depends on (build_stamp.py): the query's files and
+# the shared files changed since the commit, the targets, the cmake arguments, the build dir and the instance.
+build_stamp() {
+	local scope=()
+	[[ -z "${BENCHMARK_NAME:-}" ]] || scope=(--query-dir "accelerators/${BENCHMARK_NAME}/q${GATE_QUERY}")
+	python3 "${GATE_ROOT}/pipeline/orchestrator/accel_pipeline/build_stamp.py" "${GATE_ROOT}" "${scope[@]}" \
+		"$*" "${ACCEL_CMAKE_ARGS}" "${ACCEL_BUILD_DIR}" "${ACCEL_ENGINE_INSTANCE}" 2>/dev/null
+}
+
+# up + load + build for the targets; the build is skipped when the same targets already built
+# from the same stamp in this instance and the build dir is configured (ACCEL_BUILD_STAMP_CACHE=0
+# turns the cache off).
+engine_ready() {
+	local started stamp="" stamp_file
+	stamp_file="${ACCEL_ENGINE_STATE_DIR}/build_stamps/$(printf '%s' "$*" | sha1sum | cut -c1-16)"
+	if [[ "${ACCEL_BUILD_STAMP_CACHE:-1}" != 0 ]]; then
+		started="$(now_us)"
+		stamp="$(build_stamp "$@")" || stamp=""
+		record_phase build_stamp "${started}"
+	fi
+	if [[ -n "${stamp}" && -f "${ACCEL_BUILD_DIR}/CMakeCache.txt" && "$(cat "${stamp_file}" 2>/dev/null)" == "${stamp}" ]]; then
+		engine_steps "up" "load ${SCHEMA_SQL}"
+		return
+	fi
+	engine_steps "up" "load ${SCHEMA_SQL}" "build $*" || return 1
+	[[ -z "${stamp}" ]] || { mkdir -p "${stamp_file%/*}" && printf '%s' "${stamp}" >"${stamp_file}"; }
+}
 
 # Run a built target through the host; sets RC and LOG.
 # Run a built target through host.sh with a time limit (ACCEL_GATE_RUN_TIMEOUT seconds,
 # default 900), so a hung harness fails the gate instead of stalling the run. Sets LOG, RC and,
 # on a timeout, RUN_REASON.
 engine_run() {
-	local limit="${ACCEL_GATE_RUN_TIMEOUT:-900}"
+	local limit="${ACCEL_GATE_RUN_TIMEOUT:-900}" started
+	started="$(now_us)"
 	LOG="$(timeout --kill-after=15 "${limit}" "${ENGINE_HOST}" run "$@" 2>&1)" && RC=0 || RC=$?
+	record_phase "run_${1##*/}" "${started}"
 	RUN_REASON=""
 	[[ ${RC} -ne 124 && ${RC} -ne 137 ]] ||
 		RUN_REASON="$1 did not finish within ${limit}s: it hangs (a deadlock, or a wait that never ends)"

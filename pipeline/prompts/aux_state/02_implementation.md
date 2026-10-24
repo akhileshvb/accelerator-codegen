@@ -74,8 +74,8 @@ Required loop before you stop:
 
 1. After creating **new** module/test/bench/calibrator sources, run **`cmake -S . -B <worker_build_dir>`** once when targets are new.
 2. Build the **engine-selected** differential binary and host gate harnesses.
-3. **Correctness gate (required):** MCP `run_correctness` / `request_gate` `aux_correctness` until pass.
-4. If fail: fix implementation (prefer kernel/host registration over weakening fixtures); rebuild; retry.
+3. **Inner loop:** `quick_check` after every edit (incremental build, the query's tests, the differential on the test subset); fix until it passes.
+4. **Correctness gate (required, acceptance):** MCP `run_correctness` / `request_gate` `aux_correctness` until pass, run once `quick_check` is green (`background=True` lets you keep working; read it with `gate_status`). If it fails: fix implementation (prefer kernel/host registration over weakening fixtures), get `quick_check` green, retry.
 5. **Multi-connection (required):** MCP `run_multi_connection` until pass (the engine's own harness through `host.sh`).
 6. **ThreadSanitizer (required when the module has parallel read/build/maintenance code, i.e. any `ParallelEach` / `ParallelReduce` / `PartitionedBuild`):** `request_gate` `aux_tsan` until pass; it fails on a data race in substrate/backends/accelerators code or a forced-grain differential mismatch.
 7. Broader unit coverage / bench targets when listed in post-stage gates.

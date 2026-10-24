@@ -107,3 +107,62 @@ def test_quick_benchmark_env_base_filters_single_seed():
     assert env["ACCEL_BENCH_FILTER"] == "seed_1_q18"
     assert env["ACCEL_BENCH_ITERS"] == "3"
     assert env["ACCEL_BENCH_PROFILE"] == "1"
+
+
+def test_quick_tier_env_is_the_cheap_read_only_sweep():
+    paths = {"db_env_var": "TPCH_SF1_DB", "dataset_db": "/d.db", "aux_bench_suites": "lineitem_only"}
+    workload = {
+        "workload_kind": "aux_state",
+        "aux_bench_sweep_optimization": {"write_frequencies": [0], "bench_warmup": 3, "quick_bench_queries": 10,
+                                         "bench_ref_samples": 2, "write_mix_sample": {"enabled": True, "count": 2,
+                                                                                       "choices": [1, 5, 10]}},
+        "aux_bench_sweep_quick": {"bench_warmup": 1, "bench_queries": 5, "bench_ref_samples": 1,
+                                  "write_frequencies": [0]},
+    }
+    quick = _quick_benchmark_env(paths, query=6, workload=workload, include_profile=False, acceptance=False)
+    assert quick["ACCEL_AUX_WRITE_FREQUENCIES"] == "0"
+    assert (quick["ACCEL_BENCH_WARMUP"], quick["ACCEL_BENCH_QUERIES"], quick["ACCEL_BENCH_REF_SAMPLES"]) == ("1", "5", "1")
+    full = _quick_benchmark_env(paths, query=6, workload=workload, include_profile=False, acceptance=True)
+    assert (full["ACCEL_BENCH_WARMUP"], full["ACCEL_BENCH_QUERIES"], full["ACCEL_BENCH_REF_SAMPLES"]) == ("3", "10", "2")
+
+
+def test_quick_tier_defaults_apply_without_a_config_block():
+    paths = {"db_env_var": "TPCH_SF1_DB", "dataset_db": "/d.db"}
+    env = _quick_benchmark_env(paths, query=6, workload={"workload_kind": "aux_state"}, include_profile=False,
+                               acceptance=False)
+    assert env["ACCEL_BENCH_QUERIES"] == "5" and env["ACCEL_AUX_WRITE_FREQUENCIES"] == "0"
+
+
+def test_quick_tier_never_samples_write_mixes_but_acceptance_does(tmp_path):
+    workload = {
+        "aux_bench_sweep_optimization": {"write_frequencies": [0], "write_mix_sample": {
+            "enabled": True, "count": 2, "choices": [1, 5, 10], "lock_per_attempt": True}},
+    }
+    assert _aux_quick_write_frequencies(workload, art_dir=tmp_path, optimization_iter=1, attempt=1,
+                                        acceptance=False) == [0]
+    assert len(_aux_quick_write_frequencies(workload, art_dir=tmp_path, optimization_iter=1, attempt=1)) == 3
+
+
+def test_the_shipped_quick_tier_is_cheaper_than_the_optimization_tier():
+    from accel_pipeline.config import load_aux_state_defaults
+
+    defaults = load_aux_state_defaults()
+    quick, opt = defaults["aux_bench_sweep_quick"], defaults["aux_bench_sweep_optimization"]
+    assert quick["write_frequencies"] == [0] and quick["bench_queries"] <= 5 and quick["bench_ref_samples"] == 1
+    assert quick["bench_warmup"] < opt["bench_warmup"] and quick["bench_timeout_sec"] == 120
+
+
+def test_a_quick_bench_that_overruns_its_limit_reports_it(monkeypatch, tmp_path):
+    import subprocess
+
+    from accel_pipeline.tools import ab_tools
+
+    def hang(*a, **k):
+        raise subprocess.TimeoutExpired("bench", k["timeout"])
+
+    monkeypatch.setattr(ab_tools.subprocess, "run", hang)
+    paths = {"db_env_var": "X", "dataset_db": "/d"}
+    rows, output = ab_tools._run_aux_quick_sweep(
+        tmp_path / "bench", repo=tmp_path, paths=paths, query=6,
+        workload={"workload_kind": "aux_state", "aux_bench_sweep_quick": {"bench_timeout_sec": 7}}, acceptance=False)
+    assert rows == [] and "did not finish within 7s" in output

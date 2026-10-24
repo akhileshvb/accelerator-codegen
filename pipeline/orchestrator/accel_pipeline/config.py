@@ -85,6 +85,34 @@ class SessionConfig:
     max_context_tokens: int = 0
 
 
+# ---- quick tier (workstream C): the fast inner loop and parallel gates ----
+@dataclass(frozen=True)
+class QuickTierConfig:
+    enabled: bool = True
+    timeout_sec: float = 120.0
+    build_stamp_cache: bool = True
+    differential_probes: int = 3
+    background_gates: tuple[str, ...] = (
+        "aux_correctness", "aux_unit", "prims_tests", "aux_multi_connection", "aux_cross_accel",
+    )
+    parallel_gates: bool = True
+    gate_jobs: int = 0  # concurrent gates in a parallel group; 0 = one per gate
+
+
+def _quick_tier_config(data: dict[str, Any]) -> QuickTierConfig:
+    block = dict(data.get("quick_tier") or {})
+    default = QuickTierConfig()
+    return QuickTierConfig(
+        enabled=bool(block.get("enabled", default.enabled)),
+        timeout_sec=float(block.get("timeout_sec", default.timeout_sec)),
+        build_stamp_cache=bool(block.get("build_stamp_cache", default.build_stamp_cache)),
+        differential_probes=int(block.get("differential_probes", default.differential_probes)),
+        background_gates=tuple(str(g) for g in block.get("background_gates", default.background_gates)),
+        parallel_gates=bool(block.get("parallel_gates", default.parallel_gates)),
+        gate_jobs=int(block.get("gate_jobs", default.gate_jobs)),
+    )
+
+
 @dataclass
 class PipelineConfig:
     repo_root: Path
@@ -153,6 +181,7 @@ class PipelineConfig:
     # enforce | warn | off: the post-stage ownership check (write_ownership.check_stage).
     write_policy: str = "warn"
     measurement: MeasurementConfig = field(default_factory=MeasurementConfig)
+    quick_tier: QuickTierConfig = field(default_factory=QuickTierConfig)
 
 
 def _load_yaml(path: Path) -> dict[str, Any]:
@@ -476,6 +505,7 @@ def load_pipeline_config(
         sandbox_extra_rw=[str(x) for x in data.get("sandbox_extra_rw") or []],
         write_policy=_choice(data, "write_policy", ("enforce", "warn", "off"), "warn"),
         measurement=MeasurementConfig.from_dict(data.get("measurement")),
+        quick_tier=_quick_tier_config(data),
     )
 
     env_build = os.environ.get("ACCEL_PIPELINE_BUILD_DIR")
@@ -858,6 +888,8 @@ def _merge_aux_defaults(workload: dict[str, Any], repo_root: Path) -> None:
 
     if "aux_bench_sweep_optimization" in aux_defaults:
         workload["aux_bench_sweep_optimization"] = dict(aux_defaults["aux_bench_sweep_optimization"])
+    if "aux_bench_sweep_quick" in aux_defaults:
+        workload["aux_bench_sweep_quick"] = dict(aux_defaults["aux_bench_sweep_quick"])
 
 
 def _apply_optimization_block(pipeline_config: PipelineConfig, opt: dict[str, Any]) -> PipelineConfig:
@@ -1009,6 +1041,7 @@ def _apply_optimization_block(pipeline_config: PipelineConfig, opt: dict[str, An
         sandbox_extra_ro=list(pipeline_config.sandbox_extra_ro),
         sandbox_extra_rw=list(pipeline_config.sandbox_extra_rw),
         write_policy=pipeline_config.write_policy,
+        quick_tier=pipeline_config.quick_tier,
     )
 
 
@@ -1131,6 +1164,7 @@ def _apply_workload_overrides(pipeline_config: PipelineConfig, workload: dict[st
         sandbox_extra_ro=list(pipeline_config.sandbox_extra_ro),
         sandbox_extra_rw=list(pipeline_config.sandbox_extra_rw),
         write_policy=pipeline_config.write_policy,
+        quick_tier=pipeline_config.quick_tier,
     )
     if has_opt:
         return _apply_optimization_block(merged, opt_block)

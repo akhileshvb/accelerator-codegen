@@ -329,8 +329,9 @@ def log_gate_complete(
     index: int = 0,
     count: int = 0,
     detail: str = "",
+    phase_timings: dict[str, float] | None = None,
 ) -> None:
-    """Log gate subprocess completion with status and elapsed time."""
+    """Log gate subprocess completion with status, elapsed time and the per-phase seconds."""
     context = _gate_context_label(change_kind, iteration)
     progress = _gate_progress_label(index, count)
     line = (
@@ -340,6 +341,9 @@ def log_gate_complete(
     if detail:
         line += f" — {squeeze_truncate(detail, 120)}"
     print(line, file=sys.stderr)
+    phases = {k: v for k, v in (phase_timings or {}).items() if k != "gate_wall"}
+    if phases:
+        print("[pipeline]   phases: " + " ".join(f"{k}={v:.1f}s" for k, v in phases.items()), file=sys.stderr)
     if status == "fail":
         print(f"[pipeline] gate FAILED: {gate_name}", file=sys.stderr)
 

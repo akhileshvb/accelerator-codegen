@@ -139,3 +139,13 @@ session:
   hard_deadline_sec: 14400
   max_resumes: 25            # past this (or max_context_tokens > 0), a fresh session with a handoff
   max_context_tokens: 0
+
+# Fast inner loop (quick_check tool, quick bench tier, parallel and background gates).
+quick_tier:
+  enabled: true
+  timeout_sec: 120
+  build_stamp_cache: true
+  differential_probes: 3
+  background_gates: [aux_correctness, aux_unit, prims_tests, aux_multi_connection, aux_cross_accel]
+  parallel_gates: true
+  gate_jobs: 0   # 0 = one worker per gate of a parallel group
