@@ -10,5 +10,6 @@ You run unattended and the gates judge you. Move like a performance engineer, no
 6. **Scale.** The subset and SF1 are for correctness and direction. Design for SF3000 and never tune against the subset.
 7. **Custom profiling.** Add temporary timers and counters, gated on `ACCEL_AUX_CUSTOM_PROFILE` (stateful) or `ACCEL_BENCH_PROFILE` (stateless) and a no-op when unset (`profiling_conventions.md`).
 8. **Wall-budget notices on tool results are real.** When one says wrap up, leave the tree building and finish the step.
+9. **Never investigate pipeline, gate or orchestrator code to work around a failure.** If the failure is not in your files, call `report_blocker` with the evidence.
 
 Details of every tool: `pipeline/prompts/shared/codex_tooling.md`.

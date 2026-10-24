@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from accel_pipeline import no_progress
 from accel_pipeline import session as session_mod
 from accel_pipeline.backends.base import StageRunRequest, StageRunResult
 from accel_pipeline.config import ModelConfig, PipelineConfig
@@ -54,6 +55,8 @@ class _Outcome:
     stdout: str
     stderr: str
     killed: str = ""
+    reason: str = ""  # why it was stopped: deadline | idle | no_progress | blocker
+    detail: str = ""  # the evidence a directed resume carries
 
 
 def _feed(proc: subprocess.Popen, text: str) -> None:
@@ -177,6 +180,7 @@ class CodexExecBackend:
             "run_engine_build",
             "run_layer_gate",
             "discover_host_sdk",
+            "report_blocker",
             "acquire_shared_lease",
             "release_shared_lease",
         ]
@@ -346,7 +350,8 @@ class CodexExecBackend:
                 status="error",
                 error=outcome.killed,
                 final_text=outcome.stdout[-200_000:],
-                metadata={"duration_ms": duration_ms, "timed_out": True, "session_id": session_id},
+                metadata={"duration_ms": duration_ms, "timed_out": True, "session_id": session_id,
+                          "stop_reason": outcome.reason, "stop_detail": outcome.detail},
             )
         stdout, stderr = outcome.stdout, outcome.stderr
         combined = stdout if stdout.strip() else stderr
@@ -404,8 +409,9 @@ class CodexExecBackend:
             if stdin is not None:
                 threading.Thread(target=_feed, args=(proc, stdin), daemon=True).start()
             start = last_active = time.monotonic()
+            clock = self._progress_clock(since)
             rollout: Path | None = None
-            killed = ""
+            killed = reason = detail = ""
             while True:
                 try:
                     proc.wait(timeout=poll)
@@ -420,14 +426,37 @@ class CodexExecBackend:
                 if touched:
                     last_active = max(last_active, now - (time.time() - max(touched)))
                 if hard and now - start >= hard:
-                    killed = f"codex exec hit the hard deadline ({hard:.0f}s)"
+                    killed, reason = f"codex exec hit the hard deadline ({hard:.0f}s)", "deadline"
                 elif idle and now - last_active >= idle:
-                    killed = f"codex exec idle for {idle:.0f}s (no output, session or tool activity)"
+                    killed, reason = f"codex exec idle for {idle:.0f}s (no output, session or tool activity)", "idle"
+                elif (blocker := self._blocker_since(since)):
+                    killed, reason, detail = "the agent reported a blocker (report_blocker)", "blocker", blocker
+                elif clock is not None and clock.poll(rollout) == "redirect":
+                    killed = f"codex exec made no progress for {clock.idle_sec():.0f}s"
+                    reason, detail = "no_progress", clock.redirect_report()
                 if killed:
                     _kill(proc)
                     break
             return _Outcome(proc.returncode, out_path.read_text(errors="replace"),
-                            err_path.read_text(errors="replace"), killed)
+                            err_path.read_text(errors="replace"), killed, reason, detail)
+
+    def _progress_clock(self, since: float) -> no_progress.ProgressClock | None:
+        """The turn's progress clock, when the stage is watched (a stage with no art dir or a Verus step is not)."""
+        nudge, redirect = self._pipeline_config.session.no_progress.for_stage(self._stage)
+        if self._art_dir is None or self._stage.startswith("verus_") or not (nudge or redirect):
+            return None
+        return no_progress.ProgressClock(
+            self._art_dir, self._pipeline_config.repo_root, query=self._query, stage=self._stage,
+            pipeline_config=self._pipeline_config, nudge_sec=nudge, redirect_sec=redirect, started_wall=since,
+            sample_sec=max(0.05, min(15.0, (nudge or redirect) / 4)))
+
+    def _blocker_since(self, since: float) -> str:
+        """The report_blocker file written during this turn, else ''."""
+        path = self._art_dir / no_progress.BLOCKER_FILE if self._art_dir is not None else None
+        try:
+            return path.read_text(encoding="utf-8") if path is not None and path.stat().st_mtime >= since else ""
+        except OSError:
+            return ""
 
     @staticmethod
     def _session_id(output: str, codex_home: str | None, since: float, cwd: str = "") -> str:

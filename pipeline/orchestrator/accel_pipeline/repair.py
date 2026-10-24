@@ -9,12 +9,12 @@ import json
 import sys
 import time
 import traceback
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Callable, TypeVar
 
 from accel_pipeline.config import ModelConfig, PipelineConfig, load_run_workload
-from accel_pipeline.failure import PROVIDER_FLAKE, Failure, StageFailure, failure_from_gate, render_failure
+from accel_pipeline.failure import AGENT_BLOCKER, PROVIDER_FLAKE, Failure, StageFailure, failure_from_gate, render_failure
 from accel_pipeline.gate_parallel import first_failure, run_gates_parallel
 from accel_pipeline.gates import GateFailure, GateResult
 from accel_pipeline.layout import query_dir
@@ -85,6 +85,7 @@ def run_with_repair(ctx: RepairCtx, attempt: Callable[[], T], *, gates: list[str
     flakes = 0
     quarantined: set[str] = set()
     rolled_back = False
+    blocker: Failure | None = None  # the agent said the obstacle is not in its files: the next check decides
     result: Any = None
     run_attempt = True
 
@@ -99,6 +100,10 @@ def run_with_repair(ctx: RepairCtx, attempt: Callable[[], T], *, gates: list[str
             return result
 
         _record(ctx, failure)
+        if blocker is not None:
+            raise stop_stage(ctx, _persisting(blocker, failure), f"agent-reported blocker persists: {blocker.summary}")
+        if failure.infra_reason == AGENT_BLOCKER:  # from the stage itself: there is no check to re-run
+            raise stop_stage(ctx, failure, failure.summary)
         if failure.infra_reason == PROVIDER_FLAKE:
             flakes += 1
             if flakes > cfg.provider_retries:
@@ -131,7 +136,10 @@ def run_with_repair(ctx: RepairCtx, attempt: Callable[[], T], *, gates: list[str
             code_left -= 1
             ctx.log(f"{failure.kind} failure in {failure.source}; round {code_rounds - code_left}/{code_rounds}, "
                     "resuming the agent's session")
-            repair_turn(ctx, failure)
+            blocker = repair_turn(ctx, failure)
+            if blocker is not None:  # infra, never code budget: re-run the failing check once
+                code_left += 1
+                ctx.log(f"the agent reported a blocker ({blocker.summary}); re-running the check once")
             continue
         if not rolled_back:
             rolled_back = True
@@ -220,20 +228,30 @@ def _quarantine(ctx: RepairCtx, gate: str, failure: Failure) -> None:
             "not rerun in this batch")
 
 
-def repair_turn(ctx: RepairCtx, failure: Failure, *, must_change: bool | None = None) -> None:
+def _persisting(blocker: Failure, failure: Failure) -> Failure:
+    """The agent's blocker, with the check that failed again when re-run (the report cites blocker.md)."""
+    again = f"re-running the check once more still failed ({failure.source}): {failure.summary}"
+    return replace(blocker, summary=f"{blocker.summary}; {again}", diagnosis=[*blocker.diagnosis, again],
+                   reproduce=failure.reproduce)
+
+
+def repair_turn(ctx: RepairCtx, failure: Failure, *, must_change: bool | None = None) -> Failure | None:
     """One agent turn, in the stage's own session, on the failure report; a provider flake re-runs it.
-    must_change: the turn has to edit the query's files (default: when the failure is a code failure)."""
+    must_change: the turn has to edit the query's files (default: when the failure is a code failure).
+    Returns the blocker when the agent ended the turn with report_blocker, else None."""
     if ctx.stage != "test_suite" and _revise_test_suite(ctx):
-        return
+        return None
     turn = ctx.repair_turn or _crash_debug_turn(ctx, failure.kind == "code" if must_change is None else must_change)
     retries = ctx.pipeline_config.repair.provider_retries
     for flake in range(1, retries + 2):
         try:
             turn(failure)
-            return
+            return None
         except StageStopped:
             raise
         except StageFailure as exc:
+            if exc.failure.infra_reason == AGENT_BLOCKER:
+                return exc.failure
             if exc.failure.infra_reason == PROVIDER_FLAKE and flake <= retries:
                 _wait_out_flake(ctx, flake)
                 continue
@@ -241,7 +259,8 @@ def repair_turn(ctx: RepairCtx, failure: Failure, *, must_change: bool | None = 
                     "the next check judges the tree")
         except Exception as exc:  # noqa: BLE001
             ctx.log(f"the repair turn raised {type(exc).__name__}: {exc}; the next check judges the tree")
-        return
+        return None
+    return None
 
 
 def _revise_test_suite(ctx: RepairCtx) -> bool:

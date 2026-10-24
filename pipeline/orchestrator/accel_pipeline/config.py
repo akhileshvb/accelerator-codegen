@@ -82,6 +82,22 @@ class RepairConfig:
 
 
 @dataclass(frozen=True)
+class NoProgressConfig:
+    """Seconds an agent may go without real progress (accel_pipeline.no_progress) before the
+    footer asks it to state its blocker (nudge) and before its turn is ended with a directed
+    resume (redirect); 0 disables. `stages` overrides either per stage."""
+
+    nudge_sec: float = 480
+    redirect_sec: float = 1200
+    stages: tuple[tuple[str, tuple[tuple[str, float], ...]], ...] = ()
+
+    def for_stage(self, stage: str) -> tuple[float, float]:
+        """(nudge, redirect) seconds of one stage."""
+        override = dict(dict(self.stages).get(stage, ()))
+        return float(override.get("nudge_sec", self.nudge_sec)), float(override.get("redirect_sec", self.redirect_sec))
+
+
+@dataclass(frozen=True)
 class SessionConfig:
     continuity: bool = True
     soft_deadline_sec: int = 5400
@@ -90,6 +106,7 @@ class SessionConfig:
     hard_deadline_sec: int = 14400
     max_resumes: int = 25
     max_context_tokens: int = 0
+    no_progress: NoProgressConfig = field(default_factory=NoProgressConfig)
 
     def soft_deadline_for(self, stage: str) -> int:
         return dict(self.stage_soft_deadline_sec).get(stage, self.soft_deadline_sec)
@@ -449,6 +466,16 @@ def _repair_config(block: dict[str, Any]) -> RepairConfig:
     )
 
 
+def _no_progress_config(block: dict[str, Any]) -> NoProgressConfig:
+    defaults = NoProgressConfig()
+    return NoProgressConfig(
+        nudge_sec=float(block.get("nudge_sec", defaults.nudge_sec)),
+        redirect_sec=float(block.get("redirect_sec", defaults.redirect_sec)),
+        stages=tuple((str(stage), tuple((str(k), float(v)) for k, v in (override or {}).items()))
+                     for stage, override in (block.get("stages") or {}).items()),
+    )
+
+
 def _session_config(block: dict[str, Any]) -> SessionConfig:
     defaults = SessionConfig()
     return SessionConfig(
@@ -459,6 +486,7 @@ def _session_config(block: dict[str, Any]) -> SessionConfig:
         hard_deadline_sec=int(block.get("hard_deadline_sec", defaults.hard_deadline_sec)),
         max_resumes=int(block.get("max_resumes", defaults.max_resumes)),
         max_context_tokens=int(block.get("max_context_tokens", defaults.max_context_tokens)),
+        no_progress=_no_progress_config(block.get("no_progress") or {}),
     )
 
 

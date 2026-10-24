@@ -141,6 +141,9 @@ session:
   hard_deadline_sec: 14400
   max_resumes: 25            # past this (or max_context_tokens > 0), a fresh session with a handoff
   max_context_tokens: 0
+  # No real progress (an owned file, a stage artifact, or a check result that changed; reads and greps
+  # are activity): the tool footer asks for the blocker, then the turn ends with a directed resume.
+  no_progress: {nudge_sec: 480, redirect_sec: 1200}   # stages: {<stage>: {nudge_sec: N, redirect_sec: N}}
 
 # Fast inner loop (quick_check tool, quick bench tier, parallel and background gates).
 quick_tier:

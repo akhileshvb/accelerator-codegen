@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from accel_pipeline.jsonio import read_json
+from accel_pipeline.no_progress import record_check
 from accel_pipeline.session import keep_alive
 
 
@@ -305,7 +306,15 @@ def build_mcp_tool_callables(
 
         return discover_host_sdk_json(workload, pipeline_config.repo_root, pipeline_config.build_dir)
 
+    def report_blocker(summary: str, evidence: str) -> str:
+        """The obstacle is outside your files: write blocker.md and end the turn."""
+        from accel_pipeline.no_progress import write_blocker
+
+        write_blocker(art, summary, evidence)
+        return "Blocker recorded. Stop now; the orchestrator takes over. Do not continue working."
+
     return {
+        "report_blocker": report_blocker,
         "request_gate": request_gate,
         "gate_status": gate_status,
         "quick_check": quick_check,
@@ -370,6 +379,7 @@ def main(argv: list[str] | None = None) -> int:
             )
             with keep_alive(art):  # a long tool call (gate, bench, build) is agent activity, not idleness
                 result = tools[name](*a, **kw)
+            record_check(art, name, a, result)
             return result + _budget_footer(pipeline_config, stage, q)
         except Exception as exc:  # noqa: BLE001 — surface to MCP client
             return json.dumps({"error": str(exc), "tool": name})
@@ -544,6 +554,13 @@ def main(argv: list[str] | None = None) -> int:
             alternate_candidate_ids,
             cost_model_insufficient_reason,
         )
+
+    @_tool(annotations=_rw)
+    def report_blocker(summary: str, evidence: str) -> str:
+        """Call when the obstacle is outside what you own (a pipeline, gate, harness or backend bug, a
+        missing input) instead of investigating it. Writes blocker.md and ends your turn; the
+        orchestrator re-runs the failing check once and otherwise stops for an operator."""
+        return _call("report_blocker", summary, evidence)
 
     @_tool(annotations=_rw)
     def run_pipeline_command(command: str) -> str:
