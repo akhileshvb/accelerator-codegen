@@ -39,6 +39,9 @@ from accel_pipeline.paths import (
     query_artifacts_dir,
 )
 
+ANALYSIS_STAGES = ("analysis", "analysis_critic")  # both see the query, its parameters and the data
+
+
 def _read_text(path: Path, default: str = "") -> str:
     return path.read_text(encoding="utf-8") if path.is_file() else default
 
@@ -178,7 +181,7 @@ def build_prompt_context(
     ref_path = workload.get("reference_sql_path")
     if ref_path:
         reference_sql_path = str(ref_path)
-        if stage == "analysis" and Path(ref_path).is_file():
+        if stage in ANALYSIS_STAGES and Path(ref_path).is_file():
             reference_sql = Path(ref_path).read_text(encoding="utf-8")
 
     import yaml
@@ -198,7 +201,7 @@ def build_prompt_context(
 
     paths = resolve_workload_paths(pipeline_config, workload, query)
 
-    if is_aux and stage in ("analysis", "analysis_critic"):
+    if is_aux and stage in ANALYSIS_STAGES:
         from accel_pipeline.data_shape import build_data_section, dependent_table_names
         from accel_pipeline.tools.data_tools import DataToolContext, dataset_row_counts
 
