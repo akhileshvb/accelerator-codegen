@@ -93,7 +93,7 @@ def call_tool(name: str, arguments: dict) -> dict:
                 try:
                     return json.loads(text)
                 except ValueError:
-                    return {"ok": not result.isError, "text": text}
+                    return {"ok": not getattr(result, "isError", getattr(result, "is_error", False)), "text": text}
 
     return asyncio.run(call())
 
