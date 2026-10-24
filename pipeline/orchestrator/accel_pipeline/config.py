@@ -143,6 +143,8 @@ class QuickTierConfig:
     )
     parallel_gates: bool = True
     gate_jobs: int = 0  # concurrent gates in a parallel group; 0 = one per gate
+    write_cost_budget_share: float = 0.5  # of the aux_correctness timeout that quick_check lets the projected writes and builds use
+    admission_gates: tuple[str, ...] = ("aux_correctness", "aux_bench_sweep", "aux_tsan")  # run only after quick_check passed
 
 
 def _quick_tier_config(data: dict[str, Any]) -> QuickTierConfig:
@@ -156,6 +158,8 @@ def _quick_tier_config(data: dict[str, Any]) -> QuickTierConfig:
         background_gates=tuple(str(g) for g in block.get("background_gates", default.background_gates)),
         parallel_gates=bool(block.get("parallel_gates", default.parallel_gates)),
         gate_jobs=int(block.get("gate_jobs", default.gate_jobs)),
+        write_cost_budget_share=float(block.get("write_cost_budget_share", default.write_cost_budget_share)),
+        admission_gates=tuple(str(g) for g in block.get("admission_gates", default.admission_gates)),
     )
 
 

@@ -68,6 +68,14 @@ def _compact_background_state(state: dict) -> dict:
     return compact
 
 
+def admission_refusal_payload(ctx: ToolContext, gate_name: str) -> str:
+    """The refusal (JSON) when `gate_name` may not run before a passing quick_check on this code; "" when it may."""
+    from accel_pipeline.quick import admission_refusal
+
+    reason = admission_refusal(ctx.pipeline_config, ctx.workload or {}, ctx.query, gate_name)
+    return json.dumps({"gate": gate_name, "status": "refused", "reason": reason}, indent=2) if reason else ""
+
+
 def make_gate_tools(ctx: ToolContext):
     def request_gate(gate_name: str, background: bool = False) -> str:
         """MCP TOOL (not a resource). Run an official orchestrator gate by name.
@@ -84,6 +92,8 @@ def make_gate_tools(ctx: ToolContext):
         aux_correctness, aux_unit, prims_tests, aux_multi_connection and aux_cross_accel);
         keep working and read the result once with ``gate_status``. Never poll it in a loop.
         """
+        if refusal := admission_refusal_payload(ctx, gate_name):
+            return refusal
         if background:
             state = start_background_gate(
                 ctx.pipeline_config, ctx.workload or {}, ctx.query, gate_name, workload_name=ctx.workload_name

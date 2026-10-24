@@ -97,11 +97,20 @@ for target in "${EXTRA_TARGETS[@]}"; do
   [[ ${RC} -eq 0 ]] || fail_step "${target}" "${HOST_RUN} ${target}"
 done
 if [[ ${WITH_DIFF} -eq 1 ]]; then
-  export ACCEL_ADV_MAX_PROBES="${ACCEL_ADV_MAX_PROBES:-${ACCEL_QUICK_PROBES:-3}}"
   suite_prepare quick "${JSON}" quick_check
+  suite_adversarial_env
   engine_run "${DIFF_BINARY}" "${QUERY}"
   suite_extras run_aux_quick_check.sh
   [[ ${RC} -eq 0 ]] || fail_step differential "${HOST_RUN} ${DIFF_BINARY} ${QUERY}"
+  # As the full tier: the same differential again, same draws, capped at one thread (a sanitizer run has its own count).
+  if [[ -z "${SANITIZER}" && "$(gate_threads)" -gt 1 ]]; then
+    SUITE_N_EXTRAS=("${SUITE_EXTRAS[@]}")
+    [[ -z "${ACCEL_SUITE_REPORT:-}" ]] || export ACCEL_SUITE_REPORT="${ACCEL_SUITE_REPORT%.json}_threads1.json"
+    ACCEL_AUX_THREADS=1 engine_run "${DIFF_BINARY}" "${QUERY}"
+    suite_extras run_aux_quick_check.sh
+    [[ ${RC} -eq 0 ]] || fail_step differential_threads1 "ACCEL_AUX_THREADS=1 ${HOST_RUN} ${DIFF_BINARY} ${QUERY}"
+    SUITE_EXTRAS=("${SUITE_N_EXTRAS[@]}")
+  fi
 fi
 sanitizer_report
 if [[ ${SAN_YOURS} -gt 0 ]]; then

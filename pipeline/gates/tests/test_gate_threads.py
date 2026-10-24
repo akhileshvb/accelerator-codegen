@@ -33,6 +33,20 @@ def test_quick_tier_differential_runs_once_at_n(repo):
     assert result(gj, "aux_correctness")["threads_checked"] == [4]
 
 
+def test_quick_check_runs_the_differential_at_n_then_one_thread_like_the_full_tier(repo):
+    proc, _, log, gj, _ = run_gate(repo, "run_aux_quick_check.sh", "5",
+                                   env_extra={"ACCEL_GATE_NAME": "quick_check", "ACCEL_AUX_THREADS": "4"})
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert thread_values(log) == ["4", "1"]
+
+
+def test_a_quick_check_that_fails_only_at_one_thread_names_it(repo):
+    proc, _, _, gj, _ = run_gate(repo, "run_aux_quick_check.sh", "5", env_extra={
+        "ACCEL_GATE_NAME": "quick_check", "ACCEL_AUX_THREADS": "4", "FAKE_FAIL_AT_ONE_THREAD": "1"})
+    assert proc.returncode == 1
+    assert result(gj, "quick_check")["step"] == "differential_threads1"
+
+
 def test_a_differential_that_fails_only_at_one_thread_fails_the_gate(repo):
     proc, _, _, gj, _ = run_gate(repo, "run_aux_correctness.sh", "5",
                                  env_extra={"ACCEL_AUX_THREADS": "4", "FAKE_FAIL_AT_ONE_THREAD": "1"})
@@ -108,6 +122,11 @@ def test_sanitizer_check_builds_its_own_instrumented_dir_with_every_phase_at_n_t
     assert "CMAKE_BUILD_TYPE:STRING=RelWithDebInfo" in cache
     data = result(gj, "quick_check")
     assert data["status"] == "pass" and data["sanitizer"] == "thread" and data["threads"] == 3
+
+
+def test_a_sanitizer_quick_check_runs_the_differential_at_its_one_thread_count_only(repo):
+    _, _, log, _, _ = run_gate(repo, "run_aux_quick_check.sh", "5", env_extra=SAN_ENV)
+    assert thread_values(log) == ["3"]
 
 
 def test_a_report_with_a_frame_in_the_query_fails_and_engine_reports_do_not(repo):

@@ -71,6 +71,7 @@ inline void RunSuiteDifferential(const std::string &db_path, const engine::Share
   const auto started = std::chrono::steady_clock::now();
   if (stateful)
     runtime.Build();
+  const double build_seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
 
   suite::Tally tally;
   const auto accel = [&](const std::string &, const std::string &tuple) {
@@ -96,7 +97,7 @@ inline void RunSuiteDifferential(const std::string &db_path, const engine::Share
                              ",\"params\":" + std::to_string(spec.params.size()) + ",\"param_tuples\":" + params +
                              "],\"txns\":" + std::to_string(spec.txns.size()) + ",\"write_errors\":" +
                              std::to_string(run.write_errors) + ",\"write_error_examples\":" + run.write_error_examples +
-                             "],\"executes\":{\"hit\":" + std::to_string(counts.hit) + ",\"fallback\":" +
+                             "],\"build_seconds\":" + std::to_string(build_seconds) + "," + run.CostFields() + ",\"executes\":{\"hit\":" + std::to_string(counts.hit) + ",\"fallback\":" +
                              std::to_string(counts.fallback) + "},\"seconds\":" + std::to_string(seconds) + "," +
                              tally.Fields() + "}";
   if (const auto path = SuiteEnv("ACCEL_SUITE_REPORT"); !path.empty())

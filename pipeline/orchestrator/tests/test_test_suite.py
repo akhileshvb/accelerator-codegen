@@ -211,15 +211,15 @@ def test_derived_parameters_follow_their_source():
 
 def test_a_run_environment_is_its_seed_and_tier(tmp_path):
     suite = write_suite(tmp_path)
-    cfg = ts.SuiteConfig(acceptance_random_tuples=7, quick_random_tuples=2, quick_txns=3, differential_every=4)
+    cfg = ts.SuiteConfig(acceptance_random_tuples=7, differential_every=4)
     full = ts.run_environment(suite, tier="full", cfg=cfg, seed=5, params_file=tmp_path / "full.sql")
     again = ts.run_environment(suite, tier="full", cfg=cfg, seed=5, params_file=tmp_path / "again.sql")
     assert (tmp_path / "full.sql").read_text() == (tmp_path / "again.sql").read_text()
     assert len((tmp_path / "full.sql").read_text().splitlines()) == 7
     assert full["ACCEL_SUITE_SEED"] == "5" and full["ACCEL_SUITE_EVERY"] == "4" and "ACCEL_SUITE_TXNS" not in full
     quick = ts.run_environment(suite, tier="quick", cfg=cfg, seed=5, params_file=tmp_path / "quick.sql")
-    assert len((tmp_path / "quick.sql").read_text().splitlines()) == 2 and quick["ACCEL_SUITE_EVERY"] == "0"
-    assert quick["ACCEL_SUITE_TXNS"].split(",") == ["001.sql", "002.sql", "003.sql"]
+    assert len((tmp_path / "quick.sql").read_text().splitlines()) == 7 and quick["ACCEL_SUITE_EVERY"] == "4"  # as many as the full tier
+    assert "ACCEL_SUITE_TXNS" not in quick  # every transaction of the suite
     iterate = ts.run_environment(suite, tier="iterate", cfg=ts.SuiteConfig(acceptance_random_tuples=7, iterate_random_tuples=3, iterate_every=10),
                                  seed=5, params_file=tmp_path / "iterate.sql")
     assert len((tmp_path / "iterate.sql").read_text().splitlines()) == 3 and iterate["ACCEL_SUITE_EVERY"] == "10"
@@ -228,10 +228,10 @@ def test_a_run_environment_is_its_seed_and_tier(tmp_path):
     assert fresh["ACCEL_SUITE_SEED"] != "0" and again == {**full, "ACCEL_SUITE_PARAMS_FILE": again["ACCEL_SUITE_PARAMS_FILE"]}
 
 
-def test_the_quick_tier_takes_the_first_transaction_of_each_kind_and_table(tmp_path):
-    suite = write_suite(tmp_path, txns={**TXNS, "002.sql": "INSERT INTO t VALUES (9, 'A', DATE '1995-01-01', 1);"},
-                        manifest=edited(MANIFEST, ["txns", "002.sql", "kind"], "point_insert"))
-    assert ts.quick_txn_names(suite, 10) == ["001.sql", "003.sql", "004.sql", "005.sql", "006.sql"]
+def test_transactions_are_profiled_by_declared_kind_and_written_tables(tmp_path):
+    suite = write_suite(tmp_path)
+    profiles = ts.txn_profiles(suite)
+    assert profiles["001.sql"] == ("point_insert", ("t",)) and list(profiles) == list(ts.txn_files(suite))
 
 
 def test_a_frozen_suite_cannot_be_edited_and_a_change_request_is_the_way(tmp_path):

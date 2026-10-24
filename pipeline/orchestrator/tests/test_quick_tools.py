@@ -3,15 +3,18 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
+from pathlib import Path
 from types import SimpleNamespace
 
-from accel_pipeline import mcp_server
+from accel_pipeline import mcp_server, quick
+from accel_pipeline.config import QuickTierConfig, load_pipeline_config
 from accel_pipeline.quick import QuickResult
 from accel_pipeline.failure import Failure
 from accel_pipeline.tools import gate_tools, quick_tools
 from accel_pipeline.tools.gate_tools import ToolContext
 
-CONFIG = SimpleNamespace(quick_tier=SimpleNamespace(background_gates=("aux_unit",)))
+CONFIG = SimpleNamespace(quick_tier=QuickTierConfig(background_gates=("aux_unit", "aux_correctness")))
 WORKLOAD = {"workload_kind": "aux_state"}
 
 
@@ -75,3 +78,29 @@ def test_an_empty_footer_adds_nothing_and_a_broken_one_never_fails_the_call(monk
 
     monkeypatch.setattr("accel_pipeline.session.budget_footer", broken)
     assert mcp_server._budget_footer(CONFIG, "s", 1) == ""
+
+
+def test_heavy_gates_are_refused_before_a_passing_quick_check_in_the_foreground_and_the_background(monkeypatch, tmp_path):
+    monkeypatch.setattr(gate_tools, "start_background_gate", lambda *a, **k: (_ for _ in ()).throw(AssertionError("started")))
+    monkeypatch.setattr(gate_tools, "run_gate", lambda *a, **k: (_ for _ in ()).throw(AssertionError("ran")))
+    config = SimpleNamespace(repo_root=tmp_path, quick_tier=CONFIG.quick_tier)  # not a git tree: no stamp, no admission
+    request_gate, _, _, _ = gate_tools.make_gate_tools(ToolContext(config, 6, WORKLOAD))
+    for background in (False, True):
+        out = json.loads(request_gate("aux_correctness", background=background))
+        assert out["status"] == "refused" and "run quick_check first" in out["reason"]
+
+
+def test_an_admitted_gate_runs(monkeypatch):
+    ran = []
+    monkeypatch.setattr(gate_tools, "run_gate", lambda config, name, *a, **k: ran.append(name) or SimpleNamespace(name=name, data={"status": "pass"}))
+    monkeypatch.setattr(gate_tools, "admission_refusal_payload", lambda ctx, gate: "")
+    request_gate, *_ = gate_tools.make_gate_tools(ToolContext(CONFIG, 6, WORKLOAD))
+    assert json.loads(request_gate("aux_correctness"))["status"] == "pass" and ran == ["aux_correctness"]
+
+
+def test_run_correctness_is_refused_like_request_gate(tmp_path):
+    root = Path(__file__).resolve().parents[3]
+    config = replace(load_pipeline_config(repo_root=root), repo_root=tmp_path)
+    tools = mcp_server.build_mcp_tool_callables(config, WORKLOAD, "w", 6, "implementation", 0, tmp_path)
+    out = json.loads(tools["run_correctness"]())
+    assert out["gate"] == "aux_correctness" and out["status"] == "refused"

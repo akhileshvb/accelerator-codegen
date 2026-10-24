@@ -53,7 +53,7 @@ Optimizations do not trade away generality: keep `hard_guidelines.md` §4, the s
 }
 ```
 
-2. **Patch phase.** Rewrite whole files for coordinated changes, patch for local ones; bump encode/decode version constants when the blob layout changes. No grep/edit switching: implement, `quick_check`, then end with the hypothesis JSON, a short summary and **`HYPOTHESIS_PATCH_COMPLETE`**.
+2. **Patch phase.** Rewrite whole files for coordinated changes, patch for local ones; bump encode/decode version constants when the blob layout changes. No grep/edit switching: implement, iterate with `quick_check` until it passes with no projected-write-cost failure (the heavy gates are refused before, and a gate is requested once, not used to debug), then end with the hypothesis JSON, a short summary and **`HYPOTHESIS_PATCH_COMPLETE`**.
 3. If impossible: `{"status": "cannot_test", "reason": "..."}` and `CANNOT_TEST`. If both axes are exhausted (not while write-mix is collapsed or a clear redesign remains): `OPTIMIZATION_SATURATED` with a JSON reason. Below the read-speedup floor it is honored only after profile-guided, distinct trials including one `structural` and one `low_level`.
 
 {{measurement_trust}}
