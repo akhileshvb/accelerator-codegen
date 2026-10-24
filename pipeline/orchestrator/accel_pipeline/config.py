@@ -72,6 +72,12 @@ class RepairConfig:
     max_orchestrator_retries: int = 1
     load_factor: float = 1.5
     never_quarantine: tuple[str, ...] = ("aux_correctness", "aux_unit")
+    provider_retries: int = 3  # network/provider flakes: their own budget, with a growing wait
+    provider_backoff_sec: tuple[float, ...] = (30.0, 90.0, 270.0)
+
+    def provider_backoff(self, retry: int) -> float:
+        """Seconds to wait before provider retry number `retry` (1-based; the last wait repeats)."""
+        return self.provider_backoff_sec[min(retry, len(self.provider_backoff_sec)) - 1] if self.provider_backoff_sec else 0.0
 
 
 @dataclass(frozen=True)
@@ -404,6 +410,8 @@ def _repair_config(block: dict[str, Any]) -> RepairConfig:
         max_orchestrator_retries=int(block.get("max_orchestrator_retries", defaults.max_orchestrator_retries)),
         load_factor=float(block.get("load_factor", defaults.load_factor)),
         never_quarantine=tuple(str(g) for g in block.get("never_quarantine", defaults.never_quarantine)),
+        provider_retries=int(block.get("provider_retries", defaults.provider_retries)),
+        provider_backoff_sec=tuple(float(x) for x in block.get("provider_backoff_sec", defaults.provider_backoff_sec)),
     )
 
 

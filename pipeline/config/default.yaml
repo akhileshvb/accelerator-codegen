@@ -129,6 +129,8 @@ repair:
   max_orchestrator_retries: 1
   load_factor: 1.5          # a gate timeout under loadavg > load_factor * cores is infra
   never_quarantine: [aux_correctness, aux_unit]
+  provider_retries: 3       # provider/network flakes: their own budget (not infra_retries), with a growing wait
+  provider_backoff_sec: [30, 90, 270]
 
 # One codex session per role (accel_pipeline/session.py) and the wall budgets of an agent run.
 session:

@@ -6,7 +6,7 @@ from typing import Any
 
 from accel_pipeline.backends import StageRunRequest, create_agent_backend
 from accel_pipeline.config import ModelConfig, PipelineConfig, load_run_workload, apply_workload_overrides
-from accel_pipeline.failure import Failure, StageFailure
+from accel_pipeline.failure import PROVIDER_FLAKE, Failure, StageFailure
 from accel_pipeline.models import make_model_id
 from accel_pipeline.paths import query_artifacts_dir
 from accel_pipeline.session import run_in_session
@@ -217,7 +217,7 @@ def stage_failure(stage: str, backend_name: str, result: Any) -> Failure:
         return Failure(kind="code", stage=stage, source="write_policy", summary=summary, evidence=detail)
     if is_transient_provider_failure(detail):
         return Failure(kind="infra", stage=stage, source="agent", summary=summary, evidence=detail,
-                       infra_reason="provider_flake")
+                       infra_reason=PROVIDER_FLAKE)
     return Failure(kind="orchestrator", stage=stage, source="agent", summary=summary, evidence=detail)
 
 

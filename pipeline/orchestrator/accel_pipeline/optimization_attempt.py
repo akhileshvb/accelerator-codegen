@@ -1037,7 +1037,7 @@ def run_optimization_iteration(
             # Soft-retry provider flakes on the same attempt slot so network
             # disconnects do not burn the whole attempt budget without any work.
             provider_retries = 0
-            max_provider_retries = 3
+            max_provider_retries = pipeline_config.repair.provider_retries
             while True:
                 cycle = worker.run_candidate_cycle(user_msg)
                 save_attempt_state(
@@ -1060,7 +1060,7 @@ def run_optimization_iteration(
                         file=sys.stderr,
                         flush=True,
                     )
-                    time.sleep(min(30, 5 * provider_retries))
+                    time.sleep(pipeline_config.repair.provider_backoff(provider_retries))
                     continue
                 break
 

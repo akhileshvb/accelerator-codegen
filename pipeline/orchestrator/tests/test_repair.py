@@ -171,6 +171,60 @@ def test_a_provider_flake_reruns_the_attempt_not_the_gates(world):
     assert len(attempts) == 2 and len(world.gate_calls) == 1
 
 
+FLAKE = Failure(kind="infra", stage="implementation", source="agent", summary="x", infra_reason="provider_flake")
+
+
+def test_provider_flakes_have_their_own_budget_and_back_off(world, monkeypatch):
+    waits = []
+    monkeypatch.setattr(repair_mod.time, "sleep", waits.append)
+    attempts = []
+
+    def attempt():
+        attempts.append(1)
+        if len(attempts) <= 3:
+            raise StageFailure(FLAKE)
+        return "ok"
+
+    assert run_with_repair(world.ctx(), attempt) == "ok"
+    assert waits == [30.0, 90.0, 270.0] and world.agent_messages == []
+
+
+def test_a_flake_that_never_clears_stops_the_run_cleanly(world):
+    def attempt():
+        raise StageFailure(FLAKE)
+
+    with pytest.raises(StageStopped, match="provider failed 4 times"):
+        run_with_repair(world.ctx(), attempt)
+
+
+def test_flakes_do_not_spend_the_infra_or_code_budgets(tmp_path, monkeypatch):
+    world = World(tmp_path, monkeypatch, infra_retries=0, max_code_rounds=0, provider_retries=2)
+    attempts = []
+
+    def attempt():
+        attempts.append(1)
+        if len(attempts) <= 2:
+            raise StageFailure(FLAKE)
+
+    run_with_repair(world.ctx(), attempt)
+    assert len(attempts) == 3
+
+
+def test_a_flake_in_the_repair_turn_reruns_the_turn_not_the_code_round(world, monkeypatch):
+    turns = []
+
+    def agent(**kwargs):
+        turns.append(1)
+        if len(turns) == 1:
+            raise StageFailure(FLAKE)
+        world.agent_messages.append(kwargs["user_message"])
+
+    monkeypatch.setattr("accel_pipeline.stages.base.run_agent_stage", agent)
+    world.gate_script = [gate_fail()]
+    run_with_repair(world.ctx(), lambda: None, gates=["aux_correctness"])
+    assert len(turns) == 2 and len(world.agent_messages) == 1 and len(world.gate_calls) == 2
+
+
 def test_a_nested_stop_passes_through(world):
     def attempt():
         raise StageStopped("inner", Path("x"))

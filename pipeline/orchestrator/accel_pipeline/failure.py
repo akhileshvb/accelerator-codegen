@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any, Literal
 if TYPE_CHECKING:
     from accel_pipeline.gates import GateResult
 
+PROVIDER_FLAKE = "provider_flake"  # the infra_reason of a network or provider error: the agent never ran
 FailureKind = Literal["code", "infra", "timeout", "measurement", "orchestrator"]
 
 

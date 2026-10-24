@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any, Callable, TypeVar
 
 from accel_pipeline.config import ModelConfig, PipelineConfig, load_run_workload
-from accel_pipeline.failure import Failure, StageFailure, failure_from_gate, render_failure
+from accel_pipeline.failure import PROVIDER_FLAKE, Failure, StageFailure, failure_from_gate, render_failure
 from accel_pipeline.gate_parallel import first_failure, run_gates_parallel
 from accel_pipeline.gates import GateFailure, GateResult
 from accel_pipeline.layout import query_dir
@@ -80,6 +80,7 @@ def run_with_repair(ctx: RepairCtx, attempt: Callable[[], T], *, gates: list[str
     code_rounds = code_left
     infra_used: dict[str, int] = {}
     orchestrator_left = cfg.max_orchestrator_retries
+    flakes = 0
     quarantined: set[str] = set()
     rolled_back = False
     result: Any = None
@@ -96,6 +97,14 @@ def run_with_repair(ctx: RepairCtx, attempt: Callable[[], T], *, gates: list[str
             return result
 
         _record(ctx, failure)
+        if failure.infra_reason == PROVIDER_FLAKE:
+            flakes += 1
+            if flakes > cfg.provider_retries:
+                raise stop_stage(ctx, failure, f"the provider failed {flakes} times in a row")
+            _wait_out_flake(ctx, flakes)
+            run_attempt = from_attempt
+            continue
+        flakes = 0
         if failure.kind == "infra":
             used = infra_used[failure.source] = infra_used.get(failure.source, 0) + 1
             if used <= cfg.infra_retries:
@@ -191,8 +200,12 @@ def _clear_infra(ctx: RepairCtx, failure: Failure, used: int) -> None:
     from accel_pipeline.infra_fail_fast import handle_infra_failure
 
     handle_infra_failure(ctx.pipeline_config, ctx.workload, ctx.query, text=failure_text({"log_tail": failure.evidence}))
-    if failure.infra_reason == "provider_flake":
-        time.sleep(min(30, 5 * used))
+
+
+def _wait_out_flake(ctx: RepairCtx, retry: int) -> None:
+    wait = ctx.pipeline_config.repair.provider_backoff(retry)
+    ctx.log(f"provider flake; retry {retry}/{ctx.pipeline_config.repair.provider_retries} in {wait:.0f}s")
+    time.sleep(wait)
 
 
 def _quarantine(ctx: RepairCtx, gate: str, failure: Failure) -> None:
@@ -206,29 +219,36 @@ def _quarantine(ctx: RepairCtx, gate: str, failure: Failure) -> None:
 
 
 def _repair_turn(ctx: RepairCtx, failure: Failure) -> None:
-    """One agent turn, in the stage's own session, on the failure report."""
+    """One agent turn, in the stage's own session, on the failure report; a provider flake re-runs it."""
     from accel_pipeline.stages.base import run_agent_stage
 
     bench = str(ctx.workload.get("benchmark_name", "tpch"))
-    try:
-        run_agent_stage(
-            stage="crash_debug",
-            prompt_file="04_crash_debug.md",
-            pipeline_config=ctx.pipeline_config,
-            model_config=ctx.model_config,
-            workload_name=ctx.workload_name,
-            query=ctx.query,
-            user_message=render_failure(failure),
-            model_overrides=ctx.model_overrides,
-            optimization_iter=ctx.iteration,
-            must_change=ctx.pipeline_config.repo_root / query_dir(bench, ctx.query) if failure.kind == "code" else None,
-            session_role=MAIN,
-        )
-    except StageFailure as exc:
-        ctx.log(f"the repair turn itself failed ({exc.failure.kind}: {exc.failure.summary}); "
-                "the next check judges the tree")
-    except Exception as exc:  # noqa: BLE001
-        ctx.log(f"the repair turn raised {type(exc).__name__}: {exc}; the next check judges the tree")
+    retries = ctx.pipeline_config.repair.provider_retries
+    for flake in range(1, retries + 2):
+        try:
+            run_agent_stage(
+                stage="crash_debug",
+                prompt_file="04_crash_debug.md",
+                pipeline_config=ctx.pipeline_config,
+                model_config=ctx.model_config,
+                workload_name=ctx.workload_name,
+                query=ctx.query,
+                user_message=render_failure(failure),
+                model_overrides=ctx.model_overrides,
+                optimization_iter=ctx.iteration,
+                must_change=ctx.pipeline_config.repo_root / query_dir(bench, ctx.query) if failure.kind == "code" else None,
+                session_role=MAIN,
+            )
+            return
+        except StageFailure as exc:
+            if exc.failure.infra_reason == PROVIDER_FLAKE and flake <= retries:
+                _wait_out_flake(ctx, flake)
+                continue
+            ctx.log(f"the repair turn itself failed ({exc.failure.kind}: {exc.failure.summary}); "
+                    "the next check judges the tree")
+        except Exception as exc:  # noqa: BLE001
+            ctx.log(f"the repair turn raised {type(exc).__name__}: {exc}; the next check judges the tree")
+        return
 
 
 def _rollback(ctx: RepairCtx) -> None:
