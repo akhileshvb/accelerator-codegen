@@ -234,7 +234,7 @@ def sh_quote(text: str) -> str:
 def wait(proc: subprocess.Popen, timeout: float, log: Path) -> tuple[int | None, list[tuple[float, str]]]:
     """Exit status (None: timed out) and the times at which the log's stage and gate lines appeared."""
     deadline = time.monotonic() + timeout
-    marks: list[tuple[float, str]] = []
+    marks: list[tuple[float, str]] = [(time.monotonic(), "launch")]
     seen = 0
     while True:
         done = proc.poll() is not None
