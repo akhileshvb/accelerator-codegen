@@ -82,7 +82,7 @@ def run_gate(repo, script, *args, ctx_extra=None, env_extra=None, kind="aux_stat
         "ACCEL_PIPELINE_BUILD_DIR": str(repo / "build-release"),
         "ACCEL_PIPELINE_PYTHONPATH": str(ORCHESTRATOR), **(env_extra or {}),
     }
-    for pinned in ("ACCEL_ENGINE_INSTANCE", "ACCEL_ENGINE_STATE_DIR", "ACCEL_CMAKE_ARGS"):
+    for pinned in ("ACCEL_ENGINE_INSTANCE", "ACCEL_ENGINE_STATE_DIR", "ACCEL_CMAKE_ARGS", "ACCEL_INSTANCE_TAG"):
         if pinned not in (env_extra or {}):
             env.pop(pinned, None)
     proc = subprocess.run(["bash", str(repo / "pipeline" / "gates" / script), *args], cwd=repo,
