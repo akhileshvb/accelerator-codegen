@@ -41,6 +41,8 @@ class ModelConfig:
     # session into a few-kilobyte summary every few turns.  0 leaves Codex's defaults.
     codex_model_context_window: int = 0
     codex_auto_compact_tokens: int = 0
+    # What a compaction summary keeps (repo-relative); empty leaves Codex's generic summary.
+    codex_compact_prompt_file: str = ""
 
 
 @dataclass(frozen=True)
@@ -665,6 +667,7 @@ def load_model_config(path: Path | None = None, repo_root: Path | None = None) -
         stage_reasoning_effort={str(k): str(v) for k, v in (data.get("stage_reasoning_effort") or {}).items()},
         codex_model_context_window=int(data.get("codex_model_context_window") or 0),
         codex_auto_compact_tokens=int(data.get("codex_auto_compact_tokens") or 0),
+        codex_compact_prompt_file=str(data.get("codex_compact_prompt_file") or ""),
     )
 
 

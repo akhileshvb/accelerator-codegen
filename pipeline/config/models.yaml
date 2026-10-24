@@ -10,6 +10,7 @@ codex_bypass_approvals_and_sandbox: true
 # The presets' real window (~1M on OpenRouter); compact at 600k instead of Codex's ~300k default.
 codex_model_context_window: 1000000
 codex_auto_compact_tokens: 600000
+codex_compact_prompt_file: pipeline/prompts/shared/compact_prompt.md
 
 stage_providers:
   analysis: codex_exec

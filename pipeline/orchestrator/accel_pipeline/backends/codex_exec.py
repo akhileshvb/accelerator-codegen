@@ -311,6 +311,9 @@ class CodexExecBackend:
                 cmd.extend(["-c", f"model_context_window={self._model_config.codex_model_context_window}"])
             if self._model_config.codex_auto_compact_tokens:
                 cmd.extend(["-c", f"model_auto_compact_token_limit={self._model_config.codex_auto_compact_tokens}"])
+            if self._model_config.codex_compact_prompt_file:
+                compact = self._pipeline_config.repo_root / self._model_config.codex_compact_prompt_file
+                cmd.extend(["-c", f'experimental_compact_prompt_file="{compact}"'])
             effort = (getattr(self._model_config, "stage_reasoning_effort", None) or {}).get(self._stage)
             if effort:
                 cmd.extend(["-c", f'model_reasoning_effort="{effort}"'])
