@@ -39,11 +39,9 @@ txns:
   "022.sql": {kind: bulk_delete}
   "023.sql": {kind: bulk_update}
   "024.sql": {kind: bulk_update}
-  "026.sql": {kind: point_update}
   "027.sql": {kind: key_move}
   "028.sql": {kind: point_update}
   "029.sql": {kind: point_delete}
-  "030.sql": {kind: point_insert}
   "031.sql": {kind: bulk_insert}
   "032.sql": {kind: sequence}
 not_applicable:
