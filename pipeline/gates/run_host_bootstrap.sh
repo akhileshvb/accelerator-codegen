@@ -29,8 +29,8 @@ done
 for file in "${DIFF_SOURCE}" "backends/${ENGINE_NAME}/tests/harness.cmake"; do
   [[ -f "${ROOT}/${file}" ]] || finish fail "missing ${file}. ${HOST_HINT}" ""
 done
-grep -q "aux/finalize.cpp" "${ROOT}/backends/${ENGINE_NAME}/tests/harness.cmake" ||
-  finish fail "harness.cmake declares no module test: glob accelerators/*/q*/${ENGINE_NAME}/aux/finalize.cpp into test_<bench>_q<N>_aux (query_host_bootstrap.md)" ""
+grep -Eq "aux/(register|finalize)\.cpp" "${ROOT}/backends/${ENGINE_NAME}/tests/harness.cmake" ||
+  finish fail "harness.cmake declares no module test: glob accelerators/*/q*/${ENGINE_NAME}/aux/register.cpp (or finalize.cpp) into test_<bench>_q<N>_aux (query_host_bootstrap.md)" ""
 
 HARNESS_FILES=()
 while IFS= read -r file; do HARNESS_FILES+=("${file}"); done < <(cd "${ROOT}" &&
