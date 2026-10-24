@@ -74,7 +74,8 @@ def prefix(binds: list[Bind], cwd: Path, *, setting: str = "sandbox") -> list[st
             args += ["--ro-bind", str(p), str(p)]
     if Path("/opt").is_dir():
         args += ["--ro-bind", "/opt", "/opt"]
-    args += ["--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp", "--tmpfs", "/run"]
+    # /sys read-only: without it perf finds no PMU (every profile came back "not applicable")
+    args += ["--proc", "/proc", "--dev", "/dev", "--ro-bind", "/sys", "/sys", "--tmpfs", "/tmp", "--tmpfs", "/run"]
     # /etc/resolv.conf may point into /run (systemd-resolved)
     resolv = Path(os.path.realpath("/etc/resolv.conf"))
     if resolv.is_relative_to("/run") and resolv.parent.is_dir():
