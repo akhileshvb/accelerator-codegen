@@ -280,7 +280,10 @@ def run_gate(
     )
     started = time.monotonic()
     stamp_before = current_stamp(pipeline_config, workload, query)
-    proc = _run_gate_script(script, query, pipeline_config.repo_root, gate_env, cancel, timeout_s)
+    limits = {"cancel": cancel, "timeout_s": timeout_s}
+    proc = _run_gate_script(
+        script, query, pipeline_config.repo_root, gate_env, **{k: v for k, v in limits.items() if v is not None}
+    )
     duration_ms = int((time.monotonic() - started) * 1000)
     data: dict[str, Any] = {}
     if out_json.is_file():

@@ -23,6 +23,7 @@ from accel_pipeline.failure import Failure, render_failure
 from accel_pipeline.gates import run_gate
 from accel_pipeline.layout import query_dir, workload_schema_sql
 from accel_pipeline.paths import gates_dir_for_query, query_artifacts_dir
+from accel_pipeline.workload_facts import scratch_connection
 
 QUICK_GATE = "quick_check"
 SUBSET_MAX_SOURCE_GB = float(os.environ.get("ACCEL_SUBSET_MAX_SOURCE_GB", 30))
@@ -52,21 +53,20 @@ def _subset_key(source: Path, subset_sql: Path, schema_sql: Path) -> str:
 def _write_subset(source: Path, subset_sql: Path, schema_sql: Path, dest: Path) -> None:
     """Load `source` into a scratch database, cut the subset out of it with `subset_sql` (written
     against the source attached as `src`) and export its tables as <table>.tbl files into `dest`."""
-    import duckdb
-
     with tempfile.TemporaryDirectory() as scratch:
-        full = duckdb.connect(f"{scratch}/full.duckdb")
+        full = scratch_connection(f"{scratch}/full.db")
         for stmt in _sql_statements(schema_sql):
             full.execute(stmt)
         for tbl in sorted(source.glob("*.tbl")):
             full.execute(f"COPY {tbl.stem} FROM '{tbl}' (DELIMITER '|', HEADER false)")
         full.close()
-        subset = duckdb.connect(f"{scratch}/subset.duckdb")
-        subset.execute(f"ATTACH '{scratch}/full.duckdb' AS src (READ_ONLY)")
+        subset = scratch_connection(f"{scratch}/subset.db")
+        subset.execute(f"ATTACH '{scratch}/full.db' AS src (READ_ONLY)")
         for stmt in _sql_statements(subset_sql):
             subset.execute(stmt)
         tables = subset.execute(
-            "SELECT table_name FROM duckdb_tables() WHERE NOT temporary AND database_name = current_database()"
+            "SELECT table_name FROM information_schema.tables "
+            "WHERE table_schema = 'main' AND table_catalog = current_database()"
         ).fetchall()
         for (table,) in tables:
             subset.execute(f"COPY {table} TO '{dest}/{table}.tbl' (DELIMITER '|', HEADER false)")

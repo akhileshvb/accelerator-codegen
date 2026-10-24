@@ -52,6 +52,7 @@ def build_mcp_tool_callables(
     optimization_iter: int,
     art: Path,
 ) -> dict[str, Callable[..., str]]:
+    from accel_pipeline.gate_stamps import current_stamp
     from accel_pipeline.gates import run_gate
     from accel_pipeline.tools.ab_tools import AbToolContext, make_ab_tools
     from accel_pipeline.tools.gate_tools import ToolContext as GateCtx
@@ -61,10 +62,11 @@ def build_mcp_tool_callables(
     from accel_pipeline.tools.shell_tools import ToolContext as ShellCtx
     from accel_pipeline.tools.shell_tools import make_shell_tools
     from accel_pipeline.tools.gate_tools import _compact_gate_payload
+    from accel_pipeline.tools.quick_tools import make_quick_tools
 
-    request_gate, run_engine_build, run_layer_gate = make_gate_tools(
-        GateCtx(pipeline_config, query, workload=workload, stage=stage)
-    )
+    gate_ctx = GateCtx(pipeline_config, query, workload=workload, stage=stage, workload_name=workload_name)
+    request_gate, run_engine_build, run_layer_gate, gate_status = make_gate_tools(gate_ctx)
+    quick_check = make_quick_tools(gate_ctx)
     run_command = make_shell_tools(ShellCtx(pipeline_config, query))
     request_structural_reanalysis = make_reanalysis_tools(
         ReanalysisCtx(pipeline_config, query, stage, workload_name, optimization_iter)
@@ -77,7 +79,7 @@ def build_mcp_tool_callables(
     )
     begin_ab_trial, run_quick_benchmark, end_ab_trial = make_ab_tools(ab_ctx)
 
-    def _run_named_gate(gate_name: str) -> str:
+    def _run_named_gate(gate_name: str, env: dict[str, str] | None = None) -> str:
         result = run_gate(
             pipeline_config,
             gate_name,
@@ -85,24 +87,41 @@ def build_mcp_tool_callables(
             workload=workload,
             raise_on_failure=False,
             allow_skip=True,
+            env=env,
         )
         return json.dumps(_compact_gate_payload(result.name, result.data), indent=2)
 
+    def _cached_by_code_stamp(name: str, measure: Callable[[], str]) -> str:
+        """`measure()`, or its last result when the code is exactly what it measured (build stamp)."""
+        path = art / f"{name}_cache.json"
+        stamp = current_stamp(pipeline_config, workload, query)
+        cached = read_json(path)
+        if stamp and cached.get("stamp") == stamp:
+            return f"{cached['payload']}\n(cached: the code is unchanged since this was measured)"
+        payload = measure()
+        if stamp and current_stamp(pipeline_config, workload, query) == stamp:
+            path.write_text(json.dumps({"stamp": stamp, "payload": payload}), encoding="utf-8")
+        return payload
+
     def run_profile() -> str:
         """Refresh profile artifacts. Aux: quick instrumented bench (not full fair sweep)."""
-        if workload.get("workload_kind") == "aux_state":
-            # Full aux_bench_sweep is too heavy mid-loop; use the same quick path as A/B.
-            out = run_quick_benchmark(True)
-            digest = get_profile_digest()
-            return json.dumps(
-                {
-                    "mode": "aux_quick_profile",
-                    "quick_benchmark": out[:12_000],
-                    "digest": json.loads(digest) if digest.startswith("{") else {"raw": digest},
-                },
-                indent=2,
-            )[:50_000]
-        return _run_named_gate("profile")
+
+        def measure() -> str:
+            if workload.get("workload_kind") == "aux_state":
+                # Full aux_bench_sweep is too heavy mid-loop; use the same quick path as A/B.
+                out = run_quick_benchmark(True)
+                digest = get_profile_digest()
+                return json.dumps(
+                    {
+                        "mode": "aux_quick_profile",
+                        "quick_benchmark": out[:12_000],
+                        "digest": json.loads(digest) if digest.startswith("{") else {"raw": digest},
+                    },
+                    indent=2,
+                )[:50_000]
+            return _run_named_gate("profile", env={"ACCEL_BENCH_WARMUP": "1", "ACCEL_BENCH_ITERS": "3"})
+
+        return _cached_by_code_stamp("profile", measure)
 
     def run_correctness() -> str:
         """Run correctness / aux_correctness gate (smoke + SF1 differential for aux)."""
@@ -275,6 +294,8 @@ def build_mcp_tool_callables(
 
     return {
         "request_gate": request_gate,
+        "gate_status": gate_status,
+        "quick_check": quick_check,
         "run_engine_build": run_engine_build,
         "run_layer_gate": run_layer_gate,
         "run_profile": run_profile,
@@ -317,21 +338,33 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
 
-    def _tools():
-        pipeline_config, workload, workload_name, q, stage, optimization_iter, art = _build_context(args)
+    def _context():
+        context = _build_context(args)
         # Query 0 is valid (engine_backend). Only fail when neither CLI nor env set a query.
         if os.environ.get("ACCEL_PIPELINE_QUERY") is None and args.query == 0:
             raise RuntimeError(
                 "ACCEL_PIPELINE_QUERY / --query required for measurement tools "
                 "(CodexExecBackend should write pipeline/.codex/accel_pipeline_mcp.env)"
             )
-        return build_mcp_tool_callables(
-            pipeline_config, workload, workload_name, q, stage, optimization_iter, art
-        )
+        return context
+
+    def _budget_footer(pipeline_config, stage: str, q: int) -> str:
+        """The wall-budget notice (empty until a deadline is near); never fails a tool call."""
+        try:
+            from accel_pipeline.session import budget_footer
+
+            footer = budget_footer(pipeline_config, stage, q)
+        except Exception:  # noqa: BLE001
+            return ""
+        return f"\n\n{footer}" if footer else ""
 
     def _call(name: str, *a, **kw) -> str:
         try:
-            return _tools()[name](*a, **kw)
+            pipeline_config, workload, workload_name, q, stage, optimization_iter, art = _context()
+            tools = build_mcp_tool_callables(
+                pipeline_config, workload, workload_name, q, stage, optimization_iter, art
+            )
+            return tools[name](*a, **kw) + _budget_footer(pipeline_config, stage, q)
         except Exception as exc:  # noqa: BLE001 — surface to MCP client
             return json.dumps({"error": str(exc), "tool": name})
 
@@ -384,7 +417,7 @@ def main(argv: list[str] | None = None) -> int:
         return mcp.tool(**kwargs)
 
     @_tool(annotations=_rw)
-    def request_gate(gate_name: str) -> str:
+    def request_gate(gate_name: str, background: bool = False) -> str:
         """MCP TOOL (not a resource — do not list_mcp_resources).
 
         Run an official orchestrator gate by name. Returns JSON with status,
@@ -393,8 +426,24 @@ def main(argv: list[str] | None = None) -> int:
         engine_runtime, engine_host). Prefer run_engine_build / run_layer_gate when listed.
         Keep calling until status=pass. Do not substitute host cmake or docker
         exec of the harness for this tool.
+        Aux gates are for acceptance and take minutes; use quick_check in the edit loop.
+        background=True starts aux_correctness, aux_unit, prims_tests, aux_multi_connection or
+        aux_cross_accel in its own process and returns at once; read it once with gate_status.
         """
-        return _call("request_gate", gate_name)
+        return _call("request_gate", gate_name, background)
+
+    @_tool(annotations=_ro)
+    def gate_status(gate_name: str) -> str:
+        """State of a background gate (request_gate background=True): running, or its result.
+        stale=true: the code changed after it ran, so it is rerun at stage exit. Never poll in a loop."""
+        return _call("gate_status", gate_name)
+
+    @_tool(annotations=_ro)
+    def quick_check(targets: list[str] | None = None, differential: bool = True) -> str:
+        """Seconds-level check of this query's accelerator: incremental build, its own tests, the
+        differential on the small test subset. Run after every edit. targets: extra build targets of
+        your own test binaries (built and run). Correctness only; the subset is never a tuning target."""
+        return _call("quick_check", targets, differential)
 
     @_tool(annotations=_rw)
     def run_engine_build() -> str:
@@ -459,9 +508,11 @@ def main(argv: list[str] | None = None) -> int:
         return _call("begin_ab_trial", trial_id, hypothesis)
 
     @_tool(annotations=_rw)
-    def run_quick_benchmark(include_profile: bool = True) -> str:
-        """Run quick exploratory benchmark for active A/B trial."""
-        return _call("run_quick_benchmark", include_profile)
+    def run_quick_benchmark(include_profile: bool = True, acceptance: bool = False) -> str:
+        """Run the benchmark for the active A/B trial. Default: the quick tier, seconds, read axis only,
+        direction not measurement. acceptance=True: the full optimization tier; end_ab_trial(keep=True)
+        needs one."""
+        return _call("run_quick_benchmark", include_profile, acceptance)
 
     @_tool(annotations=_rw)
     def end_ab_trial(trial_id: str, keep: bool = False) -> str:

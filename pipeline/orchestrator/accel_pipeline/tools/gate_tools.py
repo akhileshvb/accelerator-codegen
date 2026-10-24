@@ -4,6 +4,7 @@ import json
 from dataclasses import dataclass
 from typing import Any
 
+from accel_pipeline.background_gates import background_status, start_background_gate
 from accel_pipeline.config import PipelineConfig
 from accel_pipeline.gates import run_gate
 
@@ -27,6 +28,7 @@ class ToolContext:
     query: int
     workload: dict[str, Any] | None = None
     stage: str = ""
+    workload_name: str = ""
 
 
 def _compact_gate_payload(gate_name: str, data: dict) -> dict:
@@ -56,8 +58,15 @@ def _compact_gate_payload(gate_name: str, data: dict) -> dict:
     return compact
 
 
+def _compact_background_state(state: dict) -> dict:
+    compact = {k: state[k] for k in ("gate", "status", "reason", "note", "elapsed_sec", "stale") if k in state}
+    if state.get("data"):
+        compact.update({k: v for k, v in _compact_gate_payload(state["gate"], state["data"]).items() if k != "gate"})
+    return compact
+
+
 def make_gate_tools(ctx: ToolContext):
-    def request_gate(gate_name: str) -> str:
+    def request_gate(gate_name: str, background: bool = False) -> str:
         """MCP TOOL (not a resource). Run an official orchestrator gate by name.
 
         Engine-backend layers: ``engine_build`` then this layer's gate
@@ -65,8 +74,18 @@ def make_gate_tools(ctx: ToolContext):
         increment until ``status`` is ``pass``. Prefer ``run_engine_build`` /
         ``run_layer_gate`` when listed. Docker hosts: this is the in-container
         build+run — do not cmake on the developer machine.
-        Aux: ``aux_correctness`` / ``aux_multi_connection``.
+        Aux: ``aux_correctness`` / ``aux_multi_connection``. Gates are for acceptance and take
+        minutes; for the edit-test loop use ``quick_check``.
+
+        ``background=True`` starts the gate in its own process and returns at once (only
+        aux_correctness, aux_unit, prims_tests, aux_multi_connection and aux_cross_accel);
+        keep working and read the result once with ``gate_status``. Never poll it in a loop.
         """
+        if background:
+            state = start_background_gate(
+                ctx.pipeline_config, ctx.workload or {}, ctx.query, gate_name, workload_name=ctx.workload_name
+            )
+            return json.dumps(_compact_background_state(state), indent=2)
         result = run_gate(
             ctx.pipeline_config,
             gate_name,
@@ -76,6 +95,16 @@ def make_gate_tools(ctx: ToolContext):
             allow_skip=True,
         )
         return json.dumps(_compact_gate_payload(result.name, result.data), indent=2)
+
+    def gate_status(gate_name: str) -> str:
+        """MCP TOOL. State of the background run of a gate: running, or its result.
+
+        ``stale: true`` means the code changed after it ran: its result does not cover your latest
+        edit, and the orchestrator reruns the gate at stage exit. Call it once when you need the
+        answer, not in a loop.
+        """
+        state = background_status(ctx.pipeline_config, ctx.workload or {}, ctx.query, gate_name)
+        return json.dumps(_compact_background_state(state), indent=2)
 
     def run_engine_build() -> str:
         """MCP TOOL. Official ``engine_build`` gate (host cmake or docker ensure+build)."""
@@ -98,4 +127,4 @@ def make_gate_tools(ctx: ToolContext):
             )
         return request_gate(gate)
 
-    return request_gate, run_engine_build, run_layer_gate
+    return request_gate, run_engine_build, run_layer_gate, gate_status

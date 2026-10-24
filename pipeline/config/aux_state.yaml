@@ -80,7 +80,6 @@ aux_bench_sweep_quick:
   bench_ref_samples: 1
   bench_base_write_samples: 1
   bench_timeout_sec: 120
-  skip_duckdb_ref: false
 
 optimization:
   max_iterations: 3

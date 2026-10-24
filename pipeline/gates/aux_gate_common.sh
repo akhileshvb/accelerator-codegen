@@ -48,7 +48,7 @@ load_engine_gate_context() { _load_gate_context "$1" "$2" --engine-only; }
 
 load_aux_gate_context() {
 	_load_gate_context "$1" "$2"
-	GATE_OUT="${GATE_ART}/gates"
+	GATE_OUT="${ACCEL_GATE_OUT_DIR:-${GATE_ART}/gates}"
 	mkdir -p "${GATE_OUT}"
 	export GATE_OUT
 }
