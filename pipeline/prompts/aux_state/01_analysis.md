@@ -1,6 +1,6 @@
 # Stage 1: Aux-state analysis
 
-Design a stateful (aux-state) accelerator for **{{display_name}}** **Q{{query_number}}** (`{{aux_function_name}}`).
+Design a stateful (aux-state) accelerator for **{{display_name}}** **Q{{query_number}}** (`{{aux_function_name}}`). If a tool or input you need is broken or missing, call `report_blocker` with the evidence instead of investigating pipeline code.
 
 ## Goal
 
