@@ -307,6 +307,10 @@ class CodexExecBackend:
                 "-c",
                 'mcp_servers.accel_pipeline.default_tools_approval_mode="approve"',
             ]
+            if self._model_config.codex_model_context_window:
+                cmd.extend(["-c", f"model_context_window={self._model_config.codex_model_context_window}"])
+            if self._model_config.codex_auto_compact_tokens:
+                cmd.extend(["-c", f"model_auto_compact_token_limit={self._model_config.codex_auto_compact_tokens}"])
             effort = (getattr(self._model_config, "stage_reasoning_effort", None) or {}).get(self._stage)
             if effort:
                 cmd.extend(["-c", f'model_reasoning_effort="{effort}"'])

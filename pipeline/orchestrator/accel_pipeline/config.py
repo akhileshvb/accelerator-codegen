@@ -37,6 +37,10 @@ class ModelConfig:
     # Per-stage reasoning effort passed to codex (model_reasoning_effort):
     # minimal | low | medium | high.  Unset stages use the model's default.
     stage_reasoning_effort: dict[str, str] = field(default_factory=dict)
+    # Codex knows no OpenRouter model's window: it assumes ~258k and compacts at ~300k, folding a
+    # session into a few-kilobyte summary every few turns.  0 leaves Codex's defaults.
+    codex_model_context_window: int = 0
+    codex_auto_compact_tokens: int = 0
 
 
 @dataclass(frozen=True)
@@ -659,6 +663,8 @@ def load_model_config(path: Path | None = None, repo_root: Path | None = None) -
             data.get("codex_bypass_approvals_and_sandbox", True)
         ),
         stage_reasoning_effort={str(k): str(v) for k, v in (data.get("stage_reasoning_effort") or {}).items()},
+        codex_model_context_window=int(data.get("codex_model_context_window") or 0),
+        codex_auto_compact_tokens=int(data.get("codex_auto_compact_tokens") or 0),
     )
 
 
