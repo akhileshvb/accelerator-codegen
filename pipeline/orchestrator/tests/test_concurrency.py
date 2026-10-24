@@ -136,8 +136,8 @@ def test_parallel_gates_split_the_workers_jobs(monkeypatch):
 
 
 def test_instance_tags_differ_across_trees():
-    assert instance_tag("q6_duckdb", Path("/a/build-release-q6")) != instance_tag("q6_duckdb", Path("/b/build-release-q6"))
-    assert instance_tag("q6_duckdb", Path("/a/b")) == instance_tag("q6_duckdb", Path("/a/b"))
+    assert instance_tag("q6_eng", Path("/a/build-release-q6")) != instance_tag("q6_eng", Path("/b/build-release-q6"))
+    assert instance_tag("q6_eng", Path("/a/b")) == instance_tag("q6_eng", Path("/a/b"))
 
 
 # --- the fair lock ---
