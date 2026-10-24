@@ -42,6 +42,7 @@ def _compact_gate_payload(gate_name: str, data: dict) -> dict:
         "returncode",
         "reason",
         "notes",
+        "reproduce",
         "smoke_exit_code",
         "differential_exit_code",
     ):

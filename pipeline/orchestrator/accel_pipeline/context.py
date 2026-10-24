@@ -437,6 +437,7 @@ def build_prompt_context(
             "audit",
             "architecture_audit",
             "validation",
+            "test_suite",
         )
         else ""
     )
