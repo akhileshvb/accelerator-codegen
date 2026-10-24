@@ -301,6 +301,16 @@ class TestAuxAnalysisValidation:
         with pytest.raises(AuxAnalysisValidationError, match="state_storage is required"):
             validate_aux_analysis(analysis)
 
+    def test_one_primitive_may_not_hold_every_component(self):
+        analysis = _sample_valid_analysis()
+        storage = analysis["correctness_facts"]["state_design"]["state_storage"]
+        storage += [dict(storage[0], component="order directory"), dict(storage[0], component="run pages")]
+        with pytest.raises(AuxAnalysisValidationError, match="narrowest generic primitive"):
+            validate_aux_analysis(analysis)
+        analysis["primitives_used"].append({"name": "CowPagedArray", "why": "run pages"})
+        storage[2]["primitive"] = "CowPagedArray"
+        validate_aux_analysis(analysis)
+
     def test_rejects_poor_fitness(self):
         analysis = _sample_valid_analysis()
         analysis["fitness_assessment"]["recommended"] = False

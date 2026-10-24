@@ -261,6 +261,13 @@ def _validate_state_storage(analysis: dict[str, Any]) -> None:
             raise AuxAnalysisValidationError(
                 f"{label}.primitive {entry['primitive']!r} is not listed in primitives_used or primitives_proposed"
             )
+    holders = {str(entry["primitive"]).strip() for entry in storage}
+    if len(storage) >= 3 and len(holders) == 1:
+        raise AuxAnalysisValidationError(
+            f"every {where} component is held by {holders.pop()!r}: name the narrowest generic primitive for each "
+            "component (a directory or reverse map is a COW map, run pages are a paged COW array), reusing or "
+            "proposing those instead of one primitive that does everything"
+        )
 
 
 def _validate_base_path_cost_decomposition(decomposition: Any) -> None:
