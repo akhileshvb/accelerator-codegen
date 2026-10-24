@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from accel_pipeline.workload_facts import with_facts
-from accel_pipeline.validation import AuxAnalysisValidationError, validate_aux_analysis
+from accel_pipeline.validation import AuxAnalysisValidationError, validate_aux_analysis, validate_aux_analysis_file
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -236,6 +236,50 @@ class TestAuxAnalysisValidation:
         analysis["correctness_facts"]["state_design"]["read_work_ratio"]["worst"] = "lots"
         with pytest.raises(AuxAnalysisValidationError, match="positive numbers"):
             validate_aux_analysis(analysis)
+
+    @staticmethod
+    def _write(tmp_path, analysis, calls):
+        path = tmp_path / "analysis.json"
+        path.write_text(json.dumps(analysis))
+        (tmp_path / "data_queries.jsonl").write_text(
+            "".join(json.dumps({"tool": "query_data", "args": {"sql": sql}, "error": err}) + "\n" for sql, err in calls))
+        return path
+
+    @staticmethod
+    def _probe_all(analysis):
+        for i, c in enumerate(analysis["state_candidate_search"]["candidates"]):
+            c["units_probe"] = f"SELECT count(*) FROM t WHERE k < {i}"
+            c["measured_units"] = f"{i} entries"
+        return [c["units_probe"] for c in analysis["state_candidate_search"]["candidates"]]
+
+    def test_every_candidate_needs_a_logged_units_probe(self, tmp_path):
+        analysis = _sample_valid_analysis()
+        assert len(analysis["state_candidate_search"]["candidates"]) >= 3
+        path = self._write(tmp_path, analysis, [])
+        with pytest.raises(AuxAnalysisValidationError, match="units_probe is required"):
+            validate_aux_analysis_file(path)
+        probes = self._probe_all(analysis)
+        path = self._write(tmp_path, analysis, [(p, None) for p in probes[1:]])
+        with pytest.raises(AuxAnalysisValidationError, match=r"candidates\[0\]\.units_probe does not match"):
+            validate_aux_analysis_file(path)
+        path = self._write(tmp_path, analysis, [(p.replace(" ", "\n  ", 1) + ";", None) for p in probes])
+        validate_aux_analysis_file(path)
+
+    def test_failed_query_is_not_a_probe(self, tmp_path):
+        analysis = _sample_valid_analysis()
+        probes = self._probe_all(analysis)
+        path = self._write(tmp_path, analysis, [(probes[0], "time box")] + [(p, None) for p in probes[1:]])
+        with pytest.raises(AuxAnalysisValidationError, match="does not match"):
+            validate_aux_analysis_file(path)
+
+    def test_probes_must_be_distinct(self, tmp_path):
+        analysis = _sample_valid_analysis()
+        probes = self._probe_all(analysis)
+        for c in analysis["state_candidate_search"]["candidates"]:
+            c["units_probe"] = probes[0]
+        path = self._write(tmp_path, analysis, [(probes[0], None)])
+        with pytest.raises(AuxAnalysisValidationError, match="distinct units_probe"):
+            validate_aux_analysis_file(path)
 
     def test_rejects_poor_fitness(self):
         analysis = _sample_valid_analysis()

@@ -299,8 +299,9 @@ def make_data_tools(ctx: DataToolContext) -> dict[str, Callable[..., str]]:
     def query_data(sql: str, max_rows: int | None = None) -> str:
         """MCP TOOL. Run ONE read-only statement (SELECT/WITH/EXPLAIN/DESCRIBE/SUMMARIZE) on the iteration dataset.
 
-        Use it to measure what the design depends on: rows qualifying for a predicate, distinct counts,
-        value ranges, fan-out, how two columns relate. The statement runs on the target engine, in its SQL.
+        Use it to measure what the design depends on (rows qualifying for a predicate, distinct counts,
+        value ranges, fan-out, how two columns relate) and to simulate a candidate design's read: count the
+        entries it would visit for a binding. The statement runs on the target engine, in its SQL.
         Results are CSV with a header, capped at max_rows (default and maximum are configured); a
         statement is stopped at the time box (default 60 s). Counts and spreads measured here are at
         iteration scale. Every call is logged to data_queries.jsonl.

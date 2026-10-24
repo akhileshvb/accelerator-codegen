@@ -252,3 +252,10 @@ def test_an_exit_gate_record_older_than_the_turn_does_not_end_it(tmp_path, monke
     (gates / "fake_gate.json").write_text('{"status": "pass"}')
     os.utime(gates / "fake_gate.json", (1, 1))
     assert backend._exit_gate_passed(time.time()) is False
+
+
+def test_the_mcp_validate_analysis_tool_reports_the_stage_check(tmp_path):
+    from accel_pipeline.mcp_server import build_mcp_tool_callables
+
+    tools = build_mcp_tool_callables(_config(tmp_path), {}, "w", 1, "analysis", 0, tmp_path)
+    assert tools["validate_analysis"]().startswith("invalid: analysis file not found")

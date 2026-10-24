@@ -198,7 +198,7 @@ def build_prompt_context(
 
     paths = resolve_workload_paths(pipeline_config, workload, query)
 
-    if is_aux and stage == "analysis":
+    if is_aux and stage in ("analysis", "analysis_critic"):
         from accel_pipeline.data_shape import build_data_section, dependent_table_names
         from accel_pipeline.tools.data_tools import DataToolContext, dataset_row_counts
 

@@ -373,6 +373,8 @@ def stage_analysis_json(analysis: dict[str, Any], stage: str) -> str:
         payload = analysis_for_optimization(analysis)
     elif stage == "audit":
         payload = analysis_for_audit(analysis)
+    elif stage == "analysis_critic":
+        payload = analysis
     else:
         payload = {
             "note": "Write full analysis.json per schema; read shared docs on demand.",

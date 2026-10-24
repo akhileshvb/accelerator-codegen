@@ -330,8 +330,21 @@ def build_mcp_tool_callables(
         write_blocker(art, summary, evidence)
         return "Blocker recorded. Stop now; the orchestrator takes over. Do not continue working."
 
+    def validate_analysis() -> str:
+        """Check analysis.json as the analysis stage will when the turn ends."""
+        from accel_pipeline.paths import analysis_artifact_path
+        from accel_pipeline.validation import AuxAnalysisValidationError, validate_aux_analysis_file
+
+        try:
+            validate_aux_analysis_file(analysis_artifact_path(pipeline_config.repo_root, query, workload=workload),
+                                       allow_poor_fitness=bool(workload.get("allow_poor_fitness", False)))
+        except AuxAnalysisValidationError as exc:
+            return f"invalid: {exc}"
+        return "valid"
+
     return {
         "report_blocker": report_blocker,
+        "validate_analysis": validate_analysis,
         "request_gate": request_gate,
         "gate_status": gate_status,
         "quick_check": quick_check,
@@ -620,6 +633,11 @@ def main(argv: list[str] | None = None) -> int:
     def discover_host_sdk() -> str:
         """Describe this engine's host.sh verbs and how to connect."""
         return _call("discover_host_sdk")
+
+    @_tool(annotations=_ro)
+    def validate_analysis() -> str:
+        """Check analysis.json exactly as the analysis stage will when your turn ends: "valid" or the first problem."""
+        return _call("validate_analysis")
 
     @_tool(annotations=_ro)
     def query_data(sql: str, max_rows: int | None = None) -> str:
