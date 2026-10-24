@@ -16,7 +16,7 @@ from accel_pipeline.failure import Failure
 from accel_pipeline.jsonio import read_json
 from accel_pipeline.layout import query_dir
 from accel_pipeline.playbook import append_experiment_log
-from accel_pipeline.repair import RepairCtx, repair_turn, run_with_repair, stop_stage
+from accel_pipeline.repair import RepairCtx, _revise_test_suite, repair_turn, run_with_repair, stop_stage
 from accel_pipeline.session import READONLY
 from accel_pipeline.stages.base import run_agent_stage
 from accel_pipeline.stages.gate_plan import workload_post_audit_gates
@@ -86,11 +86,16 @@ def _fix_blocking_findings(ctx: RepairCtx, audit_turn) -> None:
     repair_turn(ctx, Failure(
         kind="code", stage="audit", source="audit_findings",
         summary=f"The independent audit found {len(findings)} blocking problems. Fix each in your query's files "
-                "(or, if one is wrong, say why in the experiment log and leave it).",
+                "(or, if one is wrong, say why in the experiment log and leave it). A gap in the frozen test suite is not yours to "
+                "edit: write it as a test_suite_change_request.md in the artifacts and the tester will handle it.",
         evidence=numbered(findings)), must_change=False)
+    # a finding about the frozen suite is answered by a change request: the tester handles it before the re-check
+    revised = _revise_test_suite(ctx)
     touched = touched_since(repo_root, before, base, qdir)
     audit_turn(
-        "Re-check only these findings against the current tree and update audit_result.json and final_audit.md "
+        ("The tester revised the frozen test suite on the implementer's change request (see test_suite_change_requests/).\n\n"
+         if revised else "")
+        + "Re-check only these findings against the current tree and update audit_result.json and final_audit.md "
         "(a finding that is resolved leaves the lists; one that is not stays, with its evidence).\n\n"
         f"{numbered(findings)}\n\nFiles changed by the repair round: {', '.join(touched) or 'none'}\n\n"
         f"```diff\n{cumulative_diff(repo_root, base, touched) or '(no changes)'}\n```"

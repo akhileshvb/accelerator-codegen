@@ -191,6 +191,16 @@ def test_blocking_findings_go_to_the_main_session_in_one_round_then_the_audit_re
     assert not (stage_ctx.art / "audit_open_findings.md").exists()
 
 
+def test_a_change_request_raised_in_the_repair_round_goes_to_the_tester_before_the_recheck(stage_ctx, monkeypatch):
+    rnd = Round(stage_ctx, [{"correctness_ok": True}])
+    (stage_ctx.art / "audit_result.json").write_text(json.dumps(BLOCKED))
+    monkeypatch.setattr(audit_stage, "repair_turn", rnd.repair)
+    handled = []
+    monkeypatch.setattr(audit_stage, "_revise_test_suite", lambda ctx: handled.append(ctx) or True)
+    audit_stage._fix_blocking_findings(stage_ctx, rnd.audit_turn)
+    assert handled == [stage_ctx] and "tester revised the frozen test suite" in rnd.audit_messages[0]
+
+
 GENERALITY_ONLY = {"correctness_ok": True, "scale_review": {"generality_failures": ["dates: Feb 29"]}}
 
 
