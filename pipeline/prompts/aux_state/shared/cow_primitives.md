@@ -10,7 +10,7 @@ Read the catalogue in `accelerators/prims/README.md` ("Which one to use"), then 
 
 Choose the key space, the point-versus-range read shape and the write shape (a refresh touches ~0.1% of rows with keys spread uniformly, so nearly every unit) first. Then build the container that makes both cheap.
 
-- **Generic.** Name it by what it is (`ShardedSortedMap`), not by who uses it. No table, column, benchmark or query words, comments included. Engine-exact value semantics belong to the backend API, never to `prims/`.
+- **Generic.** Name it by what it is (its structure and access pattern), not by who uses it. No table, column, benchmark or query words, comments included. Engine-exact value semantics belong to the backend API, never to `prims/`.
 - **Documented.** Start the header with the structured comment (PURPOSE / KEY SPACE / COMPLEXITY / MEMORY / COW/THREADS / USE WHEN). The catalogue row is generated from it.
 - **Tested.** Randomized reference tests against a `std::` model: thousands of operations, copy, mutate the copy, check the old version is unchanged.
 - **Published.** Stage the header and the full updated `accelerators/prims/tests/test_prims.cpp` under `pipeline/prims_staging/<repo-relative path>`, then call `primitive_publish(files, rationale)`. Fix what it reports and retry until `ok`. `prims/` is not directly writable. After a publish, `#include` it.
