@@ -209,6 +209,18 @@ def run_host_bootstrap(
         )
         return {"engine_name": engine, "status": "pass", "skipped": False, "path": str(path)}
 
+    if not force and not pending_harness_requests(pipeline_config.repo_root, engine):
+        from accel_pipeline.gates import run_gate
+
+        existing = run_gate(pipeline_config, "host_bootstrap", query, workload=workload, raise_on_failure=False,
+                            change_kind="host_bootstrap", iteration=0)
+        if existing.status == "pass":
+            path = write_host_bootstrap_status(pipeline_config.repo_root, engine, status="pass",
+                                               reason="the existing harness passes the gate",
+                                               extra={"gate_data": existing.data})
+            print(f"[host_bootstrap] engine={engine}: the existing harness passes; no agent run", flush=True)
+            return {"engine_name": engine, "status": "pass", "skipped": True, "path": str(path)}
+
     return _bootstrap_under_repair(
         pipeline_config, model_config, engine, representative_workload, workload, query, model_overrides
     )
