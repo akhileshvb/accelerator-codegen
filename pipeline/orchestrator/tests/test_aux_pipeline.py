@@ -460,8 +460,8 @@ class TestPromptRendering:
         assert "Bottleneck: scan_for_scan at 50% writes" in revision_prompt
         assert "revision" in revision_prompt.lower()
         impl = render_prompt(pipeline_config, "02_implementation.md", workload, 14, "implementation")
-        assert "implementation contract" in impl.lower()
-        assert "full analysis" in impl.lower()
+        assert not re.search(r"\{\{\w+\}\}", impl), "unresolved placeholder"
+        assert "## Design contract" in impl and "```json" in impl
         opt = render_prompt(
             pipeline_config, "03_optimization_unified.md", workload, 14, "optimization_unified", optimization_iter=1
         )

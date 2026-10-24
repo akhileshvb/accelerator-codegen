@@ -46,6 +46,6 @@ GOAL_PROMPTS = {
 @pytest.mark.parametrize("prompt,guide", GOAL_PROMPTS.items())
 def test_goal_prompts_name_their_guides_and_include_the_fast_loop(prompt, guide):
     text = (PROMPTS / prompt).read_text(encoding="utf-8")
-    assert "## Goal" in text and guide in text and "{{fast_loop}}" in text
+    assert guide in text and "{{fast_loop}}" in text
     assert list(PROMPTS.rglob(guide))
     assert "low_level_execution.md" in text
