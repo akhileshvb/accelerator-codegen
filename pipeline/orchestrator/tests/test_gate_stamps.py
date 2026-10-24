@@ -67,7 +67,7 @@ def test_a_shared_file_changes_every_querys_stamp(config, shared):
 
 
 @pytest.mark.parametrize("excluded", [
-    "pipeline/prompts/a.md", "scripts/x.py", "docs/y.md", "build-release/z.o", "build/z.o",
+    "pipeline/prompts/a.md", "scripts/x.py", "docs/y.md", "build-release/z.o", "build/z.o", "build-release.build.lock", ".gitignore",
     "accelerators/demo/q50/module.cpp", "accelerators/other/q5/module.cpp",
 ])
 def test_only_pipeline_scripts_docs_build_and_other_queries_are_excluded(config, excluded):
