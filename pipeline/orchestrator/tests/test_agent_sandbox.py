@@ -303,3 +303,14 @@ def test_write_policy_enforce_warn_off(tmp_path: Path, monkeypatch: pytest.Monke
     if policy == "enforce":
         assert "accelerators/toybench/q3/k.cpp" in result.error and "cross-query" in result.error
     assert bool(result.metadata.get("write_violations")) == (policy != "off")
+
+
+def test_engine_state_and_build_dirs_in_the_tree_are_not_agent_writes(tmp_path: Path, monkeypatch) -> None:
+    root = _git_tree(tmp_path / "t")
+    monkeypatch.setenv("ACCEL_ENGINE_STATE_DIR", str(root / ".engine_state"))
+
+    def write(r: Path) -> None:
+        (r / ".engine_state/build_stamps").mkdir(parents=True)
+        (r / ".engine_state/build_stamps/abc").write_text("stamp")
+
+    assert _violations(root, write) == {}

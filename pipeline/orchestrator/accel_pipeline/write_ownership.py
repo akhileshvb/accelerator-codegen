@@ -403,6 +403,20 @@ class StageWriteCheck:
         self.started_at = time.time()
         self.before = tree_snapshot(self.repo_root)
 
+    def _runtime_prefixes(self) -> tuple[str, ...]:
+        """Engine state and build dirs inside the tree: written by builds and gates, not by the agent."""
+        dirs = (os.environ.get("ACCEL_ENGINE_STATE_DIR"), getattr(self.cfg, "build_dir", None))
+        out = []
+        for d in dirs:
+            if not d:
+                continue
+            path = Path(d) if Path(d).is_absolute() else self.repo_root / d
+            try:
+                out.append(str(path.resolve().relative_to(self.repo_root.resolve())).rstrip("/") + "/")
+            except ValueError:
+                continue
+        return tuple(out)
+
     def violations(self) -> list[tuple[str, str]]:
         after = tree_snapshot(self.repo_root) if self.before is not None else None
         if after is None:
@@ -412,9 +426,10 @@ class StageWriteCheck:
         shared = shared_tree_run(self.repo_root)
         write_paths = list(getattr(self.cfg, "write_paths", None) or [])
         bench = str(getattr(self.cfg, "benchmark_name", "") or self.benchmark)
+        runtime = self._runtime_prefixes()
         out: list[tuple[str, str]] = []
         for rel in changed:
-            if rel.startswith(_UNCHECKED_PREFIXES) or os.path.basename(rel).startswith(".sandbox_probe_"):
+            if rel.startswith(_UNCHECKED_PREFIXES + runtime) or os.path.basename(rel).startswith(".sandbox_probe_"):
                 continue
             lay = layout.classify(rel)
             if rel in prims:
