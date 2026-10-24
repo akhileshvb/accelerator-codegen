@@ -12,6 +12,8 @@ Implement the aux-state accelerator for **{{display_name}}** **Q{{query_number}}
 
 **Owns:** the query's module, finalize, layout, tests, benchmark, calibrator, cost-model config and its registrations. **Never touches:** `backends/`, `substrate/`, `cmake/`, other queries, `accelerators/prims/` except through `primitive_publish` (`agent_boundary.md`). **Judged by:** `aux_correctness` and `aux_multi_connection` (you pre-verify both), then the orchestrator's `aux_unit`, `prims_tests`, `aux_cost_model_calibrate`, `aux_cross_accel`, `aux_tsan`, `aux_bench_sweep`.
 
+The test suite (`tests/workload/`, written by the tester and frozen) is the acceptance: run it with `quick_check`, never edit it; a test you can show is wrong goes into `{{artifacts_path}}/test_suite_change_request.md` (the test, the evidence, what is right) and the tester decides.
+
 {{hard_guidelines}}
 
 {{codex_tooling}}
@@ -32,7 +34,7 @@ Full analysis: `{{full_analysis_path}}` · Workload SQL: `{{reference_sql_path}}
 
 - Implement `files_to_create`; the selected candidate is `correctness_facts.state_design.selected_candidate_id`. Every field, mutation rule and read-path behavior matches `correctness_facts`; re-read the analysis and reference modules instead of guessing.
 - Implement the **whole** surface: state layout, encode/decode/finalize, maintenance, read path, tests, benchmark, calibrator wrapper. A fast but incomplete or wrong module fails.
-- Honor frozen adversarial write scenarios at `{{artifacts_path}}/adversarial_write_scenarios.json` when present: the catalog `probe_select`/`build_probe` supports multiple invalidating point writes, bulk coverage matches `bulk_writes`, and each `scale_scenarios` entry runs in the shared differential gate.
+- The frozen suite's `suite.yaml` sets the point-write and bulk minimums: the catalog `probe_select`/`build_probe` supports multiple invalidating point writes, bulk coverage matches `bulk_writes`, and each `scale_scenarios` entry runs in the shared differential gate.
 - **Register everywhere.** Wire the query into every registration, allowlist, SQL-helper and CMake surface that neighboring aux queries use for host **`{{engine_name}}`**: search how a peer is registered (`registration_checklist.md`). Missing participation shows up as `unsupported shared query` or a missing SQL entrypoint.
 - **Parallel and scale-safe by construction** (`substrate_primitives.md`, `engine_interfaces.md`, `scale_factor_contract.md`; implement the analysis's `scale_plan`). `Build` runs through `core::PartitionedBuild` and the **scan** role's partitioned scan. Data-proportional work in `Execute` and maintenance splits with `ParallelReduce` / `ParallelEach`, with the same result at any cap including 1; maintenance does its engine lookups first, serially. Size containers from table statistics / `DataScaleRows()`, accumulate and emit sums in 128 bits, keep keys, offsets and counts 64-bit (narrow only with a checked cast). Fill `MaintenanceRequest` honestly and go through `ChooseMaintenance`; the cost-model JSON (`{{cost_model_config}}`, calibrated by the gate) records `calibrated_scale_rows`, and `CalibrationWrites()` includes refresh-shaped writes (bulk, keys spread). Populate `interference_us` in `StageMaintenance` from `CostModelParams.interference_*`.
 - Rebuild actions resync state for later hits (never invalidate-only). Irrelevant mutations are NoOp; reads are bounded to the window; reader epoch pin and execution gate follow `read_path_scaffold.md`, `concurrency_contract.md`.
@@ -47,7 +49,7 @@ Full analysis: `{{full_analysis_path}}` · Workload SQL: `{{reference_sql_path}}
 - `benchmark_q{{query_number}}_aux.cpp`: the full write-frequency sweep per `bench_sweep_contract.md`, ported from a peer's `bench/benchmark_q*_aux.cpp` with the shared sweep and invalidating-probe helpers so write ticks invalidate this query's state.
 - `calibrate_q{{query_number}}_aux_cost_model.cpp`: the thin wrapper over the shared calibration helper, in the shape of a peer's. Custom timing code in the calibrator is rejected. `accelerators/{{benchmark_name}}/q{{query_number}}/cost_model.hpp` (written by the scaffold) names the config directory; pass its `AuxCostModelLocation` to the engine's registration.
 - The module unit test is shared (`unit_test_contract.md`): write no per-query unit test; make the catalog probe and arguments follow `reference_sql_path` (SQL polarity: `NOT LIKE`, `<>`, anti-joins) and the **Reference SQL predicate contract** in the bootstrap.
-- Differential and unit tests include off-spec parameters (NULL, month-end and Feb 29 dates, partial/mixed-case/empty LIKE patterns, unknown enum values, equal parameters, out-of-range numbers), off-spec rows, and wide and negative keys. Run the host's params test (plain, `--data-perturb`, `--wide-keys`, `--negative-keys`) when it exists.
+- Off-spec parameters, rows and keys are the frozen suite's job (fixed tuples, a fresh random draw each run, every write kind); run the host's params test (plain, `--data-perturb`, `--wide-keys`, `--negative-keys`) when it exists.
 
 ## Exit criterion (hard)
 

@@ -1,7 +1,7 @@
 """The per-query test suite: its declarative format, mechanical validation, random draws, and freezing.
 
-One suite per query, in ``accelerators/<bench>/q<N>/tests/workload/`` (the format the Verus pipeline's tests
-stage writes too; the C++ side that runs it is ``eval/harness/suite.hpp``):
+One suite per query, in ``layout.suite_dir`` (the format the Verus pipeline's tests
+stage writes too; the engine harness runs it):
 
     params.sql    fixed parameter tuples, one per line, as SQL literals in the query's $n order
     domain.yaml   the parameter domain fresh random tuples are drawn from on every run
@@ -80,6 +80,8 @@ def gate_settings(pipeline_config: Any, workload: dict[str, Any], query: int) ->
         "query_sql": str(root / workload_query_sql(bench, query)),
         "function": (aux_function_name if aux else base_function_name)(bench, query),
         "arity": len(workload.get("parameters") or []),
+        "param_names": [str(p["name"]) for p in workload.get("parameters") or []],
+        "aux": aux,
         "schema_sql": str(root / constraints) if (root / constraints).is_file() else "",
         "config": asdict(pipeline_config.test_suite),
     }
@@ -96,6 +98,15 @@ def _yaml(path: Path) -> dict[str, Any]:
     if not isinstance(data, dict):
         raise ValueError(f"{path.name} must be a mapping")
     return data
+
+
+def dependent_tables(art: Path) -> list[str]:
+    """The tables whose writes can change the query's answer, from the analysis."""
+    try:
+        facts = json.loads((art / "analysis.json").read_text(encoding="utf-8")).get("correctness_facts") or {}
+    except (OSError, ValueError):
+        return []
+    return [str(t["name"]) for t in facts.get("dependent_tables") or [] if isinstance(t, dict) and t.get("name")]
 
 
 def read_write_mix(suite: Path) -> dict[str, Any]:
@@ -357,10 +368,11 @@ def quick_txn_names(suite: Path, count: int) -> list[str]:
 
 
 def run_environment(suite: Path, *, tier: str, cfg: SuiteConfig, seed: int | None, params_file: Path) -> dict[str, str]:
-    """The ACCEL_SUITE_* environment (host_contract.md, "Test suite") for one run of `tier` with `seed`;
+    """The ACCEL_SUITE_* environment (host_contract.md, "Test suite") for one run of `tier` (quick, full or validate) with `seed`;
     writes the run's random tuples to `params_file`."""
     seed = seed or fresh_seed()
-    random_tuples = cfg.quick_random_tuples if tier == "quick" else cfg.acceptance_random_tuples
+    random_tuples = {"quick": cfg.quick_random_tuples, "validate": cfg.validation_random_tuples}.get(
+        tier, cfg.acceptance_random_tuples)
     drawn = draw_tuples(_yaml(suite / DOMAIN), random_tuples, seed) if (suite / DOMAIN).is_file() else []
     params_file.parent.mkdir(parents=True, exist_ok=True)
     params_file.write_text("\n".join(drawn) + ("\n" if drawn else ""), encoding="utf-8")
@@ -368,6 +380,8 @@ def run_environment(suite: Path, *, tier: str, cfg: SuiteConfig, seed: int | Non
            "ACCEL_SUITE_EVERY": "0" if tier == "quick" else str(cfg.differential_every)}
     if tier == "quick":
         env["ACCEL_SUITE_TXNS"] = ",".join(quick_txn_names(suite, cfg.quick_txns))
+    if tier == "validate":
+        env["ACCEL_SUITE_MODE"] = "validate"
     return env
 
 

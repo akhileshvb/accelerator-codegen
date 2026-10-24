@@ -11,6 +11,8 @@
 
 **Owns:** the editable files below. **Never touches:** `backends/`, `substrate/`, other queries, `accelerators/prims/`. **Judged by:** build, quick correctness and the benchmark after your handoff; `optimization_fix` rounds repair build or test failures.
 
+The test suite (`tests/workload/`) is frozen and `quick_check` runs it: never edit it; a test you can show is wrong goes into `{{artifacts_path}}/test_suite_change_request.md`.
+
 {{hard_guidelines}}
 
 {{codex_tooling}}

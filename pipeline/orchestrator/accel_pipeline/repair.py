@@ -223,6 +223,8 @@ def _quarantine(ctx: RepairCtx, gate: str, failure: Failure) -> None:
 def repair_turn(ctx: RepairCtx, failure: Failure, *, must_change: bool | None = None) -> None:
     """One agent turn, in the stage's own session, on the failure report; a provider flake re-runs it.
     must_change: the turn has to edit the query's files (default: when the failure is a code failure)."""
+    if ctx.stage != "test_suite" and _revise_test_suite(ctx):
+        return
     turn = ctx.repair_turn or _crash_debug_turn(ctx, failure.kind == "code" if must_change is None else must_change)
     retries = ctx.pipeline_config.repair.provider_retries
     for flake in range(1, retries + 2):
@@ -240,6 +242,18 @@ def repair_turn(ctx: RepairCtx, failure: Failure, *, must_change: bool | None = 
         except Exception as exc:  # noqa: BLE001
             ctx.log(f"the repair turn raised {type(exc).__name__}: {exc}; the next check judges the tree")
         return
+
+
+def _revise_test_suite(ctx: RepairCtx) -> bool:
+    """A change request against the frozen test suite goes to the tester before the implementation is touched again."""
+    from accel_pipeline import test_suite as suite
+    from accel_pipeline.stages import test_suite
+
+    if not suite.pending_change_request(ctx.art):
+        return False
+    test_suite.revise(ctx.pipeline_config, ctx.model_config, ctx.workload_name, ctx.query, ctx.model_overrides)
+    ctx.log("the tester handled a test-suite change request; the next check judges the suite it froze")
+    return True
 
 
 def _crash_debug_turn(ctx: RepairCtx, must_change: bool) -> Callable[[Failure], None]:

@@ -26,6 +26,7 @@ GATE_SCRIPTS = {
     "sf10": "run_sf10.sh",
     "profile": "run_profile.sh",
     "fairness": "check_fairness.sh",
+    "test_suite_validate": "run_test_suite_validate.sh",
     "aux_correctness": "run_aux_correctness.sh",
     "aux_correctness_quick": "run_aux_correctness.sh",
     "quick_check": "run_aux_quick_check.sh",

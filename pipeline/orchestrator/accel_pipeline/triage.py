@@ -18,8 +18,8 @@ _RACY = re.compile(r"failed on run (\d+) after passing (\d+) times")
 _TIMEOUT = re.compile(r"did not finish within|timed out after")
 _TIMEOUT_RC = frozenset({124, 137})
 _MISSING_PRODUCER = re.compile(
-    r"(?:analysis\.json|adversarial_write_scenarios\.json)[^\n]*(?:not found|missing|no such file)"
-    r"|(?:not found|missing|no such file)[^\n]*(?:analysis\.json|adversarial_write_scenarios\.json)"
+    r"(?:analysis\.json|suite\.yaml)[^\n]*(?:not found|missing|no such file)"
+    r"|(?:not found|missing|no such file)[^\n]*(?:analysis\.json|suite\.yaml)"
     r"|target missing from the gate context",
     re.IGNORECASE,
 )

@@ -137,7 +137,7 @@ prompt_subdir: aux_state
 # Aux analysis needs more turns than base parallel queries.
 stage_max_turns:
   analysis: 24
-  adversarial_tests: 8
+  test_suite: 24
   implementation: 0  # 0 = unlimited (resolved in stages/base.py)
   optimization: 0
   crash_debug: 16

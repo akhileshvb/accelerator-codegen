@@ -498,13 +498,21 @@ struct DifferentialRun {
   std::map<std::string, int> actions; // staged maintenance action -> count
 };
 
+// A transaction whose first line is `-- rollback` is applied and then aborted: nothing may change.
+inline bool IsRollbackTxn(const std::string &sql) {
+  const auto b = sql.find_first_not_of(" \t\r\n");
+  return b != std::string::npos && sql.size() >= b + 11 && std::equal(sql.begin() + b, sql.begin() + b + 11, "-- rollback",
+                                                                    [](char x, char y) { return std::tolower(x) == y; });
+}
+
 // The differential every accelerator is held to: after the build and after every transaction (applied by
 // `apply`, committed), the accelerator's answer equals the query's at the same snapshot, for every tuple
 // every `every` transactions and at the end, two random ones otherwise.
 inline DifferentialRun RunDifferentialLoop(
     Tally &tally, const Spec &spec, const std::string &query_sql, const Ordering &ordering, duckdb::Connection &qc,
     int every, uint64_t seed, const std::function<Rows(const std::string &, const std::string &)> &accel,
-    const std::function<void(const std::string &)> &apply) {
+    const std::function<void(const std::string &)> &apply,
+    const std::function<void(const std::string &)> &abort = {}) {
   DifferentialRun run;
   std::mt19937_64 rng(seed);
   auto check = [&](const std::string &where, const std::string &t) {
@@ -519,7 +527,12 @@ inline DifferentialRun RunDifferentialLoop(
   for (std::size_t i = 0; i < spec.txns.size(); ++i) {
     core::ClearMaintenanceDecisionLog();
     try {
-      apply(spec.txns[i]);
+      if (IsRollbackTxn(spec.txns[i])) {
+        Require(static_cast<bool>(abort), "the suite has a rollback transaction and the harness cannot abort one");
+        abort(spec.txns[i]);
+      } else {
+        apply(spec.txns[i]);
+      }
     } catch (const std::exception &e) {
       // the suite is validated on plain SQL: a write the accelerated path cannot apply is a failure
       if (++run.write_errors <= 3)
@@ -546,7 +559,7 @@ inline DifferentialRun RunDifferentialLoop(
 // and applies again in sequence (committed).  Per transaction: how many tuples' answers it changes
 // (a transaction that changes none can catch no stale maintenance).
 inline int Validate(const std::string &path, const Spec &spec, const std::string &query_sql,
-                    const std::string &schema_sql) {
+                    const std::string &schema_sql, std::ostream &out = std::cout) {
   duckdb::DuckDB db(path);
   duckdb::Connection c(db);
   std::vector<std::string> errors;
@@ -575,14 +588,17 @@ inline int Validate(const std::string &path, const Spec &spec, const std::string
     }
   };
   int nonempty = 0;
+  std::string tuple_rows = "[";
   std::vector<Rows> before;
   for (const auto &t : spec.params) {
     try {
       const auto rows = RunQuery(c, query_sql, t);
       nonempty += !rows.empty();
+      tuple_rows += std::string(before.empty() ? "" : ",") + std::to_string(rows.size());
       before.push_back(rows);
     } catch (const std::exception &e) {
       errors.push_back("params " + t + ": " + e.what());
+      tuple_rows += std::string(before.empty() ? "" : ",") + "-1";
       before.emplace_back();
     }
   }
@@ -606,7 +622,7 @@ inline int Validate(const std::string &path, const Spec &spec, const std::string
     // committed, in sequence: a transaction is checked on the state the ones before it leave (a subquery
     // that finds a row on the original data may find none later)
     int changed = 0;
-    if (problem.empty()) {
+    if (problem.empty() && !IsRollbackTxn(spec.txns[i])) {
       c.BeginTransaction();
       auto applied = c.Query(spec.txns[i]);
       if (!applied || applied->HasError()) {
@@ -631,7 +647,7 @@ inline int Validate(const std::string &path, const Spec &spec, const std::string
   std::string ej = "[";
   for (std::size_t i = 0; i < errors.size(); ++i)
     ej += (i ? "," : "") + Json(errors[i]);
-  std::cout << "{\"mode\":\"validate\",\"params\":" << spec.params.size() << ",\"params_nonempty\":" << nonempty
+  out << "{\"mode\":\"validate\",\"params\":" << spec.params.size() << ",\"params_nonempty\":" << nonempty << ",\"tuple_rows\":" << tuple_rows << "]"
             << ",\"txns\":" << spec.txns.size() << ",\"bench_txns\":" << spec.bench_txns.size()
             << ",\"txn_errors\":" << txn_errors << ",\"txn_effects\":" << effects << "],\"errors\":" << ej << "]}"
             << std::endl;

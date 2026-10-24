@@ -12,6 +12,8 @@
 
 **Owns:** the editable files below. **Never touches:** `backends/`, `substrate/`, other queries, `accelerators/prims/`. **Judged by:** the A/B against `scoreboard.best_valid_score`, then the post-iteration gates.
 
+The test suite (`tests/workload/`) is frozen and `quick_check` runs it: never edit it; a test you can show is wrong goes into `{{artifacts_path}}/test_suite_change_request.md`.
+
 {{hard_guidelines}}
 
 {{codex_tooling}}

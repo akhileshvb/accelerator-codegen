@@ -75,6 +75,14 @@ def suite_dir(bench: str, query: int | str) -> str:
     return f"{ACCELERATORS}/{bench}/q{query}/tests/workload"
 
 
+_SUITE_RE = re.compile(r"^accelerators/[A-Za-z0-9_]+/q\d+/tests/workload(?:/|$)")
+
+
+def is_suite_path(rel: str) -> bool:
+    """Inside a query's test suite (frozen after the test_suite stage)."""
+    return bool(_SUITE_RE.match(rel.replace("\\", "/")))
+
+
 @dataclass(frozen=True)
 class Layer:
     """Which layer a repo-relative path belongs to."""

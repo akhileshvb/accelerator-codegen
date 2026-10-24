@@ -30,6 +30,17 @@ inline std::string SuiteEnv(const char *name, const std::string &fallback = "") 
   return value && *value ? value : fallback;
 }
 
+// The suite on plain SQL, no accelerator: every tuple evaluates, every transaction applies and rolls back, and
+// which of them change an answer. Writes the report (ACCEL_SUITE_REPORT) and returns whether it found no error.
+inline bool RunSuiteValidation(const std::string &db_path) {
+  namespace suite = ::accelerator_codegen::suite;
+  const suite::Spec spec = suite::LoadSpec(SuiteEnv("ACCEL_SUITE_DIR"), "ACCEL_SUITE_REPLACE_PARAMS_FILE",
+                                           "ACCEL_SUITE_PARAMS_FILE");
+  std::ofstream report(SuiteEnv("ACCEL_SUITE_REPORT", "/dev/stderr"));
+  return suite::Validate(db_path, spec, suite::ReadFile(SuiteEnv("ACCEL_SUITE_QUERY_SQL")),
+                         suite::SchemaSql("ACCEL_SUITE_SCHEMA_SQL"), report) == 0;
+}
+
 // Differential of the suite on a writable copy of the database: the fixed tuples plus the run's random ones, after
 // the build and after each transaction. Throws when the accelerated path disagrees with the query.
 inline void RunSuiteDifferential(const std::string &db_path, const engine::SharedQueryCatalogEntry &entry) {
@@ -65,8 +76,14 @@ inline void RunSuiteDifferential(const std::string &db_path, const engine::Share
   const auto accel = [&](const std::string &, const std::string &tuple) {
     return suite::RunAccel(qc, function, suite::Project(tuple, arity));
   };
-  const auto run = suite::RunDifferentialLoop(
-      tally, spec, query_sql, ordering, qc, every, seed, accel, [&](const std::string &sql) { runtime.ApplyWrite(sql); });
+  const auto apply = [&](const std::string &sql) { runtime.ApplyWrite(sql); };
+  const auto abort = [&](const std::string &sql) {
+    runtime.BeginWrite();
+    for (auto &statement : wc.ExtractStatements(sql))
+      suite::Require(!wc.Query(std::move(statement))->HasError(), "a rollback transaction failed");
+    runtime.RollbackWrite();
+  };
+  const auto run = suite::RunDifferentialLoop(tally, spec, query_sql, ordering, qc, every, seed, accel, apply, abort);
   const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
 
   const auto counts = core::ReadAuxExecuteCounts();

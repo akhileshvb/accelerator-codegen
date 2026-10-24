@@ -12,6 +12,8 @@ Implement the accelerator for **{{display_name}}** **Q{{query_number}}** on host
 
 **Owns:** this query's files under `accelerators/.../q{{query_number}}/{{engine_name}}/`. **Never touches:** `backends/`, `substrate/`, `cmake/`, other queries, `accelerators/prims/`. **Judged by:** correctness, then baseline, profile and fairness gates (`constraints.md` below).
 
+The test suite (`tests/workload/`, written by the tester and frozen) is the acceptance: run it with `quick_check`, never edit it; a test you can show is wrong goes into `{{artifacts_path}}/test_suite_change_request.md` (the test, the evidence, what is right) and the tester decides.
+
 {{hard_guidelines}}
 
 {{codex_tooling}}

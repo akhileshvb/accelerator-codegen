@@ -41,6 +41,10 @@ int main(int argc, char **argv) {
     namespace ts = accelerator_codegen::test_support;
     ts::ScratchDir scratch("tpch_shared_diff_q" + std::to_string(query_id));
     const std::string work = ts::PrivateDbCopy(tpch_db, scratch);
+    if (accelerator_codegen::aux_state::harness::SuiteRequested() &&
+        accelerator_codegen::aux_state::harness::SuiteEnv("ACCEL_SUITE_MODE") == "validate") {
+      return accelerator_codegen::aux_state::harness::RunSuiteValidation(work) ? 0 : 1;
+    }
     std::cerr << "differential (read-only): tpch Q" << query_id << '\n';
     accelerator_codegen::aux_state::harness::RunDifferentialCheck(work, entry);
     std::cerr << "PASS tpch Q" << query_id << " read-only differential\n";

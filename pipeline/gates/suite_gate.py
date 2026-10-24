@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """The gates' side of the frozen test suite (accel_pipeline.test_suite): what a gate script needs of it.
 
-    suite_gate.py <root> prepare <quick|full>   exports for the run: verifies the freeze, draws the run's random
+    suite_gate.py <root> prepare <quick|full|validate>   exports for the run: verifies the freeze, draws the run's random
                                                 tuples under a fresh seed (ACCEL_SUITE_SEED reproduces one), prints the
                                                 ACCEL_SUITE_* environment (host_contract.md, "Test suite")
+    suite_gate.py <root> validate [report.json] the suite's problems: its files, or a validate run's report (exit 1)
     suite_gate.py <root> summary <report.json>  the run's report as the gate result's `suite` field
     suite_gate.py <root> mix <acceptance|quick> the write frequencies of one benchmark run: seed and the list
     suite_gate.py <root> freeze                 record the suite's content hash (the test_suite stage does it)
@@ -28,12 +29,15 @@ def _exports(env: dict[str, str]) -> str:
     return "\n".join(f"export {k}={shlex.quote(v)}" for k, v in env.items())
 
 
-def prepare(ts, ctx: dict, tier: str) -> int:
-    settings = ctx["test_suite"]
-    suite, art = Path(settings["dir"]), Path(ctx["artifacts_dir"])
-    if not suite.is_dir():
-        return 0
-    if problem := ts.frozen_problem(art, suite):
+def _suite(ctx: dict) -> Path | None:
+    """The suite directory of this run, or None: the query has no suite (older trees, or an engine-backend run)."""
+    settings = ctx.get("test_suite")
+    return Path(settings["dir"]) if settings and Path(settings["dir"]).is_dir() else None
+
+
+def prepare(ts, ctx: dict, suite: Path, tier: str) -> int:
+    settings, art = ctx["test_suite"], Path(ctx["artifacts_dir"])
+    if tier != "validate" and (problem := ts.frozen_problem(art, suite)):
         print(problem, file=sys.stderr)
         return 3
     seed = int(os.environ.get("ACCEL_SUITE_SEED") or 0) or None
@@ -52,6 +56,19 @@ def prepare(ts, ctx: dict, tier: str) -> int:
     return 0
 
 
+def validate(ts, ctx: dict, suite: Path, report_path: str | None) -> int:
+    """The suite's own problems: its files (no report), or the harness's report of running it on plain SQL."""
+    settings, art = ctx["test_suite"], Path(ctx["artifacts_dir"])
+    tables = ts.dependent_tables(art)
+    if report_path is None:
+        problems = ts.validate_static(suite, query_sql=Path(settings["query_sql"]).read_text(encoding="utf-8"),
+                                      param_names=settings["param_names"], dependent_tables=tables, aux=settings["aux"])
+    else:
+        problems = ts.validate_report(json.loads(Path(report_path).read_text(encoding="utf-8")), suite, tables, settings["aux"])
+    print("\n".join(problems))
+    return 1 if problems else 0
+
+
 def summary(report_path: str) -> int:
     try:
         report = json.loads(Path(report_path).read_text(encoding="utf-8"))
@@ -65,14 +82,12 @@ def summary(report_path: str) -> int:
     return 0
 
 
-def mix(ts, ctx: dict, tier: str) -> int:
-    settings = ctx["test_suite"]
-    suite = Path(settings["dir"])
-    cfg = ts.SuiteConfig(**settings["config"])
+def mix(ts, ctx: dict, suite: Path, tier: str) -> int:
+    cfg = ts.SuiteConfig(**ctx["test_suite"]["config"])
     spec = ts.read_write_mix(suite) if (suite / ts.WRITE_MIX).is_file() else cfg.write_mix
     if not spec:
         return 0
-    seed = int(os.environ.get("ACCEL_SUITE_MIX_SEED") or ts.fresh_seed())
+    seed = int(os.environ.get("ACCEL_SUITE_MIX_SEED") or 0) or ts.fresh_seed()
     samples = int(spec["frequency_pct"]["samples"]) if tier == "acceptance" else int(os.environ.get("ACCEL_SUITE_QUICK_SAMPLES", 2))
     print(json.dumps({"seed": seed, "frequencies": ts.draw_write_frequencies(spec, samples, seed)}))
     return 0
@@ -80,19 +95,23 @@ def mix(ts, ctx: dict, tier: str) -> int:
 
 def main(argv: list[str]) -> int:
     root, command, rest = Path(argv[0]), argv[1], argv[2:]
-    sys.path.insert(0, str(root / "pipeline" / "orchestrator"))
-    from accel_pipeline import test_suite as ts
-
     if command == "summary":
         return summary(rest[0])
     ctx = _context()
+    suite = _suite(ctx)
+    if suite is None:
+        return 0
+    sys.path.insert(0, str(root / "pipeline" / "orchestrator"))
+    from accel_pipeline import test_suite as ts
+
     if command == "prepare":
-        return prepare(ts, ctx, rest[0])
+        return prepare(ts, ctx, suite, rest[0])
+    if command == "validate":
+        return validate(ts, ctx, suite, rest[0] if rest else None)
     if command == "mix":
-        return mix(ts, ctx, rest[0])
+        return mix(ts, ctx, suite, rest[0])
     if command == "freeze":
-        settings = ctx["test_suite"]
-        print(json.dumps(ts.freeze(Path(ctx["artifacts_dir"]), Path(settings["dir"]), query=int(ctx["query_number"]))))
+        print(json.dumps(ts.freeze(Path(ctx["artifacts_dir"]), suite, query=int(ctx["query_number"]))))
         return 0
     raise SystemExit(f"unknown command {command}")
 

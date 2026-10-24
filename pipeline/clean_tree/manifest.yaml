@@ -71,6 +71,7 @@ generated:
   - eval/harness/*.cmake
   - eval/harness/cost_calibration.*
   - eval/harness/differential.*
+  - eval/harness/suite.hpp
   - eval/harness/tpch_rf.*
   - eval/harness/tpch_test_recipes.hpp
   - eval/tests/mysql/**
