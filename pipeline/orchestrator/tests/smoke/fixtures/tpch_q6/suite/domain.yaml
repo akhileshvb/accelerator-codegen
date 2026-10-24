@@ -1,6 +1,0 @@
-version: 1
-params:
-  - {name: start_date, type: date, min: 1993-01-01, max: 1997-01-01}
-  - {name: discount, type: decimal, min: 0.02, max: 0.09, scale: 2}
-  - {name: quantity, type: decimal, min: 24, max: 25, scale: 2}
-  - {name: end_date, type: derived, from: start_date, add_months: 12}
