@@ -944,13 +944,6 @@ def run_optimization_iteration(
         flush=True,
     )
     baseline = _measure_baseline(pipeline_config, workload, query, eval_config)
-    if not baseline:
-        raise StageFailure(Failure(
-            kind="measurement",
-            stage="optimization",
-            source="bench_baseline",
-            summary="optimization: failed to measure baseline at iteration start",
-        ))
     if not load_best_valid_baseline(art):
         snapshot_best_valid_baseline_files(pipeline_config, workload, query)
         advance_best_valid_baseline(

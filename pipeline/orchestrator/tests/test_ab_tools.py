@@ -166,3 +166,44 @@ def test_a_quick_bench_that_overruns_its_limit_reports_it(monkeypatch, tmp_path)
         tmp_path / "bench", repo=tmp_path, paths=paths, query=6,
         workload={"workload_kind": "aux_state", "aux_bench_sweep_quick": {"bench_timeout_sec": 7}}, acceptance=False)
     assert rows == [] and "did not finish within 7s" in output
+
+
+def _quick_benchmark_world(monkeypatch, tmp_path, rows):
+    """make_ab_tools' run_quick_benchmark with the build, the bench and the artifact writers stubbed."""
+    import json
+    from types import SimpleNamespace
+
+    from accel_pipeline.config import MeasurementConfig
+    from accel_pipeline.tools import ab_tools
+
+    art = tmp_path / "art"
+    art.mkdir()
+    (art / ab_tools.ACTIVE_TRIAL_FILE).write_text(json.dumps(
+        {"trial_id": "t", "reference_score": 1.0, "last_metrics": {"stale": True}, "last_score": 9.0}))
+    paths = {"aux_bench_target": "bench", "dataset_db": "/d", "db_env_var": "X"}
+    monkeypatch.setattr(ab_tools, "resolve_workload_paths", lambda cfg, wl, q: paths)
+    monkeypatch.setattr("accel_pipeline.worker_isolation.ensure_private_dataset_db", lambda cfg, db, query: db)
+    monkeypatch.setattr(ab_tools, "query_artifacts_dir", lambda root, q, workload=None: art)
+    monkeypatch.setattr(ab_tools.subprocess, "run", lambda *a, **k: SimpleNamespace(returncode=0, stdout="", stderr=""))
+    monkeypatch.setattr(ab_tools, "_run_aux_quick_sweep", lambda *a, **k: (rows, "out"))
+    monkeypatch.setattr(ab_tools, "write_aux_profile_artifacts", lambda *a, **k: None)
+    monkeypatch.setattr(ab_tools, "refresh_optimization_runtime", lambda *a, **k: None)
+    monkeypatch.setattr(ab_tools, "build_scoreboard", lambda *a, **k: {"best_valid_score": 1.0})
+    monkeypatch.setattr(ab_tools, "write_scoreboard", lambda *a, **k: None)
+    monkeypatch.setattr(ab_tools, "_editable_rel_paths", lambda ctx: [])
+    config = SimpleNamespace(repo_root=tmp_path, build_dir=tmp_path / "build", measurement=MeasurementConfig())
+    ctx = ab_tools.AbToolContext(config, 6, {"workload_kind": "aux_state", "benchmark_name": "demo"})
+    _, run_quick_benchmark, _ = ab_tools.make_ab_tools(ctx)
+    return art, run_quick_benchmark
+
+
+def test_a_quick_bench_that_measured_the_fallback_is_flagged_and_voids_the_trial(monkeypatch, tmp_path):
+    import json
+
+    rows = parse_aux_benchmark_output(Q18_AUX_OUTPUT.replace(",1.00,0.00,", ",0.00,1.00,", 2))
+    art, run_quick_benchmark = _quick_benchmark_world(monkeypatch, tmp_path, rows)
+    payload = json.loads(run_quick_benchmark(include_profile=False, acceptance=True))
+    assert payload["ab_signal"] == "invalid_measurement"
+    assert any("fallback" in line for line in payload["measurement_invalid"])
+    trial = json.loads((art / "ab_active_trial.json").read_text())
+    assert "last_metrics" not in trial and "last_score" not in trial

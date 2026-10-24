@@ -119,13 +119,14 @@ def test_a_never_quarantine_gate_stops_the_run_instead(world):
     assert world.agent_messages == [] and world.events == []
 
 
-def test_the_baseline_runtime_error_becomes_a_measurement_failure(world):
+def test_a_baseline_measurement_failure_resumes_the_main_session_and_reruns_the_attempt(world):
     calls = []
 
     def attempt():
         calls.append(1)
         if len(calls) == 1:
-            raise RuntimeError("optimization: failed to measure baseline at iteration start")
+            raise StageFailure(Failure(kind="measurement", stage="optimization", source="bench_baseline",
+                                       summary="the baseline benchmark did not produce a measurement"))
         return "ok"
 
     assert run_with_repair(world.ctx(), attempt) == "ok"

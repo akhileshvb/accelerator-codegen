@@ -153,8 +153,6 @@ def _attempt(ctx: RepairCtx, attempt: Callable[[], T]) -> tuple[T | None, Failur
     except GateFailure as exc:
         return None, _failure_from_text(ctx, "gate", str(exc))
     except Exception as exc:  # noqa: BLE001 - the loop's contract: nothing else escapes
-        if "failed to measure baseline" in str(exc):
-            return None, Failure(kind="measurement", stage=ctx.stage, source="bench_baseline", summary=str(exc))
         return None, Failure(kind="orchestrator", stage=ctx.stage, source="exception",
                              summary=f"{type(exc).__name__}: {exc}", evidence=traceback.format_exc())
 

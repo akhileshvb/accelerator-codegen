@@ -20,6 +20,8 @@ from accel_pipeline.config import (
     resolve_workload_paths,
 )
 from accel_pipeline.kernel_snapshot import resolve_snapshot_paths
+from accel_pipeline.layout import query_dir
+from accel_pipeline.measurement import check_measurement
 from accel_pipeline.optimization_checkpoint import load_best_valid_baseline
 from accel_pipeline.optimization_eval import aux_optimization_score, improvement_ratio
 from accel_pipeline.optimization_runtime import record_ab_trial, refresh_optimization_runtime
@@ -511,6 +513,7 @@ def make_ab_tools(ctx: AbToolContext):
         except Exception as exc:  # noqa: BLE001
             return f"ERROR: private dataset db setup failed: {exc}"
         aux = _is_aux_workload(ctx.workload)
+        invalid: list[str] = []
         bench_target = _benchmark_build_target(paths, ctx.workload)
         build_dir = ctx.pipeline_config.build_dir
         repo = ctx.pipeline_config.repo_root
@@ -543,6 +546,18 @@ def make_ab_tools(ctx: AbToolContext):
             if not rows:
                 return f"ERROR: aux quick sweep produced no CSV rows\n{output[-4000:]}"
             metrics = _aux_quick_metrics(rows)
+            invalid = [
+                line
+                for failure in check_measurement(
+                    rows,
+                    workload=ctx.workload,
+                    phase="attempt",
+                    config=ctx.pipeline_config.measurement,
+                    bench_binary=bin_path,
+                    query_dir=repo / query_dir(str(ctx.workload.get("benchmark_name", "tpch")), ctx.query),
+                )
+                for line in failure.diagnosis
+            ]
             write_aux_profile_artifacts(
                 _art(ctx),
                 metrics,
@@ -572,6 +587,12 @@ def make_ab_tools(ctx: AbToolContext):
             metrics = parse_benchmark_log(output)
 
         active = _read_active_trial(ctx) if acceptance else {}
+        if active and invalid:
+            # A bench that did not measure the accelerator voids the trial's metrics: end_ab_trial then discards.
+            for key in ("last_metrics", "last_score", "last_improvement_pct"):
+                active.pop(key, None)
+            _write_active_trial(ctx, active)
+            active = {}
         if active:
             active["last_metrics"] = metrics
             cand = (
@@ -603,7 +624,10 @@ def make_ab_tools(ctx: AbToolContext):
             if acceptance
             else "quick: direction only, never kept or discarded on this; end_ab_trial(keep=True) needs an acceptance=True run"
         )
-        if active and active.get("last_improvement_pct") is not None:
+        if invalid:
+            payload["measurement_invalid"] = invalid
+            payload["ab_signal"] = "invalid_measurement"
+        elif active and active.get("last_improvement_pct") is not None:
             # Surface A/B signal explicitly so agents cannot ignore regressions.
             payload["vs_reference_score"] = active.get("reference_score")
             payload["vs_best_valid_score"] = board.get("best_valid_score")
