@@ -114,25 +114,21 @@ def test_profile_is_stale_after_best_valid_moves(tmp_path):
     assert "stale" in profile_guidance_error(tmp_path, hot_spot="x", expected_gain="y", strategy="other")
 
 
-# --- scoreboard: both read axes -------------------------------------------------------------
+# --- scoreboard: the read axis is against the engine's own SQL -------------------------------
 
-def test_scoreboard_and_runtime_show_both_read_axes_and_the_floor():
-    metrics = {
-        "read_only_query_speedup": 1.06,
-        "accel_hit_median_us": 7000.0,
-        "by_write_frequency_pct": {"0": {"ref_query_median_us": 81300.0, "accel_hit_median_us": 7000.0}},
-    }
-    assert read_axes(metrics) == {"vs_base_kernel": 1.06, "vs_engine": pytest.approx(11.614, rel=1e-3)}
+def test_read_axis_is_the_speedup_over_the_engine():
+    assert read_axes({"read_only_query_speedup": 11.6}) == {"vs_engine": 11.6}
+    assert read_axes({}) == {"vs_engine": None}
 
 
-def test_build_scoreboard_carries_read_axes(tmp_path):
-    metrics = {"read_only_query_speedup": 1.06, "by_write_frequency_pct": {"0": {"ref_query_median_us": 80000.0, "accel_hit_median_us": 8000.0}}}
+def test_build_scoreboard_carries_the_read_axis_and_runtime_flags_the_floor(tmp_path):
+    metrics = {"read_only_query_speedup": 10.0}
     (tmp_path / "best_valid_baseline.json").write_text(json.dumps({"metrics": metrics}))
     board = build_scoreboard(tmp_path, is_aux=True, last_metrics=metrics)
-    assert board["read_speedup"]["best_valid"] == {"vs_base_kernel": 1.06, "vs_engine": 10.0}
-    lines = "\n".join(_read_axis_lines(board, 10.0))
-    assert "1.06x vs the stateless base kernel" in lines and "10.00x vs the engine" in lines
-    assert "READ FLOOR NOT MET" in lines
+    assert board["read_speedup"]["best_valid"] == {"vs_engine": 10.0}
+    lines = "\n".join(_read_axis_lines(board, 20.0))
+    assert "10.00x vs the engine's own SQL" in lines and "READ FLOOR NOT MET" in lines
+    assert "base kernel" not in lines
 
 
 # --- structural redesigns -------------------------------------------------------------------

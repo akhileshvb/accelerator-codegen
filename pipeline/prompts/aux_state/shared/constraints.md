@@ -2,7 +2,7 @@
 
 **This stage owns** the query's own files: `aux/module.{hpp,cpp}`, `aux/finalize.{hpp,cpp}`, layout, tests, benchmark, calibrator, cost-model config, and the append-only registrations listed in `agent_boundary.md` and `registration_checklist.md`. State is per query (`{{aux_function_name}}`).
 
-**It must not touch** `backends/`, `substrate/`, `cmake/`, the root `CMakeLists.txt`, other queries' files, the query's `base/**` kernel (a separate accelerator), or `accelerators/prims/` except through `primitive_publish` (`cow_primitives.md`).
+**It must not touch** `backends/`, `substrate/`, `cmake/`, the root `CMakeLists.txt`, other queries' files, or `accelerators/prims/` except through `primitive_publish` (`cow_primitives.md`).
 
 **Rules**
 

@@ -46,6 +46,11 @@ Print **one header row** and **one data row** to stdout, header first column `su
 `accel_hit_rate`, `writes_executed`, `duckdb_workload_us` (the engine reference's workload time), `accel_workload_us`,
 `num_queries`, `accel_fallback_reads`, `state_builds`.
 
+`query_only_speedup` is the read axis: the engine's own SQL for the same binding over the accelerator hit
+(`engine_ref_query_median_us / accel_hit_median_us`). Both are wall-clock medians of fully consumed results, taken on
+connections with the same settings and the same thread budget, in interleaved pairs so load affects both alike. There is
+no stateless kernel to compare against: never time or register one.
+
 The four measurement columns are **required**: `accel_hit_rate`, `num_queries`, `accel_fallback_reads` and
 `state_builds` are how the orchestrator tells a bench that timed your accelerator from one that timed the fallback
 ("Trusting a benchmark number" in the optimization prompt). Take them from the runtime's own statistics of the measured loop, never from an assumption:

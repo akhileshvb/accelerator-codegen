@@ -31,7 +31,6 @@ from accel_pipeline.optimization_runtime import record_ab_trial, refresh_optimiz
 from accel_pipeline.optimization_scoreboard import (
     build_scoreboard,
     primary_score_from_metrics,
-    read_speedup_vs_engine,
     write_scoreboard,
 )
 from accel_pipeline.paths import query_artifacts_dir
@@ -410,7 +409,7 @@ def _aux_quick_metrics(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "accel_hit_rate": float(zero_row.get("accel_hit_rate") or 0.0),
         "speedup_median": dual_score if dual_score > 0 else read_only,
         "optimization_score": dual_score if dual_score > 0 else read_only,
-        "reference_median_us": float(zero_row.get("base_kernel_median_us") or 0.0),
+        "reference_median_us": float(zero_row.get("ref_query_median_us") or 0.0),
         "accelerator_median_us": accel_hit_median_us,
         "optimization_signal": optimization_signal,
         "aux_summary": summary,
@@ -425,8 +424,7 @@ def _format_quick_benchmark_result(metrics: dict[str, Any], *, aux: bool) -> str
             "composite_score": metrics.get("composite_score"),
             "composite_workload_speedup": metrics.get("composite_workload_speedup"),
             "read_only_query_speedup": metrics.get("read_only_query_speedup"),
-            "read_speedup_vs_base_kernel": metrics.get("read_only_query_speedup"),
-            "read_speedup_vs_engine": read_speedup_vs_engine(metrics),
+            "read_speedup_vs_engine": metrics.get("read_only_query_speedup"),
             "read_only_cold_start_workload_speedup": metrics.get(
                 "read_only_cold_start_workload_speedup"
             ),

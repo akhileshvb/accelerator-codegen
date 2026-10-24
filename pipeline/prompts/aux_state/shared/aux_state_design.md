@@ -6,7 +6,7 @@ Aux state must **materially accelerate** the query while remaining maintainable 
 
 ## Design goal
 
-- Fast path avoids dominant base-kernel work (large scans, joins, heavy aggregates).
+- Fast path avoids dominant work of the engine's own plan (large scans, joins, heavy aggregates).
 - State is compact enough for tractable storage and incremental maintenance.
 - Read-path work after aux lookup is **small relative to** work eliminated.
 

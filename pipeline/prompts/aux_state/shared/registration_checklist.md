@@ -22,7 +22,7 @@ Treat these as **classes of wiring** — find the current files by searching pee
 | Cost-model location | `accelerators/{bench}/q{N}/cost_model.hpp` declares the query's `AuxCostModelLocation`; passed to the registration (catalog entry or runtime constructor, per the index) | maintenance runs on default coefficients; calibrated JSON ignored |
 | Host SQL entrypoint (workload `engine_name`) | Query callable via that engine’s SQL function surface after rebuild (call syntax: engine profile `entry_points`) | `Table Function … does not exist` / host-equivalent missing symbol |
 | Cross-accel / multi-conn helpers | Aux SQL, reference SQL, and an invalidating writer for this query id | `unsupported … invalidating writer SQL` / multi-conn warmup fail |
-| Bench arg / SQL formatters | Sweep can sample args and format base/kernel SQL for this query | `unsupported query_id` from the arg sampler (or equiv.) |
+| Bench arg / SQL formatters | Sweep can sample args and format the engine SQL and the accelerator SQL for this query | `unsupported query_id` from the arg sampler (or equiv.) |
 | CMake targets | Smoke test, bench, calibrator targets build (auto-discovery usually enough) | missing `test_<bench>_q*_aux` / bench targets |
 
 Catalog entry alone is **not** enough: the host SQL entry point (the **registration** role's SQL-entry registrars) must be registered from this query's directory too, or the selected engine host never exposes `{{aux_function_name}}`.

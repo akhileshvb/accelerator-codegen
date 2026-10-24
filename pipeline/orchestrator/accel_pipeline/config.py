@@ -444,7 +444,6 @@ def resolve_optimization_edit_paths(
             "header": f"{aux}/module.hpp",
             "secondary_cpp": f"{aux}/finalize.cpp",
             "all_paths": all_paths,
-            "base_kernel_path": paths["kernel_path"],
             "is_aux": True,
         }
 
@@ -457,7 +456,6 @@ def resolve_optimization_edit_paths(
         "header": paths["header_path"],
         "secondary_cpp": paths["package_path"],
         "all_paths": all_paths,
-        "base_kernel_path": None,
         "is_aux": False,
     }
 
@@ -800,7 +798,6 @@ def _derive_query_names(data: dict[str, Any], engine: str, root: Path) -> None:
     )
     if data.get("workload_kind") == "aux_state":
         data.update(
-            base_function_name=naming.base_function_name(bench, q),
             aux_function_name=naming.aux_function_name(bench, q),
             accelerator_id=naming.accelerator_id(bench, q),
             prerequisite_workload=naming.base_workload_name(bench, q),

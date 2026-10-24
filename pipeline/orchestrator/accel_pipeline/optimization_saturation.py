@@ -1,6 +1,6 @@
 """Agent-declared optimization saturation (early stop) and the evidence it must come with.
 
-A stateful accelerator whose reads are barely faster than the stateless base kernel is not
+A stateful accelerator whose reads are barely faster than the engine's own SQL is not
 saturated, whatever the write axis says. Below the read-speedup floor a claim is honored only
 after the last N trials were each profile-guided and used distinct strategies, among them one
 structural change and one low-level (vectorization / layout) change. If those were all tried and
@@ -133,7 +133,7 @@ def load_trial_protocol(art: Path) -> list[dict[str, Any]]:
 
 
 def best_valid_read_speedup(art: Path) -> float:
-    """Read-only speedup over the stateless base kernel of the best valid state."""
+    """Read-only speedup over the engine's own SQL of the best valid state."""
     metrics = read_json(art / "best_valid_baseline.json").get("metrics") or {}
     try:
         return float(metrics.get("read_only_query_speedup") or 0.0)
@@ -183,7 +183,7 @@ def judge_saturation_claim(
     if missing:
         return (
             Verdict.REJECT,
-            f"read speedup over the stateless base kernel is {speedup:.2f}x, below the {floor:g}x floor; "
+            f"read speedup over the engine's own SQL is {speedup:.2f}x, below the {floor:g}x floor; "
             "still to do: " + "; ".join(missing) + ". " + REDESIGN_HINT,
             cfg,
         )

@@ -347,7 +347,6 @@ def build_runtime_state(
                 "package": edit_paths["secondary_cpp"],
                 "fused_scan": None,
                 "cost_model": paths.get("cost_model_config"),
-                "base_kernel_readonly": edit_paths.get("base_kernel_path"),
             },
             "bench_target": paths.get("aux_bench_target") or paths["bench_target"],
             "dataset_db": paths["dataset_db"],
@@ -407,7 +406,6 @@ def build_runtime_state(
             "package": edit_paths["secondary_cpp"],
             "fused_scan": paths.get("fused_scan_path") if not edit_paths.get("is_aux") else None,
             "cost_model": paths.get("cost_model_config") if edit_paths.get("is_aux") else None,
-            "base_kernel_readonly": edit_paths.get("base_kernel_path"),
         },
         "bench_target": paths["bench_target"],
         "dataset_db": paths["dataset_db"],
@@ -423,15 +421,13 @@ def _read_axis_lines(board: dict[str, Any], floor: float) -> list[str]:
         return f"{float(value):.2f}x" if value else "n/a"
 
     lines = [
-        f"- **READ AXIS (best valid)**: {fmt(axes.get('vs_base_kernel'))} vs the stateless base kernel; "
-        f"{fmt(axes.get('vs_engine'))} vs the engine's own SQL",
-        f"- read axis (last measured): {fmt(last.get('vs_base_kernel'))} vs base kernel; "
-        f"{fmt(last.get('vs_engine'))} vs engine",
+        f"- **READ AXIS (best valid)**: {fmt(axes.get('vs_engine'))} vs the engine's own SQL",
+        f"- read axis (last measured): {fmt(last.get('vs_engine'))} vs the engine's own SQL",
     ]
-    base = axes.get("vs_base_kernel")
+    base = axes.get("vs_engine")
     if floor > 0 and base and float(base) < floor:
         lines.append(
-            f"- **READ FLOOR NOT MET** ({float(base):.2f}x < {floor:g}x over the base kernel): the write axis "
+            f"- **READ FLOOR NOT MET** ({float(base):.2f}x < {floor:g}x over the engine's SQL): the write axis "
             "does not excuse this. Profile first, then attack the top hot spot; restructure when the "
             "profile shows the read visits too much state."
         )
@@ -483,8 +479,8 @@ def format_runtime_markdown(state: dict[str, Any]) -> str:
     if is_aux:
         lines.extend(_read_axis_lines(board, float(state.get("read_floor") or 0.0)))
     lines.append(
-        "- Early stop: `OPTIMIZATION_SATURATED` is honored once the read speedup over the stateless "
-        "kernel reaches the floor; below it, only after the last trials were each profile-guided "
+        "- Early stop: `OPTIMIZATION_SATURATED` is honored once the read speedup over the engine's own SQL "
+        "reaches the floor; below it, only after the last trials were each profile-guided "
         "(`begin_ab_trial` with hot_spot, expected_gain, strategy), distinct, and included one "
         "`structural` and one `low_level` change."
     )

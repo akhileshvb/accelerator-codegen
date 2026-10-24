@@ -101,7 +101,6 @@ def _sample_valid_analysis() -> dict:
     )
     return {
         "accelerator_id": "tpch_q14_aux",
-        "base_function_name": "accel_tpch_q14",
         "aux_function_name": "accel_tpch_q14_aux",
         "fitness_assessment": {
             "recommended": True,

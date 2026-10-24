@@ -243,7 +243,6 @@ def build_context_packet(
             "package": edit_paths["secondary_cpp"],
             "fused_scan": fused_path if not edit_paths.get("is_aux") else None,
             "cost_model": paths.get("cost_model_config") if edit_paths.get("is_aux") else None,
-            "base_kernel_readonly": edit_paths.get("base_kernel_path"),
         },
     }
     return packet

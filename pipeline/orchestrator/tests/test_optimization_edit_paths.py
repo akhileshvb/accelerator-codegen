@@ -22,11 +22,10 @@ def test_aux_optimization_edit_paths_point_at_aux_module():
         tpch_db_sf10=repo.parent / "accelerator-codegen-duckdb" / "tpch_sf10.duckdb",
     )
     edit = resolve_optimization_edit_paths(pc, workload, 18)
-    base = resolve_workload_paths(pc, workload, 18)
     assert edit["is_aux"] is True
     eng = workload["engine_name"]
     assert edit["primary_cpp"] == f"accelerators/tpch/q18/{eng}/aux/module.cpp"
     assert edit["header"] == f"accelerators/tpch/q18/{eng}/aux/module.hpp"
     assert edit["secondary_cpp"] == f"accelerators/tpch/q18/{eng}/aux/finalize.cpp"
     assert "accelerators/tpch/q18/config/q18_aux_cost_model_duckdb.json" in edit["all_paths"]
-    assert edit["base_kernel_path"] == base["kernel_path"]
+    assert "base_kernel_path" not in edit  # an aux accelerator has no stateless kernel beside it
