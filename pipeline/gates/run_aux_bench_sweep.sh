@@ -153,21 +153,31 @@ for suite in "${SUITE_LIST[@]}"; do
 done
 printf '[%s]' "$(IFS=,; echo "${DRAWS[*]}")" > "${DRAWS_JSON}"
 
-# One extra read-only point at one thread, next to the default budget's read-only point (first repeat, first suite):
-# the speedup of N threads over 1, report-only. The measurement lease and CPUs are the sweep's.
-THREADS_N="$(gate_threads measure)"
+# Two extra read-only points (first repeat, first suite): at one thread, and at the thread count the pipeline
+# configures for runs (ACCEL_AUX_THREADS, else the worker's CPUs) on that many CPUs of the worker's core set, not
+# on the lease's one-core slot. Report-only: the speedup of N threads over 1, reads and build.
+THREADS_N=1
 THREADS1_CSV="${ACCEL_AUX_BENCH_WORK_DIR}/results_threads1.csv"
+THREADSN_CSV="${ACCEL_AUX_BENCH_WORK_DIR}/results_threadsN.csv"
 : > "${THREADS1_CSV}"
-if [[ "${ACCEL_AUX_THREAD_POINT:-1}" != 0 && ${THREADS_N} -gt 1 && "${CHANGE_KIND}" != "optimization" ]]; then
-  export "ACCEL_Q${QUERY}_BENCH_SUITE=${SUITE_LIST[0]}"
-  export ACCEL_AUX_WRITE_FREQUENCIES=0
-  echo "thread point: read-only at ACCEL_AUX_THREADS=1 (default budget ${THREADS_N})" | tee -a "${SWEEP_LOG}"
-  ACCEL_AUX_THREADS=1 engine_measure "${BENCH_TARGET}" --query "${QUERY}" 0
+: > "${THREADSN_CSV}"
+thread_point() {   # <threads> <csv>: the row of the read-only point at that thread count
+  ACCEL_AUX_THREADS="$1" engine_measure "${BENCH_TARGET}" --query "${QUERY}" 0
   printf '%s\n' "${LOG}" >> "${SWEEP_LOG}"
   printf '%s\n' "${LOG}" | awk -F, '
     /^suite,/ { if (!hdr) { print; hdr = 1 }; next }
     /^speedup_gate/ || /^#/ { next }
-    NF >= 10 { print }' >> "${THREADS1_CSV}"
+    NF >= 10 { print }' >> "$2"
+}
+if [[ "${ACCEL_AUX_THREAD_POINT:-1}" != 0 && "${CHANGE_KIND}" != "optimization" ]]; then
+  read -r PIN_CPUS THREADS_N <<<"$(worker_cpus "$(gate_threads)")"
+  if [[ ${THREADS_N} -gt 1 ]]; then
+    export "ACCEL_Q${QUERY}_BENCH_SUITE=${SUITE_LIST[0]}"
+    export ACCEL_AUX_WRITE_FREQUENCIES=0
+    echo "thread points: read-only at 1 thread and at ${THREADS_N} threads (cpus ${PIN_CPUS})" | tee -a "${SWEEP_LOG}"
+    thread_point 1 "${THREADS1_CSV}"
+    ACCEL_RUN_CPUS="${PIN_CPUS}" thread_point "${THREADS_N}" "${THREADSN_CSV}"
+  fi
 fi
 
 python3 - <<PY
@@ -209,10 +219,10 @@ for one, expected in zip(summaries, expected_rows):
             "(benchmark must emit CSV with workload_speedup per write frequency)"
         )
 
-threads1_csv = pathlib.Path("${THREADS1_CSV}")
+threads1_csv, threadsn_csv = pathlib.Path("${THREADS1_CSV}"), pathlib.Path("${THREADSN_CSV}")
 scaling = {}
-if threads1_csv.is_file() and threads1_csv.stat().st_size:
-    scaling = thread_scaling(results_csv, threads1_csv, int("${THREADS_N}"), "${SUITE_LIST[0]}")
+if threads1_csv.stat().st_size and threadsn_csv.stat().st_size:
+    scaling = thread_scaling(threadsn_csv, threads1_csv, int("${THREADS_N}"), "${SUITE_LIST[0]}")
     summary["thread_scaling"] = scaling
 
 gate = {

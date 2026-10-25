@@ -104,20 +104,17 @@ optimization:
     inferred_diff_fraction: 0.35
 
 # The stage-exit batch: the quick unit checks, then one aux_exit run (correctness at N and 1 threads, multi-connection,
-# cross-accelerator, TSAN on the subset and the bench sweep, side by side), then the cost-model calibration, which
-# rebuilds the state several times (a few minutes on its own).
+# cross-accelerator, TSAN on the subset, the bench sweep and the cost-model calibration, side by side).
 post_implementation_gates:
   - aux_unit
   - prims_tests
   - aux_exit
-  - aux_cost_model_calibrate
 
 # End-of-optimization-iteration batch (not run per attempt): the lighter correctness tier.
 post_optimization_gates:
   - aux_unit
   - prims_tests
   - aux_exit
-  - aux_cost_model_calibrate
 
 # End-of-audit hard gates: the exit run and the engine-free module TSAN driver.
 # Scale-safety / harness-cheat review is agent analysis in final_audit.md

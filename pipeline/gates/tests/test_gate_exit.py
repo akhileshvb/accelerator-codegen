@@ -20,13 +20,15 @@ def test_every_phase_runs_as_its_gate_and_the_exit_result_lists_them(repo, tmp_p
     assert proc.returncode == 0, proc.stdout + proc.stderr
     exit_result = result(gj, "aux_exit")
     assert exit_result["status"] == "pass"
-    assert set(exit_result["phases"]) == {"correctness", "multi_connection", "cross_accel", "tsan", "bench"}
+    assert set(exit_result["phases"]) == {"correctness", "multi_connection", "cross_accel", "tsan", "bench", "calibrate"}
     for phase, gate in [("correctness", "aux_correctness"), ("multi_connection", "aux_multi_connection"),
-                        ("cross_accel", "aux_cross_accel"), ("bench", "aux_bench_sweep"), ("tsan", "aux_tsan")]:
+                        ("cross_accel", "aux_cross_accel"), ("bench", "aux_bench_sweep"), ("tsan", "aux_tsan"),
+                        ("calibrate", "aux_cost_model_calibrate")]:
         assert exit_result["phases"][phase]["result"].endswith(f"{gate}.json")
         assert result(gj, gate)["status"] == exit_result["phases"][phase]["status"]
     assert exit_result["phases"]["tsan"]["status"] == "skip"  # the fake host is not embedded
-    assert len(bench_calls(log)) == 2  # the sweep's one call and its one-thread point
+    assert any(c.startswith("run calibrator") for c in calls)  # calibrated in the exit run, not in a gate after it
+    assert len(bench_calls(log)) == 3  # the sweep's one call and its one- and N-thread points
     assert any(c.startswith("build ") and "diff_bin" in c and "bench_aux" in c for c in calls)  # the targets built together
 
 

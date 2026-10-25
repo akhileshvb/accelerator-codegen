@@ -274,3 +274,28 @@ def test_the_mcp_update_analysis_tool_patches_then_validates(tmp_path, monkeypat
     assert out.startswith("applied 1 operation(s); validation: invalid") and json.loads(target.read_text()) == {"x": {"y": 2}}
     assert tools["update_analysis"]([{"op": "remove", "path": "/nope"}]).startswith("not applied")
     assert json.loads(target.read_text()) == {"x": {"y": 2}}
+
+
+def _data_call(art, error=None):
+    with (art / "data_queries.jsonl").open("a") as log:
+        log.write(json.dumps({"tool": "query_data", "error": error}) + "\n")
+
+
+def test_successful_data_calls_are_progress_in_the_analysis_stages_only(tmp_path):
+    clock = _clock(tmp_path, nudge=0.4, redirect=0.8)
+    clock.stage = "analysis"
+    for _ in range(8):
+        _data_call(tmp_path / "art")
+        assert _poll_for(clock, 0.1) == ""
+    for _ in range(8):  # failed calls are not
+        _data_call(tmp_path / "art", error="syntax")
+        _poll_for(clock, 0.1)
+    assert clock.poll() == "redirect"
+
+
+def test_data_calls_are_not_progress_while_implementing(tmp_path):
+    clock = _clock(tmp_path, nudge=0.3, redirect=0.8)
+    for _ in range(8):
+        _data_call(tmp_path / "art")
+        _poll_for(clock, 0.1)
+    assert clock.poll() == "redirect"

@@ -188,11 +188,12 @@ run_limit() {
 engine_run() { _engine_run "" "$@"; }
 
 # engine_run for a benchmark: queues for the host-wide measurement lease (outside the time limit), runs
-# pinned to the measurement CPUs, and records the queueing as the phase measurement_lease_wait.
+# pinned to the measurement CPUs (ACCEL_RUN_CPUS: to those instead), and records the queueing as the phase
+# measurement_lease_wait.
 engine_measure() { _engine_run "${ACCEL_GATE_NAME:-${GATE_QUERY:-gate}}" "$@"; }
 
 _engine_run() {
-	local lease="$1" limit started waited wrap=() live
+	local lease="$1" limit started waited wrap=() pin=() live
 	shift
 	limit="$(run_limit)"
 	started="$(now_us)"
@@ -201,7 +202,8 @@ _engine_run() {
 	[[ -z "${lease}" ]] ||
 		wrap=(env "PYTHONPATH=${ACCEL_PIPELINE_PYTHONPATH:-${GATE_ROOT}/pipeline/orchestrator}:${PYTHONPATH:-}" python3 -m accel_pipeline.pack.measurement_lease
 			--holder "${ACCEL_INSTANCE_TAG:-${ACCEL_PIPELINE_WORKER_ID:-w0}}" --reason "${lease}" --)
-	"${wrap[@]}" timeout --kill-after=15 "${limit}" "${ENGINE_HOST}" run "$@" >"${live}" 2>&1 && RC=0 || RC=$?
+	[[ -z "${ACCEL_RUN_CPUS:-}" ]] || pin=(taskset -c "${ACCEL_RUN_CPUS}")   # after the lease's own pinning: a wider set
+	"${wrap[@]}" "${pin[@]}" timeout --kill-after=15 "${limit}" "${ENGINE_HOST}" run "$@" >"${live}" 2>&1 && RC=0 || RC=$?
 	LOG="$(<"${live}")"
 	rm -f "${live}"
 	record_phase "run_${1##*/}" "${started}"
@@ -280,6 +282,17 @@ print(max(1, n // max(1, int(sys.argv[2]))))" "${ACCEL_MEASURE_SET}" "${ACCEL_ME
 		return
 	fi
 	nproc
+}
+
+# worker_cpus <n>: the first n CPUs of the worker's own core set (ACCEL_CORE_SET, else the CPUs of this process), as a
+# taskset list, and how many there were (fewer than n when the set is smaller).
+worker_cpus() {
+	python3 -c "
+import os, sys
+cpus = sorted(int(c) for part in (os.environ.get('ACCEL_CORE_SET') or '').split(',') if part
+              for c in range(int(part.partition('-')[0]), int(part.rpartition('-')[2]) + 1))
+cpus = (cpus or sorted(os.sched_getaffinity(0)))[:int(sys.argv[1])]
+print(','.join(map(str, cpus)), len(cpus))" "$1"
 }
 
 # thread_lint: the query's sources hold no hard-coded thread counts or hardware_concurrency (the thread-budget

@@ -27,10 +27,31 @@ def expects_scaling(analysis: dict[str, Any]) -> bool:
     return bool(plan.strip()) and not _SERIAL_PLAN.match(plan)
 
 
-def build_report(reports: list[dict], *, scale: float, threads: int, budget_s: float, expected_scaling: bool) -> tuple[str, str]:
+def _not_scaling(at_n: float, at_1: float, threads: int, where: str) -> str:
+    return (
+        f"the state build does not scale with threads: {at_n:.2f} s at {threads} threads vs {at_1:.2f} s at 1 "
+        f"({at_1 / at_n:.1f}x) {where}, but analysis.json's scale_plan.build_parallelism says it splits over the thread cap. "
+        "Something in it is serial, usually one thread inserting rows one at a time into a shared structure. "
+        "Build per-partition partials in core::PartitionedBuild (or the scan role's partitioned scan) and merge "
+        "them; sort or bulk-load instead of inserting per row.")
+
+
+def full_scale_defect(sweep_scaling: dict[str, Any]) -> str:
+    """The thread_scaling of the last bench sweep (SF1 builds at N and at 1 thread) as a defect, for a subset build too
+    short to judge."""
+    at_n, at_1 = float(sweep_scaling.get("build_ms_at_N") or 0.0) / 1e3, float(sweep_scaling.get("build_ms_at_1") or 0.0) / 1e3
+    threads = int(sweep_scaling.get("threads") or 0)
+    if threads < MIN_THREADS or not at_n or at_1 / at_n >= SCALING_FLOOR:
+        return ""
+    return _not_scaling(at_n, at_1, threads, "in the last bench sweep on the full SF1 database")
+
+
+def build_report(reports: list[dict], *, scale: float, threads: int, budget_s: float, expected_scaling: bool,
+                 sweep_scaling: dict[str, Any] | None = None) -> tuple[str, str]:
     """(the build line, the defect or ""): the build's seconds at N and at 1 thread on the subset, its speedup, and the
     N-thread build projected to the full dataset (rows scale). `reports`: the suite reports of the N-thread and the
-    one-thread run, the second missing when the cap is one thread."""
+    one-thread run, the second missing when the cap is one thread. When the subset build is too short to time, the
+    scaling is judged on `sweep_scaling`, the last bench sweep's builds at full scale."""
     if not reports or not float(reports[0].get("build_seconds") or 0.0):
         return "", ""
     at_n = float(reports[0]["build_seconds"])
@@ -40,12 +61,9 @@ def build_report(reports: list[dict], *, scale: float, threads: int, budget_s: f
     line = f"{at_n:.2f} s at {threads} threads" + (f", {at_1:.2f} s at 1 thread ({speedup:.1f}x)" if at_1 else "")
     line += f" on the subset; projected {full_s:.0f} s on the full dataset (budget {budget_s:.0f} s)"
     if expected_scaling and threads >= MIN_THREADS and at_1 >= MIN_TIMED_BUILD_S and speedup < SCALING_FLOOR:
-        return line, (
-            f"the state build does not scale with threads: {at_n:.2f} s at {threads} threads vs {at_1:.2f} s at 1 "
-            f"({speedup:.1f}x), but analysis.json's scale_plan.build_parallelism says it splits over the thread cap. "
-            "Something in it is serial, usually one thread inserting rows one at a time into a shared structure. "
-            "Build per-partition partials in core::PartitionedBuild (or the scan role's partitioned scan) and merge "
-            "them; sort or bulk-load instead of inserting per row.")
+        return line, _not_scaling(at_n, at_1, threads, "on the subset")
+    if expected_scaling and at_1 < MIN_TIMED_BUILD_S and (defect := full_scale_defect(sweep_scaling or {})):
+        return line, defect
     if full_s > budget_s:
         return line, (
             f"the state build is too slow for the full dataset: {at_n:.2f} s on the subset at {threads} threads, "

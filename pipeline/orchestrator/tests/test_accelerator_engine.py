@@ -96,7 +96,7 @@ def test_postgres_keeps_full_post_gates():
 
     w = _postgres_workload("tpch_q3_aux")
     gates = workload_post_implementation_gates(w)
-    assert gates == ["aux_unit", "prims_tests", "aux_exit", "aux_cost_model_calibrate"]
+    assert gates == ["aux_unit", "prims_tests", "aux_exit"]
     assert w["engine_host"]["multi_conn_target"] == "test_postgres_aux_multi_connection_stress"
 
 
