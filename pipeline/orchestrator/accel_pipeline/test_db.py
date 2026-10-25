@@ -97,16 +97,23 @@ def cut_selects(tables: list[str], joins: list[tuple[tuple[str, str], tuple[str,
 
 def _sample(table: str, rows: int, root_rows: int, join_columns: list[str], integers: list[str]) -> str:
     """Every P-th key value, P a prime near rows / root_rows: an even spread over the key range (no bias to early
-    keys), and a prime stride cannot line up with the blocks a generator numbers its keys in."""
+    keys), and a prime stride cannot line up with the blocks a generator numbers its keys in. An integer join key is
+    sampled by value; a text one by its rank among the distinct keys (a modulo of another integer column would keep
+    whatever few values happen to divide, e.g. none of a handful of dates)."""
     if rows <= root_rows:
         return f"SELECT * FROM {table}"
-    column = next((c for c in join_columns + integers if c in integers), None)
-    if column is None:
-        raise ValueError(f"{table} has no integer column to sample by key")
     stride = math.ceil(rows / root_rows)
     while any(stride % d == 0 for d in range(2, math.isqrt(stride) + 1)):
         stride += 1
-    return f"SELECT * FROM {table} WHERE {column} % {stride} = 0"
+    if column := next((c for c in join_columns if c in integers), None):
+        return f"SELECT * FROM {table} WHERE {column} % {stride} = 0"
+    if join_columns:
+        key = join_columns[0]
+        ranked = f"SELECT {key}, ROW_NUMBER() OVER (ORDER BY {key}) AS key_rank FROM (SELECT DISTINCT {key} FROM {table}) AS keys"
+        return f"SELECT * FROM {table} WHERE {key} IN (SELECT {key} FROM ({ranked}) AS ranked WHERE key_rank % {stride} = 0)"
+    if integers:
+        return f"SELECT * FROM {table} WHERE {integers[0]} % {stride} = 0"
+    raise ValueError(f"{table} has no join key or integer column to sample by")
 
 
 def _write_cut(runner: HostSql, selects: dict[str, str], directory: Path) -> dict[str, int]:

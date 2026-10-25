@@ -46,9 +46,17 @@ def test_a_sample_with_no_rows_is_an_error(tmp_path):
         test_db._write_cut(type("R", (), {"rows": lambda self, sql, seconds: []})(), {"t": "SELECT 1"}, tmp_path / "cut")
 
 
-def test_a_table_without_an_integer_column_cannot_be_sampled():
-    with pytest.raises(ValueError, match="no integer column"):
+def test_a_table_without_a_join_key_or_integer_column_cannot_be_sampled():
+    with pytest.raises(ValueError, match="no join key or integer column"):
         cut_selects(["notes"], [], {"notes": 10}, {"notes": []}, 5)
+
+
+def test_a_text_join_key_is_sampled_by_rank_not_by_another_integer_column():
+    # SEC-EDGAR: num joins sub on adsh (text); num's integer columns are a handful of report dates and quarter counts
+    joins = [(("num", "adsh"), ("sub", "adsh"))]
+    out = cut_selects(["num", "sub"], joins, {"num": 1000, "sub": 50}, {"num": ["ddate", "qtrs"], "sub": ["cik"]}, 100)
+    assert "ROW_NUMBER() OVER (ORDER BY adsh)" in out["num"] and "key_rank % 11 = 0" in out["num"] and "ddate" not in out["num"]
+    assert out["sub"].startswith("SELECT * FROM sub WHERE adsh IN (SELECT adsh FROM (")
 
 
 def test_key_columns_with_the_same_name_link_tables_the_query_does_not_join():
