@@ -12,7 +12,7 @@ from test_repair import _implement, _stage_world
 
 from accel_pipeline.optimization import attempt as attempt_mod
 from accel_pipeline import repair as repair_mod
-from accel_pipeline.crash_debug import run_post_stage_gates_with_crash_debug
+from accel_pipeline.repair import run_gates_with_repair
 from accel_pipeline.gates.stamps import current_stamp, record_pass
 from accel_pipeline.gates.run import GateResult
 from accel_pipeline.optimization.eval import BenchmarkSample, MultiSampleBenchmark
@@ -74,7 +74,7 @@ def test_implementation_repair_exit_reuse_and_a_measurement_repair_run_in_one_se
 
     # stage exit on identical code: what passed is reused, the acceptance timing of another stage is not
     world.runs.clear()
-    run_post_stage_gates_with_crash_debug(world.config, world.models, "w", 3, GATES, change_kind="audit")
+    run_gates_with_repair(world.config, world.models, "w", 3, GATES, change_kind="audit")
     assert world.runs == [("aux_bench_sweep", "audit")]
 
     # optimization start: the baseline measured the fallback, the repair resumes the same session, the rerun is trusted

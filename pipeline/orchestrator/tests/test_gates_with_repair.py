@@ -3,7 +3,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from accel_pipeline.config import PipelineConfig, QuickTierConfig, RepairConfig
-from accel_pipeline.crash_debug import run_post_stage_gates_with_crash_debug
+from accel_pipeline.repair import run_gates_with_repair
 from accel_pipeline.gates.run import GateResult
 from accel_pipeline.repair import StageStopped
 
@@ -54,7 +54,7 @@ def gate_runs(monkeypatch):
 @patch("accel_pipeline.stages.base.run_agent_stage")
 def test_crash_debug_retries_until_gates_pass(run_agent, parallel, gate_runs, tmp_path):
     gate_runs.script["correctness"] = [FAILED, FAILED, PASSED]
-    results = run_post_stage_gates_with_crash_debug(
+    results = run_gates_with_repair(
         _config(tmp_path, parallel=parallel), MagicMock(), "workload", 1, ["correctness"],
         change_kind="optimization", iteration=2,
     )
@@ -67,7 +67,7 @@ def test_crash_debug_retries_until_gates_pass(run_agent, parallel, gate_runs, tm
 def test_max_rounds_overrides_the_configured_code_budget(run_agent, parallel, gate_runs, tmp_path):
     gate_runs.script["correctness"] = [FAILED]
     with pytest.raises(StageStopped):
-        run_post_stage_gates_with_crash_debug(
+        run_gates_with_repair(
             _config(tmp_path, parallel=parallel), MagicMock(), "workload", 1, ["correctness"],
             change_kind="audit", max_rounds=2,
         )
@@ -79,7 +79,7 @@ def test_the_failing_gate_of_a_batch_is_the_one_repaired(run_agent, parallel, ga
     unit_failed = GateResult(name="aux_unit", status="fail", data={"log_tail": "Segmentation fault"})
     gate_runs.script["aux_unit"] = [unit_failed, GateResult(name="aux_unit", status="pass", data={})]
     gate_runs.script["aux_correctness"] = [GateResult(name="aux_correctness", status="pass", data={})]
-    run_post_stage_gates_with_crash_debug(
+    run_gates_with_repair(
         _config(tmp_path, parallel=parallel), MagicMock(), "workload", 1, ["aux_correctness", "aux_unit"],
         change_kind="optimization",
     )
@@ -88,5 +88,5 @@ def test_the_failing_gate_of_a_batch_is_the_one_repaired(run_agent, parallel, ga
 
 
 def test_dry_run_runs_nothing(tmp_path):
-    assert run_post_stage_gates_with_crash_debug(
+    assert run_gates_with_repair(
         _config(tmp_path, parallel=True), MagicMock(), "w", 1, ["g"], dry_run=True) == []

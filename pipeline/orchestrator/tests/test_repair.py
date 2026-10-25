@@ -35,7 +35,7 @@ class World:
         monkeypatch.setattr(repair_mod, "_replan", lambda ctx, failure: self.events.append("replan") or False)
         monkeypatch.setattr("accel_pipeline.stages.base.run_agent_stage", self._agent)
         monkeypatch.setattr(repair_mod.time, "sleep", lambda s: None)
-        monkeypatch.setattr("accel_pipeline.infra_fail_fast.handle_infra_failure", lambda *a, **k: None)
+        monkeypatch.setattr("accel_pipeline.failure.handle_infra_failure", lambda *a, **k: None)
         self.tmp = tmp_path
 
     def ctx(self, **kw):
@@ -263,7 +263,7 @@ def _stage_world(tmp_path, monkeypatch, mode="ok"):
     monkeypatch.setattr(repair_mod, "_run_gates", world._run_gates)
     monkeypatch.setattr(repair_mod, "_rollback", lambda ctx: None)
     monkeypatch.setattr(repair_mod, "_replan", lambda ctx, failure: False)
-    monkeypatch.setattr("accel_pipeline.infra_fail_fast.handle_infra_failure", lambda *a, **k: None)
+    monkeypatch.setattr("accel_pipeline.failure.handle_infra_failure", lambda *a, **k: None)
     monkeypatch.setenv("FAKE_CODEX_MODE", mode)
     monkeypatch.setenv("FAKE_CODEX_DIR", str(tmp_path))
     (tmp_path / "accelerators/toybench/q3").mkdir(parents=True)

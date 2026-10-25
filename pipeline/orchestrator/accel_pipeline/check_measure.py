@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from accel_pipeline import perf_profile
-from accel_pipeline.optimization.aux_bench import parse_aux_benchmark_output
+from accel_pipeline.sweep_csv import parse_aux_benchmark_output
 from accel_pipeline.config import PipelineConfig, resolve_workload_paths
 from accel_pipeline.engine_host import host_info, host_script, instance_env
 

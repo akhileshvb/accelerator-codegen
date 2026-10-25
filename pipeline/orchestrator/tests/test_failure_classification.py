@@ -2,7 +2,7 @@ import subprocess
 
 import pytest
 
-from accel_pipeline import triage
+from accel_pipeline import failure
 
 WORKLOAD = {"benchmark_name": "toybench", "query_number": 3}
 
@@ -24,7 +24,7 @@ def repo(tmp_path):
 
 
 def classify(text, repo, **kw):
-    return triage.classify("aux_correctness", {"log_tail": text, **kw}, WORKLOAD, repo)
+    return failure.classify("aux_correctness", {"log_tail": text, **kw}, WORKLOAD, repo)
 
 
 def test_engine_internal_sanitizer_is_infra(repo):
@@ -78,9 +78,9 @@ def test_plain_test_failure_is_code(repo):
 
 
 def test_transient_provider_failure():
-    assert triage.is_transient_provider_failure("stream disconnected before completion")
-    assert not triage.is_transient_provider_failure("assertion failed in kernel")
-    assert not triage.is_transient_provider_failure(None)
+    assert failure.is_transient_provider_failure("stream disconnected before completion")
+    assert not failure.is_transient_provider_failure("assertion failed in kernel")
+    assert not failure.is_transient_provider_failure(None)
 
 
 ENGINE_WORKLOAD = {"workload_kind": "engine_backend", "engine_name": "toydb"}
@@ -96,19 +96,19 @@ ASAN_ENGINE = """==1==ERROR: AddressSanitizer: heap-use-after-free on address 0x
 
 
 def test_an_engine_backend_report_in_the_backends_tree_is_code(repo):
-    assert triage.classify("engine_canary_asan", {"log_tail": ASAN_BACKEND}, ENGINE_WORKLOAD, repo) == ("code", None)
+    assert failure.classify("engine_canary_asan", {"log_tail": ASAN_BACKEND}, ENGINE_WORKLOAD, repo) == ("code", None)
 
 
 def test_an_engine_backend_report_without_a_backend_frame_is_infra(repo):
-    assert triage.classify("engine_canary_asan", {"log_tail": ASAN_ENGINE}, ENGINE_WORKLOAD, repo) == (
+    assert failure.classify("engine_canary_asan", {"log_tail": ASAN_ENGINE}, ENGINE_WORKLOAD, repo) == (
         "infra", "engine_internal_sanitizer")
 
 
 def test_a_harness_that_fails_a_later_repeat_is_a_race_and_code():
     data = {"log_tail": "test_x failed on run 4 after passing 3 times: a race (the harness or the backend depends on timing)"}
-    assert triage.racy_repeats(data) == (3, 4)
-    assert triage.racy_repeats({"log_tail": "failed on run 1"}) is None
-    assert triage.classify("engine_scan", data, ENGINE_WORKLOAD, None) == ("code", None)
+    assert failure.racy_repeats(data) == (3, 4)
+    assert failure.racy_repeats({"log_tail": "failed on run 1"}) is None
+    assert failure.classify("engine_scan", data, ENGINE_WORKLOAD, None) == ("code", None)
 
 
 def test_the_failure_report_of_a_racy_gate_says_it_is_a_race():
@@ -121,7 +121,7 @@ def test_the_failure_report_of_a_racy_gate_says_it_is_a_race():
 
 
 def test_registration_errors_in_suite_validation_are_infra(repo):
-    from accel_pipeline.triage import classify as gate_classify
+    from accel_pipeline.failure import classify as gate_classify
 
     text = "aux warmup failed for Q1: Catalog Error: Table Function with name accel_x_q1_aux does not exist!"
     assert gate_classify("test_suite_validate", {"log_tail": text}, {}, repo)[0] == "infra"

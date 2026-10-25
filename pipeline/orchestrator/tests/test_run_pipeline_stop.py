@@ -26,7 +26,7 @@ def test_a_stage_exception_is_retried_once_then_recorded_as_a_stop(config, monke
         calls.append(kwargs["resume"])
         raise ValueError("bug")
 
-    monkeypatch.setattr(run_pipeline, "_run_stage_once", boom)
+    monkeypatch.setattr(run_pipeline, "run_stage", boom)
     with pytest.raises(StageStopped, match="orchestrator exception"):
         run_pipeline._run_stage("implementation", config, None, "w", 3, {}, False)
     assert calls == [False, True]
@@ -43,12 +43,12 @@ def test_a_stage_that_recovers_on_retry_is_not_a_stop(config, monkeypatch):
         if outcome:
             raise outcome
 
-    monkeypatch.setattr(run_pipeline, "_run_stage_once", once)
+    monkeypatch.setattr(run_pipeline, "run_stage", once)
     run_pipeline._run_stage("implementation", config, None, "w", 3, {}, False)
 
 
 def test_dry_run_exceptions_still_surface(config, monkeypatch):
-    monkeypatch.setattr(run_pipeline, "_run_stage_once", lambda *a, **k: (_ for _ in ()).throw(ValueError("x")))
+    monkeypatch.setattr(run_pipeline, "run_stage", lambda *a, **k: (_ for _ in ()).throw(ValueError("x")))
     with pytest.raises(ValueError):
         run_pipeline._run_stage("implementation", config, None, "w", 3, {}, True)
 

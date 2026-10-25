@@ -6,12 +6,11 @@ from typing import Any, Callable
 
 from accel_pipeline.backends import StageRunRequest, create_agent_backend
 from accel_pipeline.config import ModelConfig, PipelineConfig, load_run_workload, apply_workload_overrides
-from accel_pipeline.failure import AGENT_BLOCKER, PROVIDER_FLAKE, Failure, StageFailure
+from accel_pipeline.failure import AGENT_BLOCKER, PROVIDER_FLAKE, Failure, StageFailure, is_transient_provider_failure
 from accel_pipeline.models import make_model_id
 from accel_pipeline.no_progress import REDIRECT
 from accel_pipeline.paths import query_artifacts_dir
 from accel_pipeline.session import run_in_session
-from accel_pipeline.triage import is_transient_provider_failure
 from accel_pipeline.agent_progress import begin_agent_run
 from accel_pipeline.pipeline_log import (
     log_stage_complete,

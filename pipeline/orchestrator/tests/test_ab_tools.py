@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from accel_pipeline.optimization.aux_bench import parse_aux_benchmark_output, summarize_sweep_rows
+from accel_pipeline.optimization.aux_bench import summarize_sweep_rows
+from accel_pipeline.sweep_csv import parse_aux_benchmark_output
 from accel_pipeline.optimization.ab_tools import (
     _aux_quick_metrics,
     _aux_quick_write_frequencies,

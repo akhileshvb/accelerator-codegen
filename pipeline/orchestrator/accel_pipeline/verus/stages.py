@@ -31,7 +31,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
-from accel_pipeline.verus import actions, workspace
+from accel_pipeline.verus import STAGES, actions, workspace
 from accel_pipeline.verus import params as qparams
 from accel_pipeline.verus.agent import json_block, render, run_agent
 from accel_pipeline.verus.context import IGNORED_WORKLOAD_FIELDS, VerusContext
@@ -39,8 +39,6 @@ from accel_pipeline.verus.stopping import Attempt, StopConfig, StopState, should
 
 _STATE_LOCK = threading.RLock()
 
-STAGES = ("preflight", "spec", "analysis", "freeze", "tests", "glue", "kernel", "integration", "optimization",
-          "audit")
 
 
 _TRANSIENT = re.compile(r"\b(402|429|500|502|503|504|529)\b|Payment Required|rate.?limit|overloaded|temporarily|unavailable|"

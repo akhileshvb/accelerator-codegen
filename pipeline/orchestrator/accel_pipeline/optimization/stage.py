@@ -10,7 +10,7 @@ from accel_pipeline.optimization.base_bench import (
     process_base_bench_after_gates,
 )
 from accel_pipeline.config import ModelConfig, PipelineConfig, load_run_workload
-from accel_pipeline.crash_debug import run_post_stage_gates_with_crash_debug
+from accel_pipeline.repair import run_gates_with_repair
 from accel_pipeline.optimization.attempt import run_optimization_iteration
 from accel_pipeline.optimization.worker import OptimizationWorker, worker_enabled
 from accel_pipeline.paths import query_artifacts_dir
@@ -24,7 +24,6 @@ def run(
     model_config: ModelConfig,
     workload_name: str,
     query: int,
-    max_iterations: int,
     model_overrides: dict[str, str] | None = None,
     dry_run: bool = False,
     *,
@@ -52,7 +51,7 @@ def run(
         )
 
     try:
-        for iteration in range(1, max_iterations + 1):
+        for iteration in range(1, pipeline_config.optimization_max_iterations + 1):
             if deadline is not None and time.time() >= deadline and not dry_run:
                 append_experiment_log(
                     pipeline_config.repo_root,
@@ -161,7 +160,7 @@ def run(
                 file=sys.stderr,
                 flush=True,
             )
-            run_post_stage_gates_with_crash_debug(
+            run_gates_with_repair(
                 pipeline_config,
                 model_config,
                 workload_name,

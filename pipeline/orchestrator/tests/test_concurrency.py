@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from accel_pipeline import triage
+from accel_pipeline import failure
 
 from accel_pipeline.pack import core_budget
 
@@ -382,22 +382,22 @@ def test_quick_runs_are_flagged_noisy_while_someone_measures(host_dir):
 def test_a_timeout_while_another_worker_measures_is_infra(host_dir, monkeypatch):
     monkeypatch.setenv("ACCEL_INSTANCE_TAG", "me")
     text = "aux_bench did not finish within 900s"
-    assert triage.classify("aux_bench_sweep", {"log_tail": text}, {}, None, query=3, load_factor=1e9) == ("code", None)
+    assert failure.classify("aux_bench_sweep", {"log_tail": text}, {}, None, query=3, load_factor=1e9) == ("code", None)
     holder = spawn(window_script(3), "other")
     holder.stdout.readline()
-    assert triage.classify("aux_bench_sweep", {"log_tail": text}, {}, None, query=3, load_factor=1e9) == ("infra", "timeout_under_load")
+    assert failure.classify("aux_bench_sweep", {"log_tail": text}, {}, None, query=3, load_factor=1e9) == ("infra", "timeout_under_load")
     holder.kill()
     holder.wait()
 
 
 def test_a_timeout_after_queueing_for_the_lease_is_infra(host_dir):
     text = "[measurement-lease] waited 120.0 s for the measurement lease\nbench timed out after 300s"
-    assert triage.classify("aux_bench_sweep", {"log_tail": text}, {}, None, query=3, load_factor=1e9) == ("infra", "timeout_under_load")
+    assert failure.classify("aux_bench_sweep", {"log_tail": text}, {}, None, query=3, load_factor=1e9) == ("infra", "timeout_under_load")
 
 
 def test_not_getting_the_lease_is_infra(host_dir):
     text = "measurement lease not acquired within 3600s (held by q9): not acquired within 3600s"
-    assert triage.classify("aux_bench_sweep", {"log_tail": text}, {}, None, query=3) == ("infra", "measurement_lease_busy")
+    assert failure.classify("aux_bench_sweep", {"log_tail": text}, {}, None, query=3) == ("infra", "measurement_lease_busy")
 
 
 # --- nothing kills other workers' processes ---

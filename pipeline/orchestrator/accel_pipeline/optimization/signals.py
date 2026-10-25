@@ -4,50 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-STORE_DIAGNOSTIC_FIELDS: tuple[str, ...] = (
-    "aux_state_bytes",
-    "valid_partitions",
-    "total_slots",
-    "validity_slots_scanned_median",
-    "validity_scan_us_median",
-    "partitions_read_per_query_median",
-    "state_bytes_read_median",
-    "store_execute_calls",
-    "accel_hit_median_us",
-    "accel_hit_rate",
-)
-
-_INT_FIELDS = {
-    "aux_state_bytes",
-    "valid_partitions",
-    "total_slots",
-    "state_bytes_read_median",
-    "store_execute_calls",
-}
-_FLOAT_FIELDS = {
-    "validity_slots_scanned_median",
-    "validity_scan_us_median",
-    "partitions_read_per_query_median",
-    "accel_hit_median_us",
-    "accel_hit_rate",
-}
-
-
-def coerce_diagnostic_field(name: str, value: Any) -> Any:
-    if value is None or value == "":
-        return None
-    if name in _INT_FIELDS:
-        try:
-            return int(float(value))
-        except (TypeError, ValueError):
-            return None
-    if name in _FLOAT_FIELDS:
-        try:
-            return float(value)
-        except (TypeError, ValueError):
-            return None
-    return value
-
+from accel_pipeline.sweep_csv import STORE_DIAGNOSTIC_FIELDS, coerce_diagnostic_field
 
 def extract_store_diagnostics(metrics: dict[str, Any] | None) -> dict[str, Any]:
     """Pull factual store/execution measurements from benchmark metrics."""

@@ -74,7 +74,7 @@ class World:
         monkeypatch.setattr(eb, "backend_diff", lambda *a, **k: "diff --git a/x b/x")
         monkeypatch.setattr(eb, "backend_digest", lambda *a, **k: "## Backend digest\n\n")
         monkeypatch.setattr(repair_mod.time, "sleep", lambda s: None)
-        monkeypatch.setattr("accel_pipeline.infra_fail_fast.handle_infra_failure", lambda *a, **k: None)
+        monkeypatch.setattr("accel_pipeline.failure.handle_infra_failure", lambda *a, **k: None)
         monkeypatch.setattr(repair_mod, "_rollback", lambda ctx: None)
         self.monkeypatch = monkeypatch
 

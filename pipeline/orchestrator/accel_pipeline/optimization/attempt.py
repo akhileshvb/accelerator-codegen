@@ -20,7 +20,7 @@ from accel_pipeline.config import (
     resolve_optimization_edit_paths,
     resolve_workload_paths,
 )
-from accel_pipeline.failure import Failure, StageFailure
+from accel_pipeline.failure import Failure, StageFailure, is_transient_provider_failure
 from accel_pipeline.jsonio import read_json
 from accel_pipeline.optimization.kernel_hot_path_review import analyze_kernel_source
 from accel_pipeline.models import make_model_id
@@ -90,7 +90,6 @@ from accel_pipeline.playbook import append_experiment_log
 from accel_pipeline.prompts import render_prompt, save_rendered_prompt, with_codex_tooling
 from accel_pipeline.session import MAIN, run_in_session
 from accel_pipeline.stages.base import resolve_optimization_max_turns
-from accel_pipeline.triage import is_transient_provider_failure as _is_transient_provider_failure  # noqa: F401
 
 HYPOTHESIS_COMPLETE = "HYPOTHESIS_COMPLETE"
 PATCH_COMPLETE = "HYPOTHESIS_PATCH_COMPLETE"
@@ -356,7 +355,7 @@ def _fail_fast_infra_if_needed(
     pack_queries: list[int] | None = None,
 ) -> dict[str, Any] | None:
     """On shared-tree infra failures, repair + release lease and stop burning agent turns."""
-    from accel_pipeline.infra_fail_fast import handle_infra_failure
+    from accel_pipeline.failure import handle_infra_failure
 
     info = handle_infra_failure(
         pipeline_config,
@@ -1115,7 +1114,7 @@ def run_optimization_iteration(
                     cycle.status != "ready"
                     and cycle.status != "saturated"
                     and cycle.status != "cannot_test"
-                    and _is_transient_provider_failure(cycle.reason)
+                    and is_transient_provider_failure(cycle.reason)
                     and provider_retries < max_provider_retries
                 ):
                     provider_retries += 1
