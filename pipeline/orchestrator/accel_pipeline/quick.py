@@ -21,6 +21,7 @@ from accel_pipeline import test_suite as ts
 from accel_pipeline.gates.build_stamp import code_stamp
 from accel_pipeline.check_measure import Bench
 from accel_pipeline.config import PipelineConfig
+from accel_pipeline.engine_host import ensure_dataset_loaded, workload_dataset_dir
 from accel_pipeline.failure import Failure, render_failure
 from accel_pipeline.gates.stamps import check_version, current_stamp
 from accel_pipeline.gates.run import run_gate
@@ -280,14 +281,21 @@ def run_quick_check(pipeline_config: PipelineConfig, workload: dict, query: int,
     return QuickResult(status="pass", phase_timings=timings, summary="quick_check passed", report=report)
 
 
-def profile_hot_spots(pipeline_config: PipelineConfig, workload: dict[str, Any], query: int) -> str:
-    """run_profile: samples of the read, write and build paths on the subset, as JSON. A tree that does not pass the
-    plain check, or a profiler that cannot run, is a failure to fix or report; a server engine is not applicable."""
+def profile_hot_spots(pipeline_config: PipelineConfig, workload: dict[str, Any], query: int, scale: str = "subset") -> str:
+    """run_profile: samples of the read, write and build paths as JSON, on the subset in the quick_check's instance or
+    (scale "full") on the full gate dataset in an instance of its own. A tree that does not pass the plain check, or a
+    profiler that cannot run, is a failure to fix or report; a server engine is not applicable."""
     checked = run_quick_check(pipeline_config, workload, query, differential=False)
     instance = saved_report(pipeline_config, workload, query).get("instance")
     if checked.status != "pass" or not instance:
         return render_quick_result(checked) if checked.status != "pass" else json.dumps(
             {"status": "fail", "summary": "no quick_check instance to profile in: run quick_check first"})
+    if scale == "full":
+        instance = _full_instance(workload, instance)
+        if problem := ensure_dataset_loaded(workload, pipeline_config.repo_root, pipeline_config.build_dir,
+                                            instance_env={"ACCEL_ENGINE_INSTANCE": instance["engine_instance"],
+                                                          "ACCEL_ENGINE_STATE_DIR": instance["engine_state_dir"]}):
+            return json.dumps({"status": "fail", "summary": f"the full dataset could not be loaded for profiling: {problem}"})
     profiles = Bench(pipeline_config, workload, query, instance).profile(PROFILE_SECONDS)
     broken = {path: p["reason"] for path, p in profiles.items() if p["status"] == "error"}
     if broken:
@@ -296,7 +304,15 @@ def profile_hot_spots(pipeline_config: PipelineConfig, workload: dict[str, Any],
             diagnosis=["profiling failed because of the host or the harness, not because there is nothing to profile: fix what "
                        "the message names, or report it (report_blocker) if it is outside the query's files"])
         return json.dumps({"status": "fail", "failure": render_failure(failure)}, indent=2)
-    return json.dumps({"status": "pass", **{f"{path}_path": render_for_agent(p).splitlines() for path, p in profiles.items()}}, indent=2)
+    return json.dumps({"status": "pass", "scale": scale,
+                       **{f"{path}_path": render_for_agent(p).splitlines() for path, p in profiles.items()}}, indent=2)
+
+
+def _full_instance(workload: dict[str, Any], quick_instance: dict[str, str]) -> dict[str, str]:
+    """An instance of its own on the full gate dataset, as the stage exit gives its bench phase (the profile's
+    write mix must not disturb the quick instance)."""
+    return {"engine_instance": quick_instance["engine_instance"] + "-full",
+            "engine_state_dir": quick_instance["engine_state_dir"] + "-full", "dataset": workload_dataset_dir(workload)}
 
 
 def _report_path(pipeline_config: PipelineConfig, workload: dict[str, Any], query: int) -> Path:

@@ -213,17 +213,43 @@ OK = {"status": "ok", "sampling": {"self_pct_by_bucket": {"own_code": 90.0}, "to
     {"self_pct": 60.0, "bucket": "own_code", "symbol": "q::Build()"}]}}
 
 
-def profile(config, monkeypatch, profiles, gate_status="pass"):
+def profile(config, monkeypatch, profiles, gate_status="pass", **kwargs):
     Gate(monkeypatch, gate_status, {"engine_instance": "i", "engine_state_dir": "/s", "dataset": "/d", "reason": "boom"})
     monkeypatch.setattr(quick, "Bench", FakeProfiles)
     FakeProfiles.result = profiles
-    return json.loads(quick.profile_hot_spots(config, WORKLOAD, 6))
+    FakeBench.instances = []
+    return json.loads(quick.profile_hot_spots(config, WORKLOAD, 6, **kwargs))
 
 
 def test_run_profile_returns_the_hot_spots_of_each_path(config, monkeypatch):
     out = profile(config, monkeypatch, {"read": OK, "write": OK, "build": OK})
-    assert out["status"] == "pass" and set(out) == {"status", "read_path", "write_path", "build_path"}
+    assert out["status"] == "pass" and set(out) == {"status", "scale", "read_path", "write_path", "build_path"}
     assert any("q::Build()" in line for line in out["build_path"])
+
+
+def test_run_profile_defaults_to_the_subset_instance(config, monkeypatch):
+    loaded = []
+    monkeypatch.setattr(quick, "ensure_dataset_loaded", lambda *a, **k: loaded.append(k) or None)
+    out = profile(config, monkeypatch, {"read": OK, "write": OK, "build": OK})
+    assert out["scale"] == "subset" and not loaded
+    assert FakeBench.instances == [{"engine_instance": "i", "engine_state_dir": "/s", "dataset": "/d"}]
+
+
+def test_a_full_profile_runs_on_the_full_dataset_in_an_instance_of_its_own(config, monkeypatch):
+    loaded = []
+    monkeypatch.setattr(quick, "ensure_dataset_loaded", lambda workload, *a, **k: loaded.append(k["instance_env"]) or None)
+    monkeypatch.setenv("ACCEL_DATASET_DIR", "/full")
+    out = profile(config, monkeypatch, {"read": OK, "write": OK, "build": OK}, scale="full")
+    (own,) = FakeBench.instances
+    assert out["scale"] == "full" and own["dataset"] == "/full"
+    assert own["engine_instance"] != "i" and own["engine_state_dir"] != "/s"
+    assert loaded == [{"ACCEL_ENGINE_INSTANCE": own["engine_instance"], "ACCEL_ENGINE_STATE_DIR": own["engine_state_dir"]}]
+
+
+def test_a_full_profile_whose_dataset_cannot_load_fails(config, monkeypatch):
+    monkeypatch.setattr(quick, "ensure_dataset_loaded", lambda *a, **k: "host.sh load failed (exit 1)")
+    out = profile(config, monkeypatch, {}, scale="full")
+    assert out["status"] == "fail" and "host.sh load failed" in out["summary"]
 
 
 def test_a_profiler_that_cannot_run_fails_run_profile_loudly(config, monkeypatch):

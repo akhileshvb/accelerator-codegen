@@ -78,13 +78,18 @@ def host_info(repo_root: Path, engine: str, build_dir: Path) -> dict[str, Any] |
     return info if done.returncode == 0 and isinstance(info, dict) else None
 
 
-def ensure_dataset_loaded(workload: dict[str, Any], repo_root: Path, build_dir: Path, timeout: float = 3600) -> str | None:
-    """Bring the engine instance up with the workload's dataset loaded (`up` and `load` are idempotent and
-    cheap when done). None on success, else why not; never raises."""
+def workload_dataset_dir(workload: dict[str, Any]) -> str:
+    return str(workload.get("dataset_dir") or os.environ.get("ACCEL_DATASET_DIR") or "")
+
+
+def ensure_dataset_loaded(workload: dict[str, Any], repo_root: Path, build_dir: Path, timeout: float = 3600,
+                          instance_env: dict[str, str] | None = None) -> str | None:
+    """Bring the engine instance (the default one, or the one `instance_env` names) up with the workload's dataset
+    loaded (`up` and `load` are idempotent and cheap when done). None on success, else why not; never raises."""
     from accel_pipeline.layout import workload_schema_sql
 
     engine = str(workload.get("engine_name") or "")
-    dataset_dir = str(workload.get("dataset_dir") or os.environ.get("ACCEL_DATASET_DIR") or "")
+    dataset_dir = workload_dataset_dir(workload)
     if not host_script(repo_root, engine).is_file():
         return f"no host.sh for engine {engine!r}"
     if not dataset_dir:
@@ -93,7 +98,7 @@ def ensure_dataset_loaded(workload: dict[str, Any], repo_root: Path, build_dir: 
     try:
         for verb, args in (("up", ()), ("load", (str(schema),))):
             done = run_host_verb(repo_root, engine, verb, *args, build_dir=build_dir, timeout=timeout,
-                                 env={"ACCEL_DATASET_DIR": dataset_dir})
+                                 env={"ACCEL_DATASET_DIR": dataset_dir, **(instance_env or {})})
             if done.returncode not in (0, 77):
                 return f"host.sh {verb} failed (exit {done.returncode}): {(done.stderr or done.stdout)[-500:]}"
     except (OSError, subprocess.SubprocessError) as exc:

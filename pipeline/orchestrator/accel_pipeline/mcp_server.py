@@ -11,7 +11,7 @@ import json
 import os
 import sys
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Literal
 
 from accel_pipeline.gates.run import tool_call_limit
 from accel_pipeline.jsonio import read_json
@@ -132,12 +132,14 @@ def build_mcp_tool_callables(
             path.write_text(json.dumps({"stamp": stamp, "payload": payload}), encoding="utf-8")
         return payload
 
-    def run_profile() -> str:
-        """Hot spots by symbol. Aux: perf samples of the read, write and build paths on the test subset (about 20 s)."""
+    def run_profile(scale: Literal["subset", "full"] = "subset") -> str:
+        """Hot spots by symbol. Aux: perf samples of the read, write and build paths. scale="subset" (default, about 20 s)
+        profiles the test subset, for direction on code paths; "full" profiles the full gate dataset in an instance of its
+        own and shows where time goes at scale (state build, big-write maintenance, caches); it takes minutes."""
         from accel_pipeline.optimization.saturation import mark_profile_run
 
         if is_aux:
-            payload = profile_hot_spots(pipeline_config, workload, query)
+            payload = profile_hot_spots(pipeline_config, workload, query, scale)
             if json.loads(payload).get("status") == "pass":
                 mark_profile_run(art)
             return payload
