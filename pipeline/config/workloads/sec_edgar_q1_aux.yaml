@@ -4,7 +4,3 @@ query_number: 1
 engines: [duckdb]
 reference_sql_path: workloads/sec_edgar/q1.sql
 parameters: []
-
-speedup_verification:
-  min_speedup_vs_base: 2.0
-  min_work_reduction_pct: 50

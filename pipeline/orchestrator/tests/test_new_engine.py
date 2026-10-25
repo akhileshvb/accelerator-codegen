@@ -31,9 +31,9 @@ def repo(tmp_path: Path) -> Path:
     shutil.copytree(REAL_PIPELINE.parent / "workloads", tmp_path / "workloads")
     shutil.copy(FIXTURES / "engine_toydb.yaml", pipeline / "config" / "workloads")
     shutil.copytree(FIXTURES / "toydb" / "backends", tmp_path / "backends")
-    workload = pipeline / "config" / "workloads" / f"{WORKLOAD}.yaml"
-    workload.write_text(
-        workload.read_text(encoding="utf-8").replace("engines: [duckdb, postgres, mysql]", "engines: [duckdb, postgres, mysql, toydb]"),
+    template = pipeline / "config" / "workloads" / "tpch_q_aux.template.yaml"
+    template.write_text(
+        template.read_text(encoding="utf-8").replace("engines: [duckdb, postgres, mysql]", "engines: [duckdb, postgres, mysql, toydb]"),
         encoding="utf-8",
     )
     return tmp_path

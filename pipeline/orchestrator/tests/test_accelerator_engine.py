@@ -171,9 +171,9 @@ def test_rendered_prompt_points_at_the_runs_engine_tree():
 
 def test_every_workload_loads_for_each_engine_it_lists():
     names = sorted(
-        p.stem
-        for p in (REPO_ROOT / "pipeline/config/workloads").glob("*.yaml")
-        if not p.stem.startswith("engine_") and "template" not in p.stem
+        [p.stem for p in (REPO_ROOT / "pipeline/config/workloads").glob("*.yaml")
+         if not p.stem.startswith("engine_") and "template" not in p.stem and p.stem != "tpch_queries"]
+        + [f"tpch_q{n}{kind}" for n in range(1, 23) for kind in ("", "_aux")]
     )
     assert names
     for name in names:

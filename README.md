@@ -81,8 +81,8 @@ whose library exists.
 
 ## Concurrent pipelines
 
-Pipelines that run at once on one host (a pack, or separate trees) share it through the `concurrency:` block of
-`pipeline/config/default.yaml`. Each run claims one of `workers` disjoint CPU sets (a host-wide flock slot) and
+Pipelines that run at once on one host (a pack, or separate trees) share it through `ConcurrencyConfig` (the `concurrency:` block of
+`pipeline/config/default.yaml` overrides its defaults). Each run claims one of `workers` disjoint CPU sets (a host-wide flock slot) and
 pins itself to it, so its agent, builds (`ACCEL_BUILD_JOBS`, `ACCEL_CTEST_JOBS`, `CMAKE_BUILD_PARALLEL_LEVEL`),
 gates and engine instances stay inside it. Benchmarks (the bench, baseline, profile, sf10 and calibration gates,
 `run_quick_benchmark` at the acceptance tier) queue first come first served for the host-wide measurement lease
@@ -100,7 +100,7 @@ cd pipeline/orchestrator && pytest tests/test_substrate_never_writable.py
 ```
 
 The write policy (`write_ownership.py`) is enforced on agent steps: codex runs under a bubblewrap
-sandbox (`sandbox:` in `pipeline/config/default.yaml`) that mounts `substrate/` and `workloads/`
+sandbox (`sandbox:`, default `bwrap`) that mounts `substrate/` and `workloads/`
 read-only, and after every stage the paths it changed are checked against each layer's owner
 (`write_policy: enforce | warn | off`).
 

@@ -177,13 +177,7 @@
  "pipeline/config/default.yaml": {
   "path": 1
  },
- "pipeline/config/packs/tpch_aux_pair.yaml": {
-  "engine": 1
- },
  "pipeline/config/packs/tpch_aux_parallel.yaml": {
-  "engine": 1
- },
- "pipeline/config/packs/tpch_aux_remaining.yaml": {
   "engine": 1
  },
  "pipeline/config/packs/tpch_duckdb_q1_q6.yaml": {
@@ -253,143 +247,8 @@
  "pipeline/config/workloads/sec_edgar_q6_aux.yaml": {
   "engine": 1
  },
- "pipeline/config/workloads/sec_edgar_q_aux.template.yaml": {
-  "engine": 1
- },
- "pipeline/config/workloads/tpch_q1.yaml": {
-  "engine": 1
- },
- "pipeline/config/workloads/tpch_q10.yaml": {
-  "engine": 1
- },
- "pipeline/config/workloads/tpch_q10_aux.yaml": {
-  "engine": 1
- },
- "pipeline/config/workloads/tpch_q11.yaml": {
-  "engine": 1
- },
- "pipeline/config/workloads/tpch_q11_aux.yaml": {
-  "engine": 1
- },
- "pipeline/config/workloads/tpch_q12.yaml": {
-  "engine": 1
- },
- "pipeline/config/workloads/tpch_q12_aux.yaml": {
-  "engine": 1
- },
- "pipeline/config/workloads/tpch_q13.yaml": {
-  "engine": 1
- },
- "pipeline/config/workloads/tpch_q13_aux.yaml": {
-  "engine": 1
- },
- "pipeline/config/workloads/tpch_q14.yaml": {
-  "engine": 1
- },
- "pipeline/config/workloads/tpch_q14_aux.yaml": {
-  "engine": 1
- },
- "pipeline/config/workloads/tpch_q15.yaml": {
-  "engine": 1
- },
- "pipeline/config/workloads/tpch_q15_aux.yaml": {
-  "engine": 1
- },
- "pipeline/config/workloads/tpch_q16.yaml": {
-  "engine": 1
- },
- "pipeline/config/workloads/tpch_q16_aux.yaml": {
-  "engine": 1
- },
- "pipeline/config/workloads/tpch_q17.yaml": {
-  "engine": 1
- },
- "pipeline/config/workloads/tpch_q17_aux.yaml": {
-  "engine": 1
- },
- "pipeline/config/workloads/tpch_q18.yaml": {
-  "engine": 1
- },
- "pipeline/config/workloads/tpch_q18_aux.yaml": {
-  "engine": 1
- },
- "pipeline/config/workloads/tpch_q19.yaml": {
-  "engine": 1
- },
- "pipeline/config/workloads/tpch_q19_aux.yaml": {
-  "engine": 1
- },
- "pipeline/config/workloads/tpch_q1_aux.yaml": {
-  "engine": 1
- },
- "pipeline/config/workloads/tpch_q2.yaml": {
-  "engine": 1
- },
- "pipeline/config/workloads/tpch_q20.yaml": {
-  "engine": 1
- },
- "pipeline/config/workloads/tpch_q20_aux.yaml": {
-  "engine": 1
- },
- "pipeline/config/workloads/tpch_q21.yaml": {
-  "engine": 1
- },
- "pipeline/config/workloads/tpch_q21_aux.yaml": {
-  "engine": 1
- },
  "pipeline/config/workloads/tpch_q21_verus_smoke.yaml": {
   "engine": 2
- },
- "pipeline/config/workloads/tpch_q22.yaml": {
-  "engine": 1
- },
- "pipeline/config/workloads/tpch_q22_aux.yaml": {
-  "engine": 1
- },
- "pipeline/config/workloads/tpch_q2_aux.yaml": {
-  "engine": 1
- },
- "pipeline/config/workloads/tpch_q3.yaml": {
-  "engine": 1
- },
- "pipeline/config/workloads/tpch_q3_aux.yaml": {
-  "engine": 1
- },
- "pipeline/config/workloads/tpch_q4.yaml": {
-  "engine": 1
- },
- "pipeline/config/workloads/tpch_q4_aux.yaml": {
-  "engine": 1
- },
- "pipeline/config/workloads/tpch_q5.yaml": {
-  "engine": 1
- },
- "pipeline/config/workloads/tpch_q5_aux.yaml": {
-  "engine": 1
- },
- "pipeline/config/workloads/tpch_q6.yaml": {
-  "engine": 1
- },
- "pipeline/config/workloads/tpch_q6_aux.yaml": {
-  "engine": 1
- },
- "pipeline/config/workloads/tpch_q7.yaml": {
-  "engine": 1
- },
- "pipeline/config/workloads/tpch_q7_aux.yaml": {
-  "engine": 1
- },
- "pipeline/config/workloads/tpch_q8.yaml": {
-  "engine": 1
- },
- "pipeline/config/workloads/tpch_q8_aux.yaml": {
-  "engine": 1
- },
- "pipeline/config/workloads/tpch_q9.yaml": {
-  "engine": 1
- },
- "pipeline/config/workloads/tpch_q9_aux.yaml": {
-  "engine": 1
  },
  "pipeline/config/workloads/tpch_q_aux.template.yaml": {
   "engine": 1

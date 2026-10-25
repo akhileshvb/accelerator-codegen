@@ -1,0 +1,202 @@
+# Per-query inputs of the TPC-H workloads tpch_q<N> and tpch_q<N>_aux: each is its template
+# (tpch_q.template.yaml, tpch_q_aux.template.yaml) plus the entry below and the reference SQL
+# workloads/tpch/instances/seed_1/<NN>.sql.
+# parameters: SQL type per parameter, in call order. aux: keys only the aux workload takes.
+1:
+  parameters: {day_offset: INTEGER}
+2:
+  parameters: {part_size: INTEGER, part_type_pattern: VARCHAR, region_name: VARCHAR}
+  aux:
+    optimization_guidance: |
+      Q2 is **minimum-cost supplier selection** (top-100 by acctbal), not a pure aggregate:
+      - Filter parts by `p_size` + `p_type LIKE pattern`, suppliers by region.
+      - Per qualifying part: keep the supplier(s) with **MIN(ps_supplycost)** in-region.
+      - Output: supplier/part attrs ordered by `s_acctbal DESC, n_name, s_name, p_partkey` LIMIT 100.
+
+      Structural priorities:
+      1. Pre-filter / index parts by (size, type) and suppliers by region at build time.
+      2. Materialize per-part min supplycost (or candidate supplier set) — avoid repeating the
+         correlated MIN subquery on every read.
+      3. Keep maintenance local: partsupp cost edits and supplier/region/part filter changes
+         should Prefer ApplyDelta / partition rebuild over full RebuildAll.
+
+      Absolute speedups are query-dependent — be aggressive on both read-only and 10% write-mix;
+      call OPTIMIZATION_SATURATED only when stuck.
+3:
+  parameters: {market_segment: VARCHAR, cutoff_date: DATE}
+4:
+  parameters: {start_date: DATE}
+  aux:
+    optimization_guidance: |
+      Q4 counts orders in a date window that have at least one late lineitem
+      (l_commitdate < l_receiptdate), grouped by o_orderpriority.
+      Prefer precomputing late-order keys / priority histograms; keep maintenance
+      local to orderdate and lineitem commit/receipt edits.
+5:
+  parameters: {region_name: VARCHAR, start_date: DATE}
+  aux:
+    optimization_guidance: |
+      **PRIORITY — dual axes (Q5):** read is already strong (~9k× read-only / ~8µs hit on
+      the opt quick bench), but **10% write-mix workload_speedup is ~0.37×** (full-rebuild
+      cliff). Do **not** spend attempts on further ≤5% hit-path micro-opts while that cliff
+      remains. Next hypotheses must raise 10% `workload_speedup` via **cheap incremental
+      maintenance**, without regressing read-only.
+
+      Measured context:
+      - Fair SF1 sweep (impl): 0% query ~169×, 10% workload **0.37×**, 50% **0.07×**.
+      - Opt best_valid: read_only ~9k×, 10% write-mix still ~**0.37×**.
+
+      Maintenance realities for this query:
+      - Bench writes are **lineitem point updates** (`l_extendedprice += 0.01` via catalog probe).
+      - Prefer **ApplyDelta** / leaf+ancestor tree updates over `MarkRebuild` + `RebuildAll`.
+      - Align `updated_columns` / mutation interpretation with the probe (price/discount path
+        must actually take the delta path end-to-end — a mismatch silently falls back to rebuild).
+      - Keep reverse/lookup maps off the hot read path (prior A/B that copied multi-million
+        order maps into side state blew hit latency to ~120ms — discard that pattern).
+      - Dimension-key changes may still rebuild; point revenue edits must not.
+
+      Success signal for an attempt: dual-axis score
+      `read_only^0.75 * write_mix^0.25` improves vs best_valid — typically by raising 10%
+      `write_mix_workload_speedup` toward ≥1× (ideally much higher) while keeping
+      `read_only_query_speedup` near the current best.
+6:
+  parameters: {start_date: DATE, discount: DECIMAL, quantity: DECIMAL}
+7:
+  parameters: {nation1: VARCHAR, nation2: VARCHAR}
+  aux:
+    optimization_guidance: |
+      Q7 is volume shipping between two nations over a fixed shipdate window,
+      grouped by (supp_nation, cust_nation, year). Materialize nation-pair volume
+      aggregates; avoid re-joining full lineitem/orders on every read.
+8:
+  parameters: {nation_name: VARCHAR, region_name: VARCHAR, part_type: VARCHAR}
+  aux:
+    optimization_guidance: |
+      Q8 computes yearly market share for a target nation within a region and part type.
+      Pre-filter region customers / part type; maintain per-year (target volume, total volume).
+9:
+  parameters: {color: VARCHAR}
+  aux:
+    optimization_guidance: |
+      Q9 is **multi-way join + grouped aggregation** with a string bind param:
+      - Filter: `p_name LIKE '%color%'` (color parameter).
+      - Join: part → lineitem → partsupp → supplier → orders → nation.
+      - Per-row profit: `l_extendedprice * (1 - l_discount) - ps_supplycost * l_quantity`.
+      - Output: `GROUP BY nation, o_year` with `SUM(amount)`.
+
+      Structural read-path priorities:
+      1. **Pre-filter parts by color** at build time — avoid scanning all parts on every read.
+      2. **Materialize (nation, o_year) profit aggregates** or dense partial sums — avoid repeating the 6-way join.
+      3. **Chunked lineitem/partsupp state** keyed by partkey or (partkey, suppkey) for scalable maintenance.
+
+      Full redesign is allowed (module.hpp + module.cpp + finalize.cpp + tests + cost model).
+      Sources are bootstrapped; retrieved precedents are non-binding. End with `HYPOTHESIS_PATCH_COMPLETE`.
+10:
+  parameters: {start_date: DATE}
+11:
+  parameters: {nation_name: VARCHAR, fraction: DOUBLE}
+  aux:
+    aux_bench_sweep: {suites: lineitem_only}
+    optimization: {max_iterations: 5, max_attempts_per_iteration: 8, consecutive_fail_stop: 0, no_improvement_stop: 8}
+    optimization_guidance: |
+      Q11 is "important parts": nation-scoped partsupp value per partkey, filtered by a HAVING
+      threshold (national total supply value * fraction).
+
+      Correctness priorities for aux state:
+      1. Maintain nation-scoped aggregates over partsupp (join supplier → nation on nation_name).
+      2. Keep the national denominator (SUM(ps_supplycost * ps_availqty) for the nation) consistent
+         with the HAVING predicate when partsupp/supplier/nation rows change.
+      3. On read, return only partkeys whose per-part value exceeds threshold * national_total.
+
+      Efficiency hints (after correctness):
+      - Precompute per-nation totals and per-(nation, partkey) sums to avoid rescanning partsupp.
+      - Invalidate or incrementally update on deltas to watched columns only.
+12:
+  parameters: {shipmode1: VARCHAR, shipmode2: VARCHAR, start_date: DATE}
+13:
+  parameters: {comment_pattern: VARCHAR}
+  aux:
+    optimization_guidance: |
+      Q13 is a customer→order-count histogram after filtering o_comment NOT LIKE pattern.
+      Maintain per-customer order counts (or histogram buckets) under comment-pattern
+      filters; avoid full LEFT JOIN + regroup on every read.
+14:
+  parameters: {start_date: DATE}
+  aux:
+    partitioning: {strategy: monthly_shipdate, key_function: PartitionKeyFromStartDate}
+15:
+  parameters: {start_date: DATE}
+  aux:
+    optimization_guidance: |
+      Q15 finds suppliers with MAX quarterly revenue (3-month shipdate window from start_date).
+      Maintain per-supplier revenue in the window (or top-k / max tracker); supplier attr
+      join is small once winners are known.
+16:
+  parameters: {brand: VARCHAR, type_pattern: VARCHAR, size1: INTEGER, size2: INTEGER, size3: INTEGER, size4: INTEGER, size5: INTEGER, size6: INTEGER, size7: INTEGER, size8: INTEGER}
+17:
+  parameters: {brand: VARCHAR, container: VARCHAR}
+  aux:
+    optimization_guidance: |
+      Q17 is **part-grain aggregation + selective filter**:
+      - Subquery: per-`l_partkey`, `0.2 * AVG(l_quantity)` over all lineitems.
+      - Read path: join qualifying parts (brand + container) to lineitems where `l_quantity < avg_quantity`,
+        then `SUM(l_extendedprice) / 7.0`.
+
+      Structural read-path priorities:
+      1. **Materialize per-part quantity thresholds** at build time — avoid rescanning all lineitems for the aggregate.
+      2. **Brand+container part index** — iterate matching parts only, not full part scan + filter.
+      3. **Colocate extendedprice sums** with threshold flags for qualifying lineitems.
+
+      Full redesign is allowed (module.hpp + module.cpp + finalize.cpp + tests + cost model).
+      Sources are bootstrapped; use `rip_grep` / `ast_grep` on reference aux modules. End with `HYPOTHESIS_PATCH_COMPLETE`.
+18:
+  parameters: {quantity_threshold: BIGINT}
+  aux:
+    optimization: {max_iterations: 5, max_attempts_per_iteration: 8, consecutive_fail_stop: 0, no_improvement_stop: 8}
+    optimization_guidance: |
+      Structural read-path priority (from analysis.json viable alternates):
+      1. **compact_join_orderkey_full** — store order metadata (custkey, orderdate, totalprice) colocated
+         with quantity sums; eliminate `ScanOrders` on aux hit. Try this first (smaller scope than full
+         narrow_qualifying). Customer scan may remain for this hypothesis.
+      2. **narrow_qualifying_only** — maintain a qualifying-order index/vector for orders above threshold;
+         read path iterates O(|qualifying|) only. Requires threshold-stable maintenance on lineitem deltas.
+
+      Previous attempts failed on turn limits or build errors — use `write_file` for coordinated multi-region
+      edits after one full read per file. End with `HYPOTHESIS_PATCH_COMPLETE` as soon as the hypothesis
+      is fully implemented; do not keep patching after the edit is complete.
+19:
+  parameters: {brand1: VARCHAR, quantity1: BIGINT, brand2: VARCHAR, quantity2: BIGINT, brand3: VARCHAR, quantity3: BIGINT}
+  aux:
+    optimization_guidance: |
+      Q19 is a scalar discounted revenue over three brand/container/qty/size OR branches
+      with shipmode/shipinstruct filters. Index parts by brand/container/size bands and
+      maintain matching lineitem revenue; Prefer ApplyDelta on part/lineitem edits.
+20:
+  parameters: {start_date: DATE, part_name_pattern: VARCHAR, nation_name: VARCHAR}
+  aux:
+    optimization_guidance: |
+      Q20 lists in-nation suppliers with excess availqty vs yearly shipped qty for
+      parts matching a name pattern. Materialize part-name filter sets and
+      (part,supp) shipped aggregates; keep partsupp availability checks local.
+21:
+  parameters: {nation_name: VARCHAR}
+  aux:
+    optimization_guidance: |
+      Q21 is **existence-heavy** (correlated EXISTS / NOT EXISTS over lineitem self-joins).
+      Prefer taxonomy patterns #18 (membership/existence counts) and #19 (semijoin filters).
+
+      Structural read-path priorities:
+      1. Precompute per-(orderkey, suppkey) late-shipment and competitor-existence facts at build time
+         so the read path avoids repeated lineitem self-joins.
+      2. Nation-filtered supplier index — iterate qualifying suppliers only, not full supplier scan + filter.
+      3. Dense per-order competitor counts / flags for NOT EXISTS (no other late competitor).
+
+      Full redesign is allowed (module.hpp + module.cpp + finalize.cpp + tests). Read each file once,
+      then use `write_file` for coordinated edits. End with `HYPOTHESIS_PATCH_COMPLETE` when done.
+22:
+  parameters: {country_code1: VARCHAR, country_code2: VARCHAR, country_code3: VARCHAR, country_code4: VARCHAR, country_code5: VARCHAR, country_code6: VARCHAR, country_code7: VARCHAR}
+  aux:
+    optimization_guidance: |
+      Q22 aggregates customers in selected phone country codes with above-average
+      positive acctbal and no orders. Maintain country-code filtered customer sets,
+      average threshold, and order-existence flags; Prefer ApplyDelta on customer/orders.

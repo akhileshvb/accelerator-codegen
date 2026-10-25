@@ -8,10 +8,6 @@ parameters:   # spec: eval/bench/sec_edgar/params/q6.json (zero-arg function = d
   - {name: stmt, type: VARCHAR, default: "IS", domain: ["BS", "IS", "CF", "EQ", "CI"]}
   - {name: uom, type: VARCHAR, default: "USD", domain: ["USD", "shares", "pure", "CAD", "CNY", "EUR"]}
 
-speedup_verification:
-  min_speedup_vs_base: 2.0
-  min_work_reduction_pct: 50
-
 aux_bench_sweep:
   write_frequencies: [0, 1, 10, 50]
   suites: value_append

@@ -7,7 +7,6 @@ workload_kind: engine_backend
 engine_name: duckdb
 allow_update_existing: false
 
-hide_foreign_engines: true
 agent_hidden_trees:
   - backends/postgres
   - backends/mysql

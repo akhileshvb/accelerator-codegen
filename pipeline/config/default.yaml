@@ -1,97 +1,36 @@
-build_dir: build-release
+# The pipeline's settings. Every setting and its default is a field in accel_pipeline/config.py;
+# this file sets only what differs from the defaults.
 
-# The agents' OS sandbox (accel_pipeline/sandbox.py): every C++-mode codex step and its MCP
-# server see the run's tree (substrate/ and workloads/ read-only), the build and codex dirs,
-# the engine fork checkout and datasets (read-only), and the docker socket for engines whose host.sh
-# uses docker.  `none` runs codex unsandboxed.  Extra host paths, absolute:
-sandbox: bwrap
 sandbox_extra_ro: []
-sandbox_extra_rw: []
-# The post-stage ownership check (write_ownership.check_stage): paths an agent stage changed
-# against the write policy (other queries' dirs, backends/, prims/, prooflib/, ...).
-# enforce: the stage fails listing them; warn: logged to the run's events; off: skipped.
-write_policy: warn
-# Query-accelerator workloads list their `engines:`; a run picks one (--engine / pack `engines:`).
 
-# Paths that require the shared-file lease under concurrent pack workers.
-shared_paths:
-  # Engine backends: generic only (queries register from their own
-  # directories), so these change only for engine-level additions.
-  - backends/*/api/**
-  - backends/*/engine/**
-  - backends/*/state/**
-  - eval/tests/test_support/**
-  - eval/bench/**/*_arg_variants.*
-  # Shared primitives library: changed only through primitive_publish.
-  - accelerators/prims/**
-  # Helpers shared by one benchmark's queries (frozen during concurrent optimization).
-  - accelerators/*/common/**
-
-# Dataset databases are run parameters: each key names the environment variable
-# that holds the database path (unset: the dataset is unavailable to the run).
-shared_bench_harness: [tpch]   # backends/<engine>/bench/: benchmark_<engine>_<bench>_aux, calibrate_<engine>_<bench>_aux_cost_model
-
+# Dataset databases are run parameters: each key names the environment variable that holds the
+# database path (unset: the dataset is unavailable to the run).
 datasets:
   tpch_sf1: ACCEL_TPCH_DB
   tpch_sf10: ACCEL_TPCH_SF10_DB
-  tpch_sf20: ACCEL_TPCH_SF20_DB          # optional; manual production benchmark
   tpch_test: ACCEL_TPCH_TEST_DB
   sec_edgar_sf3: ACCEL_SEC_EDGAR_DB
 
+# backends/<engine>/bench/: benchmark_<engine>_<bench>_aux, calibrate_<engine>_<bench>_aux_cost_model
+shared_bench_harness: [tpch]
+
 optimization:
-  max_iterations: 3
-  # Stop after this many consecutive iterations (each up to max_attempts_per_iteration
-  # profile-guided attempts) without a fair-sweep improvement.  Must be <= max_iterations
-  # to ever fire.
-  no_improvement_stop: 2
-  # Wall-clock budget of the whole optimization stage (seconds; 0: none): no new
-  # iteration or attempt starts after it, so the run always reaches the audit.
-  stage_budget_sec: 7200
   max_attempts_per_iteration: 5
-  improvement_threshold_pct: 3.0
-  reject_threshold_pct: 2.0
-  consecutive_fail_stop: 0  # 0 = never stop early within an iteration
   quick_benchmark_samples: 1
-  context_max_chars: 80000
-  context_max_lines: 1200
-  bootstrap_max_chars: 300000
-  bootstrap_max_lines_per_file: 0
-  skip_per_attempt_correctness: true
-  accept_on_screen: true
-  skip_confirmation: true
-  smoke_runs: 2
-  max_turns:
-    analysis: 0  # 0 = unlimited
-    patch: 0
-    unified: 0
-  # 0 = keep fixing within the same attempt until build/smoke pass (safety_cap limits rounds)
-  build_fix_max_rounds: 0
-  correctness_fix_max_rounds: 0
-  build_fix_safety_cap: 12
-  correctness_fix_safety_cap: 12
-  fix_log_chars: 6000
-  persistent_worker: true
-  worker_max_turns_per_candidate: 0
-  worker_safety_cap_turns: 80
-  hot_path_digest_max_chars: 25000
-  turn_delta_max_chars: 4000
-  checkpoint_file: optimization_worker_checkpoint.json
   # OPTIMIZATION_SATURATED below the read-speedup floor needs profile-guided, distinct attempts.
   early_stop:
     enabled: true
     saturation_min_read_speedup: 20
     saturation_required_attempts: 3
-  # deprecated aliases
-  episodes_per_iteration: 4
-  max_turns_per_episode: 8
 
+# Turn caps per stage; 0 = unlimited. aux_state.yaml overrides them for aux workloads.
 stage_max_turns:
   analysis: 8
   implementation: 15
-  optimization: 0  # unlimited
+  optimization: 0
   crash_debug: 12
   audit: 6
-  host_bootstrap: 0  # unlimited (query-host bootstrap; gate retries separately)
+  host_bootstrap: 0
 
 write_paths:
   # a query owns its whole directory: kernels, tests, benchmarks, cost models
@@ -110,92 +49,15 @@ allowed_commands:
   - "^ctest -N( .*)?$"
   - "^ninja -C build-release.*$"
 
-gates_dir: pipeline/gates
-
-# Is a benchmark measuring the accelerator? (measurement.check_measurement)
-measurement:
-  enabled: true
-  min_hit_rate: 0.5          # accel_hit_rate required at write frequency 0
-  max_fallbacks_on_hit: 0    # fallback reads tolerated at write frequency 0
-  require_state_built: true  # the bench must report a built state
-  max_cv: 0.5                # sample spread (stdev / mean) beyond which a score is noise
-  min_ref_us: 1              # reference query time plausible range
-  max_ref_s: 600
-
-# Failures go to a bounded repair loop (accel_pipeline/repair.py) instead of ending the run: infra
-# failures are retried without spending the budget, code failures resume the agent's session.
 repair:
-  max_code_rounds: 3
-  infra_retries: 1
-  max_replans: 1
-  max_orchestrator_retries: 1
-  load_factor: 1.5          # a gate timeout under loadavg > load_factor * cores is infra
   never_quarantine: [aux_correctness, aux_correctness_iterate, aux_unit, test_suite_validate]   # a suite that cannot be validated stops the stage; it is never frozen unvalidated
-  provider_retries: 3       # provider/network flakes: their own budget (not infra_retries), with a growing wait
-  provider_backoff_sec: [30, 90, 270]
 
-# A stronger model forks the stuck agent's own session for a second opinion: the agent's ask_advisor tool, and
-# the repair loop (the same failure stall_rounds times in a row, or a no-progress redirect).
-advisor:
-  max_consults_per_stage: 4   # per query and stage (implementation, optimization); 0 disables
-  stall_rounds: 2
-  timeout_sec: 480
-
-# One codex session per role (accel_pipeline/session.py) and the wall budgets of an agent run.
 session:
-  continuity: true
-  soft_deadline_sec: 5400    # MCP tool results start asking the agent to wrap up
-  stage_soft_deadline_sec: {test_suite: 900, analysis: 900}   # per stage, instead of soft_deadline_sec
-  idle_timeout_sec: 2400     # no rollout, tool or heartbeat activity: killed, then resumed
-  hard_deadline_sec: 14400
-  max_resumes: 0             # 0: no resume cap; one conversation per role, like a single agent session
-  max_context_tokens: 0      # 0: no token cap; Codex compacts at codex_auto_compact_tokens with compact_prompt.md
-  # No real progress (an owned file, a stage artifact, or a check result that changed; reads and greps
-  # are activity): the tool footer asks for the blocker, then the turn ends with a directed resume.
+  stage_soft_deadline_sec: {test_suite: 900, analysis: 900}
+  max_resumes: 0   # one conversation per role, like a single agent session
   # A stage's own acceptance gate passing during the agent's turn ends the turn (the stage then runs the gate again and completes).
   exit_gate: {test_suite: test_suite_validate}
-  no_progress: {nudge_sec: 480, redirect_sec: 1200}   # stages: {<stage>: {nudge_sec: N, redirect_sec: N}}
 
-# Fast inner loop (quick_check tool, quick bench tier, parallel and background gates).
-quick_tier:
-  enabled: true
-  timeout_sec: 120
-  build_stamp_cache: true
-  differential_probes: 3
-  background_gates: [aux_exit, aux_correctness, aux_unit, prims_tests, aux_multi_connection, aux_cross_accel]
-  parallel_gates: true
-  gate_jobs: 0   # 0 = one worker per gate of a parallel group
-  build_budget_sec: 15   # quick_check fails when the state build, projected from the subset to the full dataset, takes longer
-  write_cost_budget_share: 0.5   # quick_check fails when the projected full-gate writes and builds exceed this share of one gate differential run's timeout (ACCEL_GATE_RUN_TIMEOUT)
-  admission_gates: [aux_exit, aux_correctness, aux_bench_sweep, aux_tsan]   # request_gate refuses these until quick_check passed on the current code
-
-# CPU budgets and host-wide leases between pipelines running at once (pack/core_budget.py, pack/measurement_lease.py).
-# Each worker takes one of `workers` disjoint CPU sets of the host and pins itself (and so its agent, builds,
-# gates and engine instances) to it; builds and ctest get job caps from the set. Benchmarks queue for the
-# measurement lease and run on the reserved measurement CPUs, which no worker uses.
-concurrency:
-  workers: 1               # pipelines sharing this host's CPUs; ACCEL_CONCURRENT_WORKERS (a pack sets it)
-  measure_cores: null      # CPUs reserved for benchmarks; null: none for one worker, else a fifth (2..8)
-  measure_slots: null      # benchmarks measuring at once, each pinned to its share of the measurement CPUs; null: one per 2 CPUs (1: strictly one at a time)
-  host_lock_dir: ""        # one dir for every tree on the host; "": /dev/shm/accel-pipeline-<uid>
-  measurement_lease: true
-  measurement_wait_sec: 3600
-  shared_lease_wait_sec: 300
-
-# The per-query test suite (accel_pipeline.test_suite): written by the test_suite stage before the
-# implementation, frozen, and run by the correctness gates with fresh random draws every run. quick_check runs
-# the same tuples and transactions as aux_correctness, on the subset dataset.
 test_suite:
-  acceptance_random_tuples: 20    # random domain tuples of an aux_correctness run, besides the fixed ones
-  differential_every: 5           # aux_correctness compares every tuple every N transactions (else two random ones)
-  iterate_random_tuples: 10       # aux_correctness_iterate (the gate of an optimization iteration): fewer random tuples,
-  iterate_every: 10               #   a comparison every N transactions, the minimum write probes, one thread count
-  validation_random_tuples: 12    # random tuples the stage's validation runs through the reference SQL
-  bench_repeats: 3                # acceptance bench sweeps, each with fresh write-frequency draws; median [min-max] is reported
-  write_mix:                      # the range the tester starts from (write_mix.yaml of the suite is the query's own)
+  write_mix:   # the range the tester starts from (write_mix.yaml of the suite is the query's own)
     frequency_pct: {min: 1, max: 50, samples: 3, distribution: log}
-
-data_tools:                # the agents' data exploration tools (query_data and the statistics helpers)
-  query_seconds: 60        # time box of one statement
-  default_rows: 200
-  max_rows: 2000
