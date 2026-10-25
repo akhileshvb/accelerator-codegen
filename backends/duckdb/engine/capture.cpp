@@ -21,23 +21,6 @@ void AuxWatchedColumns::Add(const std::string &table, const std::vector<int32_t>
   }
 }
 
-void AuxWatchedColumns::Remove(const std::string &table, const std::vector<int32_t> &columns) {
-  std::lock_guard<std::mutex> lock(mutex);
-  auto it = watched.find(table);
-  if (it == watched.end()) {
-    return;
-  }
-  for (auto c : columns) {
-    auto col = it->second.find(c);
-    if (col != it->second.end() && --col->second == 0) {
-      it->second.erase(col);
-    }
-  }
-  if (it->second.empty()) {
-    watched.erase(it);
-  }
-}
-
 bool AuxWatchedColumns::Columns(const std::string &table,
                                 ::duckdb::vector<::duckdb::PhysicalIndex> &columns) {
   std::lock_guard<std::mutex> lock(mutex);

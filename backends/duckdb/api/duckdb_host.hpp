@@ -37,14 +37,18 @@ class DuckdbHost {
 public:
   using Accelerator = DuckdbAccelerator;
 
-  // The database's host, created on first use; it lives while someone holds it.
-  static std::shared_ptr<DuckdbHost> Get(::duckdb::DatabaseInstance &db);
+  // The database's host, created on first use; the database owns it and
+  // drops it, with all its state, when it closes.
+  static DuckdbHost &Get(::duckdb::DatabaseInstance &db);
   // The database's host if one exists (nullptr: nothing is captured on it).
-  static std::shared_ptr<DuckdbHost> Existing(::duckdb::DatabaseInstance &db);
+  static DuckdbHost *Existing(::duckdb::DatabaseInstance &db);
   ~DuckdbHost();
   DuckdbHost(const DuckdbHost &) = delete;
   DuckdbHost &operator=(const DuckdbHost &) = delete;
 
+  // Notes that `context`'s connection uses the host. When the last such
+  // connection closes, builds still in flight finish first.
+  void Participate(::duckdb::ClientContext &context);
   // Registers the catalog entry's accelerator (once; not built yet).
   Accelerator &Ensure(const SharedQueryCatalogEntry &entry);
   Accelerator *Find(const std::string &accelerator_id);
@@ -74,6 +78,7 @@ public:
 private:
   void InvalidateStraddled(uint64_t start, uint64_t epoch);
   explicit DuckdbHost(::duckdb::DatabaseInstance &db);
+  class Participant;
   struct Impl;
   std::unique_ptr<Impl> impl;
 };

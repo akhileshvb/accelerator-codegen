@@ -148,7 +148,8 @@ template <typename Write> void TimedMaintenanceWrite(Write &&write) {
 DuckdbRuntime::DuckdbRuntime(::duckdb::Connection &connection, const SharedQueryCatalogEntry &entry,
                              double expected_queries_before_write)
     : connection_(connection), entry_(entry), host_(DuckdbHost::Get(*connection.context->db)),
-      accelerator_(host_->Ensure(entry)) {
+      accelerator_(host_.Ensure(entry)) {
+  host_.Participate(*connection.context);
   SetExpectedQueriesBeforeNextWrite(expected_queries_before_write);
 }
 
@@ -202,7 +203,7 @@ void DuckdbRuntime::Read(const core::QueryArguments &arguments, Sink &sink) {
   // The table function's bind swaps in the SQL for such a transaction; this
   // is a statement bound before its first write. No state holds those rows,
   // and a side connection cannot see them: refuse rather than answer wrongly.
-  if (reader && host_->TransactionWroteDependency(*reader, entry_.accelerator_id)) {
+  if (reader && host_.TransactionWroteDependency(*reader, entry_.accelerator_id)) {
     throw std::runtime_error(std::string("accelerator ") + entry_.accelerator_id +
                              " cannot answer inside a transaction that wrote its tables; "
                              "run the query SQL directly");
@@ -401,8 +402,8 @@ runtime::ColumnarBatchRef DuckdbRuntime::ToBatch(const core::MutationBatch &muta
 }
 
 void DuckdbRuntime::CaptureByHand(const core::MutationBatch &mutation) {
-  if (!host_->Captures(accelerator_.tables.at(mutation.table))) {
-    host_->CaptureByHand(*connection_.context, ToBatch(mutation));
+  if (!host_.Captures(accelerator_.tables.at(mutation.table))) {
+    host_.CaptureByHand(*connection_.context, ToBatch(mutation));
   }
 }
 
@@ -418,7 +419,7 @@ void DuckdbRuntime::ApplyMutationBatch(const core::MutationBatch &mutation) {
   }
 }
 
-void DuckdbRuntime::UseManualCapture() { host_->SetManualCapture(true); }
+void DuckdbRuntime::UseManualCapture() { host_.SetManualCapture(true); }
 
 void DuckdbRuntime::ExecuteBaseQuery() {
   // A Verus kit's SQL is parameterized ($1, ...): its own fallback runs it

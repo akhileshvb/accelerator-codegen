@@ -23,6 +23,7 @@
 #include "substrate/aux/core/aux_calibration.hpp"
 #include "duckdb/accelerator/capture_registry.hpp"
 #include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
+#include "duckdb/parser/parsed_data/create_table_function_info.hpp"
 #include "duckdb/main/attached_database.hpp"
 #include "duckdb/main/config.hpp"
 #include "duckdb/main/database_manager.hpp"
@@ -71,6 +72,15 @@ std::vector<int32_t> WatchedAttnums(::duckdb::Connection &connection, const std:
     }
   }
   return all;
+}
+
+// A connection of the host, which the database owns: it must not keep the
+// database alive, or database and host would hold each other forever.
+std::unique_ptr<::duckdb::Connection> OpenHostConnection(::duckdb::DatabaseInstance &db) {
+  auto connection = std::make_unique<::duckdb::Connection>(db);
+  connection->context->db = ::duckdb::shared_ptr<::duckdb::DatabaseInstance>(
+      std::shared_ptr<::duckdb::DatabaseInstance>(std::shared_ptr<void>(), &db));
+  return connection;
 }
 
 // The build's read: a transaction on the accelerator's connection. Beginning
@@ -124,6 +134,7 @@ struct DuckdbHost::Impl final : runtime::EngineSlots {
   std::unordered_map<std::string, core::TableId> tables; // by DuckDB table name
   core::TableId next_table = 1;
   std::atomic<bool> manual_capture{false};
+  std::atomic<int> participants{0}; // open connections that have used the host
 
   mutable std::mutex writers_mutex;
   std::unordered_map<uint64_t, Epoch> writers; // txn -> start time
@@ -216,7 +227,7 @@ struct DuckdbHost::Impl final : runtime::EngineSlots {
   uint64_t StoredRows(const std::string &name) const {
     std::lock_guard<std::mutex> lock(statistics_mutex);
     if (!statistics_connection) {
-      statistics_connection = std::make_unique<::duckdb::Connection>(db);
+      statistics_connection = OpenHostConnection(db);
     }
     uint64_t rows = 0;
     statistics_connection->context->RunFunctionInTransaction([&] {
@@ -230,33 +241,78 @@ struct DuckdbHost::Impl final : runtime::EngineSlots {
 
 namespace {
 
-std::mutex &HostsMutex() {
-  static std::mutex mutex;
+// Recursive: a host destroyed while Get registers it unregisters itself.
+std::recursive_mutex &HostsMutex() {
+  static std::recursive_mutex mutex;
   return mutex;
 }
 
-std::unordered_map<::duckdb::DatabaseInstance *, std::weak_ptr<DuckdbHost>> &Hosts() {
-  static std::unordered_map<::duckdb::DatabaseInstance *, std::weak_ptr<DuckdbHost>> hosts;
+std::unordered_map<::duckdb::DatabaseInstance *, DuckdbHost *> &Hosts() {
+  static std::unordered_map<::duckdb::DatabaseInstance *, DuckdbHost *> hosts;
   return hosts;
+}
+
+// Owns the host for the database's lifetime. It sits in a function of the system
+// catalog, which DatabaseInstance destroys while closing its databases, before the
+// connection manager: the host's connections still close cleanly.
+struct HostAnchor final : ::duckdb::TableFunctionInfo {
+  explicit HostAnchor(std::unique_ptr<DuckdbHost> host_p) : host(std::move(host_p)) {}
+  std::unique_ptr<DuckdbHost> host;
+};
+
+void AnchorToDatabase(::duckdb::DatabaseInstance &db, std::unique_ptr<DuckdbHost> host) {
+  ::duckdb::Connection connection(db);
+  ::duckdb::TableFunction function("accel_duckdb_host_anchor", {}, nullptr);
+  function.function_info = ::duckdb::make_shared_ptr<HostAnchor>(std::move(host));
+  ::duckdb::CreateTableFunctionInfo info(std::move(function));
+  info.internal = true;
+  connection.BeginTransaction();
+  ::duckdb::Catalog::GetSystemCatalog(*connection.context).CreateTableFunction(*connection.context, info);
+  connection.Commit();
 }
 
 } // namespace
 
-std::shared_ptr<DuckdbHost> DuckdbHost::Get(::duckdb::DatabaseInstance &db) {
-  std::lock_guard<std::mutex> lock(HostsMutex());
-  auto &slot = Hosts()[&db];
-  if (auto host = slot.lock()) {
-    return host;
+DuckdbHost &DuckdbHost::Get(::duckdb::DatabaseInstance &db) {
+  std::lock_guard<std::recursive_mutex> lock(HostsMutex());
+  if (auto *host = Existing(db)) {
+    return *host;
   }
-  std::shared_ptr<DuckdbHost> host(new DuckdbHost(db));
-  slot = host;
-  return host;
+  std::unique_ptr<DuckdbHost> host(new DuckdbHost(db));
+  auto &created = *host;
+  AnchorToDatabase(db, std::move(host));
+  Hosts()[&db] = &created;
+  return created;
 }
 
-std::shared_ptr<DuckdbHost> DuckdbHost::Existing(::duckdb::DatabaseInstance &db) {
-  std::lock_guard<std::mutex> lock(HostsMutex());
-  auto it = Hosts().find(&db);
-  return it == Hosts().end() ? nullptr : it->second.lock();
+DuckdbHost *DuckdbHost::Existing(::duckdb::DatabaseInstance &db) {
+  std::lock_guard<std::recursive_mutex> lock(HostsMutex());
+  const auto it = Hosts().find(&db);
+  return it == Hosts().end() ? nullptr : it->second;
+}
+
+// A connection that has used the host. The last one to close waits out the builds
+// in flight: closing the database under a running build would pull its tables
+// from beneath it.
+class DuckdbHost::Participant final : public ::duckdb::ClientContextState {
+public:
+  explicit Participant(std::shared_ptr<HostLink> link_p) : link(std::move(link_p)) {
+    link->Call([](DuckdbHost &host) { ++host.impl->participants; });
+  }
+  ~Participant() override {
+    link->Call([](DuckdbHost &host) {
+      if (--host.impl->participants == 0) {
+        host.impl->runtime.AwaitScheduledBuilds();
+      }
+    });
+  }
+
+private:
+  std::shared_ptr<HostLink> link;
+};
+
+void DuckdbHost::Participate(::duckdb::ClientContext &context) {
+  context.registered_state->GetOrCreate<Participant>("accel_host_participant", impl->link);
 }
 
 DuckdbHost::DuckdbHost(::duckdb::DatabaseInstance &db) : impl(std::make_unique<Impl>(*this, db)) {
@@ -274,19 +330,13 @@ DuckdbHost::DuckdbHost(::duckdb::DatabaseInstance &db) : impl(std::make_unique<I
 
 DuckdbHost::~DuckdbHost() {
   impl->link->Close(); // no engine callback is inside the host past this point
+  {
+    std::lock_guard<std::recursive_mutex> lock(HostsMutex());
+    Hosts().erase(&impl->db);
+  }
   auto &registry = impl->db.GetCaptureRegistry();
   registry.Remove(impl->capture.get());
   registry.Remove(impl->commit_ids.get());
-  auto &watched = WatchedColumns(impl->db);
-  for (auto &[id, accelerator] : impl->accelerators) {
-    for (const auto &[name, table] : accelerator->binding->CaptureTables()) {
-      for (const auto &dependency : accelerator->binding->Module().Dependencies()) {
-        if (dependency.table == table) {
-          watched.Remove(name, WatchedAttnums(*accelerator->connection, name, dependency));
-        }
-      }
-    }
-  }
 }
 
 DuckdbHost::Accelerator &DuckdbHost::Ensure(const SharedQueryCatalogEntry &entry) {
@@ -297,7 +347,7 @@ DuckdbHost::Accelerator &DuckdbHost::Ensure(const SharedQueryCatalogEntry &entry
   }
   auto accelerator = std::make_unique<Accelerator>();
   accelerator->entry = &entry;
-  accelerator->connection = std::make_unique<::duckdb::Connection>(impl->db);
+  accelerator->connection = OpenHostConnection(impl->db);
   if (!impl->default_db) {
     auto &context = *accelerator->connection->context;
     impl->default_db = ::duckdb::DatabaseManager::Get(context).GetDatabase(
@@ -412,6 +462,7 @@ void DuckdbHost::OnMutation(::duckdb::ClientContext &context,
     }
     table = it->second;
   }
+  Participate(context);
   const auto txn = TxnId(::duckdb::MetaTransaction::Get(context));
   const Epoch start = DuckDBAuxBackend::SnapshotEpoch(context); // engine call: before writers_mutex
   {

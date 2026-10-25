@@ -47,6 +47,7 @@ template <typename Run>
 void WithHostRuntime(::duckdb::ClientContext &reader, const SharedQueryCatalogEntry &entry, Run &&run) {
   ::duckdb::Connection connection(*reader.db);
   duckdb_backend runtime(connection, entry, 10.0);
+  duckdb::DuckdbHost::Get(*reader.db).Participate(reader);
   runtime.EnsureBuilt();
   duckdb::DuckDBAuxBackend::ReaderScope at_reader_snapshot(reader);
   run(runtime);
@@ -287,7 +288,7 @@ void InferAuxSchema(::duckdb::Connection &connection, const SharedQueryCatalogEn
 ::duckdb::unique_ptr<::duckdb::TableRef> AuxBindReplace(::duckdb::ClientContext &context,
                                                          ::duckdb::TableFunctionBindInput &input) {
   const auto &entry = input.info->Cast<AuxFunctionInfo>().entry;
-  const auto host = duckdb::DuckdbHost::Existing(*context.db);
+  auto *host = duckdb::DuckdbHost::Existing(*context.db);
   if (!host || !host->TransactionWroteDependency(context, entry.accelerator_id ? entry.accelerator_id : "")) {
     return nullptr;
   }

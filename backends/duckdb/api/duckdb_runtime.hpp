@@ -124,7 +124,7 @@ private:
 
   ::duckdb::Connection &connection_;
   const SharedQueryCatalogEntry &entry_;
-  std::shared_ptr<DuckdbHost> host_;
+  DuckdbHost &host_;
   DuckdbAccelerator &accelerator_;
 };
 

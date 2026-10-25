@@ -37,7 +37,6 @@ public:
   static ::duckdb::string ObjectType() { return "MutationWatchProvider"; }
 
   void Add(const std::string &table, const std::vector<int32_t> &columns);
-  void Remove(const std::string &table, const std::vector<int32_t> &columns);
   bool TryGetWatchedColumns(::duckdb::TableCatalogEntry &table,
                             ::duckdb::vector<::duckdb::PhysicalIndex> &columns) override;
   // Updates report the updated columns' new values plus the old values of
