@@ -72,6 +72,9 @@ what goes wrong) or when the analysis leaves the cost unbounded and your estimat
   analysis's), transient build peak, one streaming pass with O(1) work per scanned row. Speed comes first:
   fail on size only for a component that stores data no read or write needs, duplicates another, or
   could be materially smaller at the same read and write speed, and name the smaller layout.
+* **A1 buildable.** Every facility the design relies on exists today in `substrate/`, `backends/<engine>/api/` or the
+  primitive library (check the headers). Fails on a required runtime mechanism that does not exist (admission
+  control, memory reservation or accounting, draining or pinning versions): the implementer cannot add it.
 * **E1 exactness.** Multiplicity (duplicate join keys), NULLs, numeric widths at SF3000 (keys beyond
   2^31, sums beyond 64 bits), the engine's comparison semantics.
 * **C1 no answer cache.** The state is not a cache of final answers per binding.

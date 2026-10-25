@@ -213,20 +213,20 @@ class World:
                                    summary="the agent reported a blocker (blocker.md)", evidence="gate is broken"))
 
 
-def test_a_blocker_that_was_a_flake_passes_the_one_recheck_and_costs_no_code_round(tmp_path, monkeypatch):
+def test_a_blocker_from_a_repair_turn_is_rechecked_and_passes(tmp_path, monkeypatch):
     world = World(tmp_path, monkeypatch)
     run_with_repair(world.ctx(), lambda: None, gates=["g"])
     assert world.agent_calls == 1 and len(world.gate_calls) == 2
 
 
-def test_a_persisting_blocker_stops_cleanly_citing_the_blocker(tmp_path, monkeypatch):
+def test_a_repeated_blocker_is_adapted_to_until_the_budget_is_spent_then_cited(tmp_path, monkeypatch):
     world = World(tmp_path, monkeypatch)
     world.gates_pass_from = 99
     with pytest.raises(StageStopped) as stopped:
         run_with_repair(world.ctx(), lambda: None, gates=["g"])
-    assert world.agent_calls == 1 and len(world.gate_calls) == 2  # one agent turn, one re-check, no code rounds
+    assert world.agent_calls == world.config.repair.max_code_rounds
     report = stopped.value.report.read_text()
-    assert "agent-reported blocker" in report and "gate is broken" in report and "still failed" in report
+    assert "the agent's blocker" in report and "gate is broken" in report and "still failed" in report
 
 
 def test_a_pass_of_the_stages_exit_gate_ends_the_turn_as_a_finish(tmp_path, monkeypatch):

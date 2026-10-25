@@ -96,7 +96,8 @@ def run_with_repair(ctx: RepairCtx, attempt: Callable[[], T], *, gates: list[str
     quarantined: set[str] = set()
     rolled_back = False
     stall = _Stall()
-    blocker: Failure | None = None  # the agent said the obstacle is not in its files: the next check decides
+    blocker: Failure | None = None  # the agent said the obstacle is not in its files: the next code round adapts to it
+    last_blocker: Failure | None = None  # cited in the stop report
     result: Any = None
     run_attempt = True
 
@@ -111,17 +112,14 @@ def run_with_repair(ctx: RepairCtx, attempt: Callable[[], T], *, gates: list[str
             return result
 
         _record(ctx, failure)
-        if blocker is not None:
-            if _revise_test_suite(ctx):  # the blocker was the frozen suite: the tester decides, then the check reruns
-                blocker = None
-                continue
-            raise stop_stage(ctx, _persisting(blocker, failure), f"agent-reported blocker persists: {blocker.summary}")
         if failure.infra_reason == AGENT_BLOCKER:
-            if gates and from_attempt:  # the stage's own checks decide whether the obstacle is real
-                blocker = failure
+            blocker = last_blocker = failure
+            if _revise_test_suite(ctx):  # the blocker was the frozen suite: the tester decides, then the check reruns
+                continue
+            if gates and from_attempt:  # the obstacle may be a flake: the stage's own checks run once first
                 ctx.log(f"the agent reported a blocker ({failure.summary}); running the stage's gates once")
                 continue
-            raise stop_stage(ctx, failure, failure.summary)
+            failure = replace(failure, kind="code", infra_reason=None)  # nothing left to check: the agent adapts
         if failure.infra_reason == PROVIDER_FLAKE:
             flakes += 1
             if flakes > cfg.provider_retries:
@@ -154,10 +152,13 @@ def run_with_repair(ctx: RepairCtx, attempt: Callable[[], T], *, gates: list[str
             code_left -= 1
             ctx.log(f"{failure.kind} failure in {failure.source}; round {code_rounds - code_left}/{code_rounds}, "
                     "resuming the agent's session")
-            blocker = repair_turn(ctx, _with_advice(ctx, failure, stall))
-            if blocker is not None:  # infra, never code budget: re-run the failing check once
-                code_left += 1
-                ctx.log(f"the agent reported a blocker ({blocker.summary}); re-running the check once")
+            if blocker is not None:
+                ctx.log(f"the agent reported a blocker ({blocker.summary}); it adapts in this round")
+                failure, blocker = _adapting(ctx, blocker, failure), None
+            else:
+                failure = _with_advice(ctx, failure, stall)
+            if (blocker := repair_turn(ctx, failure)) is not None:
+                last_blocker = blocker
             continue
         if not rolled_back:
             rolled_back = True
@@ -168,7 +169,10 @@ def run_with_repair(ctx: RepairCtx, attempt: Callable[[], T], *, gates: list[str
         if _replan(ctx, failure):
             code_left, rolled_back = code_rounds, False
             continue
-        raise stop_stage(ctx, failure, f"{failure.kind} failure in {failure.source} survived {code_rounds} repair rounds")
+        reason = f"{failure.kind} failure in {failure.source} survived {code_rounds} repair rounds"
+        if last_blocker is not None:
+            raise stop_stage(ctx, _persisting(last_blocker, failure), f"{reason}; the agent's blocker: {last_blocker.summary}")
+        raise stop_stage(ctx, failure, reason)
 
 
 def run_gates_with_repair(
@@ -221,22 +225,40 @@ def _with_advice(ctx: RepairCtx, failure: Failure, stall: _Stall) -> Failure:
     cfg = ctx.pipeline_config.advisor
     if stall.consulted or not (failure.source == "no_progress" or stall.rounds >= cfg.stall_rounds):
         return failure
-    from accel_pipeline import advisor
-
     stall.consulted = True
     why = ("the watchdog ended the agent's turn without progress" if failure.source == "no_progress"
            else f"the same failure {stall.rounds} repair rounds in a row")
+    return _advised(ctx, failure, why, trigger="stall")
+
+
+ADAPT = ("You reported a blocker outside your files. The pipeline does not stop for it, and it cannot change those "
+         "files for you: adapt. Work around it within your own files; if part of the analysed design cannot be built "
+         "with what exists, build the rest, record the deviation in experiment_log.md and fix the failing check; if "
+         "the design itself no longer holds, call request_structural_reanalysis with the evidence.")
+
+
+def _adapting(ctx: RepairCtx, blocker: Failure, failure: Failure) -> Failure:
+    """The failing check with the agent's blocker and the instruction to adapt to it, advised when the cap allows."""
+    notes = [] if failure.evidence == blocker.evidence else [f"Your blocker: {blocker.summary}\n{blocker.evidence}"[:4000]]
+    adapting = replace(failure, diagnosis=[*failure.diagnosis, *notes, ADAPT])
+    return _advised(ctx, adapting, "the agent reported a blocker outside its files", trigger="blocker")
+
+
+def _advised(ctx: RepairCtx, failure: Failure, why: str, *, trigger: str) -> Failure:
+    """The failure with the advisor's diagnosis added, or unchanged when no consult happens."""
+    from accel_pipeline import advisor
+
     question = (f"The orchestrator is consulting you because {why}. Latest failure report:\n\n{render_failure(failure)}"[:8000])
     try:
         advice = advisor.consult(ctx.pipeline_config, ctx.model_config, ctx.workload_name, ctx.query, ctx.stage,
-                                 question=question, trigger="stall", optimization_iter=ctx.iteration)
+                                 question=question, trigger=trigger, optimization_iter=ctx.iteration)
     except advisor.Unavailable as exc:
         ctx.log(f"advisor not consulted: {exc}")
         return failure
     except Exception as exc:  # noqa: BLE001 - repair goes on without advice
         ctx.log(f"advisor consult failed: {type(exc).__name__}: {exc}")
         return failure
-    ctx.log("the advisor diagnosed the stall; its advice goes to the agent")
+    ctx.log(f"the advisor was consulted ({trigger}); its advice goes to the agent")
     return replace(failure, diagnosis=[*failure.diagnosis, advisor.advise_message(advice)])
 
 
@@ -330,8 +352,8 @@ def _quarantine(ctx: RepairCtx, gate: str, failure: Failure) -> None:
 
 
 def _persisting(blocker: Failure, failure: Failure) -> Failure:
-    """The agent's blocker, with the check that failed again when re-run (the report cites blocker.md)."""
-    again = f"re-running the check once more still failed ({failure.source}): {failure.summary}"
+    """The agent's blocker, with the check that still failed when the repair budget ran out (the report cites blocker.md)."""
+    again = f"the check still failed after the repair rounds ({failure.source}): {failure.summary}"
     return replace(blocker, summary=f"{blocker.summary}; {again}", diagnosis=[*blocker.diagnosis, again],
                    reproduce=failure.reproduce)
 

@@ -375,22 +375,31 @@ def test_a_blocker_from_the_stage_turn_runs_the_gates_once_and_passes_on_them(wo
     assert world.gate_calls == [["aux_correctness"]] and world.agent_messages == []
 
 
-def test_a_blocker_the_gates_confirm_stops_the_stage(world):
+def test_a_blocker_the_gates_confirm_gets_a_round_to_adapt(world):
     world.gate_script = [gate_fail()]
+    run_with_repair(world.ctx(), _blocked, gates=["aux_correctness"])
+    assert len(world.agent_messages) == 1 and len(world.gate_calls) == 2
+    assert "the gate looks stuck" in world.agent_messages[0] and repair_mod.ADAPT in world.agent_messages[0]
+
+
+def test_a_blocker_without_gates_gets_a_round_to_adapt(world):
+    attempts = [_blocked, lambda: "done"]
+    assert run_with_repair(world.ctx(), lambda: attempts.pop(0)()) == "done"
+    assert len(world.agent_messages) == 1 and repair_mod.ADAPT in world.agent_messages[0]
+
+
+def test_a_blocker_stops_the_stage_only_once_the_repair_budget_is_spent(tmp_path, monkeypatch):
+    world = World(tmp_path, monkeypatch, max_code_rounds=2)
+    world.gate_script = [gate_fail()] * 4  # the first check, one per round, one after the rollback
     with pytest.raises(StageStopped) as stopped:
         run_with_repair(world.ctx(), _blocked, gates=["aux_correctness"])
-    assert "agent-reported blocker persists" in Path(stopped.value.report).read_text()
-
-
-def test_a_blocker_without_gates_stops_at_once(world):
-    with pytest.raises(StageStopped):
-        run_with_repair(world.ctx(), _blocked)
-    assert world.gate_calls == []
+    assert len(world.agent_messages) == 2 and world.events == ["rollback", "replan"]
+    report = Path(stopped.value.report).read_text()
+    assert "the gate looks stuck" in report and "survived 2 repair rounds" in report
 
 
 def test_a_blocker_on_the_frozen_suite_goes_to_the_tester_then_the_gates_rerun(world, monkeypatch):
     revisions = [True, False]
     monkeypatch.setattr(repair_mod, "_revise_test_suite", lambda ctx: revisions.pop(0))
-    world.gate_script = [gate_fail()]  # the bad tuple fails the stage's check once; after the tester's fix it passes
     run_with_repair(world.ctx(), _blocked, gates=["aux_correctness"])
-    assert world.gate_calls == [["aux_correctness"], ["aux_correctness"]] and revisions == [False]
+    assert world.gate_calls == [["aux_correctness"]] and revisions == [False] and world.agent_messages == []
