@@ -78,7 +78,7 @@
       "\\[tool discover_host_sdk\\].*No progress for",
       "\\[repair\\] timeout failure in no_progress",
       "advisor_consult: stage=implementation trigger=stall",
-      "the advisor diagnosed the stall"
+      "the advisor was consulted \\(stall\\)"
     ],
     "escaped": "\\[tool quick_check\\]"
   },
