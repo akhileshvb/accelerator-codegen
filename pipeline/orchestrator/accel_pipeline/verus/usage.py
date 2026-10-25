@@ -23,6 +23,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from accel_pipeline.session import rollout_path
+
 _PRICES_URL = "https://openrouter.ai/api/v1/models"
 _PRICES_CACHE = Path.home() / ".cache" / "accel_verus" / "openrouter_prices.json"
 
@@ -34,16 +36,9 @@ def _ts(s: str) -> float:
         return 0.0
 
 
-def _rollout(codex_home: Path, session_id: str) -> Path | None:
-    if not session_id:
-        return None
-    found = list((Path(codex_home) / "sessions").rglob(f"rollout-*{session_id}.jsonl"))
-    return max(found, key=lambda p: p.stat().st_mtime) if found else None
-
-
 def session_usage(codex_home: Path, session_id: str, since: float) -> dict[str, Any]:
     """Tokens, model calls and tool calls of the part of a session after `since` (epoch seconds)."""
-    path = _rollout(codex_home, session_id)
+    path = rollout_path(codex_home, session_id)
     if path is None:
         return {}
     keys = ("input_tokens", "cached_input_tokens", "output_tokens", "reasoning_output_tokens")

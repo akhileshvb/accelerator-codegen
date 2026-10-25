@@ -308,9 +308,9 @@ def test_impl_stage_tools_include_layer_gates():
     assert layer_gate_from_stage("impl_epochs") == "engine_epochs"
     assert layer_gate_from_stage("impl_scan") == "engine_scan"
     assert layer_gate_from_stage("implementation") is None
-    names = CodexExecBackend._engine_impl_mcp_tools("impl_epochs")
+    names = CodexExecBackend._enabled_mcp_tools("impl_epochs")
     assert {"request_gate", "run_engine_build", "run_layer_gate"} <= set(names)
-    assert CodexExecBackend._engine_impl_mcp_tools("implementation") is None
+    assert CodexExecBackend._enabled_mcp_tools("implementation") is None
 
 
 def test_mcp_run_layer_gate_maps_impl_stage(monkeypatch, tmp_path):

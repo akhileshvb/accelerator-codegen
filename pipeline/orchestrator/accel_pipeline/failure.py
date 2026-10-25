@@ -333,72 +333,24 @@ def restore_aux_from_snapshot(repo_root: Path, query: int, workload: dict[str, A
     return restored
 
 
-def repair_foreign_query_sources(
-    repo_root: Path,
-    *,
-    owner_query: int,
-    pack_queries: list[int] | None = None,
-    only_queries: list[int] | None = None,
-) -> dict[str, Any]:
-    """Restore peer aux sources from best_valid snapshots.
-
-    Prefer ``only_queries`` (e.g. the single foreign id from a compile error).
-    Blasting every pack query wipes concurrent workers' in-progress edits.
-    """
-    if only_queries is not None:
-        targets = list(only_queries)
-    else:
-        targets = list(pack_queries or [])
-    if not targets and only_queries is None:
-        # Conservative default: do not scan the whole artifacts tree under pack
-        # concurrency — caller should pass an explicit foreign id.
-        targets = []
-    restored: dict[str, list[str]] = {}
-    for q in sorted(set(targets)):
-        if int(q) == int(owner_query):
-            continue
-        files = restore_aux_from_snapshot(repo_root, int(q))
-        if files:
-            restored[f"q{q}"] = files
-    return {"owner_query": owner_query, "restored": restored}
-
-
-def handle_infra_failure(
-    pipeline_config: Any,
-    workload: dict[str, Any],
-    query: int,
-    *,
-    text: str,
-    pack_queries: list[int] | None = None,
-) -> dict[str, Any] | None:
-    """If ``text`` is an infra failure, repair tree + release lease and return info."""
+def handle_infra_failure(pipeline_config: Any, workload: dict[str, Any], query: int, *, text: str) -> dict[str, Any] | None:
+    """If ``text`` is an infra failure, repair the tree, release the lease and return what was done."""
     reason = classify_infra_failure(text, query=query)
     if not reason:
         return None
     repo_root = Path(pipeline_config.repo_root)
-    worker_id = getattr(pipeline_config, "worker_id", None)
-    released = release_shared_lease(repo_root, query=query, worker_id=worker_id)
+    released = release_shared_lease(repo_root, query=query, worker_id=getattr(pipeline_config, "worker_id", None))
 
-    only: list[int] | None = None
-    m = re.match(r"foreign_file_compile:q(\d+)$", reason)
-    if m:
-        only = [int(m.group(1))]
-    elif reason == "unsupported_shared_query":
-        # Catalog desync — do not mass-restore peers; release lease + own restore only.
-        only = []
-    elif pack_queries:
-        only = list(pack_queries)
-
-    repair = repair_foreign_query_sources(
-        repo_root, owner_query=query, pack_queries=pack_queries, only_queries=only
-    )
+    restored: dict[str, list[str]] = {}
+    if foreign := re.match(r"foreign_file_compile:q(\d+)$", reason):  # the compile error names the peer's file
+        if files := restore_aux_from_snapshot(repo_root, int(foreign.group(1))):
+            restored[f"q{foreign.group(1)}"] = files
     # Restore this query from its own baseline so a bad mid-edit does not linger.
-    own = restore_aux_from_snapshot(repo_root, query, workload=workload)
-    if own:
-        repair.setdefault("restored", {})[f"q{query}_own"] = own
+    if own := restore_aux_from_snapshot(repo_root, query, workload=workload):
+        restored[f"q{query}_own"] = own
     return {
         "infra_reason": reason,
         "lease_released": released,
-        "repair": repair,
+        "repair": {"owner_query": query, "restored": restored},
         "fail_fast": True,
     }

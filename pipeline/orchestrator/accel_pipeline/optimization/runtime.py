@@ -665,19 +665,6 @@ def refresh_optimization_runtime(
     return md_path
 
 
-def runtime_path_for_prompt(
-    pipeline_config: PipelineConfig,
-    workload: dict[str, Any],
-    query: int,
-) -> str:
-    art = query_artifacts_dir(pipeline_config.repo_root, query, workload=workload)
-    rel = art / RUNTIME_MD
-    try:
-        return str(rel.relative_to(pipeline_config.repo_root))
-    except ValueError:
-        return str(rel)
-
-
 def record_ab_trial(
     art: Path,
     *,

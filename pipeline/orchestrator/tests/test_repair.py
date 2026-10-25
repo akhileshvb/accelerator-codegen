@@ -279,7 +279,6 @@ def _stage_world(tmp_path, monkeypatch, mode="ok"):
         "with_codex_tooling": lambda cfg, prompt, **_: prompt,
         "make_model_id": lambda *a, **k: "m",
         "create_agent_backend": lambda **k: backend,
-        "begin_agent_run": lambda *a, **k: None,
         "log_stage_start": lambda *a, **k: None,
         "log_stage_complete": lambda *a, **k: None,
         "snapshot_frozen": lambda root: {},

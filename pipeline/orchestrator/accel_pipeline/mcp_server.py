@@ -7,7 +7,6 @@ tools of a mode (optimization, engine_backend, pack, verus) only when that mode 
 from __future__ import annotations
 
 import argparse
-import importlib
 import json
 import os
 import sys
@@ -19,13 +18,8 @@ from accel_pipeline.jsonio import read_json
 from accel_pipeline.no_progress import record_check
 from accel_pipeline.quick import profile_hot_spots
 from accel_pipeline.session import keep_alive
+from accel_pipeline.tools import mode_tools
 
-MODE_TOOLS = {
-    "optimization": "accel_pipeline.optimization.tools",
-    "engine_backend": "accel_pipeline.engine_backend.tools",
-    "pack": "accel_pipeline.pack.tools",
-    "verus": "accel_pipeline.verus.tools",
-}
 _ENGINE_BACKEND_STAGES = ("impl_", "critique_", "layer_critique", "validation", "architecture_audit", "host_bootstrap")
 _DEFAULT_STAGE = "optimization_worker"
 
@@ -245,7 +239,7 @@ def build_mcp_tool_callables(
 
 
 def _mode_callables(mode, pipeline_config, workload, query, stage, workload_name, optimization_iter, art):
-    module = importlib.import_module(MODE_TOOLS[mode])
+    module = mode_tools(mode)
     if mode == "optimization":
         return module.callables(pipeline_config, workload, query, optimization_iter, art)
     if mode == "engine_backend":
@@ -345,7 +339,7 @@ def main(argv: list[str] | None = None) -> int:
     if modes != ["verus"]:
         register_core(tool, _call)
     for mode in modes:
-        module = importlib.import_module(MODE_TOOLS[mode])
+        module = mode_tools(mode)
         module.register(tool, module.call if mode == "verus" else _call)
 
     mcp.run(transport="stdio")

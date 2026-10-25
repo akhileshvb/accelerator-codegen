@@ -169,23 +169,12 @@ class CodexExecBackend:
         return path
 
     @staticmethod
-    def _engine_impl_mcp_tools(stage: str) -> list[str] | None:
-        """Allow-list MCP tools Codex actually sees for engine_backend impl_* and Verus steps."""
-        if str(stage or "").startswith("verus_"):
-            from accel_pipeline.verus.tools import stage_tools
+    def _enabled_mcp_tools(stage: str) -> list[str] | None:
+        """The MCP tools codex may call in `stage` (engine_backend layer and Verus steps restrict them), or None for all."""
+        from accel_pipeline.tools import mode_tools
 
-            return stage_tools(stage)
-        if not str(stage or "").startswith("impl_"):
-            return None
-        return [
-            "request_gate",
-            "run_engine_build",
-            "run_layer_gate",
-            "discover_host_sdk",
-            "report_blocker",
-            "acquire_shared_lease",
-            "release_shared_lease",
-        ]
+        mode = "verus" if stage.startswith("verus_") else "engine_backend" if stage.startswith("impl_") else None
+        return mode_tools(mode).enabled_tools(stage) if mode else None
 
     def run_stage(self, request: StageRunRequest) -> StageRunResult:
         """One codex step, followed by the ownership check of what it changed (cfg.write_policy)."""
@@ -326,7 +315,7 @@ class CodexExecBackend:
             effort = efforts.get(request.stage) or efforts.get(self._stage)
             if effort:
                 cmd.extend(["-c", f'model_reasoning_effort="{effort}"'])
-            enabled = READ_ONLY_TOOLS if fork else self._engine_impl_mcp_tools(self._stage)
+            enabled = READ_ONLY_TOOLS if fork else self._enabled_mcp_tools(self._stage)
             if enabled:
                 listed = ", ".join(f'"{n}"' for n in enabled)
                 cmd.extend(

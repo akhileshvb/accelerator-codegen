@@ -253,15 +253,6 @@ def summarize_sweep_csv(path: Path) -> dict[str, Any]:
     return summary
 
 
-def load_bench_summary(
-    repo_root: Path, query: int, workload: dict[str, Any] | None = None
-) -> dict[str, Any]:
-    path = bench_summary_path(repo_root, query, workload)
-    if not path.is_file():
-        return {}
-    return json.loads(path.read_text(encoding="utf-8"))
-
-
 def load_optimization_state(
     repo_root: Path, query: int, workload: dict[str, Any] | None = None
 ) -> dict[str, Any]:

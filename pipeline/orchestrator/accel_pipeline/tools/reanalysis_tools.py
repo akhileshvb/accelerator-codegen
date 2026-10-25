@@ -11,7 +11,7 @@ from accel_pipeline.structural_reanalysis import (
     write_request,
 )
 from accel_pipeline.config import load_run_workload
-from accel_pipeline.state import load_or_create, state_path
+from accel_pipeline.state import load_or_create
 
 
 @dataclass

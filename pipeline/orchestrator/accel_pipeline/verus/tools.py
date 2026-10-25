@@ -37,7 +37,8 @@ STAGE_TOOLS: dict[str, list[str]] = {
 ESCALATED = "_escalated"  # a stage continued on the heavier model: same tools
 
 
-def stage_tools(stage: str) -> list[str] | None:
+def enabled_tools(stage: str) -> list[str] | None:
+    """The tools a Verus step may call."""
     return STAGE_TOOLS.get(stage.removesuffix(ESCALATED))
 
 

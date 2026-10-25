@@ -160,8 +160,8 @@ def test_verus_steps_are_codex_exec() -> None:
 def test_codex_backend_limits_verus_tools() -> None:
     from accel_pipeline.backends.codex_exec import CodexExecBackend
 
-    assert CodexExecBackend._engine_impl_mcp_tools("verus_kernel") == STAGE_TOOLS["verus_kernel"]
-    assert CodexExecBackend._engine_impl_mcp_tools("optimization_worker") is None
+    assert CodexExecBackend._enabled_mcp_tools("verus_kernel") == STAGE_TOOLS["verus_kernel"]
+    assert CodexExecBackend._enabled_mcp_tools("optimization_worker") is None
 
 
 def test_json_block_takes_the_last_fence() -> None:
@@ -380,7 +380,7 @@ def test_stalled_fix_rounds_get_a_second_opinion(monkeypatch: pytest.MonkeyPatch
     assert len(advised) == 1
     # round 1 progressed; rounds 2-3 stalled; round 4 carries the advice (same stage and session); round 5 plain
     assert calls == [("verus_kernel", "S1", False)] * 3 + [("verus_kernel", "S1", True), ("verus_kernel", "S1", False)]
-    from accel_pipeline.verus.tools import stage_tools
+    from accel_pipeline.verus.tools import enabled_tools as stage_tools
     assert "verus_verify" in stage_tools("verus_kernel_advisor")
 
 

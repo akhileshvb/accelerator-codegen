@@ -5,10 +5,9 @@ import re
 import signal
 import subprocess
 from dataclasses import dataclass
-from pathlib import Path
 
 from accel_pipeline.config import PipelineConfig
-from accel_pipeline.tools.tool_args import none_default as _none_default
+from accel_pipeline.tools import none_default
 
 _CTEST_DEFAULT_TIMEOUT_SECONDS = 240
 
@@ -68,8 +67,8 @@ def make_shell_tools(ctx: ToolContext):
             rewrite_command_build_dir,
         )
 
-        cwd = str(_none_default(cwd, ""))
-        timeout = int(_none_default(timeout, 600))
+        cwd = str(none_default(cwd, ""))
+        timeout = int(none_default(timeout, 600))
         raw_cmd = rewrite_command_build_dir(cmd.strip(), ctx.pipeline_config)
         effective_cmd = _normalize_ctest_cmd(raw_cmd, ctx.pipeline_config)
         shared_block = reject_shared_build_dir_cmd(effective_cmd, ctx.pipeline_config)

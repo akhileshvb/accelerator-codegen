@@ -216,7 +216,7 @@ def live_models(probe: Probe) -> list[str]:
     for model in sorted(models):
         backend = create_agent_backend(pipeline_config=probe.cfg, query=probe.query, stage="preflight_live",
                                        model_config=probe.models, workload_name=probe.workload_name)
-        backend._engine_impl_mcp_tools = lambda _stage: [LIVE_TOOL]  # only this tool is offered
+        backend._enabled_mcp_tools = lambda _stage: [LIVE_TOOL]  # only this tool is offered
         result = backend.run_stage(StageRunRequest(
             stage="preflight_live", model_id=model, agent_name="preflight", user_message="",
             instructions=f"Call the MCP tool {LIVE_TOOL} once, then reply with the single word DONE."))

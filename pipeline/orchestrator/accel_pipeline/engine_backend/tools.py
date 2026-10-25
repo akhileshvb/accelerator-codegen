@@ -25,6 +25,12 @@ def layer_gate_from_stage(stage: str, workload: dict[str, Any] | None = None) ->
     return f"engine_{lid}"
 
 
+def enabled_tools(stage: str) -> list[str]:
+    """The tools an engine_backend layer stage (impl_<layer>) may call."""
+    return ["request_gate", "run_engine_build", "run_layer_gate", "discover_host_sdk", "report_blocker",
+            "acquire_shared_lease", "release_shared_lease"]
+
+
 def layer_id_from_stage(stage: str) -> str:
     """`impl_epochs` -> `epochs`; "" when this is not a layer impl stage."""
     return stage[len("impl_") :].strip() if stage.startswith("impl_") else ""

@@ -35,7 +35,7 @@ from accel_pipeline.optimization.scoreboard import (
     write_scoreboard,
 )
 from accel_pipeline.paths import query_artifacts_dir
-from accel_pipeline.tools.tool_args import none_default as _none_default
+from accel_pipeline.tools import none_default
 
 CHECKPOINT_DIRNAME = "ab_checkpoint"
 ACTIVE_TRIAL_FILE = "ab_active_trial.json"
@@ -524,8 +524,8 @@ def make_ab_tools(ctx: AbToolContext):
         """Run a benchmark and return compact metrics. Default: the quick tier (a few queries, read
         axis only: direction, not a measurement). acceptance=True: the full optimization tier
         the accept/reject decision uses."""
-        include_profile = bool(_none_default(include_profile, True))
-        acceptance = bool(_none_default(acceptance, False))
+        include_profile = bool(none_default(include_profile, True))
+        acceptance = bool(none_default(acceptance, False))
         paths = resolve_workload_paths(ctx.pipeline_config, ctx.workload, ctx.query)
         from accel_pipeline.pack.worker_isolation import ensure_private_dataset_db
 

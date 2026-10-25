@@ -24,7 +24,6 @@ from accel_pipeline.failure import Failure, StageFailure, is_transient_provider_
 from accel_pipeline.jsonio import read_json
 from accel_pipeline.optimization.kernel_hot_path_review import analyze_kernel_source
 from accel_pipeline.models import make_model_id
-from accel_pipeline.optimization.budget import save_attempt_state
 from accel_pipeline.optimization.bootstrap import build_optimization_bootstrap, save_optimization_bootstrap
 from accel_pipeline.optimization.checkpoint import (
     advance_best_valid_baseline,
@@ -90,6 +89,11 @@ from accel_pipeline.playbook import append_experiment_log
 from accel_pipeline.prompts import render_prompt, save_rendered_prompt, with_codex_tooling
 from accel_pipeline.session import MAIN, run_in_session
 from accel_pipeline.stages.base import resolve_optimization_max_turns
+
+
+def save_attempt_state(art: Path, state: dict[str, Any]) -> None:
+    (art / "attempt_state.json").write_text(json.dumps(state, indent=2), encoding="utf-8")
+
 
 HYPOTHESIS_COMPLETE = "HYPOTHESIS_COMPLETE"
 PATCH_COMPLETE = "HYPOTHESIS_PATCH_COMPLETE"
@@ -352,18 +356,11 @@ def _fail_fast_infra_if_needed(
     query: int,
     *,
     text: str,
-    pack_queries: list[int] | None = None,
 ) -> dict[str, Any] | None:
     """On shared-tree infra failures, repair + release lease and stop burning agent turns."""
     from accel_pipeline.failure import handle_infra_failure
 
-    info = handle_infra_failure(
-        pipeline_config,
-        workload,
-        query,
-        text=text or "",
-        pack_queries=pack_queries,
-    )
+    info = handle_infra_failure(pipeline_config, workload, query, text=text or "")
     if not info:
         return None
     print(

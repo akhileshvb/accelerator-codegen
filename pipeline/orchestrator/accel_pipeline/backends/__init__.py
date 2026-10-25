@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from typing import Any
 
 from accel_pipeline.backends.base import AgentBackend, StageRunRequest, StageRunResult
 from accel_pipeline.config import ModelConfig, PipelineConfig, load_run_workload

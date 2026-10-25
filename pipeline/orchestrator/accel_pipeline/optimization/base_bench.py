@@ -432,29 +432,6 @@ def compact_summary_for_prompt(summary: dict[str, Any]) -> str:
     return json.dumps(compact, separators=(",", ":"), ensure_ascii=False)
 
 
-def compact_base_optimization_state(state: dict[str, Any], optimization_iter: int) -> dict[str, Any]:
-    if not state:
-        return {}
-    iterations = state.get("iterations") or []
-    recent = iterations[-2:]
-    compact: dict[str, Any] = {
-        "best_speedup_median": state.get("best_speedup_median"),
-        "last_speedup_median": state.get("last_speedup_median"),
-        "current_iteration": optimization_iter,
-    }
-    if recent:
-        compact["recent_iterations"] = [
-            {
-                "iteration": row.get("iteration"),
-                "speedup_median": row.get("speedup_median"),
-                "improved": row.get("improved"),
-                "dominant_phase": row.get("dominant_phase"),
-            }
-            for row in recent
-        ]
-    return compact
-
-
 def process_base_bench_after_gates(
     repo_root: Path,
     query: int,

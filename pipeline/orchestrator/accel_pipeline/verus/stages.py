@@ -31,7 +31,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
-from accel_pipeline.verus import STAGES, actions, workspace
+from accel_pipeline.verus import actions, workspace
 from accel_pipeline.verus import params as qparams
 from accel_pipeline.verus.agent import json_block, render, run_agent
 from accel_pipeline.verus.context import IGNORED_WORKLOAD_FIELDS, VerusContext

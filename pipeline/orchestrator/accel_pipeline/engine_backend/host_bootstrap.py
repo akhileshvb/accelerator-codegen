@@ -25,6 +25,7 @@ from accel_pipeline.gates.run import format_reloop_failure_sections
 from accel_pipeline.gates.run import GateResult
 from accel_pipeline.paths import engine_artifacts_dir, pipeline_root
 from accel_pipeline.repair import StageStopped
+from accel_pipeline.stages.base import run_agent_stage
 
 _GATE_LOG_TAIL_CHARS = 8000
 _DEFAULT_GATE_MAX_ROUNDS = 3
@@ -163,8 +164,6 @@ def run_host_bootstrap(
     force: bool = False,
 ) -> dict[str, Any]:
     """Run the host_bootstrap agent stage for one engine (idempotent unless force)."""
-    from accel_pipeline.engine_backend.host_bootstrap_stage import run as run_stage
-
     engine = sanitize_engine_name(engine_name)
     if not force and host_bootstrap_passed(pipeline_config.repo_root, engine):
         return {
@@ -192,7 +191,7 @@ def run_host_bootstrap(
     )
 
     if dry_run or skip_gates:
-        run_stage(
+        run_host_bootstrap_agent(
             pipeline_config,
             model_config,
             representative_workload,
@@ -243,7 +242,6 @@ def _bootstrap_under_repair(
     from accel_pipeline.paths import query_artifacts_dir
     from accel_pipeline.playbook import append_experiment_log
     from accel_pipeline.repair import RepairCtx, run_with_repair
-    from accel_pipeline.engine_backend.host_bootstrap_stage import run as run_stage
     from accel_pipeline.engine_backend.host_bootstrap_critique import (
         format_host_bootstrap_critique_feedback,
         load_host_bootstrap_critique,
@@ -266,7 +264,7 @@ def _bootstrap_under_repair(
 
     def attempt() -> Any:
         text, pending["feedback"] = pending["feedback"], ""
-        return run_stage(pipeline_config, model_config, representative_workload, query,
+        return run_host_bootstrap_agent(pipeline_config, model_config, representative_workload, query,
                          model_overrides=model_overrides, dry_run=False, engine_name=engine, extra_user_message=text)
 
     def run_gates(_names: list[str]) -> tuple[list[GateResult], GateResult | None]:
@@ -382,3 +380,40 @@ def ensure_host_bootstrap_for_pack(
         marker.parent.mkdir(parents=True, exist_ok=True)
         marker.write_text(json.dumps({"results": results}, indent=2) + "\n", encoding="utf-8")
     return results
+
+
+def run_host_bootstrap_agent(
+    pipeline_config: PipelineConfig,
+    model_config: ModelConfig,
+    workload_name: str,
+    query: int,
+    model_overrides: dict[str, str] | None = None,
+    dry_run: bool = False,
+    *,
+    engine_name: str = "",
+    extra_user_message: str = "",
+):
+    engine = engine_name or "engine"
+    user_message = (
+        f"Build the workload harnesses of engine={engine}: the differential, multi-connection, "
+        f"cross-accelerator, bench and calibrate targets under backends/{engine}/tests/harness/ and "
+        f"bench/, declared in backends/{engine}/tests/harness.cmake (the only paths you may write). "
+        "One query-parameterised harness per kind, reaching the engine through the backend api/ and "
+        "host.sh only. Build through the engine's host.sh (request_gate host_bootstrap), not a host "
+        "cmake/make. Call request_gate host_bootstrap until it passes, then finish."
+    )
+    extra = (extra_user_message or "").strip()
+    if extra:
+        user_message = f"{user_message}\n\n{extra}"
+    return run_agent_stage(
+        stage="host_bootstrap",
+        prompt_file="host_bootstrap.md",
+        pipeline_config=pipeline_config,
+        model_config=model_config,
+        workload_name=workload_name,
+        query=query,
+        user_message=user_message,
+        model_overrides=model_overrides,
+        dry_run=dry_run,
+        session_role="host_bootstrap",
+    )

@@ -6,7 +6,8 @@ import sys
 from typing import Any
 
 from accel_pipeline.verus.context import build_context
-from accel_pipeline.verus.stages import STAGE_FUNCS, STAGES, PipelineStop, Run, VerusState
+from accel_pipeline.verus import STAGES
+from accel_pipeline.verus.stages import STAGE_FUNCS, PipelineStop, Run, VerusState
 
 
 def run_verus_pipeline(

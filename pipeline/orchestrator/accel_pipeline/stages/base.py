@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, Callable
@@ -11,7 +12,6 @@ from accel_pipeline.models import make_model_id
 from accel_pipeline.no_progress import REDIRECT
 from accel_pipeline.paths import query_artifacts_dir
 from accel_pipeline.session import run_in_session
-from accel_pipeline.agent_progress import begin_agent_run
 from accel_pipeline.pipeline_log import (
     log_stage_complete,
     log_stage_start,
@@ -143,7 +143,8 @@ def run_agent_stage(
     instructions = with_codex_tooling(pipeline_config, prompt,
                                       engine_backend=workload.get("workload_kind") == "engine_backend")
 
-    begin_agent_run(stage, max_turns=max_turns, prompt_chars=len(instructions))
+    print(f"[pipeline] agent run start: stage={stage} max_turns={max_turns} prompt_chars={len(instructions)}",
+          file=sys.stderr, flush=True)
 
     request = StageRunRequest(
         stage=stage,

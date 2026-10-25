@@ -7,7 +7,6 @@ from pathlib import Path
 from typing import Any
 
 from accel_pipeline.config import PipelineConfig, load_workload, resolve_workload_paths
-from accel_pipeline.paths import pipeline_root
 from accel_pipeline.workload_facts import with_facts
 
 
