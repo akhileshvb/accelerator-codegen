@@ -22,6 +22,7 @@ environment cannot run it.
 from __future__ import annotations
 
 import argparse
+import fcntl
 import hashlib
 import json
 import os
@@ -133,10 +134,14 @@ def base_tree(rev: str, engine: str, workload: dict, env: dict[str, str]) -> Pat
     """The base is kept per source commit: it only changes with the clean-tree tooling or the backend."""
     commit = run(["git", "-C", str(SOURCE_ROOT), "rev-parse", "--short", rev]).stdout.strip()
     base = SMOKE_HOME / "bases" / f"{engine}-{commit}"
-    if not (base / ".git").is_dir():
-        shutil.rmtree(base, ignore_errors=True)
-        base.parent.mkdir(parents=True, exist_ok=True)
-        make_base(rev, engine, workload, env, base)
+    base.parent.mkdir(parents=True, exist_ok=True)
+    with open(base.with_name(base.name + ".lock"), "w") as lock:  # concurrent runs (canaries) share one base
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        if not base.is_dir():
+            partial = base.with_name(f"{base.name}.partial-{os.getpid()}")
+            shutil.rmtree(partial, ignore_errors=True)
+            make_base(rev, engine, workload, env, partial)
+            partial.rename(base)  # appears only complete
     return base
 
 
@@ -144,10 +149,13 @@ def cached_venv(base: Path) -> Path:
     """One virtualenv per requirements file, kept between runs (a tree gets a copy: its python is all the run uses)."""
     requirements = base / "pipeline/orchestrator/requirements.txt"
     venv = SMOKE_HOME / "venvs" / hashlib.sha256(requirements.read_bytes()).hexdigest()[:12]
-    if not (venv / "bin/python").is_file():
-        shutil.rmtree(venv, ignore_errors=True)
-        run([sys.executable, "-m", "venv", str(venv)])
-        run([str(venv / "bin/pip"), "install", "-q", "-r", str(requirements)])
+    venv.parent.mkdir(parents=True, exist_ok=True)
+    with open(venv.with_name(venv.name + ".lock"), "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        if not (venv / "bin/python").is_file():
+            shutil.rmtree(venv, ignore_errors=True)
+            run([sys.executable, "-m", "venv", str(venv)])
+            run([str(venv / "bin/pip"), "install", "-q", "-r", str(requirements)])
     return venv
 
 
