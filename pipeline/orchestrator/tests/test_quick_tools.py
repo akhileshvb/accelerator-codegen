@@ -7,7 +7,7 @@ from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
-from accel_pipeline import mcp_server, quick
+from accel_pipeline import mcp_server
 from accel_pipeline.config import QuickTierConfig, load_pipeline_config
 from accel_pipeline.quick import QuickResult
 from accel_pipeline.failure import Failure

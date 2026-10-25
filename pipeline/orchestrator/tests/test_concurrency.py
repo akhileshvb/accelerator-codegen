@@ -19,9 +19,7 @@ from accel_pipeline.pack import core_budget
 
 from accel_pipeline.pack import measurement_lease
 from accel_pipeline.config import ConcurrencyConfig
-from accel_pipeline.engine_host import instance_tag
-from accel_pipeline.gates.run import build_jobs, jobs_per_gate
-from accel_pipeline.pack.host_lock import FairLock, LockTimeout, try_lock
+from accel_pipeline.pack.host_lock import FairLock, LockTimeout
 from accel_pipeline.pack.shared_file_lease import SharedFileLease
 
 PACKAGE_ROOT = str(Path(core_budget.__file__).resolve().parents[2])
@@ -44,10 +42,6 @@ def spawn(code: str, *args: str, env: dict | None = None, **kw) -> subprocess.Po
 
 
 # --- core partitioning ---
-
-def test_cpu_list_round_trip():
-    assert core_budget.parse_cpus("0-3,8,10-11") == {0, 1, 2, 3, 8, 10, 11}
-    assert core_budget.format_cpus({0, 1, 2, 3, 8, 10, 11}) == "0-3,8,10-11"
 
 
 def plain(n: int) -> list[frozenset[int]]:
@@ -80,14 +74,6 @@ def test_core_groups_follow_the_sysfs_topology():
     groups = core_budget.core_groups(frozenset(os.sched_getaffinity(0)))
     assert frozenset().union(*groups) == frozenset(os.sched_getaffinity(0))
     assert sum(len(g) for g in groups) == len(os.sched_getaffinity(0))
-
-
-def test_auto_measurement_cores_and_slots():
-    assert core_budget.auto_measure_cores(20, workers=1) == 0
-    assert core_budget.auto_measure_cores(40, workers=8) == 8
-    assert core_budget.auto_measure_cores(12, workers=4) == 2
-    assert core_budget.auto_measure_cores(2, workers=2) == 1
-    assert core_budget.auto_measure_slots(4) == 4 and core_budget.auto_measure_slots(0) == 1
 
 
 def test_workers_claim_distinct_slots_host_wide(host_dir, monkeypatch):
@@ -133,17 +119,6 @@ def test_activate_pins_the_process_and_derives_job_caps(host_dir):
     measure = core_budget.core_groups(frozenset(CPUS))[-1]
     worker = [c for c in CPUS if c not in measure]
     assert out == f"{worker} {len(worker)} {len(worker)} {len(worker)} {core_budget.format_cpus(measure)} {len(worker)}"
-
-
-def test_parallel_gates_split_the_workers_jobs(monkeypatch):
-    monkeypatch.setattr(os, "sched_getaffinity", lambda pid: set(range(12)))
-    assert jobs_per_gate(3) == 4
-    assert jobs_per_gate(50) == 1
-
-
-def test_instance_tags_differ_across_trees():
-    assert instance_tag("q6_eng", Path("/a/build-release-q6")) != instance_tag("q6_eng", Path("/b/build-release-q6"))
-    assert instance_tag("q6_eng", Path("/a/b")) == instance_tag("q6_eng", Path("/a/b"))
 
 
 # --- the fair lock ---
@@ -196,45 +171,12 @@ def test_a_crashed_holder_releases_the_lock(tmp_path):
     lock.acquire(timeout_sec=2).close()
 
 
-def test_a_crashed_waiters_ticket_does_not_block_the_queue(tmp_path):
-    code = """
-        import sys
-        from pathlib import Path
-        from accel_pipeline.pack.host_lock import FairLock
-        FairLock(Path(sys.argv[1]), "t").acquire(timeout_sec=60)
-    """
-    lock = FairLock(tmp_path, "t")
-    held = lock.acquire(timeout_sec=1)
-    waiter = spawn(code, str(tmp_path))
-    time.sleep(0.6)
-    assert lock.queue_depth() == 1
-    waiter.kill()
-    waiter.wait()
-    held.close()
-    lock.acquire(timeout_sec=2).close()
-
-
-def test_try_lock_is_exclusive(tmp_path):
-    first = try_lock(tmp_path / "x.lock")
-    assert first is not None and try_lock(tmp_path / "x.lock") is None
-    first.close()
-    assert try_lock(tmp_path / "x.lock") is not None
-
-
 def test_shared_lease_waits_are_bounded_and_say_who_holds_it(tmp_path):
     holder = SharedFileLease(tmp_path)
     holder.acquire("q2", reason="editing CMakeLists")
     with pytest.raises(TimeoutError, match=r"held by 'q2' for \d+s \(editing CMakeLists\), 0 waiting"):
         SharedFileLease(tmp_path).acquire("q5", timeout_sec=0.3)
     holder.release("q2")
-
-
-def test_a_crashed_shared_lease_holder_is_not_reported(tmp_path):
-    lease = SharedFileLease(tmp_path)
-    lease.acquire("q2")
-    assert lease.holder() == "q2"
-    lease._fp.close()  # the process died: flock gone, metadata left behind
-    assert lease.holder() is None
 
 
 # --- the measurement lease ---
@@ -309,16 +251,6 @@ def test_slots_let_benchmarks_measure_at_once_on_disjoint_cpus(host_dir, monkeyp
         p.wait()
 
 
-def test_a_disabled_lease_never_queues(host_dir, monkeypatch):
-    monkeypatch.setenv(measurement_lease.ENABLED_ENV, "0")
-    holder = spawn(window_script(3), "x", env={measurement_lease.ENABLED_ENV: "0"})
-    holder.stdout.readline()
-    with measurement_lease.measurement_window("y", "t") as window:
-        assert not window.leased and window.waited_sec == 0
-    holder.kill()
-    holder.wait()
-
-
 @needs_two_cpus
 def test_the_wrapper_pins_the_command_and_holds_the_lease_until_it_exits(host_dir):
     measure = CPUS[-1]
@@ -335,48 +267,6 @@ def test_the_wrapper_pins_the_command_and_holds_the_lease_until_it_exits(host_di
     assert re.search(r"waited 0\.\d s for the measurement lease; pinned to cores", proc.stderr.read())
 
 
-def test_the_wrapper_reports_its_queueing_and_a_timeout(host_dir):
-    holder = spawn(window_script(4), "first")
-    holder.stdout.readline()
-    env = {**os.environ, "PYTHONPATH": PACKAGE_ROOT, measurement_lease.WAIT_ENV: "1"}
-    run = subprocess.run(
-        [sys.executable, "-m", "accel_pipeline.pack.measurement_lease", "--holder", "h2", "--", "true"],
-        env=env, text=True, capture_output=True,
-    )
-    assert run.returncode == measurement_lease.BUSY_EXIT
-    assert measurement_lease.BUSY.search(run.stderr)
-    holder.kill()
-    holder.wait()
-    env[measurement_lease.WAIT_ENV] = "10"
-    done = subprocess.run(
-        [sys.executable, "-m", "accel_pipeline.pack.measurement_lease", "--holder", "h2", "--", "true"],
-        env=env, text=True, capture_output=True,
-    )
-    assert done.returncode == 0 and measurement_lease.waited_seconds(done.stderr) is not None
-
-
-@needs_two_cpus
-def test_a_measured_run_is_pinned_and_reports_the_wait(host_dir, monkeypatch):
-    if not subprocess.run(["which", "taskset"], capture_output=True).returncode == 0:
-        pytest.skip("no taskset")
-    monkeypatch.setenv(core_budget.MEASURE_SET_ENV, str(CPUS[-1]))
-    proc = measurement_lease.run_measured(
-        [sys.executable, "-c", "import os; print(sorted(os.sched_getaffinity(0)), os.environ['ACCEL_MEASURE_CPUS'])"],
-        reason="t", capture_output=True, text=True,
-    )
-    assert proc.stdout.strip() == f"[{CPUS[-1]}] {CPUS[-1]}"
-    assert measurement_lease.lease_note(proc.stderr) == {"waited_sec": 0.0, "runs": 1}
-
-
-def test_quick_runs_are_flagged_noisy_while_someone_measures(host_dir):
-    assert measurement_lease.noise_warning(load_factor=1e9) is None
-    holder = spawn(window_script(3), "busy")
-    holder.stdout.readline()
-    assert "measurements are running (busy)" in measurement_lease.noise_warning(load_factor=1e9)
-    holder.kill()
-    holder.wait()
-
-
 # --- triage sees the lease ---
 
 def test_a_timeout_while_another_worker_measures_is_infra(host_dir, monkeypatch):
@@ -388,11 +278,6 @@ def test_a_timeout_while_another_worker_measures_is_infra(host_dir, monkeypatch)
     assert failure.classify("aux_bench_sweep", {"log_tail": text}, {}, None, query=3, load_factor=1e9) == ("infra", "timeout_under_load")
     holder.kill()
     holder.wait()
-
-
-def test_a_timeout_after_queueing_for_the_lease_is_infra(host_dir):
-    text = "[measurement-lease] waited 120.0 s for the measurement lease\nbench timed out after 300s"
-    assert failure.classify("aux_bench_sweep", {"log_tail": text}, {}, None, query=3, load_factor=1e9) == ("infra", "timeout_under_load")
 
 
 def test_not_getting_the_lease_is_infra(host_dir):

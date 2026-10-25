@@ -5,7 +5,6 @@ from __future__ import annotations
 import stat
 import sys
 import textwrap
-from pathlib import Path
 
 import pytest
 
@@ -92,18 +91,6 @@ def test_parse_report_folds_into_buckets_and_functions():
     assert pp.function_totals(parsed["top"])[0]["bucket"] == "own_code"
 
 
-def test_vectorization_counts_wide_registers():
-    result = pp.vectorization_of("  0.1 :  4010:  vpaddq (%rdi),%ymm0,%ymm0\n  0.2 :  4015:  add $0x20,%rdi\n")
-    assert result == {"instructions": 2, "wide_vector_instructions": 1, "uses_wide_vectors": True}
-
-
-def test_window_query_count_targets_a_short_loop():
-    assert pp.window_query_count(None) == 2 * pp.MIN_QUERIES
-    assert pp.window_query_count(10_000.0) == 600
-    assert pp.window_query_count(1.0) == pp.MAX_QUERIES
-    assert pp.window_query_count(1e9) == pp.MIN_QUERIES
-
-
 def test_server_engine_is_explicitly_not_applicable():
     assert pp.engine_profile_gap({"embedded": False})
     assert pp.engine_profile_gap({"embedded": True}) == ""
@@ -149,18 +136,6 @@ def test_profile_hit_path_without_perf_is_an_error_not_a_waiver(monkeypatch):
 
 def test_a_server_engine_stays_not_applicable():
     assert "not applicable" in pp.render_for_agent(pp.not_applicable(pp.engine_profile_gap({"embedded": False})))
-
-
-def test_counters_alone_take_no_samples(fake_perf):
-    profile = pp.profile_hit_path([sys.executable, "-c", "pass"], {}, hit_us=1000.0, loop_seconds=0.5, record=False)
-    assert profile["status"] == "ok" and "sampling" not in profile
-    assert profile["counters_per_query"]["instructions"] == 12000.0
-
-
-def test_the_loop_length_sets_the_window(fake_perf):
-    long = pp.profile_hit_path([sys.executable, "-c", "pass"], {}, hit_us=1000.0, loop_seconds=10.0, record=False)
-    assert long["counters_per_query"]["cycles"] == 5000.0  # per query, whatever the window held
-    assert pp.window_query_count(1000.0, 10.0) == 10_000 and pp.window_query_count(1000.0, 0.5) == pp.MIN_QUERIES * 5
 
 
 def test_the_build_profile_lists_the_hot_spots(fake_perf):

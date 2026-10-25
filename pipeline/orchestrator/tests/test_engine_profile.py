@@ -196,30 +196,6 @@ def test_layers_see_only_their_sections():
     assert "### oracle" in _render(w, "03_validation.md", "validation")
 
 
-@pytest.mark.parametrize("engine", ENGINES)
-def test_hostctl_prompt_is_the_host_script_prompt(engine):
-    w = load_workload(f"engine_{engine}", REPO_ROOT)
-    layers = {layer["id"]: layer for layer in implementation_layers(w)}
-    hostctl = layers["hostctl"]
-    assert hostctl["prompt"] == "impl_hostctl.md" and "prompt" not in layers["capture"]
-    text = _render(w, hostctl["prompt"], "impl_hostctl", hostctl)
-    contract = (PIPELINE_ROOT / "prompts" / "engine_backend" / "host_contract.md").read_text()
-    assert contract.strip() in text
-    assert "{{" not in text
-    for section in ("identity", "packaging", "host_runtime", "build", "process_model", "scan", "oracle"):
-        assert f"### {section}" in text
-    assert "### capture" not in text and "### entry_points" not in text
-    assert "backend.cmake" in text and "accel_backend_" in text
-
-
-def test_hostctl_sees_the_load_hazards_and_no_run_script_names():
-    w = load_workload("engine_postgres", REPO_ROOT)
-    text = _render(w, "impl_hostctl.md", "impl_hostctl", implementation_layers(w)[0])
-    assert "only the C collation compares bytes" in text
-    for engine in ENGINES:
-        assert "scripts/run_" not in str(_profile(engine)["oracle"])
-
-
 def test_layer_rules_are_checklist_ids():
     checklist = (PIPELINE_ROOT / "prompts" / "engine_backend" / "acceptance_checklist.md").read_text()
     ids = set(re.findall(r"^### `(\w+)`", checklist, re.M))

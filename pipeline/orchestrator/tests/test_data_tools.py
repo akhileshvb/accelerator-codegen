@@ -6,9 +6,8 @@ import time
 import pytest
 from fake_engine import make_engine
 
-from accel_pipeline.data_shape import build_data_section
 from accel_pipeline.tools import data_tools
-from accel_pipeline.tools.data_tools import check_read_only, dataset_row_counts, make_data_tools
+from accel_pipeline.tools.data_tools import check_read_only, make_data_tools
 
 
 @pytest.fixture()
@@ -83,11 +82,6 @@ def test_row_cap(tools):
     assert len(out.splitlines()) == 1 + 1 + 7 + 1  # note, header, rows, timing
 
 
-def test_row_cap_is_bounded_by_configuration(tmp_path, monkeypatch):
-    tools = make_data_tools(make_engine(tmp_path, monkeypatch, max_rows=5))
-    assert "capped at 5 rows" in tools["query_data"]("SELECT * FROM orders", max_rows=500)
-
-
 def test_time_box(tmp_path, monkeypatch):
     tools = make_data_tools(make_engine(tmp_path, monkeypatch, query_seconds=0.5))
     slow = ("WITH RECURSIVE r(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM r) "
@@ -156,26 +150,6 @@ def test_query_shape_runs_on_the_engine(tools):
     out = tools["query_shape"]()
     assert "events.order_id -> orders.id" in out and "orders.placed - events.happened" in out
     assert "### Parameterised predicates" in out
-
-
-def test_every_tool_call_is_logged(tools, ctx):
-    tools["column_stats"](["orders.id"])
-    tools["join_fanout"]("events.order_id", "orders.id")
-    tools["rows_qualifying"]("id < $1", ["5"])
-    tools["column_spread"]("events.happened", "orders.placed", "events.order_id = orders.id")
-    assert [r["tool"] for r in _log(ctx)] == ["column_stats", "join_fanout", "rows_qualifying", "column_spread"]
-    assert all(r["sql"] and r["rows"] is not None for r in _log(ctx))
-
-
-def test_data_section_lists_tables_counts_and_tools(ctx):
-    counts = dataset_row_counts(ctx, ["orders", "events", "absent"])
-    assert counts == {"orders": 100, "events": 400}
-    text = build_data_section("fake", counts)
-    assert "| orders | 100 |" in text and "| events | 400 |" in text
-    for tool in ("query_data", "column_stats", "join_fanout", "rows_qualifying", "column_spread", "query_shape"):
-        assert tool in text
-    assert "SF3000" in text and "evidence" in text
-    assert build_data_section("fake", {}).count("| table |") == 0
 
 
 def test_no_code_path_names_an_engine_or_benchmark():

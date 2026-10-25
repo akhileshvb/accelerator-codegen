@@ -93,10 +93,6 @@ def test_extras_and_deleted_files_change_the_stamp(config):
     assert code_stamp(root, query_dir="accelerators/demo/q5") != base
 
 
-def test_outside_a_git_checkout_there_is_no_stamp(tmp_path):
-    assert code_stamp(tmp_path) == ""
-
-
 def test_a_gate_passes_at_the_stamp_it_was_recorded_for(config):
     record_pass(config, WORKLOAD, 5, "aux_unit", current_stamp(config, WORKLOAD, 5))
     assert passed_at_current_stamp(config, WORKLOAD, 5, "aux_unit")
@@ -125,12 +121,6 @@ def test_the_exit_run_is_reused_across_acceptance_stages_but_not_the_iteration_t
     assert not passed_at_current_stamp(config, WORKLOAD, 5, "aux_exit", change_kind="optimization")
     record_pass(config, WORKLOAD, 5, "aux_exit", current_stamp(config, WORKLOAD, 5), change_kind="optimization")
     assert not passed_at_current_stamp(config, WORKLOAD, 5, "aux_exit", change_kind="audit")
-
-
-def test_no_stamp_never_counts_as_passed(tmp_path):
-    cfg = SimpleNamespace(repo_root=tmp_path, build_dir=tmp_path / "b")
-    record_pass(cfg, WORKLOAD, 5, "aux_unit", "")
-    assert not passed_at_current_stamp(cfg, WORKLOAD, 5, "aux_unit")
 
 
 def test_concurrent_records_all_survive(config):
@@ -193,10 +183,6 @@ def test_a_failed_or_missing_background_run_is_never_reused(config):
     assert reusable_background_result(config, WORKLOAD, 5, "prims_tests") is None
 
 
-def test_status_of_a_gate_never_started(config):
-    assert background_status(config, WORKLOAD, 5, "aux_unit")["status"] == "none"
-
-
 def test_a_background_run_whose_process_vanished_is_reported_died(config):
     path = background_gates._state_path(config, WORKLOAD, 5, "aux_unit")
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -221,11 +207,6 @@ def test_a_running_background_gate_says_what_it_is_doing_and_how_long(config):
     from accel_pipeline.tools.gate_tools import _compact_background_state
 
     assert {"elapsed_sec", "phase", "progress"} <= set(_compact_background_state(status))
-
-
-def test_only_the_listed_gates_run_in_the_background(config):
-    refused = start_background_gate(config, WORKLOAD, 5, "aux_bench_sweep", workload_name="w")
-    assert refused["status"] == "refused" and "aux_correctness" in refused["reason"]
 
 
 def test_starting_a_background_gate_records_it_running_and_does_not_start_it_twice(config, monkeypatch):

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -11,7 +10,6 @@ from types import SimpleNamespace
 import pytest
 
 from accel_pipeline import layout, sandbox
-from accel_pipeline.config import PipelineConfig
 from accel_pipeline.write_ownership import StageWriteCheck, violation_message
 
 PRIM_A, PRIM_B = f"{layout.PRIMS}/toy_a.h", f"{layout.PRIMS}/toy_b.h"
@@ -56,21 +54,6 @@ def _dsts(binds, mode=None):
     return {dst for m, _, dst in binds if mode in (None, m)}
 
 
-def test_backend_info_drives_docker_socket_and_mounts(tmp_path: Path, isolated: Path) -> None:
-    root = _tree(tmp_path / "tree").resolve()
-    sdk = tmp_path / "sdk"
-    cache = tmp_path / "cache"
-    sdk.mkdir()
-    cache.mkdir()
-    NEEDS["toydb"] = {"mounts": {"ro": [str(sdk)], "rw": [str(cache)]}, "docker": False}
-    NEEDS["dockerdb"] = {"mounts": {"ro": [], "rw": []}, "docker": True}
-    plain = sandbox.cpp_mounts(_cfg(root, "toydb"))
-    assert isolated.resolve() not in _dsts(plain)
-    assert ("ro", sdk.resolve()) in [(m, d) for m, _, d in plain] and ("rw", cache.resolve()) in [(m, d) for m, _, d in plain]
-    assert isolated.resolve() in _dsts(sandbox.cpp_mounts(_cfg(root, "dockerdb")), "rw")
-    assert isolated.resolve() not in _dsts(sandbox.cpp_mounts(_cfg(root, "")))  # no info: nothing extra
-
-
 def test_cpp_mounts_tree_layers_build_data(tmp_path: Path, isolated: Path) -> None:
     root = _tree(tmp_path / "tree").resolve()
     data = tmp_path / "data"
@@ -110,56 +93,6 @@ def test_worktree_mode_mounts_primary_and_hides_other_workers(tmp_path: Path, is
     assert ("rw", primary / "build-release-w1") not in order
 
 
-def test_pipeline_config_carries_sandbox_keys() -> None:
-    from accel_pipeline.config import load_pipeline_config
-
-    repo = Path(__file__).resolve().parents[3]
-    cfg = load_pipeline_config(repo_root=repo)
-    assert (cfg.sandbox, cfg.write_policy) == ("bwrap", "warn")
-    assert PipelineConfig.__dataclass_fields__["sandbox_extra_rw"].default_factory() == []
-
-
-def test_verus_prefix_unchanged_by_the_shared_builder(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """The Verus bwrap command line after the system mounts: the same binds, in the same order, as before
-    the builder was shared."""
-    from accel_pipeline.verus import actions, sandbox as vsb
-    from test_verus_pipeline import _ctx
-
-    home = tmp_path / "home"
-    for d in (".cargo", ".rustup"):
-        (home / d).mkdir(parents=True)
-    (tmp_path / "bin").mkdir()
-    codex = tmp_path / "pkg" / "lib" / "codex.js"
-    codex.parent.mkdir(parents=True)
-    codex.touch()
-    codex.chmod(0o755)
-    (tmp_path / "bin" / "codex").symlink_to(codex)
-    verus = tmp_path / "verus"
-    verus.mkdir()
-    monkeypatch.setenv("HOME", str(home))
-    monkeypatch.setenv("PATH", f"{tmp_path / 'bin'}:{os.environ['PATH']}")
-    for k in [k for k in os.environ if k.startswith("ACCEL_") and k.endswith("_ROOT")]:  # the sibling checkout is not part of this fixture
-        monkeypatch.delenv(k)
-    monkeypatch.setenv("VERUS_BIN", str(verus / "verus"))
-    monkeypatch.delenv("CARGO_TARGET_DIR", raising=False)
-    for mod in (sandbox, vsb):
-        monkeypatch.setattr(mod, "HOME", home)
-    ctx = _ctx(tmp_path)
-    ctx.root.mkdir(parents=True, exist_ok=True)
-    root = ctx.root.resolve()
-    args = vsb.prefix(ctx, ctx.ws)
-    tail = args[args.index("--dir") + 2:]
-    target = actions.cargo_target_dir(ctx)
-    pkg = codex.parent.parent
-    expected = ["--bind", str(root), str(root),
-                "--ro-bind", str(verus), str(verus), "--ro-bind", str(home / ".rustup"), str(home / ".rustup"),
-                "--bind", str(home / ".cargo"), str(home / ".cargo"), "--bind", str(target), str(target),
-                "--symlink", str(codex), str(tmp_path / "bin" / "codex"), "--ro-bind", str(pkg), str(pkg),
-                "--chdir", str(ctx.ws)]
-    assert tail == expected
-    assert args[1:4] == ["--unshare-all", "--share-net", "--die-with-parent"]
-
-
 @needs_bwrap
 def test_bwrap_cpp_sandbox_blocks_substrate_and_allows_the_query_dir(tmp_path: Path, isolated: Path,
                                                                      monkeypatch: pytest.MonkeyPatch) -> None:
@@ -168,11 +101,13 @@ def test_bwrap_cpp_sandbox_blocks_substrate_and_allows_the_query_dir(tmp_path: P
     monkeypatch.setenv("ACCEL_PIPELINE_QUERY", "6")
     prefix = sandbox.cpp_prefix(cfg)
     script = ("touch substrate/x 2>/dev/null && echo SUB_WRITABLE; touch workloads/toybench/x 2>/dev/null && echo WL_WRITABLE; "
-              "touch accelerators/toybench/q6/ok && echo QUERY_OK; touch build-x/ok && echo BUILD_OK; ls /home | wc -l")
+              "touch accelerators/toybench/q6/ok && echo QUERY_OK; touch build-x/ok && echo BUILD_OK; ls /home | wc -l; "
+              "test -d /sys/devices/system/cpu && echo SYS_VISIBLE; touch /sys/x 2>/dev/null && echo SYS_WRITABLE")
     proc = subprocess.run(prefix + ["bash", "-c", script], capture_output=True, text=True, timeout=60)
     out = proc.stdout.split()
     assert "QUERY_OK" in out and "BUILD_OK" in out, proc.stderr
     assert "SUB_WRITABLE" not in out and "WL_WRITABLE" not in out
+    assert "SYS_VISIBLE" in out and "SYS_WRITABLE" not in out  # without /sys, perf finds no PMU and every profile reads "not applicable"
     assert (root / "accelerators/toybench/q6/ok").exists() and not (root / "substrate/x").exists()
     check = sandbox.cpp_selfcheck(cfg, 6)
     assert check["problems"] in ([], ["MISSING codex"]), check

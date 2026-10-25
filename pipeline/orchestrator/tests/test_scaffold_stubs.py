@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
 
 from accel_pipeline.config import load_pipeline_config, load_workload
 from accel_pipeline.workload_facts import with_facts

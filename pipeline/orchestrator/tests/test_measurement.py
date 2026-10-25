@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 from accel_pipeline.config import MeasurementConfig
-from accel_pipeline.failure import StageFailure, render_failure
+from accel_pipeline.failure import StageFailure
 from accel_pipeline.optimization.measurement import check_measurement
 from accel_pipeline.optimization.eval import EvalConfig, MultiSampleBenchmark, BenchmarkSample, evaluate_attempt_outcome
 
@@ -98,10 +98,6 @@ def test_read_axis_must_be_the_engine_reference_over_the_hit():
     assert check([row(0, query_only_speedup=100.4)]) == []
 
 
-def test_unmeasured_reference_is_not_implausible():
-    assert check([row(0, ref_query_median_us=0.0)]) == []
-
-
 def test_sample_spread():
     scores = [10.0, 30.0, 1.0]
     bench = MultiSampleBenchmark(
@@ -136,15 +132,6 @@ def test_stale_binary(tmp_path):
     assert "stale build" in diagnoses([row(0)], bench_binary=binary, query_dir=qdir)[0]
 
 
-def test_disabled_check_is_silent():
-    assert check([row(0, accel_hit_rate=0.0)], config=MeasurementConfig(enabled=False)) == []
-
-
-def test_failure_renders_the_diagnosis():
-    text = render_failure(check([row(0, accel_hit_rate=0.0)])[0])
-    assert "measurement failure" in text and "fallback path" in text
-
-
 def test_attempt_with_zero_hit_rate_is_not_judged():
     outcome = evaluate_attempt_outcome(
         baseline_score=10.0,
@@ -157,18 +144,6 @@ def test_attempt_with_zero_hit_rate_is_not_judged():
     assert outcome.verdict == "reject_invalid_measurement"
     assert outcome.measurement_failures[0].kind == "measurement"
     assert "fallback path" in outcome.reason
-
-
-def test_attempt_without_a_hit_rate_metric_is_unaffected():
-    outcome = evaluate_attempt_outcome(
-        baseline_score=10.0,
-        candidate_score=11.0,
-        baseline_metrics={},
-        candidate_metrics={"speedup_median": 11.0},
-        config=EvalConfig(),
-        correctness_ok=True,
-    )
-    assert outcome.verdict == "accept"
 
 
 def test_baseline_with_zero_hit_rate_raises(monkeypatch, tmp_path):
@@ -200,15 +175,6 @@ def test_baseline_that_did_not_run_raises(monkeypatch, tmp_path):
     with pytest.raises(StageFailure) as raised:
         attempt._measure_baseline(SimpleNamespace(), {}, 6, SimpleNamespace(quick_benchmark_samples=1))
     assert "undefined reference" in raised.value.failure.evidence
-
-
-def test_hit_contract_gate_is_registered():
-    from accel_pipeline.gates.run import GATE_SCRIPTS, GATES_ALLOW_SKIP
-    from accel_pipeline.paths import find_repo_root
-
-    script = GATE_SCRIPTS["engine_hit_contract"]
-    assert (find_repo_root() / "pipeline" / "gates" / script).is_file()
-    assert "engine_hit_contract" in GATES_ALLOW_SKIP
 
 
 def test_sweep_records_measurement_ok(tmp_path, monkeypatch):

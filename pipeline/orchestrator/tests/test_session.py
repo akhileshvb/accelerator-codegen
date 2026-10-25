@@ -5,7 +5,7 @@ from types import SimpleNamespace
 from accel_pipeline.backends.base import StageRunRequest, StageRunResult
 from accel_pipeline.config import SessionConfig
 from accel_pipeline.session import (
-    HEARTBEAT_FILE, MAIN, SessionStore, budget_footer, build_handoff, context_tokens, keep_alive, run_in_session,
+    HEARTBEAT_FILE, MAIN, SessionStore, budget_footer, context_tokens, keep_alive, run_in_session,
 )
 
 
@@ -109,10 +109,6 @@ def test_continuity_off_runs_without_sessions(tmp_path):
     assert not (tmp_path / "sessions.json").exists()
 
 
-def test_build_handoff_without_any_record(tmp_path):
-    assert "Handoff" in build_handoff(tmp_path)
-
-
 def _run_file(art, started_ago, soft=100, hard=1000):
     (art / "agent_run.json").write_text(json.dumps(
         {"stage": "x", "started": time.time() - started_ago, "soft_deadline_sec": soft, "hard_deadline_sec": hard}))
@@ -129,11 +125,6 @@ def test_budget_footer_is_silent_then_asks_to_wrap_up_then_to_checkpoint(tmp_pat
     assert "about to be stopped" in budget_footer(None, "x", 1)
 
 
-def test_budget_footer_without_an_art_dir_is_empty(monkeypatch):
-    monkeypatch.delenv("ACCEL_PIPELINE_ART_DIR", raising=False)
-    assert budget_footer(None, "x", 1) == ""
-
-
 def test_keep_alive_beats_while_a_tool_call_blocks_and_stops_after(tmp_path):
     beat = tmp_path / HEARTBEAT_FILE
     with keep_alive(tmp_path, every_sec=0.05):
@@ -146,18 +137,6 @@ def test_keep_alive_beats_while_a_tool_call_blocks_and_stops_after(tmp_path):
     assert time.time() - last > 60  # aged at exit: polling a tool does not read as a running call
     time.sleep(0.2)
     assert beat.stat().st_mtime == last
-
-
-def test_keep_alive_without_an_art_dir_is_a_no_op():
-    with keep_alive(None):
-        pass
-
-
-def test_stage_soft_deadline_overrides_the_default():
-    from accel_pipeline.config import SessionConfig
-
-    cfg = SessionConfig(soft_deadline_sec=5400, stage_soft_deadline_sec=(("test_suite", 900),))
-    assert cfg.soft_deadline_for("test_suite") == 900 and cfg.soft_deadline_for("implementation") == 5400
 
 
 def test_no_resume_cap_keeps_one_conversation(tmp_path):

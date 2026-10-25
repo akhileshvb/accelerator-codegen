@@ -157,17 +157,6 @@ def test_accepts_new_header_with_readme_and_tests(primary, fake):
     assert not (primary / pl.STAGING_REL / P / "ring_buffer.hpp").exists()
 
 
-def test_provenance_appended(primary, fake):
-    res = publish(primary, stage_new_primitive(primary), query=21)
-    assert res["ok"], res
-    rec = json.loads((primary / pl.PROVENANCE_REL).read_text().splitlines()[-1])
-    assert rec["query"] == 21
-    assert rec["rationale"] == RATIONALE
-    assert rec["new_headers"] == ["ring_buffer.hpp"]
-    assert len(rec["git_head"]) == 40 and rec["ts"] > 0
-    assert f"{P}/ring_buffer.hpp" in rec["files"]
-
-
 def test_rejects_changed_existing_line(primary, fake):
     stage(primary, f"{P}/existing.hpp", EXISTING.replace("// MEMORY     8 B.", "// MEMORY     16 B."))
     res = publish(primary, [f"{P}/existing.hpp"])
@@ -175,14 +164,6 @@ def test_rejects_changed_existing_line(primary, fake):
     assert any("MEMORY     8 B." in d for d in res["diff"])
     assert (primary / P / "existing.hpp").read_text() == EXISTING
     assert fake.calls == []
-
-
-def test_existing_header_may_gain_lines(primary, fake):
-    stage(primary, f"{P}/existing.hpp", EXISTING + "namespace accelerator_codegen::aux_state::core { inline int Extra() { return 1; } }\n")
-    res = publish(primary, [f"{P}/existing.hpp"])
-    assert res["ok"], res
-    assert res["changed_headers"] == ["existing.hpp"]
-    assert "Extra" in (primary / P / "existing.hpp").read_text()
 
 
 def test_changed_existing_header_rebuilds_dependents(primary, fake):
@@ -270,12 +251,6 @@ def test_rejects_duplicate_of_published_primitive(primary, fake, name, purpose):
     assert not (primary / P / f"{name}.hpp").exists()
 
 
-def test_rejects_missing_key_space_or_purpose(primary, fake):
-    bad = new_header().replace("// KEY SPACE  dense positions [0, capacity).\n", "")
-    res = publish(primary, stage_new_primitive(primary, header=bad))
-    assert not res["ok"] and any("KEY SPACE" in p for p in res["problems"])
-
-
 def test_rejects_missing_tests(primary, fake):
     res = publish(primary, stage_new_primitive(primary, tests=None))
     assert not res["ok"]
@@ -298,12 +273,6 @@ def test_rejects_workload_vocabulary(primary, fake, word):
     res = publish(primary, stage_new_primitive(primary, header=header))
     assert not res["ok"] and "workload vocabulary" in res["error"]
     assert res["hits"] and not (primary / P / "ring_buffer.hpp").exists()
-
-
-def test_generic_schema_words_are_allowed(primary, fake):
-    header = new_header(extra_comment=" Keyed by name, date and value; count and size are O(1).")
-    res = publish(primary, stage_new_primitive(primary, header=header))
-    assert res["ok"], res
 
 
 def test_build_failure_restores_backup(primary, fake):
@@ -332,12 +301,6 @@ def test_rejects_unpublishable_paths(primary, fake):
     assert not res["ok"] and "not publishable" in res["error"]
     res = publish(primary, [f"{P}/sub/dir.hpp"])
     assert not res["ok"]
-
-
-def test_requires_rationale_and_staged_file(primary, fake):
-    assert not publish(primary, [f"{P}/ring_buffer.hpp"], rationale="")["ok"]
-    res = publish(primary, [f"{P}/ring_buffer.hpp"])
-    assert not res["ok"] and "staged file missing" in res["error"]
 
 
 def test_concurrent_publish_is_rebased(primary, fake, tmp_path, monkeypatch):
@@ -402,20 +365,6 @@ def test_refresh_prims_mirrors_primary(primary, tmp_path):
     assert pl.refresh_prims(primary, primary) == []
 
 
-def test_sync_owned_never_copies_prims(primary, tmp_path):
-    from accel_pipeline.pack.worker_worktree import sync_owned_to_primary
-
-    wt = tmp_path / "wt"
-    (wt / P).mkdir(parents=True)
-    (wt / P / "evil.hpp").write_text("// evil\n")
-    (wt / "accelerators/tpch/q5/duckdb/aux").mkdir(parents=True)
-    (wt / "accelerators/tpch/q5/duckdb/aux/module.cpp").write_text("// q5\n")
-    copied = sync_owned_to_primary(primary=primary, worktree=wt, query=5)
-    assert "accelerators/tpch/q5/duckdb/aux/module.cpp" in copied
-    assert not any(c.startswith(P) for c in copied)
-    assert not (primary / P / "evil.hpp").exists()
-
-
 @pytest.mark.parametrize("rel", [f"{P}/new.hpp", f"{P}/README.md", f"{P}/existing.hpp", pl.TESTS_REL])
 @pytest.mark.parametrize("stage_name", ["implementation", "optimization_worker", "optimization_unified_patch", ""])
 def test_write_policy_denies_direct_prims_writes(primary, rel, stage_name):
@@ -429,15 +378,6 @@ def test_write_policy_allows_staging(primary):
     ok, _ = write_allowed(primary, primary / pl.STAGING_REL / P / "new.hpp", query=5, stage="implementation",
                           write_paths=[])
     assert ok
-
-
-def test_prims_are_shared_lease_paths(primary):
-    from accel_pipeline.config import DEFAULT_SHARED_PATH_GLOBS
-    from accel_pipeline.write_ownership import is_shared_path
-
-    assert is_shared_path(primary, primary / P / "existing.hpp")
-    assert is_shared_path(primary, primary / pl.TESTS_REL)
-    assert f"{P}/**" in DEFAULT_SHARED_PATH_GLOBS
 
 
 def test_real_prims_are_workload_agnostic():

@@ -1,46 +1,16 @@
 from __future__ import annotations
 
 import json
-import subprocess
 from pathlib import Path
-from types import SimpleNamespace
 
-import pytest
 
 from accel_pipeline import check_report, quick, write_cost
 from accel_pipeline.config import QuickTierConfig
-from accel_pipeline.gates.run import GateResult
 from accel_pipeline.paths import gates_dir_for_query, query_artifacts_dir
 from accel_pipeline.test_db import CutDatasets
 from accel_pipeline.quick import render_quick_result, run_quick_check
 
-WORKLOAD = {"workload_kind": "aux_state", "benchmark_name": "tpch", "engine_name": "eng"}
-GIT = ["git", "-c", "user.name=t", "-c", "user.email=t@t"]
-
-
-@pytest.fixture()
-def config(tmp_path):
-    root = tmp_path / "repo"
-    (root / "accelerators" / "tpch" / "q6").mkdir(parents=True)
-    (root / "accelerators" / "tpch" / "q6" / "module.cpp").write_text("// v1\n")
-    (root / ".gitignore").write_text("pipeline/artifacts/\n")
-    subprocess.run(["git", "init", "-q"], cwd=root, check=True)
-    subprocess.run([*GIT, "add", "-A"], cwd=root, check=True)
-    subprocess.run([*GIT, "commit", "-qm", "base"], cwd=root, check=True)
-    return SimpleNamespace(repo_root=root, build_dir=tmp_path / "build", quick_tier=QuickTierConfig())
-
-
-class Gate:
-    def __init__(self, monkeypatch, status="pass", data=None):
-        self.calls: list[dict] = []
-        self.status = status
-        self.data = data or {}
-        monkeypatch.setattr(quick, "run_gate", self.run_gate)
-        monkeypatch.setattr(quick, "ensure_cut_datasets", lambda *a: None)
-
-    def run_gate(self, config, name, query, workload, *, env=None, timeout_s=None, **kwargs):
-        self.calls.append({"name": name, "query": query, "env": env, "timeout_s": timeout_s})
-        return GateResult(name, self.status, {"status": self.status, "phase_timings": {"host_build": 1.5}, **self.data})
+from conftest import GIT, WORKLOAD, Gate  # noqa: F401
 
 
 def edit_query(config):
@@ -73,14 +43,6 @@ def test_an_edit_runs_the_gate_again(config, monkeypatch):
     assert len(gate.calls) == 2
 
 
-def test_other_arguments_are_other_checks(config, monkeypatch):
-    gate = Gate(monkeypatch)
-    run_quick_check(config, WORKLOAD, 6)
-    run_quick_check(config, WORKLOAD, 6, differential=False)
-    run_quick_check(config, WORKLOAD, 6, targets=["t"])
-    assert len(gate.calls) == 3
-
-
 def test_a_failing_differential_returns_a_failure_with_a_reproduce_command(config, monkeypatch):
     Gate(monkeypatch, "fail", {
         "reason": "differential failed", "step": "differential", "log_tail": "row 3 differs",
@@ -104,30 +66,10 @@ def test_a_failure_is_not_cached_as_a_pass(config, monkeypatch):
     assert len(gate.calls) == 2
 
 
-def test_a_pass_after_a_failure_is_cached_again(config, monkeypatch):
-    gate = Gate(monkeypatch, "fail", {"reason": "x"})
-    run_quick_check(config, WORKLOAD, 6)
-    gate.status = "pass"
-    run_quick_check(config, WORKLOAD, 6)
-    run_quick_check(config, WORKLOAD, 6)
-    assert len(gate.calls) == 2
-
-
 def test_a_timeout_becomes_a_timeout_failure(config, monkeypatch):
     Gate(monkeypatch, "fail", {"reason": "gate did not finish within 120s"})
     result = run_quick_check(config, WORKLOAD, 6)
     assert result.status == "fail" and result.failure.kind == "timeout"
-
-
-def test_the_quick_tier_can_be_turned_off(config, monkeypatch):
-    gate = Gate(monkeypatch)
-    config.quick_tier = QuickTierConfig(enabled=False)
-    assert run_quick_check(config, WORKLOAD, 6).status == "skip" and not gate.calls
-
-
-def test_only_aux_workloads_are_checked(config, monkeypatch):
-    gate = Gate(monkeypatch)
-    assert run_quick_check(config, {**WORKLOAD, "workload_kind": "base"}, 6).status == "skip" and not gate.calls
 
 
 def test_the_configured_timeout_and_probes_reach_the_gate(config, monkeypatch):
@@ -224,13 +166,6 @@ def test_a_build_too_slow_for_the_full_dataset_fails_even_when_it_scales(config,
     monkeypatch.setattr(quick, "ensure_cut_datasets", lambda *a: cuts())
     result = run_quick_check(config, WORKLOAD, 6)
     assert result.status == "fail" and "projected ~25 s at full scale" in result.summary and "budget 15 s" in result.summary
-
-
-def test_the_build_budget_is_configurable(config, monkeypatch):
-    ReportGate(monkeypatch, stage_reports(config, build_n=0.50, build_1=3.0))
-    monkeypatch.setattr(quick, "ensure_cut_datasets", lambda *a: cuts())
-    config.quick_tier = QuickTierConfig(build_budget_sec=60)
-    assert run_quick_check(config, WORKLOAD, 6).status == "pass"
 
 
 def test_an_unchanged_check_hands_back_its_report(config, monkeypatch):

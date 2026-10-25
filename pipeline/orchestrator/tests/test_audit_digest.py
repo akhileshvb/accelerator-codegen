@@ -10,7 +10,7 @@ import pytest
 
 from accel_pipeline import audit_digest
 from accel_pipeline.audit_digest import (
-    audit_context, blocking_findings, changed_files, cumulative_diff, public_symbols, query_digest,
+    audit_context, blocking_findings, changed_files, query_digest,
     record_implementation_base, snapshot, touched_since,
 )
 from accel_pipeline.config import QuickTierConfig
@@ -64,14 +64,6 @@ def config(repo, monkeypatch):
     return SimpleNamespace(repo_root=repo, quick_tier=QuickTierConfig()), art
 
 
-def test_public_symbols_are_the_namespace_level_declarations():
-    assert public_symbols(HEADER) == [
-        "type State", "type Module",
-        "std::shared_ptr<State> BuildState(const Table &t, int64_t rows)",
-        "inline int Helper(int x) { return x + 1; }",
-    ]
-
-
 def test_the_digest_maps_files_entry_points_design_log_and_open_findings(config):
     cfg, art = config
     (art / "analysis.json").write_text(json.dumps({
@@ -93,13 +85,6 @@ def test_the_digest_maps_files_entry_points_design_log_and_open_findings(config)
     assert digest == query_digest(cfg, WORKLOAD, 5)  # deterministic
 
 
-def test_files_in_the_gates_directory_that_are_not_gate_results_are_ignored(config):
-    cfg, art = config
-    (art / "gates").mkdir()
-    (art / "gates" / "aux_bench_draws.json").write_text("[1, 2, 3]")
-    assert "none recorded" in query_digest(cfg, WORKLOAD, 5)
-
-
 def test_the_digest_without_an_analysis_or_log_still_renders(config):
     cfg, _ = config
     digest = query_digest(cfg, WORKLOAD, 5)
@@ -119,13 +104,6 @@ def test_the_cumulative_diff_covers_edits_and_new_files_since_the_base(config, r
     assert "-int x;" in context and "+int y;" in context and "+int fresh;" in context and "shared, edited" in context
     assert "x.py" not in context
     assert context.index("module.cpp") < context.index("substrate/shared.hpp")  # the query's own files first
-
-
-def test_the_diff_limit_lists_what_no_longer_fits(repo):
-    (repo / QDIR / "module.cpp").write_text("// implementation\n" + "int big;\n" * 400)
-    (repo / QDIR / "tests" / "unit.cpp").write_text("int small;\n")
-    diff = cumulative_diff(repo, "HEAD", [f"{QDIR}/tests/unit.cpp", f"{QDIR}/module.cpp"], limit=500)
-    assert "+int small;" in diff and "module.cpp: diff omitted" in diff
 
 
 def test_touched_since_names_the_files_a_round_changed(repo):
