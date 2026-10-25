@@ -356,6 +356,9 @@
   "engine": 2,
   "path": 4
  },
+ "pipeline/orchestrator/tests/test_canary_resume.py": {
+  "path": 3
+ },
  "pipeline/orchestrator/tests/test_ab_tools.py": {
   "engine": 3
  },
