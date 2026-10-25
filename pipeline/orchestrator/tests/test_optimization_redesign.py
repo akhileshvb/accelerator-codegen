@@ -183,7 +183,7 @@ def test_a_structural_attempt_without_its_design_record_fails_before_the_gates(t
 
 
 def test_incorrect_redesign_is_rolled_back(monkeypatch):
-    from accel_pipeline import gates
+    from accel_pipeline.gates import run as gates
 
     def fake_run_gate(cfg, name, *a, **kw):
         return SimpleNamespace(name=name, status="fail" if name == "aux_tsan" else "pass", data={"detail": "data race in Execute"})
@@ -194,7 +194,7 @@ def test_incorrect_redesign_is_rolled_back(monkeypatch):
 
 
 def test_all_gates_pass_runs_the_full_list_in_order(monkeypatch):
-    from accel_pipeline import gates
+    from accel_pipeline.gates import run as gates
 
     seen = []
     monkeypatch.setattr(gates, "run_gate", lambda cfg, name, *a, **kw: seen.append(name) or SimpleNamespace(status="pass", data={}))
@@ -274,7 +274,7 @@ def test_agent_sources_get_a_build_target_automatically(tmp_path):
 
 
 def test_agent_scratch_is_writable_and_invisible_to_gates_and_audit(tmp_path):
-    from accel_pipeline.build_stamp import is_relevant
+    from accel_pipeline.gates.build_stamp import is_relevant
     from accel_pipeline.write_ownership import is_owned_path
 
     assert is_owned_path(tmp_path, "accelerators/toybench/q3/scratch/bench.cpp", query=3, benchmark="toybench")

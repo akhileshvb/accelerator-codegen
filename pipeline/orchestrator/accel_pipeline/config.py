@@ -19,8 +19,26 @@ from accel_pipeline.engine_profile import (
 )
 from accel_pipeline.layout import backend_glob, query_dir, query_glob
 from accel_pipeline.paths import find_repo_root, pipeline_root
-from accel_pipeline.pack.shared_file_lease import DEFAULT_SHARED_PATH_GLOBS
 from accel_pipeline.test_suite import SuiteConfig
+
+
+DEFAULT_SHARED_PATH_GLOBS = (
+    "CMakeLists.txt",
+    "cmake/**",
+    "cmake/*.cmake",
+    # The engine backends (generic only: queries register from their own
+    # directories, so these change only in engine_backend runs; builds that
+    # compile them take the lease).
+    "backends/**",
+    # Cross-query evaluation harnesses shared by every query.
+    "eval/tests/test_support/**",
+    "eval/bench/**/*_arg_variants.*",
+    # Shared primitives library: changed only by primitive_publish; builds that
+    # read it take the lease so a publish cannot land mid-compile.
+    "accelerators/prims/**",
+    # Helpers shared by one benchmark's queries (not owned by any one query run).
+    "accelerators/*/common/**",
+)
 
 
 @dataclass

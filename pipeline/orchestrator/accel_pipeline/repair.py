@@ -16,8 +16,8 @@ from typing import Any, Callable, TypeVar
 
 from accel_pipeline.config import ModelConfig, PipelineConfig, load_run_workload
 from accel_pipeline.failure import AGENT_BLOCKER, PROVIDER_FLAKE, Failure, StageFailure, failure_from_gate, render_failure
-from accel_pipeline.gate_parallel import first_failure, run_gates_parallel
-from accel_pipeline.gates import GateFailure, GateResult
+from accel_pipeline.gates.parallel import first_failure, run_gates_parallel
+from accel_pipeline.gates.run import GateFailure, GateResult
 from accel_pipeline.layout import query_dir
 from accel_pipeline.paths import query_artifacts_dir
 from accel_pipeline.playbook import append_experiment_log

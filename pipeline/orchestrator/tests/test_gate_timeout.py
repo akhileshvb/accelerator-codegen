@@ -8,7 +8,7 @@ import subprocess
 import threading
 import time
 
-from accel_pipeline import gates
+from accel_pipeline.gates import run as gates
 
 
 def test_hung_gate_is_killed_with_its_children(tmp_path, monkeypatch):

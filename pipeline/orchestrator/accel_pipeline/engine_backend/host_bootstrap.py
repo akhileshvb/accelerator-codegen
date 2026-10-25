@@ -21,8 +21,8 @@ from accel_pipeline.config import (
     load_workload,
     sanitize_engine_name,
 )
-from accel_pipeline.gate_capture import format_reloop_failure_sections
-from accel_pipeline.gates import GateResult
+from accel_pipeline.gates.run import format_reloop_failure_sections
+from accel_pipeline.gates.run import GateResult
 from accel_pipeline.paths import engine_artifacts_dir, pipeline_root
 from accel_pipeline.repair import StageStopped
 
@@ -210,7 +210,7 @@ def run_host_bootstrap(
         return {"engine_name": engine, "status": "pass", "skipped": False, "path": str(path)}
 
     if not force and not pending_harness_requests(pipeline_config.repo_root, engine):
-        from accel_pipeline.gates import run_gate
+        from accel_pipeline.gates.run import run_gate
 
         existing = run_gate(pipeline_config, "host_bootstrap", query, workload=workload, raise_on_failure=False,
                             change_kind="host_bootstrap", iteration=0)
@@ -239,7 +239,7 @@ def _bootstrap_under_repair(
     (one batched repair round for its findings, then a re-check); a failure the loop cannot repair
     ends in a recorded stop, never a traceback."""
     from accel_pipeline.failure import Failure, render_failure
-    from accel_pipeline.gates import run_gate
+    from accel_pipeline.gates.run import run_gate
     from accel_pipeline.paths import query_artifacts_dir
     from accel_pipeline.playbook import append_experiment_log
     from accel_pipeline.repair import RepairCtx, run_with_repair

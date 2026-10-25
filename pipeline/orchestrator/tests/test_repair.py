@@ -7,7 +7,7 @@ from accel_pipeline import repair as repair_mod
 from accel_pipeline.backends.codex_exec import CodexExecBackend
 from accel_pipeline.config import ModelConfig, PipelineConfig, RepairConfig, SessionConfig
 from accel_pipeline.failure import Failure, StageFailure
-from accel_pipeline.gates import GateResult
+from accel_pipeline.gates.run import GateResult
 from accel_pipeline.repair import RepairCtx, StageStopped, run_with_repair
 
 FAKE_CODEX = Path(__file__).parent / "fixtures" / "fake_codex.sh"

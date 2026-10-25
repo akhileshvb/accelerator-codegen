@@ -8,7 +8,7 @@ from accel_pipeline.optimization.base_bench import (
     write_optimization_feedback,
 )
 from accel_pipeline.failure import extract_crash_highlights, failure_from_gate, render_failure
-from accel_pipeline.gates import GateResult
+from accel_pipeline.gates.run import GateResult
 
 
 def test_parse_benchmark_log_sec_edgar_summary():

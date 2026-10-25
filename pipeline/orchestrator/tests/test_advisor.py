@@ -281,7 +281,7 @@ class Loop:
         monkeypatch.setattr(advisor, "consult", self._consult)
 
     def _gates(self, ctx, names):
-        from accel_pipeline.gates import GateResult
+        from accel_pipeline.gates.run import GateResult
 
         if not self.texts:
             return [GateResult("g", "pass", {})], None

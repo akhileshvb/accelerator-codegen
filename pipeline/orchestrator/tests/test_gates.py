@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from accel_pipeline.gates import GateFailure, GateResult, require_gate_pass
+from accel_pipeline.gates.run import GateFailure, GateResult, require_gate_pass
 
 
 def test_require_gate_pass_accepts_pass():

@@ -4,9 +4,9 @@ import json
 from dataclasses import dataclass
 from typing import Any
 
-from accel_pipeline.background_gates import background_status, start_background_gate
+from accel_pipeline.gates.parallel import background_status, start_background_gate
 from accel_pipeline.config import PipelineConfig
-from accel_pipeline.gates import run_gate
+from accel_pipeline.gates.run import run_gate
 
 
 def layer_gate_from_stage(stage: str, workload: dict[str, Any] | None = None) -> str | None:
@@ -53,7 +53,7 @@ def _compact_gate_payload(gate_name: str, data: dict) -> dict:
     if waited := (data.get("phase_timings") or {}).get("measurement_lease_wait"):
         compact["measurement_lease"] = f"waited {waited} s for the measurement lease"
     if data.get("status") == "fail":
-        from accel_pipeline.gate_capture import log_tail_for_agent
+        from accel_pipeline.gates.run import log_tail_for_agent
 
         tail = log_tail_for_agent(data, max_chars=4000)
         compact["failure_summary"] = tail

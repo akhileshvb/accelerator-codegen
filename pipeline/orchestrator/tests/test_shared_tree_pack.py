@@ -171,7 +171,7 @@ def test_rewrite_command_and_prompt_build_dir(tmp_path: Path):
 
 
 def test_gate_build_env_helper():
-    from accel_pipeline.gates import run_gate
+    from accel_pipeline.gates.run import run_gate
     import inspect
 
     src = inspect.getsource(run_gate)

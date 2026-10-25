@@ -9,7 +9,7 @@ import pytest
 
 from accel_pipeline import quick, write_cost
 from accel_pipeline.config import QuickTierConfig
-from accel_pipeline.gates import GateResult
+from accel_pipeline.gates.run import GateResult
 from accel_pipeline.layout import suite_dir
 from accel_pipeline.paths import gates_dir_for_query, query_artifacts_dir
 from accel_pipeline.test_db import CutDatasets

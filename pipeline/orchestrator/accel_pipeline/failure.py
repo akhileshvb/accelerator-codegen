@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
-    from accel_pipeline.gates import GateResult
+    from accel_pipeline.gates.run import GateResult
 
 PROVIDER_FLAKE = "provider_flake"  # the infra_reason of a network or provider error: the agent never ran
 AGENT_BLOCKER = "agent_reported_blocker"  # the infra_reason of a blocker the agent handed to the operator
@@ -80,7 +80,7 @@ def failure_from_gate(
     load_factor: float = 1.5,
 ) -> Failure:
     """A failed gate as a Failure, triaged as infra or code."""
-    from accel_pipeline.gates import gate_failure_message
+    from accel_pipeline.gates.run import gate_failure_message
     from accel_pipeline.triage import classify
 
     workload = workload or {}

@@ -8,7 +8,6 @@ cannot interleave patches on the same files.
 from __future__ import annotations
 
 import atexit
-import fnmatch
 import json
 import os
 import sys
@@ -18,24 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from accel_pipeline.pack.host_lock import FairLock, LockTimeout
-
-DEFAULT_SHARED_PATH_GLOBS = (
-    "CMakeLists.txt",
-    "cmake/**",
-    "cmake/*.cmake",
-    # The engine backends (generic only: queries register from their own
-    # directories, so these change only in engine_backend runs; builds that
-    # compile them take the lease).
-    "backends/**",
-    # Cross-query evaluation harnesses shared by every query.
-    "eval/tests/test_support/**",
-    "eval/bench/**/*_arg_variants.*",
-    # Shared primitives library: changed only by primitive_publish; builds that
-    # read it take the lease so a publish cannot land mid-compile.
-    "accelerators/prims/**",
-    # Helpers shared by one benchmark's queries (not owned by any one query run).
-    "accelerators/*/common/**",
-)
+from accel_pipeline.write_ownership import is_shared_path
 
 _LOCK_DIRNAME = ".locks"
 _LOCK_NAME = "shared_tree"
@@ -56,35 +38,6 @@ def locks_dir(repo_root: Path) -> Path:
 
 def meta_path(repo_root: Path) -> Path:
     return locks_dir(repo_root) / _META_FILENAME
-
-
-def shared_path_globs(pipeline_config: Any | None = None) -> list[str]:
-    if pipeline_config is not None:
-        custom = getattr(pipeline_config, "shared_paths", None)
-        if isinstance(custom, list) and custom:
-            return [str(x) for x in custom]
-    return list(DEFAULT_SHARED_PATH_GLOBS)
-
-
-def rel_path(repo_root: Path, path: Path | str) -> str:
-    p = Path(path)
-    if not p.is_absolute():
-        p = repo_root / p
-    return str(p.resolve().relative_to(Path(repo_root).resolve()))
-
-
-def is_shared_path(
-    repo_root: Path,
-    path: Path | str,
-    *,
-    globs: list[str] | None = None,
-) -> bool:
-    try:
-        rel = rel_path(repo_root, path)
-    except ValueError:
-        return False
-    patterns = globs if globs is not None else list(DEFAULT_SHARED_PATH_GLOBS)
-    return any(fnmatch.fnmatch(rel, pat) for pat in patterns)
 
 
 def worker_id_from_env(default: str = "local") -> str:

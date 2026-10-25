@@ -14,7 +14,7 @@ from accel_pipeline.config import (
     resolve_workload_paths,
     workload_supported_engines,
 )
-from accel_pipeline.gate_context import build_gate_context
+from accel_pipeline.gates.run import build_gate_context
 from accel_pipeline.prompts import render_prompt
 from accel_pipeline.stages.implementation import _implementation_user_message
 

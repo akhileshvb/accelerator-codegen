@@ -63,7 +63,7 @@ def design_revision_error(hypothesis: dict[str, Any] | None) -> str:
 
 def run_full_tier_gates(pipeline_config: Any, workload: dict[str, Any], query: int, *, iteration: int) -> str:
     """Run the structural gates in order; return "" when all pass, else which one failed and why."""
-    from accel_pipeline.gates import run_gate
+    from accel_pipeline.gates.run import run_gate
 
     for name in structural_config(pipeline_config)["gates"]:
         result = run_gate(pipeline_config, name, query, workload, change_kind="optimization", iteration=iteration)

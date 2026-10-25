@@ -203,7 +203,7 @@ def test_baseline_that_did_not_run_raises(monkeypatch, tmp_path):
 
 
 def test_hit_contract_gate_is_registered():
-    from accel_pipeline.gates import GATE_SCRIPTS, GATES_ALLOW_SKIP
+    from accel_pipeline.gates.run import GATE_SCRIPTS, GATES_ALLOW_SKIP
     from accel_pipeline.paths import find_repo_root
 
     script = GATE_SCRIPTS["engine_hit_contract"]

@@ -9,7 +9,7 @@ import sys
 from pathlib import Path
 from typing import Any, Callable
 
-from accel_pipeline.gates import tool_call_limit
+from accel_pipeline.gates.run import tool_call_limit
 from accel_pipeline.jsonio import read_json
 from accel_pipeline.no_progress import record_check
 from accel_pipeline.optimization.saturation import mark_profile_run
@@ -68,8 +68,8 @@ def build_mcp_tool_callables(
     optimization_iter: int,
     art: Path,
 ) -> dict[str, Callable[..., str]]:
-    from accel_pipeline.gate_stamps import current_stamp
-    from accel_pipeline.gates import run_gate
+    from accel_pipeline.gates.stamps import current_stamp
+    from accel_pipeline.gates.run import run_gate
     from accel_pipeline.optimization.ab_tools import AbToolContext, make_ab_tools
     from accel_pipeline.tools.gate_tools import ToolContext as GateCtx
     from accel_pipeline.tools.gate_tools import admission_refusal_payload, make_gate_tools

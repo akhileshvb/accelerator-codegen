@@ -318,7 +318,7 @@ def test_mcp_run_layer_gate_maps_impl_stage(monkeypatch, tmp_path):
     from accel_pipeline.mcp_server import build_mcp_tool_callables
     from accel_pipeline.config import load_pipeline_config, load_workload, apply_workload_overrides
     from accel_pipeline.paths import query_artifacts_dir
-    from accel_pipeline.gates import GateResult
+    from accel_pipeline.gates.run import GateResult
 
     pipeline_config = load_pipeline_config(repo_root=REPO_ROOT)
     workload = load_workload("engine_postgres", REPO_ROOT)

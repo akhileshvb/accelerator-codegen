@@ -17,7 +17,7 @@ from accel_pipeline import test_suite as ts
 from accel_pipeline.optimization.aux_bench import aggregate_sweep_repeats
 from accel_pipeline.config import PipelineConfig, RepairConfig
 from accel_pipeline.failure import Failure, failure_from_gate
-from accel_pipeline.gates import GateResult
+from accel_pipeline.gates.run import GateResult
 from accel_pipeline.state import STAGES, PipelineState
 from accel_pipeline.write_ownership import layer_write_verdict
 

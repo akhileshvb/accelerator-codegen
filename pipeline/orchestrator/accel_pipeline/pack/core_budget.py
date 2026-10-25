@@ -171,13 +171,3 @@ def activate(cfg: ConcurrencyConfig) -> CoreBudget:
     for name in ("ACCEL_BUILD_JOBS", "ACCEL_CTEST_JOBS", "CMAKE_BUILD_PARALLEL_LEVEL"):
         os.environ.setdefault(name, str(budget.jobs))
     return budget
-
-
-def build_jobs() -> int:
-    """Parallel compile jobs a build in this process may use."""
-    return max(1, int(os.environ.get("ACCEL_BUILD_JOBS") or len(os.sched_getaffinity(0))))
-
-
-def jobs_per_gate(parallel_gates: int) -> int:
-    """Build/ctest job cap of each of `parallel_gates` gates running at once inside this worker's set."""
-    return max(1, len(os.sched_getaffinity(0)) // max(1, parallel_gates))

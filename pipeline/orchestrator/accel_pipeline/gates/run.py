@@ -1,3 +1,5 @@
+"""Running one gate script: its context file, its result, and the text a failure hands the agent."""
+
 from __future__ import annotations
 
 import atexit
@@ -13,15 +15,22 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping, Sequence
 
-from accel_pipeline.config import PipelineConfig
-from accel_pipeline.engine_host import instance_tag
-from accel_pipeline.gate_context import write_gate_context
-from accel_pipeline.gate_stamps import current_stamp, record_pass
+from accel_pipeline.config import (
+    PipelineConfig,
+    engine_host_conventions,
+    resolve_workload_paths,
+    sanitize_engine_name,
+)
+from accel_pipeline.engine_host import host_script, inject_host_runtime_into_gate_env, instance_tag
+from accel_pipeline.gates.stamps import current_stamp, record_pass
 from accel_pipeline.jsonio import read_json
+from accel_pipeline.layout import workload_schema_sql
 from accel_pipeline.paths import gates_dir_for_query, query_artifacts_dir
 from accel_pipeline.session import HEARTBEAT_FILE
+from accel_pipeline.test_suite import gate_settings
+from accel_pipeline.workload_facts import FACTS_FILE, workload_facts
 
 
 GATE_SCRIPTS = {
@@ -122,8 +131,6 @@ GATES_ALLOW_SKIP = frozenset(
 
 
 def gate_failure_message(result: GateResult) -> str:
-    from accel_pipeline.gate_capture import describe_returncode, log_tail_for_agent
-
     data = result.data
     detail = str(data.get("notes") or data.get("reason") or "").strip()
     tail = log_tail_for_agent(data, max_chars=500)
@@ -150,6 +157,16 @@ def require_gate_pass(result: GateResult, *, allow_skip: bool = False) -> None:
     if result.status == "skip" and allow_skip:
         return
     raise GateFailure(gate_failure_message(result))
+
+
+def build_jobs() -> int:
+    """Parallel compile jobs a build in this process may use."""
+    return max(1, int(os.environ.get("ACCEL_BUILD_JOBS") or len(os.sched_getaffinity(0))))
+
+
+def jobs_per_gate(parallel_gates: int) -> int:
+    """Build/ctest job cap of each of `parallel_gates` gates running at once inside this worker's set."""
+    return max(1, len(os.sched_getaffinity(0)) // max(1, parallel_gates))
 
 
 GATE_TIMEOUT_S = float(os.environ.get("ACCEL_GATE_TIMEOUT", 7200))
@@ -260,8 +277,6 @@ def run_gate(
     if not script.is_file():
         raise FileNotFoundError(script)
 
-    import os
-
     art = query_artifacts_dir(pipeline_config.repo_root, query, workload=workload)
     out_json = (out_dir or gates_dir_for_query(art)) / f"{gate_name}.json"
     out_json.parent.mkdir(parents=True, exist_ok=True)
@@ -297,8 +312,6 @@ def run_gate(
     engine_name = str(workload.get("engine_name") or "").strip().lower()
     if engine_name:
         gate_env["ACCEL_ENGINE_NAME"] = engine_name
-    from accel_pipeline.engine_host import inject_host_runtime_into_gate_env
-
     inject_host_runtime_into_gate_env(
         gate_env, workload, pipeline_config.repo_root, pipeline_config.build_dir
     )
@@ -319,7 +332,6 @@ def run_gate(
     # `build` verb configures the dir (host_contract.md, $ACCEL_CMAKE_ARGS); a bare configure here
     # would reset the backend switch and the generator, or fight a build that runs in the
     # engine's own environment under another source path.
-    from accel_pipeline.engine_host import host_script
     from accel_pipeline.pack.worker_isolation import ensure_worker_build_dir
 
     engine = pipeline_config.engine_name
@@ -363,8 +375,6 @@ def run_gate(
         data["stderr"] = (proc.stderr or "")[-2000:]
     data["status"] = status
     if status == "fail":
-        from accel_pipeline.gate_capture import enrich_failed_gate_data
-
         data = enrich_failed_gate_data(
             data,
             proc_returncode=proc.returncode,
@@ -422,3 +432,232 @@ def run_gate(
         skip_ok = allow_skip if allow_skip is not None else gate_name in GATES_ALLOW_SKIP
         require_gate_pass(result, allow_skip=skip_ok)
     return result
+
+
+def build_gate_context(
+    pipeline_config: PipelineConfig,
+    workload: dict[str, Any],
+    query: int,
+) -> dict[str, Any]:
+    paths = resolve_workload_paths(pipeline_config, workload, query)
+    benchmark = str(workload.get("benchmark_name", "tpch"))
+    kind = str(workload.get("workload_kind", "base"))
+    engine = sanitize_engine_name(str(workload.get("engine_name") or ""))
+    host = dict(workload.get("engine_host") or engine_host_conventions(engine, repo_root=pipeline_config.repo_root))
+    ctx: dict[str, Any] = {
+        "query_number": query,
+        "benchmark_name": benchmark,
+        "artifact_namespace": str(workload.get("artifact_namespace", benchmark)),
+        "artifacts_dir": str(query_artifacts_dir(pipeline_config.repo_root, query, workload=workload)),
+        "display_name": str(workload.get("display_name", benchmark)),
+        "workload_kind": kind,
+        "engine_name": engine,
+        "engine_host": host,
+        "source_subdir": paths["source_subdir"],
+        "function_name": paths["function_name"],
+        "create_fn": paths["create_fn"],
+        "test_target": paths["test_target"],
+        "bench_target": paths["bench_target"],
+        "ctest_smoke_name": paths["ctest_smoke_name"],
+        "ctest_smoke_regex": paths["ctest_smoke_regex"],
+        "dataset_db": str(paths["dataset_db"]),
+        "dataset_dir": str(workload.get("dataset_dir") or os.environ.get("ACCEL_DATASET_DIR", "")),
+        "schema_sql": workload_schema_sql(str(workload.get("dataset_benchmark") or benchmark)),
+        "scale_dataset_dir": str(workload.get("scale_dataset_dir") or ""),
+        "scale_db": str(paths.get("scale_db", "")),
+        "db_env_var": paths["db_env_var"],
+        "ctest_resource_lock": str(workload.get("ctest_resource_lock", f"{benchmark}_db")),
+        "build_dir": str(pipeline_config.build_dir),
+        "fairness": dict(workload.get("fairness", {})),
+        "header_path": paths["header_path"],
+        "kernel_path": paths["kernel_path"],
+        "package_path": paths["package_path"],
+    }
+    if kind != "engine_backend":
+        ctx["test_suite"] = gate_settings(pipeline_config, workload, query)
+    if workload.get("workload_kind") == "aux_state":
+        ctx.update(
+            {
+                "aux_function_name": paths["aux_function_name"],
+                "aux_test_target": paths["aux_test_target"],
+                "aux_bench_target": paths["aux_bench_target"],
+                "aux_hybrid_bench_target": paths["aux_hybrid_bench_target"],
+                "aux_calibrate_target": paths["aux_calibrate_target"],
+                "aux_ctest_smoke_regex": paths["aux_ctest_smoke_regex"],
+                "aux_state_subdir": paths["aux_state_subdir"],
+                "cost_model_config": paths["cost_model_config"],
+                "aux_bench_work_dir_suffix": paths["aux_bench_work_dir_suffix"],
+                "aux_bench_suites": paths["aux_bench_suites"],
+            }
+        )
+        bench_sweep = workload.get("aux_bench_sweep", {})
+        if isinstance(bench_sweep, dict):
+            if bench_sweep:
+                ctx["aux_bench_sweep"] = bench_sweep
+            freqs = bench_sweep.get("write_frequencies")
+            if freqs:
+                ctx["aux_write_frequencies"] = ",".join(str(f) for f in freqs)
+        opt_sweep = workload.get("aux_bench_sweep_optimization", {})
+        if isinstance(opt_sweep, dict) and opt_sweep:
+            ctx["aux_bench_sweep_optimization"] = opt_sweep
+    if kind != "engine_backend":
+        workload_facts(pipeline_config.repo_root, workload, query)
+        ctx["workload_facts_path"] = str(Path(ctx["artifacts_dir"]) / FACTS_FILE)
+    if kind == "engine_backend":
+        ctx.update(
+            {
+                "target_paths": dict(workload.get("target_paths") or {}),
+                "cmake": dict(workload.get("cmake") or {}),
+                "placement_candidates": list(workload.get("placement_candidates") or []),
+                "requires_in_process_host": bool(workload.get("requires_in_process_host", False)),
+                "implementation_layers": list(workload.get("implementation_layers") or []),
+                "host_runtime": dict(workload.get("host_runtime") or {}),
+                "known_gaps": list(workload.get("known_gaps") or []),
+            }
+        )
+        host_rt = dict(workload.get("host_runtime") or {})
+        if host_rt:
+            ctx["host_sdk"] = {
+                "engine": engine,
+                "mode": str(host_rt.get("kind") or "host_cmake"),
+                "found": True,
+                "summary": str(host_rt.get("kind") or "host_cmake"),
+            }
+    return ctx
+
+
+def write_gate_context(
+    pipeline_config: PipelineConfig,
+    workload: dict[str, Any],
+    query: int,
+) -> Path:
+    art = query_artifacts_dir(pipeline_config.repo_root, query, workload=workload)
+    gates = gates_dir_for_query(art)
+    gates.mkdir(parents=True, exist_ok=True)
+    path = gates / "_gate_context.json"
+    # Gates run in parallel rewrite it: a reader never sees a half-written file.
+    scratch = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}")
+    scratch.write_text(json.dumps(build_gate_context(pipeline_config, workload, query), indent=2), encoding="utf-8")
+    os.replace(scratch, path)
+    return path
+
+
+_SIGNAL_NAMES = {
+    132: "SIGILL",
+    134: "SIGABRT/abort",
+    136: "SIGFPE",
+    137: "SIGKILL",
+    139: "SIGSEGV",
+    143: "SIGTERM",
+}
+
+
+def describe_returncode(returncode: int | None) -> str:
+    if returncode is None:
+        return ""
+    if returncode == 0:
+        return "exit 0"
+    if returncode < 0:
+        sig = _SIGNAL_NAMES.get(128 + (-returncode), f"signal {-returncode}")
+        return f"killed by {sig} (returncode={returncode})"
+    name = _SIGNAL_NAMES.get(int(returncode))
+    if name:
+        return f"exit {returncode} ({name})"
+    return f"exit {returncode}"
+
+
+def log_tail_for_agent(data: Mapping[str, Any], *, max_chars: int = 8000) -> str:
+    """Never-empty failure text for reloop prompts / MCP failure_summary."""
+    tail = str(data.get("log_tail") or "").strip()
+    if tail:
+        return tail[-max_chars:]
+    rc = data.get("returncode")
+    if rc is None:
+        rc = data.get("exit_code")
+    bits = ["(no captured stdout/stderr from the gate process)"]
+    desc = describe_returncode(int(rc) if rc is not None and str(rc).lstrip("-").isdigit() else None)
+    if desc:
+        bits.append(desc)
+    notes = str(data.get("notes") or data.get("reason") or "").strip()
+    if notes:
+        bits.append(notes)
+    return "\n".join(bits)[-max_chars:]
+
+
+def enrich_failed_gate_data(
+    data: Mapping[str, Any],
+    *,
+    proc_returncode: int | None = None,
+    proc_output: str = "",
+) -> dict[str, Any]:
+    """Ensure a failing gate JSON always has returncode + non-empty log_tail."""
+    out = dict(data)
+    status = str(out.get("status") or "").strip().lower()
+    if status != "fail":
+        return out
+    if out.get("returncode") is None and out.get("exit_code") is None:
+        if proc_returncode is not None:
+            out["returncode"] = proc_returncode
+    tail = str(out.get("log_tail") or "").strip()
+    extra = str(proc_output or "").strip()
+    if not tail and extra:
+        out["log_tail"] = extra[-8000:]
+    if not str(out.get("log_tail") or "").strip():
+        out["log_tail"] = log_tail_for_agent(out)
+    return out
+
+
+def format_reloop_failure_sections(
+    data: Mapping[str, Any],
+    *,
+    max_chars: int = 8000,
+) -> list[str]:
+    """Markdown sections appended to layer/host-bootstrap gate-fail prompts."""
+    rc = data.get("returncode")
+    if rc is None:
+        rc = data.get("exit_code")
+    desc = ""
+    if rc is not None and str(rc).lstrip("-").isdigit():
+        desc = describe_returncode(int(rc))
+    notes = str(data.get("notes") or data.get("reason") or "").strip()
+    tail = log_tail_for_agent(data, max_chars=max_chars)
+    lines = [
+        "",
+        "### Notes",
+        notes or "(none)",
+        "",
+        "### returncode",
+        desc or "(unset)",
+        "",
+        "### log_tail",
+        "```",
+        tail,
+        "```",
+    ]
+    return lines
+
+
+@dataclass
+class CapturedRun:
+    returncode: int
+    output: str
+
+
+def run_command(
+    cmd: Sequence[str],
+    *,
+    cwd: str | os.PathLike[str] | None = None,
+    env: Mapping[str, str] | None = None,
+    timeout: float | None = None,
+) -> CapturedRun:
+    proc = subprocess.run(
+        list(cmd),
+        cwd=str(cwd) if cwd is not None else None,
+        capture_output=True,
+        text=True,
+        env=dict(env) if env is not None else os.environ,
+        timeout=timeout,
+        start_new_session=True,
+    )
+    output = ((proc.stdout or "") + (proc.stderr or ""))
+    return CapturedRun(returncode=int(proc.returncode), output=output)

@@ -20,14 +20,15 @@ import json
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from accel_pipeline.build_stamp import code_stamp
 from accel_pipeline.config import PipelineConfig
+from accel_pipeline.gates.build_stamp import code_stamp
 from accel_pipeline.jsonio import read_json
 from accel_pipeline.layout import query_dir
 from accel_pipeline.paths import gates_dir_for_query, query_artifacts_dir
 
 if TYPE_CHECKING:
-    from accel_pipeline.gates import GateResult
+    from accel_pipeline.gates.run import GateResult
+
 
 STAMPS_FILE = "gate_stamps.json"
 ITERATION_TIER = "optimization"  # the change_kind whose gate runs use the cheaper iteration bench settings
@@ -99,8 +100,8 @@ def reusable_gate_result(pipeline_config: PipelineConfig, workload: dict[str, An
                          *, change_kind: str = "") -> GateResult | None:
     """The passing result of `gate` on exactly the current code (a foreground run, else a background
     run), or None: run the gate."""
-    from accel_pipeline.background_gates import reusable_background_result
-    from accel_pipeline.gates import GateResult
+    from accel_pipeline.gates.parallel import reusable_background_result
+    from accel_pipeline.gates.run import GateResult
 
     if passed_at_current_stamp(pipeline_config, workload, query, gate, change_kind=change_kind):
         entry = _read(_stamps_path(pipeline_config, workload, query))[gate]

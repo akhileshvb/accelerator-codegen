@@ -20,6 +20,7 @@ from accel_pipeline.pack import core_budget
 from accel_pipeline.pack import measurement_lease
 from accel_pipeline.config import ConcurrencyConfig
 from accel_pipeline.engine_host import instance_tag
+from accel_pipeline.gates.run import build_jobs, jobs_per_gate
 from accel_pipeline.pack.host_lock import FairLock, LockTimeout, try_lock
 from accel_pipeline.pack.shared_file_lease import SharedFileLease
 
@@ -123,9 +124,10 @@ def test_activate_pins_the_process_and_derives_job_caps(host_dir):
         import os
         from accel_pipeline.pack import core_budget
         from accel_pipeline.config import ConcurrencyConfig
+        from accel_pipeline.gates.run import build_jobs
         core_budget.activate(ConcurrencyConfig(workers=1, measure_cores=1))
         print(sorted(os.sched_getaffinity(0)), os.environ["ACCEL_BUILD_JOBS"], os.environ["ACCEL_CTEST_JOBS"],
-              os.environ["CMAKE_BUILD_PARALLEL_LEVEL"], os.environ["ACCEL_MEASURE_SET"], core_budget.build_jobs())
+              os.environ["CMAKE_BUILD_PARALLEL_LEVEL"], os.environ["ACCEL_MEASURE_SET"], build_jobs())
     """
     out = spawn(code).communicate()[0].strip()
     measure = core_budget.core_groups(frozenset(CPUS))[-1]
@@ -135,8 +137,8 @@ def test_activate_pins_the_process_and_derives_job_caps(host_dir):
 
 def test_parallel_gates_split_the_workers_jobs(monkeypatch):
     monkeypatch.setattr(os, "sched_getaffinity", lambda pid: set(range(12)))
-    assert core_budget.jobs_per_gate(3) == 4
-    assert core_budget.jobs_per_gate(50) == 1
+    assert jobs_per_gate(3) == 4
+    assert jobs_per_gate(50) == 1
 
 
 def test_instance_tags_differ_across_trees():

@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from accel_pipeline.analysis_context import analysis_for_audit
-from accel_pipeline.build_stamp import git, is_relevant
+from accel_pipeline.gates.build_stamp import git, is_relevant
 from accel_pipeline.config import PipelineConfig
 from accel_pipeline.jsonio import read_json
 from accel_pipeline.layout import query_dir as query_dir_of

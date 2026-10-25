@@ -6,7 +6,7 @@ from accel_pipeline.audit_digest import record_implementation_base
 from accel_pipeline.optimization.aux_bench import initialize_optimization_state, process_aux_bench_after_gates
 from accel_pipeline.optimization.base_bench import process_base_bench_after_gates
 from accel_pipeline.config import ModelConfig, PipelineConfig, load_run_workload, resolve_workload_paths
-from accel_pipeline.gates import run_gate
+from accel_pipeline.gates.run import run_gate
 from accel_pipeline.layout import query_dir
 from accel_pipeline.paths import analysis_artifact_path, query_artifacts_dir
 from accel_pipeline.repair import RepairCtx, run_with_repair

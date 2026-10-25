@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from accel_pipeline.config import ModelConfig, PipelineConfig
 from accel_pipeline.failure import extract_crash_highlights  # noqa: F401 - re-exported
-from accel_pipeline.gates import GateResult
+from accel_pipeline.gates.run import GateResult
 from accel_pipeline.repair import RepairCtx, run_with_repair
 
 

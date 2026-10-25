@@ -432,7 +432,8 @@ def test_write_policy_allows_staging(primary):
 
 
 def test_prims_are_shared_lease_paths(primary):
-    from accel_pipeline.pack.shared_file_lease import DEFAULT_SHARED_PATH_GLOBS, is_shared_path
+    from accel_pipeline.config import DEFAULT_SHARED_PATH_GLOBS
+    from accel_pipeline.write_ownership import is_shared_path
 
     assert is_shared_path(primary, primary / P / "existing.hpp")
     assert is_shared_path(primary, primary / pl.TESTS_REL)

@@ -115,7 +115,7 @@ engine_steps() {
 build_stamp() {
 	local scope=()
 	[[ -z "${BENCHMARK_NAME:-}" ]] || scope=(--query-dir "accelerators/${BENCHMARK_NAME}/q${GATE_QUERY}")
-	python3 "${GATE_ROOT}/pipeline/orchestrator/accel_pipeline/build_stamp.py" "${GATE_ROOT}" "${scope[@]}" \
+	python3 "${GATE_ROOT}/pipeline/orchestrator/accel_pipeline/gates/build_stamp.py" "${GATE_ROOT}" "${scope[@]}" \
 		"$*" "${ACCEL_CMAKE_ARGS}" "${ACCEL_BUILD_DIR}" "${ACCEL_ENGINE_INSTANCE}" 2>/dev/null
 }
 

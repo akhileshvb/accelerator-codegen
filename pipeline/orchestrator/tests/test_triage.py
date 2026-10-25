@@ -113,7 +113,7 @@ def test_a_harness_that_fails_a_later_repeat_is_a_race_and_code():
 
 def test_the_failure_report_of_a_racy_gate_says_it_is_a_race():
     from accel_pipeline.failure import failure_from_gate
-    from accel_pipeline.gates import GateResult
+    from accel_pipeline.gates.run import GateResult
 
     result = GateResult("engine_scan", "fail", {"reason": "t failed on run 4 after passing 3 times: a race"})
     failure = failure_from_gate(result, stage="impl_scan", workload=ENGINE_WORKLOAD)

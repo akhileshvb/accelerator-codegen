@@ -67,7 +67,7 @@ def test_load_engine_mysql_workload():
 
 
 def test_backend_stage_gates_are_wired():
-    from accel_pipeline.gates import GATE_SCRIPTS
+    from accel_pipeline.gates.run import GATE_SCRIPTS
 
     gates_dir = REPO_ROOT / "pipeline" / "gates"
     for engine in ("engine_mysql", "engine_postgres", "engine_duckdb"):
@@ -317,7 +317,7 @@ def test_engine_pipeline_dry_run():
 
 
 def test_slot_gate_scenarios_exist_in_the_generic_harness():
-    from accel_pipeline.gates import GATE_SCRIPTS
+    from accel_pipeline.gates.run import GATE_SCRIPTS
 
     harness = (REPO_ROOT / "eval" / "harness" / "slot_gates.cpp").read_text()
     for gate, script in GATE_SCRIPTS.items():
@@ -404,7 +404,7 @@ def test_engine_layer_gate_script_exists():
 
 def test_run_gate_sets_engine_context_and_out_env(monkeypatch):
     """Engine gate scripts require ACCEL_GATE_CONTEXT / ACCEL_GATE_OUT (not just the file on disk)."""
-    from accel_pipeline.gates import run_gate
+    from accel_pipeline.gates.run import run_gate
 
     pc = load_pipeline_config(repo_root=REPO_ROOT)
     workload = load_workload("engine_postgres", REPO_ROOT)
@@ -432,7 +432,7 @@ def test_run_gate_sets_engine_context_and_out_env(monkeypatch):
 
     real_run = _sp.run
     monkeypatch.setattr(
-        "accel_pipeline.gates._run_gate_script",
+        "accel_pipeline.gates.run._run_gate_script",
         lambda script, query, cwd, env: fake_run(["bash", str(script), str(query)], cwd=cwd, env=env),
     )
     monkeypatch.setattr(
@@ -571,7 +571,7 @@ def test_layer_critique_feedback_and_load(tmp_path):
 
 
 def test_layer_gate_feedback_includes_log_tail(tmp_path):
-    from accel_pipeline.gates import GateResult
+    from accel_pipeline.gates.run import GateResult
     from accel_pipeline.engine_backend.stage import format_layer_gate_feedback
 
     failed = GateResult(
@@ -598,7 +598,7 @@ def test_layer_gate_feedback_includes_log_tail(tmp_path):
 
 
 def test_layer_gate_feedback_empty_log_tail_still_has_signal(tmp_path):
-    from accel_pipeline.gates import GateResult
+    from accel_pipeline.gates.run import GateResult
     from accel_pipeline.engine_backend.stage import format_layer_gate_feedback
 
     failed = GateResult(
