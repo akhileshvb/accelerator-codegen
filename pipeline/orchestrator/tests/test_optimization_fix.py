@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from accel_pipeline.optimization_fix import (
+from accel_pipeline.optimization.fix import (
     format_build_failure_diagnosis,
     format_smoke_failure_diagnosis,
     optimization_fix_limit,
 )
-from accel_pipeline.optimization_smoke import SmokeResult
+from accel_pipeline.optimization.smoke import SmokeResult
 from accel_pipeline.config import PipelineConfig
 from pathlib import Path
 

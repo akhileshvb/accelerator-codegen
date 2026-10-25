@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from accel_pipeline.optimization_eval import improvement_ratio
+from accel_pipeline.optimization.eval import improvement_ratio
 
 
 def test_improvement_ratio():
@@ -13,7 +13,7 @@ def test_improvement_ratio():
 
 
 def test_aux_optimization_score_prefers_read_only():
-    from accel_pipeline.optimization_eval import aux_optimization_score, score_metrics
+    from accel_pipeline.optimization.eval import aux_optimization_score, score_metrics
 
     metrics = {
         "composite_score": 0.5,
@@ -27,7 +27,7 @@ def test_aux_optimization_score_prefers_read_only():
 
 
 def test_aux_optimization_score_read_only_metric():
-    from accel_pipeline.optimization_eval import aux_optimization_score
+    from accel_pipeline.optimization.eval import aux_optimization_score
 
     metrics = {
         "composite_query_speedup": 6.0,

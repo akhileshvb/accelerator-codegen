@@ -1,10 +1,13 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING
 
-from accel_pipeline.backends.base import AgentBackend, StageRunRequest, StageRunResult
+from accel_pipeline.backends.base import StageRunRequest, StageRunResult
 from accel_pipeline.config import ModelConfig, PipelineConfig, load_run_workload
 from accel_pipeline.paths import query_artifacts_dir
+
+if TYPE_CHECKING:
+    from accel_pipeline.backends.codex_exec import CodexExecBackend
 
 # Stages that work on one query's artifacts: they get its artifact directory (the progress clock, deadline and
 # blocker files, tool footers). Engine-level stages (host_bootstrap, validation, architecture_audit) have none.
@@ -34,7 +37,7 @@ def create_agent_backend(
     model_config: ModelConfig,
     workload_name: str = "",
     optimization_iter: int = 0,
-) -> AgentBackend:
+) -> CodexExecBackend:
     from accel_pipeline.models import resolve_stage_provider
 
     resolved = provider or resolve_stage_provider(stage, model_config)
@@ -66,7 +69,6 @@ def create_agent_backend(
 
 
 __all__ = [
-    "AgentBackend",
     "StageRunRequest",
     "StageRunResult",
     "create_agent_backend",

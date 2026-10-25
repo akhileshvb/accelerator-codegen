@@ -14,7 +14,7 @@ from accel_pipeline.config import (
     resolve_workload_paths,
     workload_supported_engines,
 )
-from accel_pipeline.gate_context import build_gate_context
+from accel_pipeline.gates.run import build_gate_context
 from accel_pipeline.prompts import render_prompt
 from accel_pipeline.stages.implementation import _implementation_user_message
 
@@ -201,14 +201,6 @@ def test_rendered_prompt_points_at_the_runs_engine_tree():
     assert "pipeline/artifacts/tpch/q3/postgres" not in texts["duckdb"]
     assert "pipeline/artifacts/tpch/q3/postgres" in texts["postgres"]
     assert "pipeline/artifacts/tpch/q3/duckdb" not in texts["postgres"]
-
-
-def test_an_aux_run_does_not_wait_for_a_base_kernel(capsys):
-    from accel_pipeline.prerequisites import ensure_base_accelerator_prerequisite
-
-    pc = replace(load_pipeline_config(repo_root=REPO_ROOT), engine_name="mysql")
-    assert ensure_base_accelerator_prerequisite(pc, "tpch_q3_aux", 3, dry_run=True) is False
-    assert capsys.readouterr().err == ""
 
 
 def test_every_workload_loads_for_each_engine_it_lists():

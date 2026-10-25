@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from accel_pipeline.config import PipelineConfig, resolve_optimization_edit_paths
-from accel_pipeline.optimization_bootstrap import (
+from accel_pipeline.optimization.bootstrap import (
     build_optimization_bootstrap,
     format_bootstrap_markdown,
     load_editable_sources,

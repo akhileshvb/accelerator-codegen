@@ -1,7 +1,7 @@
 from pathlib import Path
 
 from accel_pipeline.config import PipelineConfig
-from accel_pipeline.kernel_snapshot import (
+from accel_pipeline.optimization.kernel_snapshot import (
     has_best_kernel_snapshot,
     resolve_snapshot_paths,
     restore_best_kernel,

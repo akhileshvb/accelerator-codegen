@@ -15,15 +15,23 @@ from pathlib import Path
 from typing import Any, Callable, TypeVar
 
 from accel_pipeline.config import ModelConfig, PipelineConfig, load_run_workload
-from accel_pipeline.failure import AGENT_BLOCKER, PROVIDER_FLAKE, Failure, StageFailure, failure_from_gate, render_failure
-from accel_pipeline.gate_parallel import first_failure, run_gates_parallel
-from accel_pipeline.gates import GateFailure, GateResult
+from accel_pipeline.failure import (
+    AGENT_BLOCKER,
+    PROVIDER_FLAKE,
+    Failure,
+    StageFailure,
+    classify,
+    failure_from_gate,
+    failure_text,
+    render_failure,
+)
+from accel_pipeline.gates.parallel import first_failure, run_gates_parallel
+from accel_pipeline.gates.run import GateFailure, GateResult
 from accel_pipeline.layout import query_dir
 from accel_pipeline.paths import query_artifacts_dir
 from accel_pipeline.playbook import append_experiment_log
 from accel_pipeline.session import MAIN, SessionStore
 from accel_pipeline.stages.gate_plan import run_post_stage_gates_collect
-from accel_pipeline.triage import classify, failure_text
 
 T = TypeVar("T")
 
@@ -163,6 +171,30 @@ def run_with_repair(ctx: RepairCtx, attempt: Callable[[], T], *, gates: list[str
         raise stop_stage(ctx, failure, f"{failure.kind} failure in {failure.source} survived {code_rounds} repair rounds")
 
 
+def run_gates_with_repair(
+    pipeline_config: PipelineConfig,
+    model_config: ModelConfig,
+    workload_name: str,
+    query: int,
+    gate_names: list[str],
+    *,
+    change_kind: str = "",
+    iteration: int = 0,
+    model_overrides: dict[str, str] | None = None,
+    dry_run: bool = False,
+    max_rounds: int | None = None,
+) -> list[GateResult]:
+    """Run gates; on failure repair (at most `max_rounds` code rounds) until they pass, or stop the run cleanly."""
+    if dry_run:
+        return []
+    ctx = RepairCtx(
+        pipeline_config, model_config, workload_name, query, stage=change_kind or "gates",
+        change_kind=change_kind, iteration=iteration, model_overrides=model_overrides, max_code_rounds=max_rounds,
+    )
+    run_with_repair(ctx, lambda: None, gates=gate_names)
+    return ctx.results
+
+
 _VOLATILE = re.compile(r"0x[0-9a-fA-F]+|\d+")
 
 
@@ -276,7 +308,7 @@ def _clear_infra(ctx: RepairCtx, failure: Failure, used: int) -> None:
     """Infra failures cost no code budget: repair the shared tree if that is the cause, wait out a
     provider flake, and let the caller re-run."""
     ctx.log(f"infra failure ({failure.infra_reason}) in {failure.source}; retry {used} without the agent")
-    from accel_pipeline.infra_fail_fast import handle_infra_failure
+    from accel_pipeline.failure import handle_infra_failure
 
     handle_infra_failure(ctx.pipeline_config, ctx.workload, ctx.query, text=failure_text({"log_tail": failure.evidence}))
 
@@ -368,7 +400,7 @@ def _crash_debug_turn(ctx: RepairCtx, must_change: bool) -> Callable[[Failure], 
 
 
 def _rollback(ctx: RepairCtx) -> None:
-    from accel_pipeline.kernel_snapshot import has_best_kernel_snapshot, rebuild_workload_targets, restore_best_kernel
+    from accel_pipeline.optimization.kernel_snapshot import has_best_kernel_snapshot, rebuild_workload_targets, restore_best_kernel
 
     if not has_best_kernel_snapshot(ctx.art):
         ctx.log("no best snapshot to roll back to")

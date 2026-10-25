@@ -407,12 +407,6 @@
  "pipeline/gates/tests/test_gate_plumbing.py": {
   "engine": 3
  },
- "pipeline/orchestrator/accel_pipeline/aux_bench.py": {
-  "engine": 1
- },
- "pipeline/orchestrator/accel_pipeline/base_bench.py": {
-  "engine": 7
- },
  "pipeline/orchestrator/accel_pipeline/context.py": {
   "path": 2
  },
@@ -423,33 +417,42 @@
   "path": 2,
   "symbol": 1
  },
- "pipeline/orchestrator/accel_pipeline/kernel_hot_path_review.py": {
-  "engine": 1,
-  "symbol": 4
- },
  "pipeline/orchestrator/accel_pipeline/mcp_server.py": {
   "path": 1
  },
- "pipeline/orchestrator/accel_pipeline/optimization_eval.py": {
+ "pipeline/orchestrator/accel_pipeline/optimization/ab_tools.py": {
+  "engine": 1
+ },
+ "pipeline/orchestrator/accel_pipeline/optimization/aux_bench.py": {
+  "engine": 1
+ },
+ "pipeline/orchestrator/accel_pipeline/optimization/base_bench.py": {
+  "engine": 7
+ },
+ "pipeline/orchestrator/accel_pipeline/optimization/eval.py": {
   "engine": 3
  },
- "pipeline/orchestrator/accel_pipeline/optimization_runtime.py": {
+ "pipeline/orchestrator/accel_pipeline/optimization/kernel_hot_path_review.py": {
+  "engine": 1,
+  "symbol": 4
+ },
+ "pipeline/orchestrator/accel_pipeline/optimization/profile_investigation.py": {
+  "symbol": 4
+ },
+ "pipeline/orchestrator/accel_pipeline/optimization/runtime.py": {
+  "engine": 2
+ },
+ "pipeline/orchestrator/accel_pipeline/pack/worker_isolation.py": {
   "engine": 2
  },
  "pipeline/orchestrator/accel_pipeline/pipeline_log.py": {
   "engine": 3
- },
- "pipeline/orchestrator/accel_pipeline/profile_investigation.py": {
-  "symbol": 4
  },
  "pipeline/orchestrator/accel_pipeline/run_pipeline.py": {
   "engine": 1
  },
  "pipeline/orchestrator/accel_pipeline/scaffold_stubs.py": {
   "symbol": 1
- },
- "pipeline/orchestrator/accel_pipeline/tools/ab_tools.py": {
-  "engine": 1
  },
  "pipeline/orchestrator/accel_pipeline/verus/actions.py": {
   "engine": 7,
@@ -477,9 +480,6 @@
  },
  "pipeline/orchestrator/accel_pipeline/verus/workspace.py": {
   "engine": 1
- },
- "pipeline/orchestrator/accel_pipeline/worker_isolation.py": {
-  "engine": 2
  },
  "pipeline/orchestrator/accel_pipeline/workload_facts.py": {
   "engine": 8

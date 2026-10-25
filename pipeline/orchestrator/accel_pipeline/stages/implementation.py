@@ -3,10 +3,8 @@ from __future__ import annotations
 import json
 
 from accel_pipeline.audit_digest import record_implementation_base
-from accel_pipeline.aux_bench import initialize_optimization_state, process_aux_bench_after_gates
-from accel_pipeline.base_bench import process_base_bench_after_gates
 from accel_pipeline.config import ModelConfig, PipelineConfig, load_run_workload, resolve_workload_paths
-from accel_pipeline.gates import run_gate
+from accel_pipeline.gates.run import run_gate
 from accel_pipeline.layout import query_dir
 from accel_pipeline.paths import analysis_artifact_path, query_artifacts_dir
 from accel_pipeline.repair import RepairCtx, run_with_repair
@@ -121,6 +119,8 @@ def run(
     def implement_and_seed():
         result = implement()
         if analysis_path.is_file() and workload.get("workload_kind") == "aux_state":
+            from accel_pipeline.optimization.aux_bench import initialize_optimization_state
+
             analysis = json.loads(analysis_path.read_text(encoding="utf-8"))
             initialize_optimization_state(pipeline_config.repo_root, query, analysis, workload)
         return result
@@ -131,7 +131,10 @@ def run(
 
 
 def _record_baseline(pipeline_config, workload: dict, query: int, analysis_path, impl_gates: list[str]) -> None:
+    """The implementation's bench result is the optimization stage's baseline."""
     if workload.get("workload_kind") != "aux_state":
+        from accel_pipeline.optimization.base_bench import process_base_bench_after_gates
+
         process_base_bench_after_gates(
             pipeline_config.repo_root,
             query,
@@ -140,6 +143,8 @@ def _record_baseline(pipeline_config, workload: dict, query: int, analysis_path,
             change_kind="implementation",
         )
     elif {"aux_bench_sweep", "aux_exit"} & set(impl_gates):
+        from accel_pipeline.optimization.aux_bench import process_aux_bench_after_gates
+
         selected = ""
         if analysis_path.is_file():
             selected = (

@@ -145,9 +145,7 @@ def test_every_stage_tool_is_served() -> None:
     for stage, names in STAGE_TOOLS.items():
         assert stage.startswith("verus_")
         assert set(names) <= set(TOOLS), (stage, set(names) - set(TOOLS))
-    mcp = (REPO / "pipeline" / "orchestrator" / "accel_pipeline" / "mcp_server.py").read_text()
-    for name in TOOLS:
-        assert f"def {name}(" in mcp, name
+    assert set(_registered_wrappers()) == set(TOOLS)
 
 
 def test_verus_steps_are_codex_exec() -> None:
@@ -162,8 +160,8 @@ def test_verus_steps_are_codex_exec() -> None:
 def test_codex_backend_limits_verus_tools() -> None:
     from accel_pipeline.backends.codex_exec import CodexExecBackend
 
-    assert CodexExecBackend._engine_impl_mcp_tools("verus_kernel") == STAGE_TOOLS["verus_kernel"]
-    assert CodexExecBackend._engine_impl_mcp_tools("optimization_worker") is None
+    assert CodexExecBackend._enabled_mcp_tools("verus_kernel") == STAGE_TOOLS["verus_kernel"]
+    assert CodexExecBackend._enabled_mcp_tools("optimization_worker") is None
 
 
 def test_json_block_takes_the_last_fence() -> None:
@@ -193,7 +191,7 @@ def test_front_end_routes_verus_mode(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_pack_passes_mode() -> None:
-    from accel_pipeline.run_pack import parse_pack_queries
+    from accel_pipeline.pack.run import parse_pack_queries
 
     qs = parse_pack_queries({"mode": "verus", "queries": [21, {"query": 3, "mode": "cpp"}]})
     assert [q.mode for q in qs] == ["verus", "cpp"]
@@ -328,19 +326,27 @@ def test_parallel_jobs_overlap_and_failures_stop_the_run(tmp_path: Path) -> None
     assert seen == ["tests"]  # the other job still finished before the stop
 
 
+def _registered_wrappers() -> dict:
+    from accel_pipeline.verus import tools
+
+    wrappers = {}
+
+    def tool(*, read_only):
+        return lambda fn: wrappers.setdefault(fn.__name__, fn)
+
+    tools.register(tool, lambda name, *args: None)
+    return wrappers
+
+
 def test_mcp_wrappers_pass_every_tool_parameter() -> None:
     """Each verus_* MCP wrapper takes exactly its tool's parameters (a dropped one is silently ignored)."""
-    import ast
     import inspect
 
     from accel_pipeline.verus.tools import TOOLS
 
-    src = (REPO / "pipeline" / "orchestrator" / "accel_pipeline" / "mcp_server.py").read_text()
-    wrappers = {n.name: [a.arg for a in n.args.args] for n in ast.walk(ast.parse(src))
-                if isinstance(n, ast.FunctionDef) and n.name in TOOLS}
+    wrappers = _registered_wrappers()
     for name, fn in TOOLS.items():
-        assert name in wrappers, f"{name} has no MCP wrapper"
-        assert wrappers[name] == list(inspect.signature(fn).parameters), name
+        assert list(inspect.signature(wrappers[name]).parameters) == list(inspect.signature(fn).parameters), name
 
 
 def test_stalled_fix_rounds_get_a_second_opinion(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -374,7 +380,7 @@ def test_stalled_fix_rounds_get_a_second_opinion(monkeypatch: pytest.MonkeyPatch
     assert len(advised) == 1
     # round 1 progressed; rounds 2-3 stalled; round 4 carries the advice (same stage and session); round 5 plain
     assert calls == [("verus_kernel", "S1", False)] * 3 + [("verus_kernel", "S1", True), ("verus_kernel", "S1", False)]
-    from accel_pipeline.verus.tools import stage_tools
+    from accel_pipeline.verus.tools import enabled_tools as stage_tools
     assert "verus_verify" in stage_tools("verus_kernel_advisor")
 
 

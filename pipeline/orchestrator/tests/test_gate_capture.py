@@ -3,13 +3,13 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from accel_pipeline.gate_capture import (
+from accel_pipeline.gates.run import (
     describe_returncode,
     enrich_failed_gate_data,
     log_tail_for_agent,
 )
-from accel_pipeline.gates import GateResult
-from accel_pipeline.stages.engine_backend import format_layer_gate_feedback
+from accel_pipeline.gates.run import GateResult
+from accel_pipeline.engine_backend.stage import format_layer_gate_feedback
 from accel_pipeline.tools.gate_tools import _compact_gate_payload
 
 
@@ -91,7 +91,7 @@ def test_compact_gate_payload_always_has_failure_summary():
 
 def test_run_gate_persists_enriched_fail_json(monkeypatch, tmp_path):
     from accel_pipeline.config import load_pipeline_config, load_workload
-    from accel_pipeline.gates import run_gate
+    from accel_pipeline.gates.run import run_gate
 
     repo = Path(__file__).resolve().parents[3]
     pc = load_pipeline_config(repo_root=repo)
@@ -123,11 +123,11 @@ def test_run_gate_persists_enriched_fail_json(monkeypatch, tmp_path):
         return Proc()
 
     monkeypatch.setattr(
-        "accel_pipeline.gates._run_gate_script",
+        "accel_pipeline.gates.run._run_gate_script",
         lambda script, query, cwd, env: fake_run(["bash", str(script), str(query)], cwd=cwd, env=env),
     )
     monkeypatch.setattr(
-        "accel_pipeline.worker_isolation.ensure_worker_build_dir",
+        "accel_pipeline.gates.run.ensure_build_dir",
         lambda *a, **k: None,
     )
     result = run_gate(pc, "engine_epochs", 0, workload=workload, raise_on_failure=False)

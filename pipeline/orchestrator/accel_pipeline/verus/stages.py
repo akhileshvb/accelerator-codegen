@@ -39,8 +39,6 @@ from accel_pipeline.verus.stopping import Attempt, StopConfig, StopState, should
 
 _STATE_LOCK = threading.RLock()
 
-STAGES = ("preflight", "spec", "analysis", "freeze", "tests", "glue", "kernel", "integration", "optimization",
-          "audit")
 
 
 _TRANSIENT = re.compile(r"\b(402|429|500|502|503|504|529)\b|Payment Required|rate.?limit|overloaded|temporarily|unavailable|"

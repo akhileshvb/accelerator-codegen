@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from accel_pipeline.aux_bench import (
+from accel_pipeline.optimization.aux_bench import (
     format_bench_experiment_log_line,
     parse_sweep_csv,
     record_aux_bench_sweep_outcome,
@@ -154,7 +154,7 @@ def test_record_aux_bench_sweep_outcome_writes_experiment_log(tmp_path: Path):
 
 
 def parse_sweep_csv_from_text(text: str):
-    from accel_pipeline.aux_bench import parse_sweep_csv
+    from accel_pipeline.optimization.aux_bench import parse_sweep_csv
 
     path = Path("/tmp/aux_bench_test.csv")
     path.write_text(text, encoding="utf-8")

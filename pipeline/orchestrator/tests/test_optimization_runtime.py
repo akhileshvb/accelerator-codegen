@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 
 from accel_pipeline.config import load_pipeline_config, load_workload
-from accel_pipeline.optimization_runtime import (
+from accel_pipeline.optimization.runtime import (
     build_runtime_state,
     format_runtime_markdown,
     load_episode_log,
@@ -30,7 +30,7 @@ def test_build_runtime_state_includes_profile_guidance(tmp_path, monkeypatch):
     art.mkdir()
     (art / "optimization_state.json").write_text(json.dumps({"best_speedup_median": 2.26, "iterations": []}))
     (art / "profile_summary.json").write_text(json.dumps(PROFILE_SUMMARY))
-    monkeypatch.setattr("accel_pipeline.optimization_runtime.query_artifacts_dir", lambda root, q, workload=None: art)
+    monkeypatch.setattr("accel_pipeline.optimization.runtime.query_artifacts_dir", lambda root, q, workload=None: art)
     pipeline_config = load_pipeline_config(repo_root=repo)
     workload = load_workload("sec_edgar_q1", repo)
     state = build_runtime_state(pipeline_config, workload, 1, optimization_iter=3, episode=1)
@@ -46,7 +46,7 @@ def test_refresh_writes_runtime_files(tmp_path, monkeypatch):
     repo = Path(__file__).resolve().parents[3]
     art = tmp_path / "art"
     art.mkdir()
-    monkeypatch.setattr("accel_pipeline.optimization_runtime.query_artifacts_dir", lambda root, q, workload=None: art)
+    monkeypatch.setattr("accel_pipeline.optimization.runtime.query_artifacts_dir", lambda root, q, workload=None: art)
     pipeline_config = load_pipeline_config(repo_root=repo)
     workload = load_workload("sec_edgar_q1", repo)
     path = refresh_optimization_runtime(pipeline_config, workload, 1, optimization_iter=2, episode=1)

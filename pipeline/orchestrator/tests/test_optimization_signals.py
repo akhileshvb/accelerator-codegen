@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from accel_pipeline.optimization_signals import (
+from accel_pipeline.optimization.signals import (
     diagnostic_deltas,
     extract_store_diagnostics,
     organize_diagnostics_evidence,

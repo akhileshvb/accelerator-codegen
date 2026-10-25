@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from accel_pipeline.aux_profile import (
+from accel_pipeline.optimization.aux_profile import (
     build_aux_profile_digest,
     parse_custom_profile_events,
     write_aux_profile_artifacts,

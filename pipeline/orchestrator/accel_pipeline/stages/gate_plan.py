@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from accel_pipeline.gates import GateFailure, GateResult, gate_failure_message, run_gate
+from accel_pipeline.gates.run import GateResult, run_gate
 
 
 GATES_ALLOW_SKIP = frozenset(
@@ -61,7 +61,7 @@ def run_post_stage_gates_collect(
 ) -> tuple[list[GateResult], GateResult | None]:
     """Run `gate_names` in order until one fails. reuse: skip a gate that already passed on identical code."""
     from accel_pipeline.config import load_run_workload
-    from accel_pipeline.gate_stamps import reusable_gate_result
+    from accel_pipeline.gates.stamps import reusable_gate_result
 
     workload = load_run_workload(pipeline_config, workload_name)
     from accel_pipeline.pipeline_log import log_gate_batch_start
@@ -96,25 +96,3 @@ def run_post_stage_gates_collect(
             continue
         return results, result
     return results, None
-
-
-def run_post_stage_gates(
-    pipeline_config,
-    workload_name: str,
-    query: int,
-    gate_names: list[str],
-    *,
-    change_kind: str = "",
-    iteration: int = 0,
-) -> list[GateResult]:
-    results, failed = run_post_stage_gates_collect(
-        pipeline_config,
-        workload_name,
-        query,
-        gate_names,
-        change_kind=change_kind,
-        iteration=iteration,
-    )
-    if failed is not None:
-        raise GateFailure(gate_failure_message(failed))
-    return results

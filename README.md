@@ -138,6 +138,9 @@ accel canary tpch_q14_aux --models models.yaml           # real models, fresh sa
 accel run tpch_q3_aux --engine <engine>                    # one query end to end in this tree
 accel status <run dir>                                   # stage, last events, cost so far
 accel timeline <run dir>                                 # where the time and the money went
+accel run tpch_q21_aux --mode verus                      # Verus pipeline for one query
+accel run engine_<engine>                                # engine backend onboarding
+python -m accel_pipeline.pack.run --pack tpch_aux_parallel  # many runs, one worker each
 ```
 
 - `accel run WORKLOAD` runs analysis, test_suite, implementation, optimization and audit. `--stage S` runs one

@@ -177,7 +177,7 @@ import pathlib
 import sys
 
 sys.path.insert(0, "${ROOT}/pipeline/orchestrator")
-from accel_pipeline.aux_bench import aggregate_sweep_repeats, record_aux_bench_sweep_outcome, summarize_sweep_csv, thread_scaling
+from accel_pipeline.optimization.aux_bench import aggregate_sweep_repeats, record_aux_bench_sweep_outcome, summarize_sweep_csv, thread_scaling
 from accel_pipeline.config import load_workload
 
 results_csvs = [pathlib.Path(p) for p in "${RESULT_CSVS[*]}".split()]

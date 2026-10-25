@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 
 from accel_pipeline.config import load_pipeline_config, load_workload
-from accel_pipeline.gates import read_phase_log, run_gate
+from accel_pipeline.gates.run import read_phase_log, run_gate
 
 
 def test_read_phase_log_adds_up_repeated_phases(tmp_path):
@@ -38,8 +38,8 @@ def run_with_fake_script(monkeypatch, status, rc):
 
         return Proc()
 
-    monkeypatch.setattr("accel_pipeline.gates._run_gate_script", fake_script)
-    monkeypatch.setattr("accel_pipeline.worker_isolation.ensure_worker_build_dir", lambda *a, **k: None)
+    monkeypatch.setattr("accel_pipeline.gates.run._run_gate_script", fake_script)
+    monkeypatch.setattr("accel_pipeline.gates.run.ensure_build_dir", lambda *a, **k: None)
     return run_gate(pc, "engine_epochs", 0, workload=workload, raise_on_failure=False)
 
 

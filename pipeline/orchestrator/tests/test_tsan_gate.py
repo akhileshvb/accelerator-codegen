@@ -6,7 +6,7 @@ import re
 from pathlib import Path
 
 from accel_pipeline.config import load_workload
-from accel_pipeline.gates import GATES_ALLOW_SKIP, GATE_SCRIPTS
+from accel_pipeline.gates.run import GATES_ALLOW_SKIP, GATE_SCRIPTS
 from accel_pipeline.stages.gate_plan import workload_post_audit_gates, workload_post_optimization_gates
 
 REPO_ROOT = Path(__file__).resolve().parents[3]

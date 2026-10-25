@@ -37,7 +37,7 @@ from accel_pipeline.frozen_paths import FROZEN
 from accel_pipeline.prims_library import PROVENANCE_REL, primary_root
 from accel_pipeline.prims_library import DENY_MESSAGE as _PRIMS_DENY
 from accel_pipeline.prims_library import is_staging_path
-from accel_pipeline.shared_file_lease import is_shared_path, shared_path_globs
+from accel_pipeline.config import DEFAULT_SHARED_PATH_GLOBS
 
 _OPTIMIZATION_STAGES = frozenset(
     {
@@ -89,6 +89,35 @@ def query_id_from_rel(rel: str) -> int | None:
     if not m:
         return None
     return int(m.group(1))
+
+
+def shared_path_globs(pipeline_config: Any | None = None) -> list[str]:
+    if pipeline_config is not None:
+        custom = getattr(pipeline_config, "shared_paths", None)
+        if isinstance(custom, list) and custom:
+            return [str(x) for x in custom]
+    return list(DEFAULT_SHARED_PATH_GLOBS)
+
+
+def rel_path(repo_root: Path, path: Path | str) -> str:
+    p = Path(path)
+    if not p.is_absolute():
+        p = repo_root / p
+    return str(p.resolve().relative_to(Path(repo_root).resolve()))
+
+
+def is_shared_path(
+    repo_root: Path,
+    path: Path | str,
+    *,
+    globs: list[str] | None = None,
+) -> bool:
+    try:
+        rel = rel_path(repo_root, path)
+    except ValueError:
+        return False
+    patterns = globs if globs is not None else list(DEFAULT_SHARED_PATH_GLOBS)
+    return any(fnmatch.fnmatch(rel, pat) for pat in patterns)
 
 
 def is_owned_path(

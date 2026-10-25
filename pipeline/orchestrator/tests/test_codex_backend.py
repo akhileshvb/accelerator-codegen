@@ -10,7 +10,7 @@ import pytest
 
 from accel_pipeline.config import ModelConfig, load_model_config
 from accel_pipeline.models import resolve_preset, resolve_stage_provider
-from accel_pipeline.optimization_worker import worker_enabled
+from accel_pipeline.optimization.worker import worker_enabled
 from accel_pipeline.config import PipelineConfig
 
 
@@ -117,7 +117,6 @@ def test_mcp_tool_callables_include_profile_digest(tmp_path):
         pipeline_config, workload, "tpch_q3", 3, "optimization_worker", 1, art
     )
     assert "get_profile_digest" in tools
-    assert "run_fairness" in tools
     assert "run_correctness" in tools
     assert "run_multi_connection" in tools
     digest = tools["get_profile_digest"]()
@@ -303,22 +302,22 @@ def test_codex_exec_whitelists_engine_impl_mcp_tools(monkeypatch):
 
 
 def test_impl_stage_tools_include_layer_gates():
-    from accel_pipeline.tools.gate_tools import layer_gate_from_stage
+    from accel_pipeline.engine_backend.tools import layer_gate_from_stage
     from accel_pipeline.backends.codex_exec import CodexExecBackend
 
     assert layer_gate_from_stage("impl_epochs") == "engine_epochs"
     assert layer_gate_from_stage("impl_scan") == "engine_scan"
     assert layer_gate_from_stage("implementation") is None
-    names = CodexExecBackend._engine_impl_mcp_tools("impl_epochs")
+    names = CodexExecBackend._enabled_mcp_tools("impl_epochs")
     assert {"request_gate", "run_engine_build", "run_layer_gate"} <= set(names)
-    assert CodexExecBackend._engine_impl_mcp_tools("implementation") is None
+    assert CodexExecBackend._enabled_mcp_tools("implementation") is None
 
 
 def test_mcp_run_layer_gate_maps_impl_stage(monkeypatch, tmp_path):
     from accel_pipeline.mcp_server import build_mcp_tool_callables
     from accel_pipeline.config import load_pipeline_config, load_workload, apply_workload_overrides
     from accel_pipeline.paths import query_artifacts_dir
-    from accel_pipeline.gates import GateResult
+    from accel_pipeline.gates.run import GateResult
 
     pipeline_config = load_pipeline_config(repo_root=REPO_ROOT)
     workload = load_workload("engine_postgres", REPO_ROOT)

@@ -6,8 +6,8 @@ import json
 from pathlib import Path
 
 from accel_pipeline.config import PipelineConfig, load_pipeline_config
-from accel_pipeline.optimization_context import reconstruct_seed_from_artifacts
-from accel_pipeline.optimization_worker import OptimizationWorker
+from accel_pipeline.optimization.packet import reconstruct_seed_from_artifacts
+from accel_pipeline.optimization.worker import OptimizationWorker
 
 
 def test_reconstruct_seed_from_artifacts(tmp_path: Path):

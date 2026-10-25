@@ -10,11 +10,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from accel_pipeline import background_gates
-from accel_pipeline.background_gates import background_status, reusable_background_result, start_background_gate
-from accel_pipeline.build_stamp import build_lock, code_stamp
+from accel_pipeline.gates import parallel as background_gates
+from accel_pipeline.gates.parallel import background_status, reusable_background_result, start_background_gate
+from accel_pipeline.gates.build_stamp import build_lock, code_stamp
 from accel_pipeline.config import QuickTierConfig
-from accel_pipeline.gate_stamps import check_version, current_stamp, passed_at_current_stamp, record_pass, reusable_gate_result
+from accel_pipeline.gates.stamps import check_version, current_stamp, passed_at_current_stamp, record_pass, reusable_gate_result
 from accel_pipeline.layout import BACKENDS, PRIMS
 
 WORKLOAD = {"workload_kind": "aux_state", "benchmark_name": "demo", "engine_name": "eng"}

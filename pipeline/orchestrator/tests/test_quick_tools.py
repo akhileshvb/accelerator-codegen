@@ -48,7 +48,7 @@ def test_request_gate_in_the_background_starts_it_and_returns_at_once(monkeypatc
 
     monkeypatch.setattr(gate_tools, "start_background_gate", fake_start)
     monkeypatch.setattr(gate_tools, "run_gate", lambda *a, **k: (_ for _ in ()).throw(AssertionError("ran in the foreground")))
-    request_gate, _, _, _ = gate_tools.make_gate_tools(ToolContext(CONFIG, 6, WORKLOAD, workload_name="tpch_q6_aux"))
+    request_gate, _ = gate_tools.make_gate_tools(ToolContext(CONFIG, 6, WORKLOAD, workload_name="tpch_q6_aux"))
     out = json.loads(request_gate("aux_unit", background=True))
     assert started == {"gate": "aux_unit", "workload_name": "tpch_q6_aux"}
     assert out == {"gate": "aux_unit", "status": "running"}
@@ -58,7 +58,7 @@ def test_gate_status_reports_a_finished_gate_compactly_and_whether_it_is_stale(m
     state = {"gate": "aux_unit", "status": "fail", "stale": True,
              "data": {"status": "fail", "reason": "boom", "log_tail": "tail"}}
     monkeypatch.setattr(gate_tools, "background_status", lambda *a: state)
-    _, _, _, gate_status = gate_tools.make_gate_tools(ToolContext(CONFIG, 6, WORKLOAD))
+    _, gate_status = gate_tools.make_gate_tools(ToolContext(CONFIG, 6, WORKLOAD))
     out = json.loads(gate_status("aux_unit"))
     assert out["status"] == "fail" and out["stale"] is True and out["reason"] == "boom"
     assert "log_tail" not in out and "data" not in out
@@ -84,7 +84,7 @@ def test_heavy_gates_are_refused_before_a_passing_quick_check_in_the_foreground_
     monkeypatch.setattr(gate_tools, "start_background_gate", lambda *a, **k: (_ for _ in ()).throw(AssertionError("started")))
     monkeypatch.setattr(gate_tools, "run_gate", lambda *a, **k: (_ for _ in ()).throw(AssertionError("ran")))
     config = SimpleNamespace(repo_root=tmp_path, quick_tier=CONFIG.quick_tier)  # not a git tree: no stamp, no admission
-    request_gate, _, _, _ = gate_tools.make_gate_tools(ToolContext(config, 6, WORKLOAD))
+    request_gate, _ = gate_tools.make_gate_tools(ToolContext(config, 6, WORKLOAD))
     for background in (False, True):
         out = json.loads(request_gate("aux_correctness", background=background))
         assert out["status"] == "refused" and "run quick_check first" in out["reason"]

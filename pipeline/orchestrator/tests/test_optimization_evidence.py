@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from accel_pipeline.optimization_evidence import extract_bottleneck_evidence
+from accel_pipeline.optimization.evidence import extract_bottleneck_evidence
 
 
 def test_extract_evidence_amdahl_upper_bound():

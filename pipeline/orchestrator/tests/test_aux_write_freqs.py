@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import random
 
-from accel_pipeline.aux_write_freqs import (
+from accel_pipeline.optimization.aux_write_freqs import (
     aggregate_write_mix_workload_speedup,
     ensure_attempt_write_frequencies,
     resolve_optimization_write_frequencies,

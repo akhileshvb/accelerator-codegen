@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from accel_pipeline.backend_digest import (
+from accel_pipeline.engine_backend.backend_digest import (
     backend_diff,
     backend_digest,
     layer_contracts_digest,

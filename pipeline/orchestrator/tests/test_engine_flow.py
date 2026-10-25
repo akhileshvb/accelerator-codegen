@@ -15,11 +15,11 @@ from accel_pipeline import session as session_mod
 from accel_pipeline.backends.base import StageRunRequest, StageRunResult
 from accel_pipeline.config import load_model_config, load_pipeline_config, load_workload
 from accel_pipeline.failure import StageFailure, Failure
-from accel_pipeline.gates import GateResult
+from accel_pipeline.gates.run import GateResult
 from accel_pipeline.repair import StageStopped
 from accel_pipeline.session import SessionStore, run_in_session
-from accel_pipeline.stages import engine_backend as eb
-from accel_pipeline.stages.engine_progress import Progress
+from accel_pipeline.engine_backend import stage as eb
+from accel_pipeline.engine_backend.progress import Progress
 
 REAL_PIPELINE = Path(__file__).resolve().parents[2]
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -74,7 +74,7 @@ class World:
         monkeypatch.setattr(eb, "backend_diff", lambda *a, **k: "diff --git a/x b/x")
         monkeypatch.setattr(eb, "backend_digest", lambda *a, **k: "## Backend digest\n\n")
         monkeypatch.setattr(repair_mod.time, "sleep", lambda s: None)
-        monkeypatch.setattr("accel_pipeline.infra_fail_fast.handle_infra_failure", lambda *a, **k: None)
+        monkeypatch.setattr("accel_pipeline.failure.handle_infra_failure", lambda *a, **k: None)
         monkeypatch.setattr(repair_mod, "_rollback", lambda ctx: None)
         self.monkeypatch = monkeypatch
 
@@ -222,7 +222,7 @@ def test_a_critic_that_keeps_failing_leaves_open_findings_for_the_audit(world):
 
 
 def test_the_audit_sends_each_owning_layer_its_violations_in_one_round(world):
-    from accel_pipeline.stages import engine_architecture_audit as audit_mod
+    from accel_pipeline.engine_backend import architecture_audit as audit_mod
 
     report = {"status": "fail", "summary": "s", "feedback_for_implementation": "x",
               "violations": [{"rule": "slots_only", "layer": "capture", "evidence": "c1"},

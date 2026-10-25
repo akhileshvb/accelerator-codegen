@@ -14,7 +14,7 @@ from accel_pipeline.config import (
 )
 from accel_pipeline.paths import query_artifacts_dir
 from accel_pipeline.prompts import render_prompt
-from accel_pipeline.stages.engine_backend import (
+from accel_pipeline.engine_backend.stage import (
     implementation_layers,
     run_engine_pipeline,
 )
@@ -67,7 +67,7 @@ def test_load_engine_mysql_workload():
 
 
 def test_backend_stage_gates_are_wired():
-    from accel_pipeline.gates import GATE_SCRIPTS
+    from accel_pipeline.gates.run import GATE_SCRIPTS
 
     gates_dir = REPO_ROOT / "pipeline" / "gates"
     for engine in ("engine_mysql", "engine_postgres", "engine_duckdb"):
@@ -228,7 +228,7 @@ def test_render_impl_capture_prompt():
 
 
 def test_impl_user_message_names_mcp_gate_calls():
-    from accel_pipeline.stages.engine_backend import _user_message
+    from accel_pipeline.engine_backend.stage import _user_message
 
     pc = load_pipeline_config(repo_root=REPO_ROOT)
     w = load_workload("engine_postgres", REPO_ROOT)
@@ -296,7 +296,7 @@ def test_mysql_prompt_includes_pipeline_discovered_sdk():
 
 
 def test_postgres_pipeline_writes_host_sdk_discovery(tmp_path, monkeypatch):
-    from accel_pipeline.stages.engine_backend import _prepare_engine_host_sdk
+    from accel_pipeline.engine_backend.stage import _prepare_engine_host_sdk
 
     pc = load_pipeline_config(repo_root=REPO_ROOT)
     w = load_workload("engine_postgres", REPO_ROOT)
@@ -317,7 +317,7 @@ def test_engine_pipeline_dry_run():
 
 
 def test_slot_gate_scenarios_exist_in_the_generic_harness():
-    from accel_pipeline.gates import GATE_SCRIPTS
+    from accel_pipeline.gates.run import GATE_SCRIPTS
 
     harness = (REPO_ROOT / "eval" / "harness" / "slot_gates.cpp").read_text()
     for gate, script in GATE_SCRIPTS.items():
@@ -326,7 +326,7 @@ def test_slot_gate_scenarios_exist_in_the_generic_harness():
 
 
 def test_embedded_engine_needs_no_docker_host():
-    from accel_pipeline.stages.engine_backend import _layer_should_run
+    from accel_pipeline.engine_backend.stage import _layer_should_run
 
     w = load_workload("engine_duckdb", REPO_ROOT)
     assert w["host_runtime"]["kind"] == "host_cmake"
@@ -346,7 +346,7 @@ def test_engine_pipeline_dry_run_impl_capture():
 
 
 def test_host_layer_skipped_without_in_process_host():
-    from accel_pipeline.stages.engine_backend import _layer_should_run
+    from accel_pipeline.engine_backend.stage import _layer_should_run
 
     w = load_workload("engine_mysql", REPO_ROOT)
     host = next(layer for layer in w["implementation_layers"] if layer["id"] == "host")
@@ -404,7 +404,7 @@ def test_engine_layer_gate_script_exists():
 
 def test_run_gate_sets_engine_context_and_out_env(monkeypatch):
     """Engine gate scripts require ACCEL_GATE_CONTEXT / ACCEL_GATE_OUT (not just the file on disk)."""
-    from accel_pipeline.gates import run_gate
+    from accel_pipeline.gates.run import run_gate
 
     pc = load_pipeline_config(repo_root=REPO_ROOT)
     workload = load_workload("engine_postgres", REPO_ROOT)
@@ -432,11 +432,11 @@ def test_run_gate_sets_engine_context_and_out_env(monkeypatch):
 
     real_run = _sp.run
     monkeypatch.setattr(
-        "accel_pipeline.gates._run_gate_script",
+        "accel_pipeline.gates.run._run_gate_script",
         lambda script, query, cwd, env: fake_run(["bash", str(script), str(query)], cwd=cwd, env=env),
     )
     monkeypatch.setattr(
-        "accel_pipeline.worker_isolation.ensure_worker_build_dir",
+        "accel_pipeline.gates.run.ensure_build_dir",
         lambda *a, **k: None,
     )
     result = run_gate(pc, "engine_capture", 0, workload=workload, raise_on_failure=False)
@@ -454,7 +454,7 @@ def test_run_gate_sets_engine_context_and_out_env(monkeypatch):
 
 
 def test_render_layer_critique_prompt():
-    from accel_pipeline.stages.engine_backend import _layer_extra_context
+    from accel_pipeline.engine_backend.stage import _layer_extra_context
 
     pc = load_pipeline_config(repo_root=REPO_ROOT)
     w = load_workload("engine_postgres", REPO_ROOT)
@@ -484,7 +484,7 @@ def test_render_layer_critique_prompt():
 
 
 def test_run_until_artifact_retries_then_succeeds(tmp_path):
-    from accel_pipeline.stages.engine_layer_critique import run_until_artifact
+    from accel_pipeline.engine_backend.layer_critique import run_until_artifact
 
     path = tmp_path / "layer_critique_epochs.json"
     calls: list[str] = []
@@ -503,7 +503,7 @@ def test_run_until_artifact_retries_then_succeeds(tmp_path):
 
 
 def test_run_until_artifact_retries_on_invalid_json(tmp_path):
-    from accel_pipeline.stages.engine_layer_critique import run_until_artifact
+    from accel_pipeline.engine_backend.layer_critique import run_until_artifact
 
     path = tmp_path / "layer_critique_api.json"
     calls: list[str] = []
@@ -520,7 +520,7 @@ def test_run_until_artifact_retries_on_invalid_json(tmp_path):
 
 
 def test_run_until_artifact_dry_run_does_not_retry(tmp_path):
-    from accel_pipeline.stages.engine_layer_critique import run_until_artifact
+    from accel_pipeline.engine_backend.layer_critique import run_until_artifact
 
     calls = {"n": 0}
 
@@ -535,7 +535,7 @@ def test_run_until_artifact_dry_run_does_not_retry(tmp_path):
 
 
 def test_layer_critique_feedback_and_load(tmp_path):
-    from accel_pipeline.stages.engine_layer_critique import (
+    from accel_pipeline.engine_backend.layer_critique import (
         format_layer_critique_feedback,
         load_layer_critique,
     )
@@ -571,8 +571,8 @@ def test_layer_critique_feedback_and_load(tmp_path):
 
 
 def test_layer_gate_feedback_includes_log_tail(tmp_path):
-    from accel_pipeline.gates import GateResult
-    from accel_pipeline.stages.engine_backend import format_layer_gate_feedback
+    from accel_pipeline.gates.run import GateResult
+    from accel_pipeline.engine_backend.stage import format_layer_gate_feedback
 
     failed = GateResult(
         name="engine_epochs",
@@ -598,8 +598,8 @@ def test_layer_gate_feedback_includes_log_tail(tmp_path):
 
 
 def test_layer_gate_feedback_empty_log_tail_still_has_signal(tmp_path):
-    from accel_pipeline.gates import GateResult
-    from accel_pipeline.stages.engine_backend import format_layer_gate_feedback
+    from accel_pipeline.gates.run import GateResult
+    from accel_pipeline.engine_backend.stage import format_layer_gate_feedback
 
     failed = GateResult(
         name="engine_epochs",
@@ -625,7 +625,7 @@ def test_layer_gate_feedback_empty_log_tail_still_has_signal(tmp_path):
 
 
 def test_dry_run_impl_capture_skips_critique(monkeypatch):
-    from accel_pipeline.stages import engine_backend as eb
+    from accel_pipeline.engine_backend import stage as eb
 
     called = {"critique": 0, "gates": 0}
 
@@ -648,7 +648,7 @@ def test_dry_run_impl_capture_skips_critique(monkeypatch):
 
 
 def test_critique_harness_gaps_aimed_at_the_pipeline_are_dropped(tmp_path):
-    from accel_pipeline.stages.engine_layer_critique import layer_critique_path, load_layer_critique
+    from accel_pipeline.engine_backend.layer_critique import layer_critique_path, load_layer_critique
 
     def critique(violations):
         layer_critique_path(tmp_path, "hostctl").write_text(json.dumps(

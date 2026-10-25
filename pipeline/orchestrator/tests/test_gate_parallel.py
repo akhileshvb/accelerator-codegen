@@ -7,10 +7,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from accel_pipeline import gate_parallel
+from accel_pipeline.gates import parallel as gate_parallel
 from accel_pipeline.engine_host import instance_tag
-from accel_pipeline.gate_parallel import run_gates_parallel
-from accel_pipeline.gates import GateResult
+from accel_pipeline.gates.parallel import run_gates_parallel
+from accel_pipeline.gates.run import GateResult
 
 CONFIG = SimpleNamespace(quick_tier=SimpleNamespace(gate_jobs=0), worker_id="w3", repo_root=None, build_dir=Path("/builds/b3"))
 TAG = instance_tag("w3", CONFIG.build_dir)

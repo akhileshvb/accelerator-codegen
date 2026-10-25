@@ -32,7 +32,7 @@ from accel_pipeline.config import ModelConfig, PipelineConfig
 PERF_EVENTS = "cycles,instructions"
 PARALLEL_DATA_CALLS = 8
 LIVE_TOOL = "discover_host_sdk"  # read-only, no arguments
-# the tools each stage's prompt tells the agent to call (the server registers all of them for every stage)
+# the tools each stage's prompt tells the agent to call
 STAGE_TOOLS = {
     "analysis": ["query_data", "column_stats", "validate_analysis", "update_analysis"],
     "implementation": ["quick_check", "request_gate", "gate_status", "report_blocker", "ask_advisor",
@@ -132,11 +132,11 @@ def codex_line(probe: Probe) -> list[str]:
 
 # ---------------------------------------------------------------- the MCP server
 
-def _mcp_server_parameters(probe: Probe):
-    """Parameters that start the MCP server the way codex does, inside the agents' sandbox."""
+def _mcp_server_parameters(probe: Probe, stage: str):
+    """Parameters that start the MCP server of `stage` the way codex does, inside the agents' sandbox."""
     from mcp import StdioServerParameters
 
-    backend, argv = _capture_argv(probe, "analysis")
+    backend, argv = _capture_argv(probe, stage)
     env = tomllib.loads(f"env = {_settings(argv)['mcp_servers.accel_pipeline.env']}")["env"]
     launcher = tomllib.loads(backend._config_path().read_text())["mcp_servers"]["accel_pipeline"]["command"]
     prefix = probe.sandbox_prefix
@@ -144,17 +144,21 @@ def _mcp_server_parameters(probe: Probe):
                                  env={**os.environ, **env})
 
 
-async def _mcp_probe(probe: Probe) -> tuple[set[str], list[str]]:
-    """(registered tool names, the results of PARALLEL_DATA_CALLS concurrent data-tool calls)."""
+async def _mcp_probe(probe: Probe) -> tuple[dict[str, set[str]], list[str]]:
+    """({stage: its server's registered tool names}, the results of PARALLEL_DATA_CALLS concurrent data-tool calls)."""
     from mcp import ClientSession
     from mcp.client.stdio import stdio_client
 
-    async with stdio_client(_mcp_server_parameters(probe)) as (read, write):
-        async with ClientSession(read, write, read_timeout_seconds=60.0) as session:
-            await session.initialize()
-            names = {t.name for t in (await session.list_tools()).tools}
-            calls = [session.call_tool("query_data", {"sql": "SELECT 1"}) for _ in range(PARALLEL_DATA_CALLS)]
-            results = await asyncio.gather(*calls, return_exceptions=True)
+    names: dict[str, set[str]] = {}
+    results: list = []
+    for stage in STAGE_TOOLS:
+        async with stdio_client(_mcp_server_parameters(probe, stage)) as (read, write):
+            async with ClientSession(read, write, read_timeout_seconds=60.0) as session:
+                await session.initialize()
+                names[stage] = {t.name for t in (await session.list_tools()).tools}
+                if stage == "analysis":
+                    calls = [session.call_tool("query_data", {"sql": "SELECT 1"}) for _ in range(PARALLEL_DATA_CALLS)]
+                    results = await asyncio.gather(*calls, return_exceptions=True)
     return names, [r if isinstance(r, Exception) else r.content[0].text for r in results]
 
 
@@ -175,7 +179,7 @@ def _unlogged(probe: Probe):
 
 
 def mcp_server(probe: Probe) -> list[str]:
-    """The server starts, serves every stage's tools (and the advisor's), and answers parallel data calls (B6)."""
+    """The server starts for each stage, serves its tools (and the advisor's), and answers parallel data calls (B6)."""
     from accel_pipeline.advisor import READ_ONLY_TOOLS
     from accel_pipeline.engine_host import ensure_dataset_loaded
 
@@ -183,8 +187,9 @@ def mcp_server(probe: Probe) -> list[str]:
         return [f"the data tools cannot reach the dataset: {unreachable}"]
     with _unlogged(probe):
         names, results = asyncio.run(asyncio.wait_for(_mcp_probe(probe), 90))
-    problems = [f"stage {stage}: MCP tool {tool} is not registered" for stage, tools in STAGE_TOOLS.items() for tool in tools if tool not in names]
-    problems += [f"advisor read-only tool {tool} is not registered" for tool in READ_ONLY_TOOLS if tool not in names]
+    problems = [f"stage {stage}: MCP tool {tool} is not registered" for stage, tools in STAGE_TOOLS.items() for tool in tools if tool not in names[stage]]
+    registered = set().union(*names.values())
+    problems += [f"advisor read-only tool {tool} is not registered" for tool in READ_ONLY_TOOLS if tool not in registered]
     failed = [str(r) for r in results if isinstance(r, Exception) or "error" in str(r)[:40].lower() or "lock" in str(r).lower()]
     if failed:
         problems.append(f"{len(failed)} of {PARALLEL_DATA_CALLS} parallel query_data calls failed, e.g. {failed[0][:200]}")
@@ -211,7 +216,7 @@ def live_models(probe: Probe) -> list[str]:
     for model in sorted(models):
         backend = create_agent_backend(pipeline_config=probe.cfg, query=probe.query, stage="preflight_live",
                                        model_config=probe.models, workload_name=probe.workload_name)
-        backend._engine_impl_mcp_tools = lambda _stage: [LIVE_TOOL]  # only this tool is offered
+        backend._enabled_mcp_tools = lambda _stage: [LIVE_TOOL]  # only this tool is offered
         result = backend.run_stage(StageRunRequest(
             stage="preflight_live", model_id=model, agent_name="preflight", user_message="",
             instructions=f"Call the MCP tool {LIVE_TOOL} once, then reply with the single word DONE."))

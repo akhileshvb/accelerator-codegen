@@ -195,17 +195,6 @@ def _sample_valid_analysis() -> dict:
     }
 
 
-class TestPrerequisiteRegex:
-    def test_q1_regex_does_not_match_q10(self):
-        from accel_pipeline.prerequisites import base_smoke_test_ctest_regex
-
-        tpch = {"benchmark_name": "tpch"}
-        assert base_smoke_test_ctest_regex(tpch, 1) == "^tpch_q1_smoke_test$"
-        assert base_smoke_test_ctest_regex(tpch, 14) == "^tpch_q14_smoke_test$"
-        sec = {"benchmark_name": "sec_edgar"}
-        assert base_smoke_test_ctest_regex(sec, 1) == "^sec_edgar_q1_smoke_test$"
-
-
 class TestAuxAnalysisValidation:
     def test_valid_analysis_passes(self):
         validate_aux_analysis(_sample_valid_analysis())

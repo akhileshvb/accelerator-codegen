@@ -5,10 +5,9 @@ import re
 import signal
 import subprocess
 from dataclasses import dataclass
-from pathlib import Path
 
 from accel_pipeline.config import PipelineConfig
-from accel_pipeline.tools.tool_args import none_default as _none_default
+from accel_pipeline.tools import none_default
 
 _CTEST_DEFAULT_TIMEOUT_SECONDS = 240
 
@@ -52,24 +51,51 @@ def _normalize_ctest_cmd(cmd: str, pipeline_config: PipelineConfig) -> str:
     return re.sub(r"\bctest\b", f"ctest --test-dir {build_dir}", stripped, count=1)
 
 
+def rewrite_command_build_dir(cmd: str, pipeline_config: PipelineConfig) -> str:
+    """Rewrite bare ``build-release`` tokens to this worker's build dir name."""
+    build_name = pipeline_config.build_dir.name
+    if build_name == "build-release" or "build-release" not in cmd:
+        return cmd
+    # Avoid double-rewriting already-scoped paths.
+    if build_name in cmd:
+        return cmd
+    # Rewrite absolute .../build-release (exact dir) and bare tokens.
+    root = str(pipeline_config.build_dir.parent).rstrip("/")
+    abs_shared = f"{root}/build-release"
+    abs_worker = str(pipeline_config.build_dir)
+    out = cmd
+    out = re.sub(rf"(?<![\w.-]){re.escape(abs_shared)}(?![\w.-])", abs_worker, out)
+    out = re.sub(r"(?<![\w.-])build-release(?![\w.-])", build_name, out)
+    return out
+
+
+def reject_shared_build_dir_cmd(cmd: str, pipeline_config: PipelineConfig) -> str | None:
+    """If worker isolation is active, forbid targeting the shared ``build-release`` tree."""
+    build_name = pipeline_config.build_dir.name
+    if build_name == "build-release":
+        return None
+    if re.search(r"(?<![\w.-])build-release(?![\w.-])", cmd) and build_name not in cmd:
+        return (
+            f"shared build-release is forbidden under pack isolation; "
+            f"use {build_name} (or omit — run_pipeline_command rewrites it)"
+        )
+    return None
+
+
 def make_shell_tools(ctx: ToolContext):
     allowed = [re.compile(p) for p in ctx.pipeline_config.allowed_commands]
 
     def run_command(cmd: str, cwd: str | None = "", timeout: int | None = 600) -> str:
         """Run an allowlisted build/test command."""
-        from accel_pipeline.shared_file_lease import (
+        from accel_pipeline.pack.shared_file_lease import (
             SharedFileLease,
             command_touches_shared_build,
             sticky_holder,
             worker_id_from_env,
         )
-        from accel_pipeline.worker_isolation import (
-            reject_shared_build_dir_cmd,
-            rewrite_command_build_dir,
-        )
 
-        cwd = str(_none_default(cwd, ""))
-        timeout = int(_none_default(timeout, 600))
+        cwd = str(none_default(cwd, ""))
+        timeout = int(none_default(timeout, 600))
         raw_cmd = rewrite_command_build_dir(cmd.strip(), ctx.pipeline_config)
         effective_cmd = _normalize_ctest_cmd(raw_cmd, ctx.pipeline_config)
         shared_block = reject_shared_build_dir_cmd(effective_cmd, ctx.pipeline_config)
@@ -97,7 +123,7 @@ def make_shell_tools(ctx: ToolContext):
         # through cmake so shared TUs rebuild under the same critical section.
         # Otherwise acquire briefly for cmake configure/build.
         if command_touches_shared_build(effective_cmd):
-            from accel_pipeline.shared_file_lease import sticky_lease_obj
+            from accel_pipeline.pack.shared_file_lease import sticky_lease_obj
 
             if sticky_holder() == holder and sticky_lease_obj() is not None:
                 sticky_lease_obj().ensure_held(holder, reason="cmake under sticky lease")

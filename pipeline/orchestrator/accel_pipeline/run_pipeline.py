@@ -11,15 +11,13 @@ from pathlib import Path
 from accel_pipeline import preflight
 from accel_pipeline.workload_facts import workload_facts
 from accel_pipeline.config import apply_workload_overrides, load_model_config, load_pipeline_config, load_workload
-from accel_pipeline.engine_quarantine import apply_foreign_engine_quarantine, restore_quarantine
 from accel_pipeline.env_loader import load_repo_dotenv
 from accel_pipeline.paths import find_repo_root, query_artifacts_dir
-from accel_pipeline.prerequisites import ensure_base_accelerator_prerequisite
 from accel_pipeline.failure import Failure
 from accel_pipeline.repair import EXIT_STOPPED, REPAIR_STATE_FILE, RepairCtx, StageStopped, stop_stage
 from accel_pipeline.state import STAGE_ALIASES, STAGES, PipelineState, advance_stage, load_or_create, state_path
-from accel_pipeline.verus.stages import STAGES as VERUS_STAGES
-from accel_pipeline.stages import analysis, audit, implementation, optimization, test_suite
+from accel_pipeline.stages import run_stage, stage_module
+from accel_pipeline.verus import STAGES as VERUS_STAGES
 from accel_pipeline.structural_reanalysis import process_after_stage
 from accel_pipeline.pipeline_log import log_event, log_pipeline_summary
 
@@ -51,7 +49,7 @@ def _maybe_process_structural_reanalysis(
         return None
 
     def run_analysis(**kwargs):
-        analysis.run(
+        stage_module("analysis").run(
             pipeline_config,
             model_config,
             workload_name,
@@ -63,23 +61,13 @@ def _maybe_process_structural_reanalysis(
         )
 
     def run_suite():
-        test_suite.run(pipeline_config, model_config, workload_name, query, model_overrides, dry_run)
+        run_stage("test_suite", pipeline_config, model_config, workload_name, query, model_overrides, dry_run)
 
     def run_impl():
-        implementation.run(
-            pipeline_config, model_config, workload_name, query, model_overrides, dry_run
-        )
+        run_stage("implementation", pipeline_config, model_config, workload_name, query, model_overrides, dry_run)
 
     def run_opt():
-        optimization.run(
-            pipeline_config,
-            model_config,
-            workload_name,
-            query,
-            pipeline_config.optimization_max_iterations,
-            model_overrides,
-            dry_run,
-        )
+        run_stage("optimization", pipeline_config, model_config, workload_name, query, model_overrides, dry_run)
 
     result = process_after_stage(
         repo_root=pipeline_config.repo_root,
@@ -111,50 +99,6 @@ def _maybe_process_structural_reanalysis(
     return next_idx
 
 
-def _run_stage_once(
-    stage: str,
-    pipeline_config,
-    model_config,
-    workload_name: str,
-    query: int,
-    model_overrides: dict[str, str],
-    dry_run: bool,
-    *,
-    skip_gates: bool = False,
-    resume: bool = False,
-) -> None:
-    if stage == "analysis":
-        analysis.run(pipeline_config, model_config, workload_name, query, model_overrides, dry_run)
-    elif stage == "test_suite":
-        test_suite.run(pipeline_config, model_config, workload_name, query, model_overrides, dry_run)
-    elif stage == "implementation":
-        implementation.run(
-            pipeline_config,
-            model_config,
-            workload_name,
-            query,
-            model_overrides,
-            dry_run,
-            skip_gates=skip_gates,
-        )
-    elif stage == "optimization":
-        optimization.run(
-            pipeline_config,
-            model_config,
-            workload_name,
-            query,
-            pipeline_config.optimization_max_iterations,
-            model_overrides,
-            dry_run,
-            skip_gates=skip_gates,
-            resume=resume,
-        )
-    elif stage == "audit":
-        audit.run(pipeline_config, model_config, workload_name, query, model_overrides, dry_run)
-    else:
-        raise ValueError(f"unknown stage: {stage}")
-
-
 def _mark_stopped(pipeline_config, workload_name: str, query: int, stage: str, reason: str) -> None:
     path = state_path(pipeline_config.repo_root, query, workload_name, pipeline_config.engine_name)
     if not path.is_file():
@@ -182,8 +126,8 @@ def _run_stage(
     retries = pipeline_config.repair.max_orchestrator_retries
     for attempt in range(retries + 1):
         try:
-            return _run_stage_once(stage, pipeline_config, model_config, workload_name, query, model_overrides,
-                                   dry_run, skip_gates=skip_gates, resume=resume or attempt > 0)
+            return run_stage(stage, pipeline_config, model_config, workload_name, query, model_overrides,
+                             dry_run, skip_gates=skip_gates, resume=resume or attempt > 0)
         except StageStopped as stopped:
             _mark_stopped(pipeline_config, workload_name, query, stage, stopped.reason)
             raise
@@ -305,7 +249,7 @@ def _main(argv: list[str] | None = None) -> int:
     pipeline_config = apply_workload_overrides(pipeline_config, workload)
     # Concurrent pack workers: separate build dir + CODEX_HOME (+ optional worktree).
     if os.environ.get("ACCEL_PIPELINE_WORKER_ID") or os.environ.get("ACCEL_PIPELINE_BUILD_DIR"):
-        from accel_pipeline.worker_isolation import apply_worker_isolation, isolation_summary
+        from accel_pipeline.pack.worker_isolation import apply_worker_isolation, isolation_summary
 
         pipeline_config = apply_worker_isolation(
             pipeline_config,
@@ -316,7 +260,7 @@ def _main(argv: list[str] | None = None) -> int:
         print(f"worker isolation: {isolation_summary(pipeline_config)}", file=sys.stderr)
     repo_root = Path(pipeline_config.repo_root)
     if not args.dry_run:
-        from accel_pipeline.core_budget import activate, format_cpus
+        from accel_pipeline.pack.core_budget import activate, format_cpus
 
         budget = activate(pipeline_config.concurrency)
         print(f"core budget: cpus={format_cpus(budget.cpus)} measure={format_cpus(budget.measure) or '-'} slot={budget.slot}", file=sys.stderr)
@@ -344,7 +288,7 @@ def _main(argv: list[str] | None = None) -> int:
         preflight.require(preflight.Probe(pipeline_config, model_config, workload, args.workload, query))
 
     if workload.get("workload_kind") == "engine_backend":
-        from accel_pipeline.stages import engine_backend as engine_backend_stage
+        from accel_pipeline.engine_backend import stage as engine_backend_stage
 
         print(f"=== engine_backend workload: {args.workload} ===", file=sys.stderr)
         engine_backend_stage.run_engine_pipeline(
@@ -370,6 +314,8 @@ def _main(argv: list[str] | None = None) -> int:
     # Worker worktrees are private, so the query's other engines can be hidden from the
     # agent (a shared tree would hide them from the sibling runs too).
     if repo_root != primary_root and not args.dry_run:
+        from accel_pipeline.pack.engine_quarantine import apply_foreign_engine_quarantine, restore_quarantine
+
         atexit.register(restore_quarantine, apply_foreign_engine_quarantine(repo_root, workload))
 
     # Verus mode: same front end, then the Verus pipeline's own stages.  It
@@ -396,8 +342,8 @@ def _main(argv: list[str] | None = None) -> int:
 
     # One-shot query-host bootstrap (engines without a query-scoped harness) before per-query stages.
     if args.stage in {"all", "host_bootstrap"}:
-        from accel_pipeline.backend_requests import reopen_engine_backend
-        from accel_pipeline.host_bootstrap import ensure_host_bootstrap_for_workload
+        from accel_pipeline.engine_backend.backend_requests import reopen_engine_backend
+        from accel_pipeline.engine_backend.host_bootstrap import ensure_host_bootstrap_for_workload
 
         if pipeline_config.engine_name and repo_root == primary_root:
             # Backend defects earlier query runs recorded go back to the engine's backend run first
@@ -433,14 +379,6 @@ def _main(argv: list[str] | None = None) -> int:
             from accel_pipeline.quick import prepare_inner_loop
 
             prepare_inner_loop(pipeline_config, workload, query)
-        ensure_base_accelerator_prerequisite(
-            pipeline_config,
-            args.workload,
-            query,
-            model_config=model_config,
-            model_overrides=model_overrides,
-            dry_run=args.dry_run,
-        )
 
     if args.stage != "all":
         print(f"=== stage: {args.stage} ===", file=sys.stderr)

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Protocol
+from typing import Any
 
 
 @dataclass
@@ -28,8 +28,3 @@ class StageRunResult:
     error: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
 
-
-class AgentBackend(Protocol):
-    name: str
-
-    def run_stage(self, request: StageRunRequest) -> StageRunResult: ...

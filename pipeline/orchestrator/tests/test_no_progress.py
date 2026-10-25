@@ -15,7 +15,7 @@ from accel_pipeline.backends.base import StageRunRequest
 from accel_pipeline.backends.codex_exec import CodexExecBackend
 from accel_pipeline.config import ModelConfig, NoProgressConfig, PipelineConfig, RepairConfig, SessionConfig
 from accel_pipeline.failure import AGENT_BLOCKER, Failure, StageFailure
-from accel_pipeline.gates import GateResult
+from accel_pipeline.gates.run import GateResult
 from accel_pipeline.repair import RepairCtx, StageStopped, run_with_repair
 from accel_pipeline.session import budget_footer
 from accel_pipeline.stages.base import stage_failure

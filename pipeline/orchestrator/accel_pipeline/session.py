@@ -79,9 +79,11 @@ class SessionStore:
 
 
 def rollout_path(codex_home: Path, session_id: str) -> Path | None:
-    from accel_pipeline.verus.usage import _rollout
-
-    return _rollout(codex_home, session_id)
+    """The codex rollout log of a session (the newest, if codex wrote several)."""
+    if not session_id:
+        return None
+    found = list((Path(codex_home) / "sessions").rglob(f"rollout-*{session_id}.jsonl"))
+    return max(found, key=lambda p: p.stat().st_mtime) if found else None
 
 
 def context_tokens(codex_home: Path, session_id: str) -> int:

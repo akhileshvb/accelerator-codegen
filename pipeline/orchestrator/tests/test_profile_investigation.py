@@ -1,4 +1,4 @@
-from accel_pipeline.profile_investigation import build_profile_investigation
+from accel_pipeline.optimization.profile_investigation import build_profile_investigation
 
 
 def test_scan_amplification_produces_investigation_questions_and_strategies():

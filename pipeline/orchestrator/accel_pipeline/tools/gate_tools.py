@@ -4,22 +4,9 @@ import json
 from dataclasses import dataclass
 from typing import Any
 
-from accel_pipeline.background_gates import background_status, start_background_gate
+from accel_pipeline.gates.parallel import background_status, start_background_gate
 from accel_pipeline.config import PipelineConfig
-from accel_pipeline.gates import run_gate
-
-
-def layer_gate_from_stage(stage: str, workload: dict[str, Any] | None = None) -> str | None:
-    """Map ``impl_epochs`` to the gate of that layer in the workload. None when this is not a layer impl stage."""
-    if not str(stage or "").startswith("impl_"):
-        return None
-    lid = str(stage)[len("impl_") :].strip()
-    if not lid:
-        return None
-    for layer in (workload or {}).get("implementation_layers") or []:
-        if str(layer.get("id") or "") == lid:
-            return str(layer.get("gate") or "") or None
-    return f"engine_{lid}"
+from accel_pipeline.gates.run import run_gate
 
 
 @dataclass
@@ -29,6 +16,7 @@ class ToolContext:
     workload: dict[str, Any] | None = None
     stage: str = ""
     workload_name: str = ""
+    optimization_iter: int = 0
 
 
 def _compact_gate_payload(gate_name: str, data: dict) -> dict:
@@ -53,7 +41,7 @@ def _compact_gate_payload(gate_name: str, data: dict) -> dict:
     if waited := (data.get("phase_timings") or {}).get("measurement_lease_wait"):
         compact["measurement_lease"] = f"waited {waited} s for the measurement lease"
     if data.get("status") == "fail":
-        from accel_pipeline.gate_capture import log_tail_for_agent
+        from accel_pipeline.gates.run import log_tail_for_agent
 
         tail = log_tail_for_agent(data, max_chars=4000)
         compact["failure_summary"] = tail
@@ -122,25 +110,4 @@ def make_gate_tools(ctx: ToolContext):
         state = background_status(ctx.pipeline_config, ctx.workload or {}, ctx.query, gate_name)
         return json.dumps(_compact_background_state(state), indent=2)
 
-    def run_engine_build() -> str:
-        """MCP TOOL. Official ``engine_build`` gate (host cmake or docker ensure+build)."""
-        return request_gate("engine_build")
-
-    def run_layer_gate() -> str:
-        """MCP TOOL. Official gate for this impl_* layer (e.g. impl_epochs → engine_epochs)."""
-        gate = layer_gate_from_stage(ctx.stage, ctx.workload)
-        if not gate:
-            return json.dumps(
-                {
-                    "error": "run_layer_gate is for engine_backend impl_* stages",
-                    "stage": ctx.stage,
-                    "hint": (
-                        "Call request_gate with engine_capture / engine_epochs / … "
-                        "or run_engine_build()."
-                    ),
-                },
-                indent=2,
-            )
-        return request_gate(gate)
-
-    return request_gate, run_engine_build, run_layer_gate, gate_status
+    return request_gate, gate_status

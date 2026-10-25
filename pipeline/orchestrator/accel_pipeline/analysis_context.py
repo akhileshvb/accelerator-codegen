@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import copy
 import json
-from pathlib import Path
 from typing import Any
 
 from accel_pipeline.textutil import squeeze_truncate
@@ -149,75 +148,6 @@ def compact_base_analysis_for_optimization(analysis: dict[str, Any]) -> str:
         "optimization_hypotheses": (analysis.get("optimization_hypotheses") or [])[:4],
     }
     return compact_json(payload)
-
-
-def compact_bench_summary(summary: dict[str, Any]) -> dict[str, Any]:
-    if not summary:
-        return {}
-    by_freq: dict[str, Any] = {}
-    for key, row in (summary.get("by_write_frequency_pct") or {}).items():
-        if not isinstance(row, dict):
-            continue
-        by_freq[key] = {
-            "workload_speedup": row.get("workload_speedup"),
-            "query_only_speedup": row.get("query_only_speedup"),
-            "accel_hit_rate": row.get("accel_hit_rate"),
-        }
-    return {
-        "composite_score": summary.get("composite_score"),
-        "composite_workload_speedup": summary.get("composite_workload_speedup"),
-        "read_only_query_speedup": summary.get("read_only_query_speedup"),
-        "thread_scaling": summary.get("thread_scaling"),
-        "by_write_frequency_pct": by_freq,
-    }
-
-
-def compact_gate_summary(gates_dir: Path) -> dict[str, Any]:
-    if not gates_dir.is_dir():
-        return {}
-    summary: dict[str, Any] = {}
-    for path in sorted(gates_dir.glob("*.json")):
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
-            continue
-        if not isinstance(data, dict):  # other artifacts share the directory (the bench's draws are a list)
-            continue
-        gate = str(data.get("gate") or path.stem)
-        entry: dict[str, Any] = {"status": data.get("status")}
-        for key in ("composite_score", "composite_workload_speedup", "reason", "exit_code"):
-            if key in data and data[key] is not None:
-                entry[key] = data[key]
-        if data.get("status") == "fail":
-            tail = str(data.get("log_tail") or data.get("notes") or "").strip()
-            if tail:
-                entry["failure_summary"] = tail[-400:]
-        summary[gate] = entry
-    return summary
-
-
-def compact_optimization_state(state: dict[str, Any], optimization_iter: int) -> dict[str, Any]:
-    if not state:
-        return {}
-    history = state.get("history") or []
-    last = history[-1] if history else {}
-    prior = history[-2] if len(history) >= 2 else {}
-    compact: dict[str, Any] = {
-        "active_candidate_id": state.get("active_candidate_id"),
-        "best_composite_score": state.get("best_composite_score"),
-        "best_iteration": state.get("best_iteration"),
-        "current_iteration": optimization_iter,
-    }
-    if last:
-        compact["last_result"] = {
-            "iteration": last.get("iteration"),
-            "change_kind": last.get("change_kind"),
-            "composite_score": last.get("composite_score"),
-            "composite_workload_speedup": last.get("composite_workload_speedup"),
-        }
-    if prior:
-        compact["prior_composite_score"] = prior.get("composite_score")
-    return compact
 
 
 def _slim_candidate(candidate: dict[str, Any]) -> dict[str, Any]:
@@ -380,42 +310,3 @@ def stage_analysis_json(analysis: dict[str, Any], stage: str) -> str:
             "schema_path": "pipeline/schemas/aux_state_analysis.schema.json",
         }
     return compact_json(payload)
-
-
-def build_optimization_retrieval_brief(
-    *,
-    query: int,
-    analysis: dict[str, Any],
-    bench: dict[str, Any],
-    opt_state: dict[str, Any],
-    experiment_log_tail: str,
-    optimization_iter: int,
-    gate_summary: dict[str, Any] | None = None,
-) -> str:
-    opt_ctx = analysis_for_optimization(analysis)
-    bench_compact = compact_bench_summary(bench)
-    state_compact = compact_optimization_state(opt_state, optimization_iter)
-    lines = [
-        f"## Retrieval brief (Q{query} optimization iter {optimization_iter})",
-        "",
-        "### Active design",
-        compact_json(opt_ctx.get("state_design_summary", {})),
-        "",
-        "### Bench sweep (0–50% writes)",
-        compact_json(bench_compact),
-        "",
-        "### Optimization state",
-        compact_json(state_compact),
-    ]
-    if gate_summary:
-        lines.extend(["", "### Last official gates", compact_json(gate_summary)])
-    lines.extend(["", "### Experiment log (recent)", experiment_log_tail or "(empty)"])
-    if opt_ctx.get("viable_alternate_candidates"):
-        lines.extend(
-            [
-                "",
-                "### Viable alternates (read full analysis.json for candidate_switch)",
-                compact_json(opt_ctx["viable_alternate_candidates"]),
-            ]
-        )
-    return "\n".join(lines)

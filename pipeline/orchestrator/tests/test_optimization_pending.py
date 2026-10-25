@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from accel_pipeline.optimization_pending import PendingFeedback, format_gate_delta
+from accel_pipeline.optimization.pending import PendingFeedback, format_gate_delta
 
 
 def test_pending_feedback_flush_clears():

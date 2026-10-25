@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from accel_pipeline.optimization_eval import aux_optimization_score, improvement_ratio
+from accel_pipeline.optimization.eval import aux_optimization_score, improvement_ratio
 
 
 def test_aux_score_uses_hit_time_when_read_only_zero():
