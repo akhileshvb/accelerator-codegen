@@ -20,6 +20,7 @@ _STAGE_PROVIDER_PARENTS = {
     "optimization_unified_patch": "optimization_unified",
     "optimization_fix": "optimization_worker",
     "optimization_worker": "optimization_unified",
+    "preflight_live": "analysis",  # the live model probe runs the way an analysis turn does
 }
 
 
