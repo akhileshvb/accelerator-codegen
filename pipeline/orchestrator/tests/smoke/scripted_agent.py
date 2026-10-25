@@ -285,6 +285,12 @@ def extend_primitive() -> None:
         raise SystemExit(f"primitive_publish of the extension failed: {json.dumps(result)[:4000]}")
 
 
+def is_repair_turn() -> bool:
+    """The stage was launched before (the launch log has this launch's own line too)."""
+    launches = [json.loads(l) for l in Path(ENV["ACCEL_SMOKE_CALLS"]).read_text().splitlines()]
+    return sum(c.get("stage") == STAGE for c in launches) > 1
+
+
 def report_blocker_on_failing_code() -> None:
     """Calls its failing code a blocker; the repair turn it resumes in has the code fixed."""
     call_tool("quick_check", {})
@@ -338,7 +344,7 @@ BEHAVIOURS = {
     "dismissed_check": {"implementation": lambda: implementation(rebuild_every_write, dismiss_failed_check)},
     "false_blocker": {"implementation": lambda: implementation(then=blocker_then_linger)},
     "real_blocker": {"implementation": lambda: implementation(
-        None if RESUMED else rebuild_every_write, None if RESUMED else report_blocker_on_failing_code)},
+        *((None, None) if is_repair_turn() else (rebuild_every_write, report_blocker_on_failing_code)))},
     "primitive_extension": {"implementation": lambda: implementation(then=extend_primitive)},
     "stalled": {"implementation": stall},
     "no_units_probe": {"analysis": lambda: broken_analysis(drop_units_probes)},
