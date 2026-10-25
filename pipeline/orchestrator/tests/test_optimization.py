@@ -407,3 +407,26 @@ def test_profile_freshness_detects_newer_sources(tmp_path: Path):
     )
     assert freshness["stale"] is True
     assert any("editable sources newer" in r for r in freshness["reasons"])
+
+
+def _built(read: float, write: float, build_ms: float) -> dict:
+    return {**_metrics(read, write), "by_write_frequency_pct": {"0": {"setup_full_build_ms": build_ms}}}
+
+
+@pytest.mark.parametrize("structural_attempt", [False, True])
+def test_a_much_faster_build_at_an_equal_score_is_kept(structural_attempt):
+    # the clean Q3 run's fused rank build: SF1 build 19.4 s -> 16.8 s, score flat, dropped by the old rule
+    outcome = evaluate_attempt_outcome(
+        baseline_score=261.3, candidate_score=259.0, baseline_metrics=_built(292.0, 180.0, 19400.0),
+        candidate_metrics=_built(290.0, 179.0, 16800.0), config=EvalConfig(), correctness_ok=True,
+        structural=structural_attempt)
+    assert outcome.verdict == "accept" and "13% faster" in outcome.reason
+
+
+@pytest.mark.parametrize("candidate_score,build_ms,write", [(250.0, 16800.0, 180.0), (261.3, 18500.0, 180.0),
+                                                            (261.3, 16800.0, 150.0)])
+def test_a_build_win_does_not_buy_a_score_drop_a_small_gain_or_a_write_regression(candidate_score, build_ms, write):
+    outcome = evaluate_attempt_outcome(
+        baseline_score=261.3, candidate_score=candidate_score, baseline_metrics=_built(292.0, 180.0, 19400.0),
+        candidate_metrics=_built(292.0, write, build_ms), config=EvalConfig(), correctness_ok=True)
+    assert outcome.verdict != "accept"

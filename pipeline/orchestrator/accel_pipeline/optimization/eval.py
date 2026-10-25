@@ -166,6 +166,16 @@ def evaluate_attempt_outcome(
             measurement_failures=invalid,
         )
 
+    if faster_build := build_win(baseline_metrics, candidate_metrics, improvement_pct, config):
+        return AttemptOutcome(
+            verdict="accept",
+            improvement_pct=improvement_pct,
+            baseline_score=baseline_score,
+            candidate_score=candidate_score,
+            diagnostic_vector=diagnostic_vector,
+            reason=faster_build,
+        )
+
     if structural:
         rejection = _structural_rejection(baseline_metrics, candidate_metrics, config)
         if rejection:
@@ -231,6 +241,29 @@ def evaluate_attempt_outcome(
 
 def is_aux_workload(workload: dict[str, Any]) -> bool:
     return workload.get("workload_kind") == "aux_state"
+
+
+BUILD_WIN_PCT = 10.0  # a state build this much faster is kept at an equal score: at SF3000 it is hours of build
+
+
+def _build_ms(metrics: dict[str, Any]) -> float:
+    point = (metrics.get("by_write_frequency_pct") or {}).get("0") or {}
+    return float(point.get("setup_full_build_ms") or metrics.get("setup_full_build_ms") or 0.0)
+
+
+def build_win(baseline_metrics: dict[str, Any], candidate_metrics: dict[str, Any], improvement_pct: float,
+              config: EvalConfig) -> str:
+    """Why the candidate is kept for a faster state build ("" if it is not): the build is BUILD_WIN_PCT faster
+    while the score and the write axis stay within the reject threshold (the score has no build term)."""
+    before, after = _build_ms(baseline_metrics), _build_ms(candidate_metrics)
+    if not before or not after or (before - after) / before * 100.0 < BUILD_WIN_PCT:
+        return ""
+    if improvement_pct < -config.reject_threshold_pct:
+        return ""
+    write_before, write_after = _write_mix_from_metrics(baseline_metrics), _write_mix_from_metrics(candidate_metrics)
+    if write_before > 0 and write_after < write_before * (1.0 - config.reject_threshold_pct / 100.0):
+        return ""
+    return f"state build {before / 1e3:.1f} s -> {after / 1e3:.1f} s ({(before - after) / before:.0%} faster) at an equal score"
 
 
 def _write_mix_from_metrics(metrics: dict[str, Any]) -> float:

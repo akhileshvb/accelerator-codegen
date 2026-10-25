@@ -26,7 +26,7 @@ from accel_pipeline.layout import query_dir
 from accel_pipeline.optimization.measurement import check_measurement
 from accel_pipeline.pack.measurement_lease import lease_note, noise_warning, run_measured
 from accel_pipeline.optimization.checkpoint import load_best_valid_baseline
-from accel_pipeline.optimization.eval import aux_optimization_score, improvement_ratio
+from accel_pipeline.optimization.eval import aux_optimization_score, build_win, eval_config_from_pipeline, improvement_ratio
 from accel_pipeline.optimization.saturation import profile_guidance_error, record_trial_protocol
 from accel_pipeline.optimization.runtime import record_ab_trial, refresh_optimization_runtime
 from accel_pipeline.optimization.scoreboard import (
@@ -699,7 +699,10 @@ def make_ab_tools(ctx: AbToolContext):
                     else float(metrics.get("speedup_median") or 0.0)
                 )
                 ref = float(active.get("reference_score") or _reference_score_for_trial(ctx) or 0.0)
-                if ref > 0 and cand + 1e-9 < ref:
+                faster_build = ref > 0 and build_win(
+                    dict(load_best_valid_baseline(_art(ctx)).get("metrics") or {}), metrics,
+                    improvement_ratio(ref, cand), eval_config_from_pipeline(ctx.pipeline_config))
+                if ref > 0 and cand + 1e-9 < ref and not faster_build:
                     keep = False
                     forced_discard = True
                     discard_reason = (
