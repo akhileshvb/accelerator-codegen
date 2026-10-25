@@ -1,7 +1,8 @@
 """Progress of an agent turn, and what to do when there is none.
 
 Reads, greps and file views are activity; progress is a change under the stage's owned paths, a stage
-artifact written, or a check (quick_check, a gate) whose result differs from its previous one. The
+artifact written, or a check (quick_check, a gate) whose result differs from its previous one; in the analysis
+stages also a successful data-tool call (data_queries.jsonl), since measuring the data is their work. The
 supervisor of the codex process keeps a `ProgressClock`; the MCP tool footer tells the agent how long
 it has gone without progress, and past `redirect_sec` the turn is ended with a directed resume.
 `report_blocker` is the agent's way out when the obstacle is not in its files."""
@@ -19,9 +20,11 @@ from typing import Any
 
 CHECKS_FILE = "check_signatures.json"  # written by the MCP server: {check: signature of its last result}
 BLOCKER_FILE = "blocker.md"
+DATA_LOG = "data_queries.jsonl"  # tools/data_tools.py
 
 CHECK_TOOLS = frozenset({"quick_check", "quick_layer", "request_gate", "run_engine_build", "run_layer_gate"})
 STAGE_ARTIFACTS = ("analysis*.json", "experiment_log.md", "layer_critique_*", "test_suite_change_request*")
+DATA_STAGES = frozenset({"analysis", "analysis_critic"})
 GUARDED_READ_LIMIT = 10
 _GUARDED_READ = re.compile(r"(?:^|[\s'\"=:(/])(?:pipeline/(?:orchestrator|gates|clean_tree)|scripts)/")
 _SHELL_TOOLS = frozenset({"exec_command", "shell", "local_shell"})
@@ -203,12 +206,22 @@ class ProgressClock:
         return sorted((p.name, p.stat().st_mtime_ns, p.stat().st_size) for p in files
                       if any(fnmatch.fnmatch(p.name, g) for g in STAGE_ARTIFACTS))
 
+    def _data_calls(self) -> int:
+        """Successful data-tool calls so far (analysis stages only)."""
+        if self.stage not in DATA_STAGES:
+            return 0
+        try:
+            lines = (self.art / DATA_LOG).read_text(encoding="utf-8").splitlines()
+        except OSError:
+            return 0
+        return sum('"error": null' in line for line in lines)
+
     def _sample(self) -> tuple:
         try:
             checks = (self.art / CHECKS_FILE).read_text(encoding="utf-8")
         except OSError:
             checks = ""
-        return (sorted(self._owned_state().items()), self._artifacts(), checks)
+        return (sorted(self._owned_state().items()), self._artifacts(), checks, self._data_calls())
 
     def _changes(self) -> str:
         now = self._owned_state()
