@@ -53,7 +53,9 @@ export ACCEL_INTERFERENCE_CALIB_SEC="${ACCEL_INTERFERENCE_CALIB_SEC:-4}"
 export ACCEL_INTERFERENCE_ISOLATED_SAMPLES="${ACCEL_INTERFERENCE_ISOLATED_SAMPLES:-20}"
 export ACCEL_AUX_BENCHMARK="${BENCHMARK_NAME}"
 
-engine_measure "${TARGET}" --query "${QUERY}" "${CONFIG}"
+# written beside the config and moved into place when done: a bench running at the same time (aux_exit) never reads a half-written file
+engine_measure "${TARGET}" --query "${QUERY}" "${CONFIG}.new"
+[[ ${RC} -ne 0 || ! -f "${CONFIG}.new" ]] || mv -f "${CONFIG}.new" "${CONFIG}"
 RC_RUN=${RC}
 BUILD_LOG="${ENGINE_LOG}"
 

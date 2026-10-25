@@ -8,7 +8,7 @@
 #   tsan              the differential on the subset dataset under ThreadSanitizer (its own build dir)
 #   bench             the sweep of every write frequency in one process, on the measurement CPUs, on an instance of its
 #                     own (the bench writes the database)
-# The cost-model calibration is a gate of its own after this one: it rebuilds the state several times.
+#   calibrate         the cost-model calibration (it rebuilds the state several times), on an instance of its own
 # aux_exit.json: the status, seconds and result file of each phase, and the first failure's reason.
 # ACCEL_EXIT_PHASES lists the phases to run (default: all).
 set -uo pipefail
@@ -26,23 +26,24 @@ load_aux_gate_context "${ROOT}" "${QUERY}"
 
 JSON="${GATE_OUT}/${ACCEL_GATE_NAME:-aux_exit}.json"
 GATES="$(dirname "${BASH_SOURCE[0]}")"
-read -r -a PHASES <<<"${ACCEL_EXIT_PHASES:-correctness multi_connection cross_accel tsan bench}"
+read -r -a PHASES <<<"${ACCEL_EXIT_PHASES:-correctness multi_connection cross_accel tsan bench calibrate}"
 
 declare -A GATE=([correctness]=aux_correctness [multi_connection]=aux_multi_connection [cross_accel]=aux_cross_accel
-  [tsan]=aux_tsan [bench]=aux_bench_sweep)
+  [tsan]=aux_tsan [bench]=aux_bench_sweep [calibrate]=aux_cost_model_calibrate)
 [[ "${ACCEL_GATE_CHANGE_KIND:-}" != optimization ]] || GATE[correctness]=aux_correctness_iterate   # the lighter tier
 declare -A SCRIPT=([correctness]=run_aux_correctness.sh [multi_connection]=run_aux_multi_connection.sh
-  [cross_accel]=run_aux_cross_accel.sh [tsan]=run_aux_tsan.sh [bench]=run_aux_bench_sweep.sh)
+  [cross_accel]=run_aux_cross_accel.sh [tsan]=run_aux_tsan.sh [bench]=run_aux_bench_sweep.sh
+  [calibrate]=run_aux_cost_model_calibrate.sh)
 
 mapfile -t TARGETS < <(printf '%s\n' "${AUX_TEST_TARGET}" "${DIFF_BINARY}" "${MULTI_CONN_TARGET}" "${CROSS_ACCEL_TARGET}" \
-  "${AUX_BENCH_TARGET}" | grep .)
+  "${AUX_BENCH_TARGET}" "${AUX_CALIBRATE_TARGET}" | grep .)
 if ! engine_ready "${TARGETS[@]}"; then
   emit_result "${JSON}" aux_exit fail "${ENGINE_FAIL}" "${ENGINE_LOG}"
 fi
 
 # start <phase>: the phase's gate script in the background, as that gate (its result file is the gate's own); status,
-# seconds and output in <gates dir>/aux_exit/<phase>.*. The bench writes the database: it runs on an instance of its
-# own and queues for the measurement lease. The TSAN run is on the subset dataset.
+# seconds and output in <gates dir>/aux_exit/<phase>.*. The bench and the calibration write the database: each runs on
+# an instance of its own, and both queue for the measurement lease. The TSAN run is on the subset dataset.
 RUNS="${GATE_OUT}/aux_exit"
 rm -rf "${RUNS}"
 mkdir -p "${RUNS}"
@@ -50,7 +51,7 @@ declare -A RUNNING
 start() {
   local name="$1" own=()
   case "${name}" in
-    bench) own=("ACCEL_ENGINE_INSTANCE=${ACCEL_ENGINE_INSTANCE}-${name}" "ACCEL_ENGINE_STATE_DIR=${ACCEL_ENGINE_STATE_DIR}-${name}") ;;
+    bench|calibrate) own=("ACCEL_ENGINE_INSTANCE=${ACCEL_ENGINE_INSTANCE}-${name}" "ACCEL_ENGINE_STATE_DIR=${ACCEL_ENGINE_STATE_DIR}-${name}") ;;
     tsan) own=(ACCEL_GATE_TIER=quick) ;;
     correctness) [[ "${GATE[correctness]}" != aux_correctness_iterate ]] || own=(ACCEL_GATE_TIER=iterate) ;;
   esac
