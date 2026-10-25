@@ -59,7 +59,7 @@ def cmd_run(args) -> int:
 
 def cmd_canary(args) -> int:
     argv = ["--workload", args.workload, "--models", str(args.models),
-            *_flags({"--engine": args.engine, "--until": args.until, "--rev": args.rev, "--work": args.work,
+            *_flags({"--engine": args.engine, "--stage": args.stage, "--until": args.until, "--rev": args.rev, "--work": args.work,
                      "--resume": args.resume, "--probe-models": args.probe_models})]
     return _smoke_driver("canary").main(argv)
 
@@ -123,6 +123,7 @@ def build_parser() -> argparse.ArgumentParser:
     canary.add_argument("workload")
     canary.add_argument("--models", type=Path, required=True, help="the models config under test")
     canary.add_argument("--engine", default=None, help="default: the workload's first supported engine")
+    canary.add_argument("--stage", choices=STAGES, help="run this stage only (e.g. optimization again, with --resume)")
     canary.add_argument("--until", choices=STAGES[:-1], help="pause after this stage; --resume continues")
     canary.add_argument("--resume", action="store_true", help="continue the run in --work, with the pipeline of --rev")
     canary.add_argument("--probe-models", action="store_true", help="first make every model complete a tool-calling turn")

@@ -89,6 +89,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--work", type=Path, default=None)
     parser.add_argument("--timeout", type=float, default=float(os.environ.get("ACCEL_CANARY_TIMEOUT_SEC", 4 * 3600)))
     parser.add_argument("--probe-models", action="store_true")
+    parser.add_argument("--stage", default="all", help="run this stage only (e.g. optimization again, on --resume)")
     parser.add_argument("--until", default=None, help="pause after this stage; --resume continues")
     parser.add_argument("--resume", action="store_true",
                         help="continue the run in --work: everything but the agents' files is updated to --rev's clean tree first")
@@ -123,7 +124,7 @@ def main(argv: list[str] | None = None) -> int:
     shutil.copyfile(args.models, models)
     config = tree / "pipeline/config/default.yaml"
     query = int(fixture["query"])
-    pipeline = smoke.pipeline_args(args.workload, query, args.engine, models, config) + (["--until", args.until] if args.until else []) \
+    pipeline = smoke.pipeline_args(args.workload, query, args.engine, models, config, args.stage) + (["--until", args.until] if args.until else []) \
         + (["--resume"] if args.resume else [])
     print(f"[canary] {work}: tail -f {work / 'pipeline.log'}", flush=True)
 
