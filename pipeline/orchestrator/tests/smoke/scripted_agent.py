@@ -348,6 +348,8 @@ BEHAVIOURS = {
 
 
 def optimization() -> str:
+    profile = call_tool("run_profile", {"scale": "full"})
+    assert profile.get("status") == "pass" and profile.get("scale") == "full", profile
     return 'OPTIMIZATION_SATURATED\n```json\n{"reason": "scripted agent: the reference kernel is final"}\n```'
 
 
