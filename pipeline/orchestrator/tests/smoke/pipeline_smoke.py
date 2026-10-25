@@ -41,6 +41,7 @@ sys.path.insert(0, str(HERE))
 import smoke_report  # noqa: E402
 SOURCE_ROOT = HERE.parents[3]
 SMOKE_HOME = Path(os.environ.get("ACCEL_SMOKE_HOME", f"/flash1/{os.environ.get('USER', 'smoke')}/smoke"))
+KEEP_RUNS = 3  # a full run is ~7 GB; older runs are deleted when a new one starts
 STAGES = ("analysis", "test_suite", "implementation", "optimization", "audit")
 GIT = ["git", "-c", "user.name=smoke", "-c", "user.email=smoke@localhost"]
 NO_MODEL_ENV = "ACCEL_SMOKE_NO_MODEL"  # what the models config asks for instead of a provider key
@@ -289,11 +290,20 @@ def stop(proc: subprocess.Popen) -> None:
             pass
 
 
+def new_run_dir() -> Path:
+    """A fresh run directory's path; all but the newest KEEP_RUNS - 1 earlier runs are deleted first."""
+    runs = SMOKE_HOME / "runs"
+    earlier = sorted(runs.iterdir()) if runs.is_dir() else []
+    for old in earlier[:max(0, len(earlier) - (KEEP_RUNS - 1))]:
+        shutil.rmtree(old, ignore_errors=True)
+    return runs / time.strftime("%Y%m%d-%H%M%S")
+
+
 def run_case(args, fixture: dict, env: dict[str, str], name: str | None) -> int:
     """One run in a fresh tree: the always-behaving agent (`name` None) or an adversarial case."""
     case = read_fixture("cases.json")[name] if name else {}
     query = int(fixture["query"])
-    work = args.work or SMOKE_HOME / "runs" / time.strftime("%Y%m%d-%H%M%S")
+    work = args.work or new_run_dir()
     work.mkdir(parents=True)
     timings: list[tuple[str, float]] = []
 
@@ -333,7 +343,7 @@ def run_adversarial(args, fixture: dict, env: dict[str, str]) -> int:
     """Every case in its own process (the base tree is made once, first); a table of the verdicts."""
     cases = read_fixture("cases.json")
     base_tree(args.rev, args.engine, fixture, env)
-    root = args.work or SMOKE_HOME / "runs" / time.strftime("%Y%m%d-%H%M%S")
+    root = args.work or new_run_dir()
     root.mkdir(parents=True)
     common = ["--workload", args.workload, "--engine", args.engine, "--rev", args.rev]
     waiting, running, verdicts = list(cases), {}, {}

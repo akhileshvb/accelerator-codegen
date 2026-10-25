@@ -105,3 +105,14 @@ def test_case_verdicts(tmp_path, capsys):
     assert smoke_report.verify_case("c", {**CASE, "xfail": "TODO"}, tmp_path, tmp_path, []) == 0  # expected to get through
     (tmp_path / "pipeline.log").write_text("refused: run quick_check first\n[repair] code failure in quick_check\n")
     assert smoke_report.verify_case("c", {**CASE, "xfail": "TODO"}, tmp_path, tmp_path, []) == 1  # caught: drop the xfail
+
+
+def test_a_new_run_deletes_all_but_the_newest_earlier_runs(tmp_path, monkeypatch):
+    import pipeline_smoke
+
+    monkeypatch.setattr(pipeline_smoke, "SMOKE_HOME", tmp_path)
+    for name in ("20261024-100000", "20261024-110000", "20261025-090000", "20261025-100000"):
+        (tmp_path / "runs" / name).mkdir(parents=True)
+    new = pipeline_smoke.new_run_dir()
+    assert sorted(p.name for p in (tmp_path / "runs").iterdir()) == ["20261025-090000", "20261025-100000"]
+    assert new.parent == tmp_path / "runs" and not new.exists()
