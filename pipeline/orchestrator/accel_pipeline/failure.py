@@ -19,6 +19,7 @@ if TYPE_CHECKING:
 
 PROVIDER_FLAKE = "provider_flake"  # the infra_reason of a network or provider error: the agent never ran
 AGENT_BLOCKER = "agent_reported_blocker"  # the infra_reason of a blocker the agent handed to the operator
+PROVIDER_CREDITS = "provider_out_of_credits"  # the infra_reason of a 402 from the provider: retrying cannot help
 FailureKind = Literal["code", "infra", "timeout", "measurement", "orchestrator"]
 
 
@@ -146,6 +147,14 @@ _TRANSIENT_PROVIDER = (
     "stream disconnected", "error sending request", "connection refused", "cannot connect to host",
     "timed out", "timeout", "temporarily unavailable", "503", "502", "429", "rate limit", "reconnecting...",
 )
+
+
+_OUT_OF_CREDITS = ("402 payment required", "requires more credits")
+
+
+def is_out_of_credits(reason: str | None) -> bool:
+    text = (reason or "").lower()
+    return any(needle in text for needle in _OUT_OF_CREDITS)
 
 
 def is_transient_provider_failure(reason: str | None) -> bool:

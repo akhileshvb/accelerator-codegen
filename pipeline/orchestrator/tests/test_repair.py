@@ -403,3 +403,18 @@ def test_a_blocker_on_the_frozen_suite_goes_to_the_tester_then_the_gates_rerun(w
     monkeypatch.setattr(repair_mod, "_revise_test_suite", lambda ctx: revisions.pop(0))
     run_with_repair(world.ctx(), _blocked, gates=["aux_correctness"])
     assert world.gate_calls == [["aux_correctness"]] and revisions == [False] and world.agent_messages == []
+
+
+def _out_of_credits():
+    from accel_pipeline.failure import Failure, StageFailure
+    from accel_pipeline.stages.base import stage_failure
+
+    result = type("R", (), {"error": "unexpected status 402 Payment Required: This request requires more credits",
+                            "status": "error", "metadata": {}, "final_text": ""})()
+    raise StageFailure(stage_failure("implementation", "codex_exec", result))
+
+
+def test_an_out_of_credits_provider_stops_at_once_without_retries(world):
+    with pytest.raises(StageStopped) as stopped:
+        run_with_repair(world.ctx(), _out_of_credits, gates=["aux_correctness"])
+    assert "out of credits" in stopped.value.reason and world.agent_messages == [] and world.gate_calls == []

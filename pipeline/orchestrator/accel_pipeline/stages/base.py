@@ -7,7 +7,9 @@ from typing import Any, Callable
 
 from accel_pipeline.backends import StageRunRequest, create_agent_backend
 from accel_pipeline.config import ModelConfig, PipelineConfig, load_run_workload, apply_workload_overrides
-from accel_pipeline.failure import AGENT_BLOCKER, PROVIDER_FLAKE, Failure, StageFailure, is_transient_provider_failure
+from accel_pipeline.failure import (
+    AGENT_BLOCKER, PROVIDER_CREDITS, PROVIDER_FLAKE, Failure, StageFailure, is_out_of_credits, is_transient_provider_failure,
+)
 from accel_pipeline.models import make_model_id
 from accel_pipeline.no_progress import REDIRECT
 from accel_pipeline.paths import query_artifacts_dir
@@ -226,6 +228,9 @@ def stage_failure(stage: str, backend_name: str, result: Any) -> Failure:
     summary = f"{backend_name} stage {stage} failed"
     if result.metadata.get("write_violations"):
         return Failure(kind="code", stage=stage, source="write_policy", summary=summary, evidence=detail)
+    if is_out_of_credits(detail):
+        return Failure(kind="infra", stage=stage, source="agent", evidence=detail, infra_reason=PROVIDER_CREDITS,
+                       summary="the model provider's account is out of credits (402): add credits, then --resume")
     if is_transient_provider_failure(detail):
         return Failure(kind="infra", stage=stage, source="agent", summary=summary, evidence=detail,
                        infra_reason=PROVIDER_FLAKE)

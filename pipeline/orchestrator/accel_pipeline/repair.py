@@ -17,6 +17,7 @@ from typing import Any, Callable, TypeVar
 from accel_pipeline.config import ModelConfig, PipelineConfig, load_run_workload
 from accel_pipeline.failure import (
     AGENT_BLOCKER,
+    PROVIDER_CREDITS,
     PROVIDER_FLAKE,
     Failure,
     StageFailure,
@@ -120,6 +121,8 @@ def run_with_repair(ctx: RepairCtx, attempt: Callable[[], T], *, gates: list[str
                 ctx.log(f"the agent reported a blocker ({failure.summary}); running the stage's gates once")
                 continue
             failure = replace(failure, kind="code", infra_reason=None)  # nothing left to check: the agent adapts
+        if failure.infra_reason == PROVIDER_CREDITS:
+            raise stop_stage(ctx, failure, failure.summary)
         if failure.infra_reason == PROVIDER_FLAKE:
             flakes += 1
             if flakes > cfg.provider_retries:
@@ -375,6 +378,8 @@ def repair_turn(ctx: RepairCtx, failure: Failure, *, must_change: bool | None = 
         except StageFailure as exc:
             if exc.failure.infra_reason == AGENT_BLOCKER:
                 return exc.failure
+            if exc.failure.infra_reason == PROVIDER_CREDITS:
+                raise stop_stage(ctx, exc.failure, exc.failure.summary) from exc
             if exc.failure.infra_reason == PROVIDER_FLAKE and flake <= retries:
                 _wait_out_flake(ctx, flake)
                 continue
