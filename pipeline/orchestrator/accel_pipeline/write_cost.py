@@ -58,18 +58,21 @@ def is_rebuild(cost_s: float, build_s: float, action: str = "") -> bool:
 def unfaithful_rebuilds(reports: list[dict], txn_sql: dict[str, str], coverage: list[dict],
                         statements: Callable[[str], list[tuple[str, str]]]) -> list[str]:
     """Suite transactions that rebuild the state although analysis.json's mutation_coverage maintains every
-    (table, mutation) they write as supported_delta: one line each, naming the transaction and those writes."""
+    (table, mutation) they write as supported_delta: one line each, naming the transaction and those writes. A
+    transaction counts only when every report (N threads and one) shows it, so one noisy timing does not."""
     delta = {(str(c.get("table", "")).lower(), str(c.get("mutation", "")).lower())
              for c in coverage if c.get("behavior") == "supported_delta"}
-    out: dict[str, str] = {}
+    found: list[dict[str, str]] = []
     for report in reports:
+        out: dict[str, str] = {}
         build_s = float(report.get("build_seconds") or 0.0)
         for cost in report.get("write_costs") or []:
             writes = sorted({(t, verb.lower()) for verb, t in statements(txn_sql.get(cost["txn"], ""))})
             if writes and all(w in delta for w in writes) and is_rebuild(_maintenance_s(cost), build_s, cost.get("action", "")):
                 out[cost["txn"]] = (f"{cost['txn']} ({', '.join(f'{v} {t}' for t, v in writes)}): maintenance costs as much as "
                                     "a full build; analysis.json maintains these writes incrementally (supported_delta)")
-    return list(out.values())
+        found.append(out)
+    return [line for txn, line in found[0].items() if all(txn in other for other in found)] if found else []
 
 
 def _maintenance_s(cost: dict) -> float:

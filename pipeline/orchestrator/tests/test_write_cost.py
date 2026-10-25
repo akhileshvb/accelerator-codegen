@@ -192,3 +192,13 @@ def test_rebuilds_of_supported_delta_writes_are_unfaithful():
                 {"table": "events", "mutation": "delete", "behavior": "bounded_rebuild"}]
     lines = write_cost.unfaithful_rebuilds([report], sql, coverage, statements)
     assert len(lines) == 1 and lines[0].startswith("001.sql (update accounts)")
+
+
+def test_a_rebuild_shown_by_one_thread_run_only_is_noise():
+    from accel_pipeline.test_suite import statements
+
+    slow = {"build_seconds": 0.020, "write_costs": [{"txn": "001.sql", "maint_ms": 15.0, "write_ms": 40.0, "read_ms": 1.0}]}
+    fast = {"build_seconds": 0.020, "write_costs": [{"txn": "001.sql", "maint_ms": 0.2, "write_ms": 40.0, "read_ms": 1.0}]}
+    args = ({"001.sql": "UPDATE accounts SET status = 'x' WHERE id = 1;"}, [{"table": "accounts", "mutation": "update", "behavior": "supported_delta"}], statements)
+    assert write_cost.unfaithful_rebuilds([slow, fast], *args) == []
+    assert len(write_cost.unfaithful_rebuilds([slow, slow], *args)) == 1
