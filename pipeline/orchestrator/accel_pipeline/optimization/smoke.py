@@ -112,11 +112,11 @@ def run_build(
     workload: dict,
     query: int,
 ) -> tuple[bool, str]:
-    from accel_pipeline.pack.worker_isolation import ensure_worker_build_dir
+    from accel_pipeline.gates.run import ensure_build_dir
 
     # Pack workers use build-release-{worker_id}; dirs may be missing after disk cleanup.
     try:
-        ensure_worker_build_dir(pipeline_config, configure=True)
+        ensure_build_dir(pipeline_config, configure=True)
     except Exception as exc:  # noqa: BLE001 — surface as preflight failure
         return False, str(exc)
 

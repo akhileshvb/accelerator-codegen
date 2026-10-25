@@ -51,6 +51,37 @@ def _normalize_ctest_cmd(cmd: str, pipeline_config: PipelineConfig) -> str:
     return re.sub(r"\bctest\b", f"ctest --test-dir {build_dir}", stripped, count=1)
 
 
+def rewrite_command_build_dir(cmd: str, pipeline_config: PipelineConfig) -> str:
+    """Rewrite bare ``build-release`` tokens to this worker's build dir name."""
+    build_name = pipeline_config.build_dir.name
+    if build_name == "build-release" or "build-release" not in cmd:
+        return cmd
+    # Avoid double-rewriting already-scoped paths.
+    if build_name in cmd:
+        return cmd
+    # Rewrite absolute .../build-release (exact dir) and bare tokens.
+    root = str(pipeline_config.build_dir.parent).rstrip("/")
+    abs_shared = f"{root}/build-release"
+    abs_worker = str(pipeline_config.build_dir)
+    out = cmd
+    out = re.sub(rf"(?<![\w.-]){re.escape(abs_shared)}(?![\w.-])", abs_worker, out)
+    out = re.sub(r"(?<![\w.-])build-release(?![\w.-])", build_name, out)
+    return out
+
+
+def reject_shared_build_dir_cmd(cmd: str, pipeline_config: PipelineConfig) -> str | None:
+    """If worker isolation is active, forbid targeting the shared ``build-release`` tree."""
+    build_name = pipeline_config.build_dir.name
+    if build_name == "build-release":
+        return None
+    if re.search(r"(?<![\w.-])build-release(?![\w.-])", cmd) and build_name not in cmd:
+        return (
+            f"shared build-release is forbidden under pack isolation; "
+            f"use {build_name} (or omit — run_pipeline_command rewrites it)"
+        )
+    return None
+
+
 def make_shell_tools(ctx: ToolContext):
     allowed = [re.compile(p) for p in ctx.pipeline_config.allowed_commands]
 
@@ -61,10 +92,6 @@ def make_shell_tools(ctx: ToolContext):
             command_touches_shared_build,
             sticky_holder,
             worker_id_from_env,
-        )
-        from accel_pipeline.pack.worker_isolation import (
-            reject_shared_build_dir_cmd,
-            rewrite_command_build_dir,
         )
 
         cwd = str(none_default(cwd, ""))

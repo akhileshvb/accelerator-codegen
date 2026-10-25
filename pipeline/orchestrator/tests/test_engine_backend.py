@@ -436,7 +436,7 @@ def test_run_gate_sets_engine_context_and_out_env(monkeypatch):
         lambda script, query, cwd, env: fake_run(["bash", str(script), str(query)], cwd=cwd, env=env),
     )
     monkeypatch.setattr(
-        "accel_pipeline.pack.worker_isolation.ensure_worker_build_dir",
+        "accel_pipeline.gates.run.ensure_build_dir",
         lambda *a, **k: None,
     )
     result = run_gate(pc, "engine_capture", 0, workload=workload, raise_on_failure=False)

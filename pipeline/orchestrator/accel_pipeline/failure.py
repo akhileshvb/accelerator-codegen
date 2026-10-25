@@ -117,6 +117,8 @@ def _racy_diagnosis(data: dict[str, Any]) -> list[str]:
             "shared state and fix it. Rerunning until it passes proves nothing."]
 
 
+# --- telling infrastructure failures from code failures, from the failure's own text (engine-generic)
+
 _TEXT_KEYS = ("log_tail", "stderr", "stdout", "notes", "reason")
 
 _SANITIZER_REPORT = re.compile(r"(?:WARNING: ThreadSanitizer|ERROR: AddressSanitizer|ERROR: LeakSanitizer)")
@@ -263,6 +265,8 @@ def classify(
         return "infra", "timeout_under_load"
     return "code", None
 
+
+# --- shared-tree infrastructure failures: repaired without burning agent turns
 
 _UNSUPPORTED = re.compile(r"unsupported shared query(?:\s+binding)?", re.IGNORECASE)
 _REBUILD_REVERT = re.compile(r"rebuild after (?:revert|restore) failed", re.IGNORECASE)

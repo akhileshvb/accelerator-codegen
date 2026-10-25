@@ -1,4 +1,4 @@
-"""Build/correctness fix loop for optimization attempts (mirrors crash_debug)."""
+"""Build/correctness fix loop for optimization attempts (mirrors the repair loop)."""
 
 from __future__ import annotations
 

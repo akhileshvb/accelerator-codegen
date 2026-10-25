@@ -101,7 +101,7 @@ def run_gates_parallel(
     jobs: concurrent gates in a "parallel" group (default quick_tier.gate_jobs, 0 = one per gate).
     fail_fast: after the first failing gate, running siblings are killed and the rest are not
       started (status "cancelled"); the failing result is the first non-pass in the returned list.
-    reuse: a gate that already passed on the code as it is now (gate_stamps, background gates) is not
+    reuse: a gate that already passed on the code as it is now (gates/stamps.py, background gates) is not
       run again; its result carries reused. Timing gates only count from this stage's acceptance tier.
     """
     grouped = {name for group in groups for name in group.names}

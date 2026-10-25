@@ -33,12 +33,6 @@ class Progress:
         self._marker(f"layer_{layer_id}.passed").unlink(missing_ok=True)
         self.invalidate_judgements()
 
-    def audit_done(self) -> bool:
-        return self._marker(_AUDIT).exists()
-
-    def mark_audit(self) -> None:
-        self._marker(_AUDIT).touch()
-
     def gate_passed(self, gate: str) -> bool:
         return self._marker(f"{_GATE_PREFIX}{gate}.passed").exists()
 

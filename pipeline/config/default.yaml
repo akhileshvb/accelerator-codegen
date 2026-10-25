@@ -169,7 +169,7 @@ quick_tier:
   write_cost_budget_share: 0.5   # quick_check fails when the projected full-gate writes and builds exceed this share of one gate differential run's timeout (ACCEL_GATE_RUN_TIMEOUT)
   admission_gates: [aux_exit, aux_correctness, aux_bench_sweep, aux_tsan]   # request_gate refuses these until quick_check passed on the current code
 
-# CPU budgets and host-wide leases between pipelines running at once (core_budget.py, measurement_lease.py).
+# CPU budgets and host-wide leases between pipelines running at once (pack/core_budget.py, pack/measurement_lease.py).
 # Each worker takes one of `workers` disjoint CPU sets of the host and pins itself (and so its agent, builds,
 # gates and engine instances) to it; builds and ctest get job caps from the set. Benchmarks queue for the
 # measurement lease and run on the reserved measurement CPUs, which no worker uses.

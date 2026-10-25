@@ -15,7 +15,7 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Mapping
 
 from accel_pipeline.config import (
     PipelineConfig,
@@ -265,11 +265,11 @@ def run_gate(
     out_dir: Path | None = None,
     timeout_s: float | None = None,
 ) -> GateResult:
-    """Run one gate script. `env` adds to the script's environment (gate_parallel sets a distinct
+    """Run one gate script. `env` adds to the script's environment (gates/parallel.py sets a distinct
     ACCEL_ENGINE_INSTANCE per gate); once `cancel` is set the gate is killed and reports "cancelled".
     `out_dir` puts the result files there instead of <artifacts>/gates (background gates, so a run on
     code that moves on never overwrites the canonical result); `timeout_s` replaces GATE_TIMEOUT_S.
-    A passing foreground gate is recorded in gate_stamps against the code it ran on."""
+    A passing foreground gate is recorded in gates/stamps.py against the code it ran on."""
     if gate_name not in GATE_SCRIPTS:
         raise ValueError(f"unknown gate: {gate_name}")
 
@@ -332,11 +332,10 @@ def run_gate(
     # `build` verb configures the dir (host_contract.md, $ACCEL_CMAKE_ARGS); a bare configure here
     # would reset the backend switch and the generator, or fight a build that runs in the
     # engine's own environment under another source path.
-    from accel_pipeline.pack.worker_isolation import ensure_worker_build_dir
 
     engine = pipeline_config.engine_name
     has_host = bool(engine) and host_script(Path(pipeline_config.repo_root), engine).is_file()
-    ensure_worker_build_dir(pipeline_config, configure=not has_host)
+    ensure_build_dir(pipeline_config, configure=not has_host)
 
     from accel_pipeline.pipeline_log import log_gate_complete, log_gate_start
 
@@ -432,6 +431,9 @@ def run_gate(
         skip_ok = allow_skip if allow_skip is not None else gate_name in GATES_ALLOW_SKIP
         require_gate_pass(result, allow_skip=skip_ok)
     return result
+
+
+# --- the context file a gate script reads
 
 
 def build_gate_context(
@@ -542,6 +544,8 @@ def write_gate_context(
     return path
 
 
+# --- failure text for the agent: a gate that abort()s leaves an empty log, so the return code and signal always show
+
 _SIGNAL_NAMES = {
     132: "SIGILL",
     134: "SIGABRT/abort",
@@ -637,27 +641,81 @@ def format_reloop_failure_sections(
     return lines
 
 
-@dataclass
-class CapturedRun:
-    returncode: int
-    output: str
+def _wipe_cmake_configure_state(bdir: Path) -> None:
+    """Remove CMake configure artifacts so ``-S`` can retarget the build dir."""
+    cache = bdir / "CMakeCache.txt"
+    if cache.is_file() or cache.is_symlink():
+        cache.unlink()
+    cmake_files = bdir / "CMakeFiles"
+    if cmake_files.is_dir():
+        shutil.rmtree(cmake_files, ignore_errors=True)
+    for name in ("cmake_install.cmake", "Makefile", "compile_commands.json"):
+        p = bdir / name
+        if p.is_file() or p.is_symlink():
+            try:
+                p.unlink()
+            except OSError:
+                pass
 
 
-def run_command(
-    cmd: Sequence[str],
+def ensure_build_dir(
+    pipeline_config: PipelineConfig,
     *,
-    cwd: str | os.PathLike[str] | None = None,
-    env: Mapping[str, str] | None = None,
-    timeout: float | None = None,
-) -> CapturedRun:
+    configure: bool = True,
+) -> Path:
+    """Create (and optionally cmake-configure) the build directory.
+
+    Codex may finish implementation without ever running ``cmake -S . -B <build_dir>``; gates must
+    still be able to build rather than skip with ``build dir missing``. A cache that points at another
+    source tree (a pack worker's git worktree) is wiped and reconfigured, so builds cannot compile
+    a peer's mid-edits from the shared checkout.
+    """
+    bdir = Path(pipeline_config.build_dir)
+    bdir.mkdir(parents=True, exist_ok=True)
+    if not configure:
+        return bdir
+    cache = bdir / "CMakeCache.txt"
+    src_root = Path(pipeline_config.repo_root).resolve()
+    needs_configure = not cache.is_file()
+    if cache.is_file():
+        try:
+            text = cache.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            text = ""
+        # CMake stores the source tree as CMAKE_HOME_DIRECTORY.
+        cached_src = ""
+        for line in text.splitlines():
+            if line.startswith("CMAKE_HOME_DIRECTORY:"):
+                cached_src = line.split("=", 1)[-1].strip()
+                break
+        if cached_src and Path(cached_src).resolve() != src_root:
+            print(
+                f"[pipeline] build cache source mismatch "
+                f"({cached_src} != {src_root}); reconfiguring {bdir.name}",
+                file=sys.stderr,
+                flush=True,
+            )
+            # CMake refuses in-place -S changes while CMakeCache.txt still names
+            # the old home directory. Wipe cache only — keep database copies etc.
+            _wipe_cmake_configure_state(bdir)
+            needs_configure = True
+    if not needs_configure:
+        return bdir
+    print(
+        f"[pipeline] configuring worker build dir: {bdir.name} (-S {src_root.name})",
+        file=sys.stderr,
+        flush=True,
+    )
+    cmake_env = os.environ.copy()
     proc = subprocess.run(
-        list(cmd),
-        cwd=str(cwd) if cwd is not None else None,
+        ["cmake", "-S", str(src_root), "-B", str(bdir)],
+        cwd=str(src_root),
+        env=cmake_env,
         capture_output=True,
         text=True,
-        env=dict(env) if env is not None else os.environ,
-        timeout=timeout,
-        start_new_session=True,
+        check=False,
     )
-    output = ((proc.stdout or "") + (proc.stderr or ""))
-    return CapturedRun(returncode=int(proc.returncode), output=output)
+    if proc.returncode != 0:
+        tail = ((proc.stdout or "") + (proc.stderr or ""))[-2000:]
+        raise RuntimeError(f"cmake configure failed for {bdir}:\n{tail}")
+    return bdir

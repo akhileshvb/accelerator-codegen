@@ -33,7 +33,7 @@ def setup(tmp_path, monkeypatch):
         return SimpleNamespace(returncode=0, stdout="ok", stderr="")
 
     monkeypatch.setattr(optimization_smoke, "subprocess", SimpleNamespace(run=fake_run))
-    monkeypatch.setattr("accel_pipeline.pack.worker_isolation.ensure_worker_build_dir", lambda *a, **k: None)
+    monkeypatch.setattr("accel_pipeline.gates.run.ensure_build_dir", lambda *a, **k: None)
     monkeypatch.setattr(optimization_smoke, "resolve_workload_paths",
                         lambda *a: {"aux_bench_target": "bench_t", "aux_test_target": "test_t"})
     return config, builds

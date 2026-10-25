@@ -39,7 +39,7 @@ def run_with_fake_script(monkeypatch, status, rc):
         return Proc()
 
     monkeypatch.setattr("accel_pipeline.gates.run._run_gate_script", fake_script)
-    monkeypatch.setattr("accel_pipeline.pack.worker_isolation.ensure_worker_build_dir", lambda *a, **k: None)
+    monkeypatch.setattr("accel_pipeline.gates.run.ensure_build_dir", lambda *a, **k: None)
     return run_gate(pc, "engine_epochs", 0, workload=workload, raise_on_failure=False)
 
 
