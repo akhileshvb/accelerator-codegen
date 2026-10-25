@@ -10,7 +10,13 @@ from accel_pipeline.state import STAGES
 
 SMOKE_DIR = Path(__file__).resolve().parents[1] / "tests" / "smoke"
 DEFAULT_SMOKE_WORKLOAD = "tpch_q14_aux"
-DEFAULT_ENGINE = "duckdb"
+
+
+def _engine_of(workload: str, engine: str | None) -> str:
+    from accel_pipeline.config import workload_supported_engines
+    from accel_pipeline.paths import find_repo_root
+
+    return engine or workload_supported_engines(workload, find_repo_root())[0]
 
 
 def _query_of(workload: str, engine: str) -> int:
@@ -101,7 +107,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     run = add("run", cmd_run, "run one query end to end in this tree (agents call real models)")
     run.add_argument("workload", help="e.g. tpch_q3_aux")
-    run.add_argument("--engine", default=DEFAULT_ENGINE)
+    run.add_argument("--engine", default=None, help="default: the workload's first supported engine")
     run.add_argument("--query", type=int, help="default: the workload's query number")
     run.add_argument("--models", type=Path, help="models config (default: pipeline/config/models.yaml)")
     run.add_argument("--model", action="append", default=[], metavar="STAGE=PRESET", help="override one stage's model preset")
@@ -116,7 +122,7 @@ def build_parser() -> argparse.ArgumentParser:
     canary = add("canary", cmd_canary, "run one query with real models in a fresh sandboxed clean tree, then write its TIMELINE.md")
     canary.add_argument("workload")
     canary.add_argument("--models", type=Path, required=True, help="the models config under test")
-    canary.add_argument("--engine", default=DEFAULT_ENGINE)
+    canary.add_argument("--engine", default=None, help="default: the workload's first supported engine")
     canary.add_argument("--until", choices=STAGES[:-1], help="pause after this stage; --resume continues")
     canary.add_argument("--resume", action="store_true", help="continue the run in --work, with the pipeline of --rev")
     canary.add_argument("--probe-models", action="store_true", help="first make every model complete a tool-calling turn")
@@ -125,7 +131,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     check = add("check", cmd_check, "preflight: fail before any model call when the environment cannot run the pipeline")
     check.add_argument("workload")
-    check.add_argument("--engine", default=DEFAULT_ENGINE)
+    check.add_argument("--engine", default=None, help="default: the workload's first supported engine")
     check.add_argument("--query", type=int, help="default: the workload's query number")
     check.add_argument("--models", action="store_true", help="also probe every configured model with one tiny turn (cents)")
     check.add_argument("--models-config", type=Path)
@@ -133,7 +139,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     smoke = add("smoke", cmd_smoke, "run the pipeline with a scripted agent in a clean tree: no model calls, minutes")
     smoke.add_argument("--workload", default=DEFAULT_SMOKE_WORKLOAD)
-    smoke.add_argument("--engine", default=DEFAULT_ENGINE)
+    smoke.add_argument("--engine", default=None, help="default: the workload's first supported engine")
     cases = smoke.add_mutually_exclusive_group()
     cases.add_argument("--case", help="one adversarial case: the agent misbehaves and a guardrail must stop it")
     cases.add_argument("--adversarial", action="store_true", help="every adversarial case")
@@ -148,6 +154,12 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _resolve_engine(args) -> None:
+    if hasattr(args, "engine") and hasattr(args, "workload"):
+        args.engine = _engine_of(args.workload, args.engine)
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    _resolve_engine(args)
     return args.func(args)

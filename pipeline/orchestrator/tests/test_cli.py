@@ -3,7 +3,11 @@ import json
 import pytest
 
 from accel_pipeline import cli, run_pipeline, run_status
+from accel_pipeline.config import workload_supported_engines
+from accel_pipeline.paths import find_repo_root
 from accel_pipeline.state import STAGES, PipelineState
+
+ENGINE = workload_supported_engines("tpch_q14_aux", find_repo_root())[0]
 
 
 def stage_events(*done):
@@ -12,7 +16,7 @@ def stage_events(*done):
 
 
 def make_run(tmp_path, state, events):
-    art = tmp_path / "tree/pipeline/artifacts/tpch/q3/duckdb"
+    art = tmp_path / "tree/pipeline/artifacts/tpch/q3/toydb"
     art.mkdir(parents=True)
     state.save(art / "pipeline_state.json")
     (art / "pipeline_events.jsonl").write_text("".join(json.dumps(e) + "\n" for e in events))
@@ -21,16 +25,16 @@ def make_run(tmp_path, state, events):
 
 
 def test_status_names_the_stage_of_a_running_run(tmp_path):
-    run = make_run(tmp_path, PipelineState(query=3, workload="tpch_q3_aux", engine="duckdb", stage="test_suite"),
+    run = make_run(tmp_path, PipelineState(query=3, workload="tpch_q3_aux", engine="toydb", stage="test_suite"),
                    stage_events("analysis"))
     text = run_status.render(run)
     assert "stage:  in test_suite" in text and "stage_complete  analysis" in text and "cost:" in text
 
 
 def test_status_shows_a_pause_and_a_finished_run(tmp_path):
-    paused = PipelineState(query=3, workload="w", engine="duckdb", stage="optimization", status="paused:until implementation")
+    paused = PipelineState(query=3, workload="w", engine="toydb", stage="optimization", status="paused:until implementation")
     assert "stage:  paused:until implementation" in run_status.render(make_run(tmp_path / "a", paused, stage_events("analysis")))
-    done = PipelineState(query=3, workload="w", engine="duckdb", stage="audit")
+    done = PipelineState(query=3, workload="w", engine="toydb", stage="audit")
     assert "stage:  finished" in run_status.render(make_run(tmp_path / "b", done, stage_events(*STAGES)))
 
 
@@ -59,7 +63,7 @@ def test_until_stops_after_that_stage_and_resume_continues_with_the_next(tmp_pat
     monkeypatch.setattr(run_pipeline, "log_pipeline_summary", lambda *a: None)
     monkeypatch.setattr(run_pipeline, "_maybe_process_structural_reanalysis", lambda **k: None)
     monkeypatch.setattr(run_pipeline, "advance_stage", lambda state, root: (setattr(state, "stage", STAGES[STAGES.index(state.stage) + 1]), state.save(path)))
-    args = ["--workload", "tpch_q14_aux", "--query", "14", "--engine", "duckdb"]
+    args = ["--workload", "tpch_q14_aux", "--query", "14", "--engine", ENGINE]
 
     assert run_pipeline.main([*args, "--until", "test_suite"]) == 0
     assert ran == ["analysis", "test_suite"]
