@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Real-model canary: one query end to end, in a fresh clean tree, with the models of a models config.
 
-    canary.sh --workload tpch_q14_aux --models models.yaml [--engine duckdb] [--rev HEAD] [--work DIR] [--probe-models]
+    accel canary tpch_q14_aux --models models.yaml [--engine duckdb] [--until STAGE] [--rev HEAD] [--work DIR] [--probe-models]
 
 The same clean tree, sandbox, databases and launch as the smoke test (pipeline_smoke.py), with the model in place
 of the scripted agent: the run to read before a big one (20-30 min, about $1 for a small aux query). It writes
@@ -67,6 +67,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--work", type=Path, default=None)
     parser.add_argument("--timeout", type=float, default=float(os.environ.get("ACCEL_CANARY_TIMEOUT_SEC", 4 * 3600)))
     parser.add_argument("--probe-models", action="store_true")
+    parser.add_argument("--until", default=None, help="pause after this stage; --resume continues")
     parser.add_argument("--resume", action="store_true",
                         help="continue the run in --work: the pipeline and backend of --rev are committed into its tree first")
     args = parser.parse_args(argv)
@@ -99,7 +100,8 @@ def main(argv: list[str] | None = None) -> int:
     shutil.copyfile(args.models, models)
     config = tree / "pipeline/config/default.yaml"
     query = int(fixture["query"])
-    pipeline = smoke.pipeline_args(args.workload, query, args.engine, models, config) + (["--resume"] if args.resume else [])
+    pipeline = smoke.pipeline_args(args.workload, query, args.engine, models, config) + (["--until", args.until] if args.until else []) \
+        + (["--resume"] if args.resume else [])
     print(f"[canary] {work}: tail -f {work / 'pipeline.log'}", flush=True)
 
     if args.probe_models and not args.resume:
@@ -112,7 +114,7 @@ def main(argv: list[str] | None = None) -> int:
     proc = smoke.launch(tree, work, env, pipeline, data=(inputs,))
     rc = run_to_end(proc, work / "pipeline.log", args.timeout)
     python = tree / "pipeline/orchestrator/.venv/bin/python"
-    subprocess.run([str(python), "-m", "accel_pipeline.timeline", str(work)], env={**os.environ, "PYTHONPATH": str(tree / "pipeline/orchestrator")})
+    subprocess.run([str(python), "-m", "accel_pipeline", "timeline", str(work)], env={**os.environ, "PYTHONPATH": str(tree / "pipeline/orchestrator")})
     print(f"[canary] exit {rc}; read {work / 'TIMELINE.md'} before a big run")
     return rc
 

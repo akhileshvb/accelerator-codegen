@@ -1,6 +1,6 @@
 """Where a run's wall time and money went -> <run dir>/TIMELINE.md.
 
-    python -m accel_pipeline.timeline <run dir>      (run dir: tree/, pipeline.log)
+    accel timeline <run dir>      (run dir: tree/, pipeline.log)
 
 Stages come from pipeline_events.jsonl; model and tool time from the codex rollouts (model time: from a turn
 start or a tool result to the model's next item; tool time per tool: call to output); gate durations from the
@@ -15,7 +15,6 @@ import datetime as dt
 import glob
 import json
 import re
-import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -100,10 +99,20 @@ def read_costs(sessions: list[str], models: dict[str, str]) -> list[tuple[str, s
     return rows
 
 
-def render(run: Path) -> str:
-    tree = run / "tree"
-    events = glob.glob(f"{tree}/pipeline/artifacts/*/q*/*/pipeline_events.jsonl")
+def run_files(run: Path) -> tuple[Path, list[str], list[str]]:
+    """The tree of a run directory (or `run` itself when it is a tree), its event logs and its codex rollouts."""
+    tree = run / "tree" if (run / "tree").is_dir() else run
+    events = glob.glob(f"{tree}/pipeline/artifacts/**/pipeline_events.jsonl", recursive=True)
     sessions = sorted(glob.glob(f"{tree}/pipeline/.codex/sessions/*/*/*/*.jsonl"))
+    return tree, events, sessions
+
+
+def run_log(run: Path) -> Path | None:
+    return next((p for p in (run / "pipeline.log", run / "logs" / "pipeline.log") if p.is_file()), None)
+
+
+def render(run: Path) -> str:
+    _, events, sessions = run_files(run)
     now = dt.datetime.now(dt.timezone.utc)
     stages = read_stages(events[0]) if events else []
     intervals, models = read_rollouts(sessions)
@@ -136,7 +145,7 @@ def render(run: Path) -> str:
     out += ["", f"Span {_minutes(span)} min; in stages {_minutes(sum(wall_by_stage.values()))}; between stages (orchestrator, "
             f"gates outside agents, operator pauses) {_minutes(between)}.", "",
             "By stage (wall min): " + ", ".join(f"{k} {_minutes(v)}" for k, v in wall_by_stage.most_common()), "", "## Gates (orchestrator-run)", ""]
-    log = next((p for p in (run / "pipeline.log", run / "logs" / "pipeline.log") if p.is_file()), None)
+    log = run_log(run)
     for stage, rows in (read_gates(log) if log else {}).items():
         out += [f"- {stage}: {name} {status} {_minutes(seconds)} min" for name, status, seconds in rows]
     costs = read_costs(sessions, models)
@@ -146,13 +155,7 @@ def render(run: Path) -> str:
     return "\n".join(out) + "\n"
 
 
-def main(argv: list[str] | None = None) -> int:
-    run = Path((argv or sys.argv[1:])[0]).resolve()
+def write(run: Path) -> str:
     text = render(run)
     (run / "TIMELINE.md").write_text(text)
-    print(text)
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
+    return text

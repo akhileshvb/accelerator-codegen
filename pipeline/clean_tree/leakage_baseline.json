@@ -702,9 +702,6 @@
   "path": 1,
   "symbol": 1
  },
- "scripts/aggregate_parallel_matrix.py": {
-  "engine": 11
- },
  "scripts/calibrate_rf_cost_models.py": {
   "engine": 4,
   "path": 1
@@ -764,20 +761,6 @@
  "scripts/perf/run_sf20_read.sh": {
   "engine": 3,
   "target": 1
- },
- "scripts/plot_q1_maintenance_phases.py": {
-  "engine": 6,
-  "target": 1
- },
- "scripts/plot_q1_maintenance_trace.py": {
-  "engine": 3,
-  "target": 1
- },
- "scripts/plot_q20_phase_bands_styled.py": {
-  "engine": 1
- },
- "scripts/plot_q20_phased_bench.py": {
-  "engine": 6
  },
  "scripts/run_aux_bench_sweep.sh": {
   "engine": 7

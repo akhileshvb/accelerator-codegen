@@ -8,7 +8,7 @@ repair round or a stop means the pipeline's own plumbing is broken. Everything b
 orchestrator, the MCP tooling, the gates, the builds, host.sh, the sandboxes, the freezing, the stamps and the
 measurement lease.
 
-    pipeline_smoke.sh --workload <fixtures/NAME> --engine <fixtures/engines/NAME> [--rev HEAD] [--work DIR]
+    accel smoke --workload <fixtures/NAME> --engine <fixtures/engines/NAME> [--rev HEAD] [--work DIR]
                       [--case NAME | --adversarial [--jobs N]]
 
 --case runs one adversarial case (fixtures/cases.json): the scripted agent misbehaves in one way and the run has
