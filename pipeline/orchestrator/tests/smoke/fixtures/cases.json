@@ -59,7 +59,7 @@
   "primitive_extension": {
     "about": "the agent extends a published primitive with an additive API; the publisher rebuilds the dependents and publishes",
     "expect": [
-      "\\[tool primitive_publish\\] .*\"changed_headers\": \\[\"[^\"]+\"\\]",
+      "\\[tool primitive_publish\\] .*\"changed_headers\": \\[\\s*\"[^\"]+\"\\s*\\]",
       "gate complete: \\[\\d+/\\d+\\] aux_exit \\(implementation\\) status=pass"
     ],
     "escaped": "\\[tool primitive_publish\\] \\{\"ok\": false"
