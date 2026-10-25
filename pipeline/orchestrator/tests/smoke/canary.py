@@ -58,6 +58,21 @@ def run_to_end(proc: subprocess.Popen, log: Path, timeout: float) -> int:
     return proc.returncode
 
 
+def replace_tracked(tree: Path, rev: str, paths: list[str]) -> None:
+    """The tracked files under `paths` become those of `rev`; files the run itself changed (and untracked artifacts) stay."""
+    def git_files(cwd: Path, *cmd: str) -> set[str]:
+        return set(subprocess.run(["git", "-C", str(cwd), *cmd, "--", *paths], capture_output=True, text=True,
+                                  check=True).stdout.split())
+
+    changed = git_files(tree, "diff", "--name-only", "HEAD")
+    kept = {name: (tree / name).read_bytes() for name in changed if (tree / name).is_file()}
+    for name in git_files(tree, "ls-files") - git_files(smoke.SOURCE_ROOT, "ls-tree", "-r", "--name-only", rev) - changed:
+        (tree / name).unlink()
+    smoke.git_archive(rev, paths, tree)
+    for name, data in kept.items():
+        (tree / name).write_bytes(data)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--workload", required=True)
@@ -80,9 +95,9 @@ def main(argv: list[str] | None = None) -> int:
         key = api_key()
         work = args.work or CANARY_HOME / "runs" / time.strftime("%Y%m%d-%H%M%S")
         if args.resume:
-            tree = work / "tree"
-            smoke.git_archive(args.rev, ["pipeline", f"backends/{args.engine}"], tree)
-            smoke.run([*smoke.GIT, "add", "-A", "pipeline", f"backends/{args.engine}"], cwd=tree)
+            tree, replaced = work / "tree", ["pipeline", f"backends/{args.engine}"]
+            replace_tracked(tree, args.rev, replaced)
+            smoke.run([*smoke.GIT, "add", "-A", *replaced], cwd=tree)
             smoke.run([*smoke.GIT, "commit", "-q", "--allow-empty", "-m", f"pipeline and backend from {args.rev}"], cwd=tree)
             (work / "pipeline.log").replace(work / f"pipeline.{time.strftime('%H%M%S')}.log")
         else:
