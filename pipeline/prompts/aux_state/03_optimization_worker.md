@@ -6,6 +6,8 @@
 
 **Push both axes at SF3000: fast reads and cheap maintenance, from copy-on-write state, correctly.** The accept score is `read_only^0.75 * write_mix^0.25`: read-only speedup at 0% writes, and workload speedup over sampled write mixes (re-sampled every attempt). A read win that deepens the write cliff loses.
 
+**Optimize for the target, not for this machine.** The target is SF3000 (~2e10 fact rows, ids beyond 2^32, refreshes of 10^5-10^7 rows) on many cores; you can only measure SF1 and the subset here, on a few threads. Keep every change correct and fast at the target: build, read and maintenance stay parallel and thread-safe under the thread caps with identical results at any cap; no gain that only holds because the data fits in cache, a key fits in 32 bits, a loop is short or a path runs on one thread; prefer changes whose cost scales with the touched data. A change that wins at SF1 but would lose or break at the target is rejected (`scale_factor_contract.md`).
+
 **Read floor: 20x over the engine's own SQL for the same binding.** Below it, saturation is refused: profile, then attack the hot spot (structural redesign of the state, or SIMD/layout work) until reads clear 20x.
 
 1. **Low-level execution** on the read, build and maintain paths, driven by the profile: SIMD inner loops (AVX-512/AVX2 with a scalar fallback), cache-conscious layouts, branch-free predicates, prefetch, no per-row allocation, fused passes. Guide: `pipeline/prompts/shared/low_level_execution.md`.
@@ -29,6 +31,10 @@ Pipeline files (`pipeline/`, `substrate/`, `backends/` gates and prompts, `cmake
 {{optimization_edit_paths}}
 
 ## Flow
+
+**Measure, then change.** Profile and measure as much as you like: `run_profile` (perf hot spots and counters; `scale="full"` on the full database shows where time goes at scale, the subset only shows code paths), `run_quick_benchmark` (full database, with the module's phase timings), your own scratch micro-benchmarks, timers and counters, `perf` on your scratch programs. Every change starts from a number you measured and ends with one that shows it worked.
+
+**Plateau, then redesign.** When kept trials stop moving the score (two or three in a row gain little), or the profile shows the state itself is the cost, step back as the analysis did: list candidate state designs, test them on the data (`query_data`, `column_stats`, a scratch prototype that counts the work a read and a write visit), pick by measured read and write cost, and build the winner as a `structural` attempt. The design may change entirely (components, primitives, maintenance), built only on facilities that exist in `substrate/`, the backend API and the primitive library.
 
 1. `run_profile` on the CURRENT tree; read `scoreboard` (the read axis against the engine's own SQL), the hot functions, counters, visited-state count and `freshness`. Cite both 0% hit metrics and sampled write-mix metrics. Start every attempt from the `run_profile` output (hot functions, hardware counters, visited-state count). Name the hot spot you target (`hot_spot`), the gain you expect there (`expected_gain`) and the `strategy`: `structural` (state organization or algorithm), `low_level` (SIMD with a scalar fallback, branch-free predicates, compact columnar layout, prefetch, no allocation or indirection in the hot loop) or `other`. Then re-measure and repeat on the next hot spot.
 2. State a hypothesis from named phases and counts of a fresh digest.
