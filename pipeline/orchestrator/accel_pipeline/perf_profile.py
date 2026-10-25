@@ -27,6 +27,9 @@ import tempfile
 from pathlib import Path
 from typing import Any, Callable
 
+from accel_pipeline.pack.core_budget import host_lock_dir
+from accel_pipeline.pack.host_lock import FairLock
+
 PERF_BIN_ENV = "ACCEL_PERF_BIN"
 SAMPLE_HZ = 10000
 TOP_N = 15
@@ -191,7 +194,15 @@ def work_counter_report(diagnostics: dict[str, Any], estimate: dict[str, Any]) -
 
 
 def _run(runner: Runner, cmd: list[str], env: dict[str, str], cwd: Path | None) -> subprocess.CompletedProcess:
-    return runner(cmd, env=env, cwd=cwd, capture_output=True, text=True, check=False, timeout=PERF_TIMEOUT_SEC)
+    """One perf command; a sampling one waits for the host's perf turn: perf's ring buffers come from one per-user
+    locked-memory budget, and two concurrent sessions fail with "Permission error mapping pages"."""
+    if "record" not in cmd:
+        return runner(cmd, env=env, cwd=cwd, capture_output=True, text=True, check=False, timeout=PERF_TIMEOUT_SEC)
+    turn = FairLock(host_lock_dir(), "perf").acquire(timeout_sec=PERF_TIMEOUT_SEC)
+    try:
+        return runner(cmd, env=env, cwd=cwd, capture_output=True, text=True, check=False, timeout=PERF_TIMEOUT_SEC)
+    finally:
+        turn.close()
 
 
 def _make_fifo(path: Path) -> int:

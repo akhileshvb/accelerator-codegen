@@ -147,3 +147,25 @@ def test_the_build_profile_lists_the_hot_spots(fake_perf):
 
 def test_a_build_with_no_samples_is_an_error(fake_perf):
     assert pp.profile_build([sys.executable, "-c", "pass"], {"FAKE_NO_WINDOW": "1"})["status"] == "error"
+
+
+def test_concurrent_sampling_sessions_take_turns(tmp_path, monkeypatch):
+    # two pipelines profiling at once exhausted perf's per-user locked-memory budget ("Permission error mapping pages")
+    import threading
+    import time
+
+    monkeypatch.setattr(pp, "host_lock_dir", lambda: tmp_path)
+    active, overlaps = [], []
+
+    def runner(cmd, **kwargs):
+        active.append(cmd)
+        overlaps.append(len(active) > 1)
+        time.sleep(0.2)
+        active.remove(cmd)
+
+    threads = [threading.Thread(target=pp._run, args=(runner, ["perf", "record", str(i)], {}, None)) for i in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert overlaps == [False, False]
