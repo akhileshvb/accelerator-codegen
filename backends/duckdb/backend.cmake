@@ -36,10 +36,7 @@ if(ACCEL_ENABLE_PARALLEL_KERNELS)
         accel_glob_sources(_duckdb_parallel_sources "accelerators/*/q*/duckdb/base/parallel/*.cpp")
         accel_apply_base_copts(${_duckdb_parallel_sources})
     endif()
-    target_sources(accelerator_codegen PRIVATE
-        backends/duckdb/api/parallel/parallel_runtime.cpp
-        ${_duckdb_parallel_sources}
-    )
+    target_sources(accelerator_codegen PRIVATE ${_duckdb_parallel_sources})
 endif()
 
 option(ACCEL_ENABLE_PARALLEL_AUX "Build multithreaded SEC EDGAR aux kernels (accel_sec_edgar_q*_aux_parallel)" OFF)
@@ -48,14 +45,14 @@ if(ACCEL_ENABLE_PARALLEL_AUX)
     if(_duckdb_query_engine STREQUAL "duckdb")
         accel_glob_sources(_duckdb_parallel_aux_sources "accelerators/*/q*/duckdb/aux/parallel/*.cpp")
     endif()
-    target_sources(accelerator_codegen PRIVATE
-        backends/duckdb/api/parallel/aux_parallel_scan.cpp
-        ${_duckdb_parallel_aux_sources}
-    )
-    if(NOT ACCEL_ENABLE_PARALLEL_KERNELS)
-        target_sources(accelerator_codegen PRIVATE backends/duckdb/api/parallel/parallel_runtime.cpp)
-    endif()
+    target_sources(accelerator_codegen PRIVATE ${_duckdb_parallel_aux_sources})
 endif()
+
+# The scan role's parallel native scan (api/parallel/aux_parallel_scan.hpp) is part of the API every aux
+# accelerator builds through: always compiled, not only with the legacy parallel-kernel options.
+target_sources(accelerator_codegen PRIVATE
+    backends/duckdb/api/parallel/aux_parallel_scan.cpp
+    backends/duckdb/api/parallel/parallel_runtime.cpp)
 
 # Shared TPC-H aux bench and cost-model calibrator: one binary each, `--query N`.
 accel_add_backend_exe(duckdb benchmark_duckdb_tpch_aux
