@@ -9,23 +9,46 @@ You have the same data tools as the analyst (`query_data`, `column_stats`, `join
 `rows_qualifying`, `column_spread`, `query_shape`). Do not edit any file except your report, and do not
 read pipeline or accelerator sources: everything you need is below.
 
-## 1. Re-measure the selected design
+Review it the way an engineer who must build and run it at SF3000 under heavy writes would: measure, do
+not trust the analyst's numbers, and spend your effort on what decides speed, maintenance cost and memory.
+Do not nitpick wording.
 
-Re-run the selected candidate's `units_probe`. Check that the statement models the design as described:
-the state it keeps, the bound or partition it prunes with, the stopping rule. A probe that counts
-something easier than what the read does (a global window where the design needs per-entry eligibility,
-a bound the design cannot maintain, the typical binding only) fails. Run it yourself at the worst binding
-and under a write that loosens the bound or widens the range, if the analyst did not.
+## 1. Re-measure the read, at its worst
 
-## 2. Try to beat it
+1. Re-run the selected candidate's `units_probe` and check it models the design as described (the state
+   kept, the bound or partition it prunes with, the stopping rule). A probe that counts something easier
+   than what the read does fails.
+2. **Sweep the parameter domain**, not just the analyst's extremes: one statement over every value of
+   each parameter that the data makes distinct (every day, month, segment, ...; `generate_series` or
+   `SELECT DISTINCT`), returning the count per binding. Report the worst binding and its count.
+3. **Construct the most damaging valid write** for this design (one that loosens its bounds, widens its
+   ranges, creates duplicates or new extremes, or changes a dimension row with the largest fan-out),
+   simulate it in the probe, and report the read count after it.
 
-Name the cost that dominates the selected design's measured read, then find a candidate that removes it:
-a per-entry bound instead of a global one, a bound that depends on the parameter, a different sort or
-partition key, a finer or coarser grain, two families combined, or a family the analysis skipped.
-Simulate your best alternative with one `query_data` statement over the base tables, the same way. If it
-visits materially fewer entries (or the same with cheaper maintenance), the verdict is `revise`.
+## 2. Walk every write through the design
 
-## 3. Checks
+For each dependent table and each of insert, update (including a key change) and delete, point-sized and
+refresh-sized: which state components it touches, how many entries, and why that follows the changed rows
+times their real fan-out. Flag any path that rescans, re-sorts, rebuilds or copies more than it touches, any
+bound or extremum that cannot be repaired on delete, and any write the design cannot apply from the captured
+rows. Check the parallel plan: the build is partitioned with an associative merge, maintenance splits by
+key after the serial lookups, and nothing is one serial pass over the data.
+
+## 3. Your own memory ledger
+
+Entries per component times real bytes (container overhead included) at SF3000, plus the build's transient
+peak. Name any component that stores what no read or write needs, duplicates another, or has a materially
+smaller layout at the same read and write speed.
+
+## 4. Try to beat it
+
+Name the cost that dominates the measured read (or the maintenance or memory), then find a candidate that
+removes it: a per-entry bound instead of a global one, a bound that depends on the parameter, a different
+sort or partition key, a finer or coarser grain, two families combined, or a family the analysis skipped.
+Simulate it the same way. If it visits materially fewer entries, maintains cheaper, or is materially smaller
+at the same speed, the verdict is `revise`.
+
+## 5. Checks
 
 A check fails when you can name a concrete failing case (a write, a parameter value, a data size, and
 what goes wrong) or when the analysis leaves the cost unbounded and your estimate breaks it.
@@ -59,7 +82,9 @@ Write `{{critique_path}}` and stop:
 
 ```json
 {"estimates": {"read": "...", "write": "...", "size": "...", "build": "..."},
- "remeasured": {"units_probe_ok": true, "notes": "..."},
+ "remeasured": {"units_probe_ok": true, "worst_binding": "value: count", "after_damaging_write": "write: count", "notes": "..."},
+ "writes": "one line per table and mutation that touches more than it changes (empty when none)",
+ "memory": "your SF3000 ledger in one line; the component to shrink and how, if any",
  "alternative": {"description": "...", "units_probe": "SELECT ...", "measured_units": "...", "better": false},
  "checks": [{"id": "R1", "ok": true}, {"id": "W1", "ok": false, "case": "...", "suggestion": "..."}],
  "verdict": "accept"}
