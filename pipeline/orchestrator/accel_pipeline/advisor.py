@@ -33,6 +33,9 @@ class Unavailable(Exception):
     """No consult happens: the cap is spent, the stage has no session to fork, or the advisor is off."""
 
 
+ADVISED = frozenset({"implementation", "optimization", "crash_debug"})  # crash_debug: the repair turns of either
+
+
 def scope(stage: str) -> str:
     """The stage family that shares one consult cap."""
     return "optimization" if stage.startswith("optimization") else "implementation" if stage.startswith("impl") else stage

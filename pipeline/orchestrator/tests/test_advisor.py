@@ -242,8 +242,10 @@ def test_the_mcp_tool_counts_down_and_stops_at_the_cap(tmp_path, monkeypatch):
     assert "limit reached" in ask("q")
 
 
-def test_the_mcp_tool_is_for_implementation_and_optimization(world):
+def test_the_mcp_tool_is_for_implementation_optimization_and_their_repair_turns(world, monkeypatch):
+    monkeypatch.setattr(advisor, "ask", lambda art, question, timeout: "advice")
     assert "not available" in mcp_tools(world, stage="analysis")["ask_advisor"]("q")
+    assert mcp_tools(world, stage="crash_debug")["ask_advisor"]("q").startswith("advice")
 
 
 # ---- the repair loop ----

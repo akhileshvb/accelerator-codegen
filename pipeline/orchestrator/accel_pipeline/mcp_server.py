@@ -182,7 +182,7 @@ def build_mcp_tool_callables(
         from accel_pipeline import advisor
 
         cfg = pipeline_config.advisor
-        if advisor.scope(stage) not in ("implementation", "optimization") or cfg.max_consults_per_stage <= 0:
+        if advisor.scope(stage) not in advisor.ADVISED or cfg.max_consults_per_stage <= 0:
             return "No advice: the advisor is not available in this stage."
         left = cfg.max_consults_per_stage - advisor.consults_used(art, stage)
         if left <= 0:
