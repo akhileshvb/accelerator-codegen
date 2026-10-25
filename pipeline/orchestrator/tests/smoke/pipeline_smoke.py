@@ -168,13 +168,18 @@ def new_tree(base: Path, work: Path, workload: dict, env: dict[str, str]) -> Pat
     run(["rsync", "-a", f"{cached_venv(base)}/", f"{tree}/pipeline/orchestrator/.venv/"])
     (tree / ".data").mkdir()
     for key in workload.get("databases", {}):
-        copy = tree / ".data" / Path(env[key]).name
-        shutil.copyfile(env[key], copy)
-        env[key] = str(copy)
+        shutil.copyfile(env[key], tree / ".data" / Path(env[key]).name)
+    use_tree_databases(tree, workload, env)
     run(["git", "init", "-q"], cwd=tree)
     run([*GIT, "add", "-A"], cwd=tree)
     run([*GIT, "commit", "-q", "-m", "initial"], cwd=tree)
     return tree
+
+
+def use_tree_databases(tree: Path, workload: dict, env: dict[str, str]) -> None:
+    """Point `env` at the tree's own copies of the databases (a resumed run reuses them)."""
+    for key in workload.get("databases", {}):
+        env[key] = str(tree / ".data" / Path(env[key]).name)
 
 
 def make_kit(work: Path, reference_rev: str, workload: str, fixture: dict, query: int) -> Path:

@@ -104,6 +104,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.resume:
             tree = work / "tree"
             replace_tracked(tree, smoke.base_tree(args.rev, args.engine, fixture, env))
+            smoke.use_tree_databases(tree, fixture, env)
             smoke.run([*smoke.GIT, "add", "-A", "--", ".", AGENT_OWNED], cwd=tree)
             smoke.run([*smoke.GIT, "commit", "-q", "--allow-empty", "-m", f"pipeline from {args.rev}"], cwd=tree)
             (work / "pipeline.log").replace(work / f"pipeline.{time.strftime('%H%M%S')}.log")
