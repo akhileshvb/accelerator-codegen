@@ -407,7 +407,7 @@ class TestWorkloadConfig:
         assert paths["aux_state_subdir"] == "accelerators/sec_edgar/q1/duckdb/aux"
         assert paths["aux_bench_target"] == "benchmark_sec_edgar_q1_aux"
         assert paths["cost_model_config"] == "accelerators/sec_edgar/q1/config/sec_edgar_q1_aux_cost_model_duckdb.json"
-        assert workload.get("post_implementation_gates", [])[0] == "aux_correctness"
+        assert "aux_exit" in workload.get("post_implementation_gates", [])
         assert "accelerators/sec_edgar/q1/**" in workload.get("write_paths", [])
 
     def test_sec_edgar_q2_aux_workload_loads(self):

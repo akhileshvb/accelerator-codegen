@@ -27,11 +27,9 @@ def test_tsan_gates_map_to_the_script():
 def test_aux_state_audit_runs_tsan():
     for name in ("tpch_q3_aux", "sec_edgar_q1_aux"):
         workload = load_workload(name, REPO_ROOT, engine="duckdb")
-        assert {"aux_tsan", "module_tsan"} <= set(workload_post_audit_gates(workload))
+        # the exit run holds the sanitizer run on the subset dataset; the engine-free driver is a gate of its own
+        assert {"aux_exit", "module_tsan"} <= set(workload_post_audit_gates(workload))
         assert _allowed(workload, "bash pipeline/gates/run_aux_tsan.sh 3")
         assert _allowed(workload, "bash pipeline/gates/run_module_tsan.sh 3")
-        # an optimization iteration exits on the lighter correctness tier; the audit runs the full one
-        assert "aux_correctness_iterate" in workload_post_optimization_gates(workload)
-        assert "aux_correctness" not in workload_post_optimization_gates(workload)
-        assert "aux_correctness" in workload_post_audit_gates(workload)
+        assert "aux_exit" in workload_post_optimization_gates(workload)
 

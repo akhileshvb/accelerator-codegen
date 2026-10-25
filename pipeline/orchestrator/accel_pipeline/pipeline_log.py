@@ -259,6 +259,7 @@ def _gate_context_label(change_kind: str, iteration: int) -> str:
 
 
 _GATE_DURATION_HINTS: dict[str, str] = {
+    "aux_exit": "about 3-5 min on SF1: its phases run side by side",
     "aux_bench_sweep": "often 15-45+ min on SF1",
     "aux_cost_model_calibrate": "~5-10 min when calibrating (skips if config exists)",
     "aux_cross_accel": "~1-2 min",

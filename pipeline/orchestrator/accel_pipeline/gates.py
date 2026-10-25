@@ -19,6 +19,7 @@ from accel_pipeline.config import PipelineConfig
 from accel_pipeline.engine_host import instance_tag
 from accel_pipeline.gate_context import write_gate_context
 from accel_pipeline.gate_stamps import current_stamp, record_pass
+from accel_pipeline.jsonio import read_json
 from accel_pipeline.paths import gates_dir_for_query, query_artifacts_dir
 from accel_pipeline.session import HEARTBEAT_FILE
 
@@ -41,6 +42,7 @@ GATE_SCRIPTS = {
     "aux_mutation_scenarios": "run_aux_mutation_scenarios.sh",
     "aux_speedup_verification": "run_aux_speedup_verification.sh",
     "aux_bench_sweep": "run_aux_bench_sweep.sh",
+    "aux_exit": "run_aux_exit.sh",
     "aux_cross_accel": "run_aux_cross_accel.sh",
     "aux_multi_connection": "run_aux_multi_connection.sh",
     "aux_tsan": "run_aux_tsan.sh",
@@ -81,6 +83,8 @@ GATE_SCRIPTS = {
 # The iterate tier is the stage-exit gate of an optimization iteration: the full dataset, a lighter suite and fewer
 # write probes, one thread count (the design already passed the full tier; the audit runs it again).
 GATE_TIERS = {"aux_correctness_quick": "quick", "quick_check": "quick", "aux_tsan": "quick", "aux_correctness_iterate": "iterate"}
+# The exit run has a phase on the subset dataset (the sanitizer run) beside the full-tier ones.
+SUBSET_DATASET_GATES = frozenset({"aux_exit"})
 
 
 @dataclass
@@ -303,11 +307,11 @@ def run_gate(
         gate_env["ACCEL_WORKLOAD_KIND"] = kind
     tier = GATE_TIERS.get(gate_name)
     if tier:
+        gate_env["ACCEL_GATE_TIER"] = tier
+    if tier == "quick" or gate_name in SUBSET_DATASET_GATES:
         from accel_pipeline.quick import ensure_subset_dataset
 
-        gate_env["ACCEL_GATE_TIER"] = tier
-        subset = ensure_subset_dataset(pipeline_config, workload) if tier == "quick" else None
-        if subset:
+        if subset := ensure_subset_dataset(pipeline_config, workload):
             gate_env["ACCEL_SUBSET_DATASET_DIR"] = str(subset)
     gate_env.update(env or {})
 
@@ -389,16 +393,18 @@ def run_gate(
     unchanged = bool(stamp_before) and current_stamp(pipeline_config, workload, query) == stamp_before
     if status == "pass" and unchanged and out_dir is None:
         record_pass(pipeline_config, workload, query, gate_name, stamp_before, change_kind=change_kind, result=out_json)
-    if gate_name == "aux_bench_sweep":
+    if gate_name in ("aux_bench_sweep", "aux_exit"):
         from accel_pipeline.pipeline_log import log_bench_sweep_results
 
-        log_bench_sweep_results(
-            pipeline_config.repo_root,
-            query,
-            workload,
-            gate_status=status,
-            gate_data=data,
-        )
+        bench = data if gate_name == "aux_bench_sweep" else read_json(Path(data.get("phases", {}).get("bench", {}).get("result", "")))
+        if bench:
+            log_bench_sweep_results(
+                pipeline_config.repo_root,
+                query,
+                workload,
+                gate_status=bench.get("status", status),
+                gate_data=bench,
+            )
     if gate_name in {"correctness", "baseline", "profile"}:
         from accel_pipeline.pipeline_log import log_base_bench_gate
 

@@ -103,35 +103,30 @@ optimization:
     gates: [aux_correctness, aux_unit, aux_tsan, aux_multi_connection]
     inferred_diff_fraction: 0.35
 
+# The stage-exit batch: the quick unit checks, then one aux_exit run (correctness at N and 1 threads, multi-connection,
+# cross-accelerator, TSAN on the subset and the bench sweep, side by side), then the cost-model calibration, which
+# rebuilds the state several times (a few minutes on its own).
 post_implementation_gates:
-  - aux_correctness
   - aux_unit
   - prims_tests
+  - aux_exit
   - aux_cost_model_calibrate
-  - aux_multi_connection
-  - aux_cross_accel
-  - aux_bench_sweep
 
-# End-of-optimization-iteration gate batch (not run per attempt).
+# End-of-optimization-iteration batch (not run per attempt): the lighter correctness tier.
 post_optimization_gates:
-  - aux_correctness_iterate
   - aux_unit
   - prims_tests
+  - aux_exit
   - aux_cost_model_calibrate
-  - aux_multi_connection
-  - aux_cross_accel
-  - aux_bench_sweep
 
-# End-of-audit hard gates: correctness + fair SF1 sweep.
+# End-of-audit hard gates: the exit run and the engine-free module TSAN driver.
 # Scale-safety / harness-cheat review is agent analysis in final_audit.md
 # (not brittle substring or parse-fragile speedup gates).
 post_audit_gates:
-  - aux_correctness
   - aux_unit
   - prims_tests
-  - aux_tsan
+  - aux_exit
   - module_tsan
-  - aux_bench_sweep
 
 # Optional static fairness scan paths, {bench}/{engine} expanded for the run (agent may request_gate fairness; not a hard fail gate).
 fairness:
