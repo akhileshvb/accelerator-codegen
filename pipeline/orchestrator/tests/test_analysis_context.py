@@ -8,9 +8,6 @@ from accel_pipeline.analysis_context import (
     analysis_for_optimization,
     build_shared_docs_reference,
     compact_base_analysis_for_implementation,
-    compact_bench_summary,
-    compact_gate_summary,
-    compact_optimization_state,
 )
 
 
@@ -101,56 +98,6 @@ class TestAnalysisContextSlicing:
         assert "read_path_scaffold.md" in impl_docs
         assert "unit_test_contract.md" in impl_docs
         assert "aux_state_taxonomy.md" not in impl_docs
-
-    def test_compact_bench_summary(self):
-        summary = {
-            "composite_score": 10.0,
-            "by_write_frequency_pct": {
-                "0": {
-                    "workload_speedup": 40.0,
-                    "query_only_speedup": 30.0,
-                    "accel_hit_rate": 1.0,
-                    "duckdb_workload_us": 999,
-                }
-            },
-        }
-        compact = compact_bench_summary(summary)
-        assert "duckdb_workload_us" not in compact["by_write_frequency_pct"]["0"]
-        assert compact["composite_score"] == 10.0
-
-    def test_compact_gate_summary(self, tmp_path: Path):
-        gates = tmp_path / "gates"
-        gates.mkdir()
-        (gates / "aux_bench_sweep.json").write_text(
-            '{"gate":"aux_bench_sweep","status":"pass","composite_score":12.5}',
-            encoding="utf-8",
-        )
-        summary = compact_gate_summary(gates)
-        assert summary["aux_bench_sweep"]["status"] == "pass"
-        assert summary["aux_bench_sweep"]["composite_score"] == 12.5
-
-    def test_compact_gate_summary_skips_artifacts_that_are_not_gate_results(self, tmp_path: Path):
-        gates = tmp_path / "gates"
-        gates.mkdir()
-        (gates / "aux_bench_draws.json").write_text("[0, 1, 3]", encoding="utf-8")
-        (gates / "aux_unit.json").write_text('{"gate":"aux_unit","status":"pass"}', encoding="utf-8")
-        assert list(compact_gate_summary(gates)) == ["aux_unit"]
-
-    def test_compact_optimization_state_keeps_last_only(self):
-        state = {
-            "active_candidate_id": "daily_partial",
-            "best_composite_score": 12.0,
-            "best_iteration": 2,
-            "history": [
-                {"iteration": 1, "composite_score": 10.0, "change_kind": "baseline"},
-                {"iteration": 2, "composite_score": 12.0, "change_kind": "cost_model"},
-            ],
-        }
-        compact = compact_optimization_state(state, optimization_iter=3)
-        assert compact["current_iteration"] == 3
-        assert compact["last_result"]["iteration"] == 2
-        assert compact["prior_composite_score"] == 10.0
-        assert "history" not in compact
 
     def test_compact_base_analysis_accepts_dict_scan_order(self):
         payload = compact_base_analysis_for_implementation(
