@@ -3,10 +3,6 @@
 api_key_env: OPENROUTER_API_KEY
 
 codex_bin: codex
-codex_config_path: pipeline/.codex/config.toml
-codex_timeout_sec: 7200
-# Required for MCP tools under `codex exec` (otherwise: "user cancelled MCP tool call").
-codex_bypass_approvals_and_sandbox: true
 # The presets' real window (~1M on OpenRouter); compact at 600k instead of Codex's ~300k default.
 codex_model_context_window: 1000000
 codex_auto_compact_tokens: 600000

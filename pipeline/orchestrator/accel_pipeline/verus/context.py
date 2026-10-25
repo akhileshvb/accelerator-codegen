@@ -171,8 +171,6 @@ def build_context(pipeline_config: Any, workload: dict[str, Any], workload_name:
 # agents context from C++ accelerators).
 IGNORED_WORKLOAD_FIELDS = (
     "optimization_guidance",
-    "requires_base_accelerator",
-    "prerequisite_workload",
     "cost_model_config",
     "agent_boundary",
 )

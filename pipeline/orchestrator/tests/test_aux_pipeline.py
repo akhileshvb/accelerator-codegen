@@ -363,7 +363,6 @@ class TestWorkloadConfig:
         assert workload["query_number"] == 10
         assert workload["workload_kind"] == "aux_state"
         assert workload["aux_function_name"] == "accel_tpch_q10_aux"
-        assert workload["max_structural_reanalysis"] == 2
         assert len(workload["parameters"]) == 1
         tables = {t["name"] for t in with_facts(REPO_ROOT, workload, workload["query_number"])["dependent_tables"]}
         assert tables == {"customer", "orders", "lineitem", "nation"}
@@ -375,7 +374,6 @@ class TestWorkloadConfig:
         assert workload["query_number"] == 12
         assert workload["workload_kind"] == "aux_state"
         assert workload["aux_function_name"] == "accel_tpch_q12_aux"
-        assert workload["max_structural_reanalysis"] == 2
         assert len(workload["parameters"]) == 3
         tables = {t["name"] for t in with_facts(REPO_ROOT, workload, workload["query_number"])["dependent_tables"]}
         assert tables == {"orders", "lineitem"}
@@ -388,7 +386,6 @@ class TestWorkloadConfig:
         assert workload["workload_kind"] == "aux_state"
         assert workload["benchmark_name"] == "sec_edgar"
         assert workload["aux_function_name"] == "accel_sec_edgar_q1_aux"
-        assert workload["prerequisite_workload"] == "sec_edgar_q1"
         assert workload["aux_bench_sweep"]["suites"] == "filing_append"
         tables = {t["name"] for t in with_facts(REPO_ROOT, workload, workload["query_number"])["dependent_tables"]}
         assert tables == {"pre"}
@@ -408,7 +405,6 @@ class TestWorkloadConfig:
         assert workload["workload_kind"] == "aux_state"
         assert workload["benchmark_name"] == "sec_edgar"
         assert workload["aux_function_name"] == "accel_sec_edgar_q2_aux"
-        assert workload["prerequisite_workload"] == "sec_edgar_q2"
         assert workload["aux_bench_sweep"]["suites"] == "value_append"
         tables = {t["name"] for t in with_facts(REPO_ROOT, workload, workload["query_number"])["dependent_tables"]}
         assert tables == {"num", "sub"}

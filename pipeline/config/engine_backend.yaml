@@ -138,12 +138,9 @@ prompt_subdir: engine_backend
 default_target_paths:
   host_header: backends/{engine}/api/{engine}_host.hpp
   host_source: backends/{engine}/api/{engine}_host.cpp
-  capture_header: backends/{engine}/engine/capture.hpp
   capture_source: backends/{engine}/engine/capture.cpp
   scan_header: backends/{engine}/engine/scan.hpp
   scan_source: backends/{engine}/engine/scan.cpp
-  stateful_dir: backends/{engine}/state
-  stateful_src_dir: backends/{engine}/state
   contract_test: backends/{engine}/tests/test_{engine}_runtime.cpp
   contract_test_target: test_{engine}_runtime
   adversarial_test: backends/{engine}/tests/test_{engine}_adversarial.cpp
@@ -179,9 +176,6 @@ stage_max_turns:
   validation: 0
 
 allow_update_existing: true
-
-# From-scratch fairness: physically move foreign host adapters out of the workspace.
-hide_foreign_engines: true
 
 # One audit pass over the backend digest and the layers' diffs; each owning layer's session gets its
 # violations in one batched repair round. More passes re-audit after the fixes.

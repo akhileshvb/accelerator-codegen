@@ -1,9 +1,0 @@
-benchmark_name: tpch
-query_number: 3
-engines: [duckdb, postgres]
-reference_sql_path: workloads/tpch/instances/seed_1/03.sql
-parameters:
-  - name: market_segment
-    type: VARCHAR
-  - name: cutoff_date
-    type: DATE

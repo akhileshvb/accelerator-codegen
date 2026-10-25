@@ -77,10 +77,8 @@ def test_host_bootstrap_fails_before_the_backend_exists(tmp_path):
                            representative_workload="tpch_q1_aux", force=True)
 
 
-def test_aux_workload_merges_host_bootstrap_retry_config():
+def test_aux_workload_leaves_host_bootstrap_turns_unlimited():
     w = load_workload("tpch_q1_aux", REPO_ROOT, engine="postgres")
-    assert w["host_bootstrap_gate_max_rounds"] == 3
-    assert w["host_bootstrap_critique_max_rounds"] == 2
     pc = load_pipeline_config(repo_root=REPO_ROOT)
     from accel_pipeline.config import apply_workload_overrides
 

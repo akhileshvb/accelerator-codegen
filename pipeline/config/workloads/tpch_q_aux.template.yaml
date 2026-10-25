@@ -1,11 +1,3 @@
-# Template for TPC-H aux-state workloads. Copy to tpch_q{N}_aux.yaml and fill in.
-
 workload_kind: aux_state
 benchmark_name: tpch
-query_number: 0          # set to query number
 engines: [duckdb, postgres, mysql]
-reference_sql_path: ""       # path to generated SQL instance
-parameters: []
-speedup_verification:
-  min_speedup_vs_base: 2.0
-  min_work_reduction_pct: 50

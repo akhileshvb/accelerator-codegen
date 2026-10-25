@@ -7,11 +7,10 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
-import yaml
 
 from accel_pipeline import preflight
 from accel_pipeline.backends.codex_exec import CodexExecBackend
-from accel_pipeline.config import load_model_config, load_pipeline_config, load_workload, workload_engines
+from accel_pipeline.config import load_model_config, load_pipeline_config, load_workload, workload_supported_engines
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
@@ -20,7 +19,7 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 def probe(tmp_path, monkeypatch) -> preflight.Probe:
     monkeypatch.setattr(CodexExecBackend, "_resolve_codex_bin", lambda self: "codex")
     monkeypatch.setenv("OPENROUTER_API_KEY", "unused")
-    engine = workload_engines(yaml.safe_load((REPO_ROOT / "pipeline/config/workloads/tpch_q14_aux.yaml").read_text()))[0]
+    engine = workload_supported_engines("tpch_q14_aux", REPO_ROOT)[0]
     cfg = replace(load_pipeline_config(None, REPO_ROOT), sandbox="none", engine_name=engine, codex_home=tmp_path / "codex_home")
     workload = load_workload("tpch_q14_aux", REPO_ROOT, engine=engine)
     models = load_model_config(None, repo_root=REPO_ROOT)

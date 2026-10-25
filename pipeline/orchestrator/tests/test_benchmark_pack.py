@@ -66,7 +66,6 @@ def test_apply_workload_overrides_merges_aux_stage_max_turns() -> None:
     assert merged.stage_max_turns["analysis"] == 24
     assert merged.stage_max_turns["implementation"] == 0
     assert merged.stage_max_turns["optimization"] == 0
-    assert merged.optimization_max_turns_per_episode == 0
     assert merged.optimization_max_attempts_per_iteration == 8
     assert merged.optimization_consecutive_fail_stop == 0
     assert merged.optimization_max_turns_patch == 0

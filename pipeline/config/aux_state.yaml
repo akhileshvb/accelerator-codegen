@@ -1,27 +1,14 @@
-# Shared aux-state pipeline settings merged into PipelineConfig when workload_kind=aux_state.
-
-# Run policy of an aux workload; a workload's own value wins.
-requires_base_accelerator: false   # aux and base accelerators are independent
-prerequisite_min_stage: implementation
-allow_poor_fitness: false
-allow_unsuccessful_design: false
+# Settings merged into every workload_kind=aux_state workload (on top of default.yaml and the
+# benchmark pack); lists extend default.yaml's, a workload's own values win.
 
 write_paths:
-  # the query's own tree: module, layout, registrars (engine backends name no query)
-  - accelerators/*/q*/**
-  - eval/tests/test_support/**
   - eval/bench/**/*_arg_variants.*
 
 allowed_commands:
   # Build / test (gates and agent loop)
-  - "^cmake -S \\. -B build-release( .*)?$"
-  - "^cmake -S \\. -B build-release && cmake --build build-release( .*)?$"
   - "^touch CMakeLists\\.txt && cmake -S \\. -B build-release$"
   - "^touch CMakeLists\\.txt && cmake --build build-release( .*)?$"
-  - "^cmake --build build-release( .*)?$"
   - "^ctest -R (q\\d+_|tpch_q\\d+_aux|test_[a-z0-9]+_(cross_accel|aux_multi_connection)).*"
-  - "^ctest --test-dir build-release( .*)?$"
-  - "^ctest -N( .*)?$"
   # test / bench / calibrate binaries land in the build root (no tests/ or benchmarks/ subdir)
   - "^(\\./)?build-release/(test|benchmark|calibrate)_[A-Za-z0-9_]+( .*)?$"
   - "^(ACCEL_[A-Z_]+=\\S+ )+(\\.\\/)?build-release\\/(test|benchmark|calibrate)_[A-Za-z0-9_]+( .*)?$"
@@ -81,28 +68,6 @@ aux_bench_sweep_quick:
   bench_base_write_samples: 1
   bench_timeout_sec: 120
 
-optimization:
-  max_iterations: 3
-  max_attempts_per_iteration: 5
-  improvement_threshold_pct: 2.0
-  reject_threshold_pct: 1.0
-  smoke_runs: 2
-  skip_confirmation: true
-  skip_per_attempt_correctness: true
-  two_phase_hypothesis_patch: true
-  # OPTIMIZATION_SATURATED is honored only once the read speedup over the stateless base kernel
-  # reaches the floor, or the last `saturation_required_attempts` trials were profile-guided and
-  # distinct, with one structural and one low-level change among them.
-  early_stop:
-    enabled: true
-    saturation_min_read_speedup: 20
-    saturation_required_attempts: 3
-  # A redesign of the state (declared as strategy=structural, or inferred from the changed lines)
-  # is kept only after the full tier of these gates and a measured read gain with the write axis held.
-  structural:
-    gates: [aux_correctness, aux_unit, aux_tsan, aux_multi_connection]
-    inferred_diff_fraction: 0.35
-
 # The stage-exit batch: the quick unit checks, then one aux_exit run (correctness at N and 1 threads, multi-connection,
 # cross-accelerator, TSAN on the subset and the bench sweep, side by side), then the cost-model calibration, which
 # rebuilds the state several times (a few minutes on its own).
@@ -137,33 +102,17 @@ fairness:
 
 prompt_subdir: aux_state
 
-# Aux analysis reads taxonomy + reference modules and writes a large analysis.json;
-# Aux analysis needs more turns than base parallel queries.
+# Aux analysis reads taxonomy + reference modules and writes a large analysis.json:
+# more turns than a base query needs (default.yaml); 0 = unlimited.
 stage_max_turns:
   analysis: 24
   analysis_critic: 16
   test_suite: 24
-  implementation: 0  # 0 = unlimited (resolved in stages/base.py)
-  optimization: 0
+  implementation: 0
   crash_debug: 16
   audit: 12
-  host_bootstrap: 0
   layer_critique: 20
-
-# Post-stage host_bootstrap gate: on fail, re-invoke the agent with notes/log_tail.
-host_bootstrap_gate_max_rounds: 3
-# Cheap critic after a green bootstrap gate; 0 disables.
-host_bootstrap_critique_max_rounds: 2
-
-optimization_max_turns_per_episode: 0
 
 # Independent critic rounds on the analysis (each may send it back for one revision; the next round
 # re-checks that revision); 0 disables.
 analysis_critique_max_rounds: 2
-
-# Max times analysis may re-run after implementation/optimization finds a structural bottleneck.
-max_structural_reanalysis: 2
-
-speedup_verification:
-  min_speedup_vs_base: 2.0
-  min_work_reduction_pct: 50

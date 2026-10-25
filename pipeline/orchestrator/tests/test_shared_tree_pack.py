@@ -45,8 +45,9 @@ def test_lease_blocks_second_holder(tmp_path: Path):
 
 
 def test_sticky_lease_auto_on_shared_write(tmp_path: Path):
-    shared = tmp_path / "CMakeLists.txt"
-    shared.write_text("project(x)\n", encoding="utf-8")
+    shared = tmp_path / "eval/tests/test_support/helpers.hpp"
+    shared.parent.mkdir(parents=True)
+    shared.write_text("#pragma once\n", encoding="utf-8")
     info = ensure_sticky_lease_for_write(tmp_path, holder="q2", path=shared)
     assert info is not None
     assert info.holder == "q2"

@@ -7,10 +7,6 @@ parameters:   # spec: eval/bench/sec_edgar/params/q3.json (zero-arg function = d
   - {name: fy, type: BIGINT, default: 2022, domain: [2021, 2022, 2023, 2024]}
   - {name: uom, type: VARCHAR, default: "USD", domain: ["USD", "shares", "pure", "CAD", "CNY", "EUR"]}
 
-speedup_verification:
-  min_speedup_vs_base: 2.0
-  min_work_reduction_pct: 50
-
 aux_bench_sweep:
   write_frequencies: [0, 1, 10, 50]
   suites: value_append

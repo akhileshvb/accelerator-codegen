@@ -26,11 +26,6 @@ def accelerator_id(benchmark: str, query: Any) -> str:
     return f"{benchmark}_q{query}_aux"
 
 
-def base_workload_name(benchmark: str, query: Any) -> str:
-    """The base accelerator's workload: the prerequisite of the aux one."""
-    return f"{benchmark}_q{query}"
-
-
 def header_basename(benchmark: str, query: Any) -> str:
     return f"{benchmark}_q{query}"
 
