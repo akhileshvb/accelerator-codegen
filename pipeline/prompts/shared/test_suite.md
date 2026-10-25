@@ -11,7 +11,7 @@ One suite per query, in the query's `tests/workload/` directory (the format the 
 | `suite.yaml` | The manifest: what each transaction is, which tuples cover which edge class, scale scenarios, bulk and point minimums. |
 | `setup.sql` | Optional. Shapes the data before the accelerator is built (schema-valid rows only). |
 
-`domain.yaml`: one entry per query parameter, in `$n` order (`name` = the workload's parameter name; a trailing parameter the accelerator derives, such as an interval's end date, is `type: derived`):
+`domain.yaml`: one entry per query parameter, in `$n` order (`name` = the workload's parameter name; a trailing parameter the accelerator derives, such as an interval's end date, is `type: derived`). A derived parameter is not independent: the accelerator receives only its source, so in every fixed tuple it must equal its derivation (validation checks it); put edge cases (NULL, extremes, empty ranges) on the source parameter. Reversed or equal bounds are edge cases only when both bounds are parameters:
 
 ```yaml
 version: 1
@@ -88,7 +88,7 @@ DELETE FROM events WHERE event_id = (SELECT min(event_id) FROM events WHERE stat
 
 An INSERT copies a visible row by subquery (`INSERT INTO events SELECT event_id + 1000000000, account_id, ... FROM events WHERE ... LIMIT 1`); a bulk chunk is one file with many rows (`INSERT INTO t SELECT ... FROM t WHERE <slice> `); a duplicate key is an INSERT of an existing key, and its undo a DELETE of the later copy.
 
-`domain.yaml`, `write_mix.yaml`: as above. `suite.yaml` for the toy:
+`domain.yaml` for the toy (both bounds are parameters, so reversed and equal bounds are valid tuples): `start_ts` and `end_ts` as `type: date`, `status` as `type: choice`. `write_mix.yaml`: as above. `suite.yaml` for the toy:
 
 ```yaml
 version: 1

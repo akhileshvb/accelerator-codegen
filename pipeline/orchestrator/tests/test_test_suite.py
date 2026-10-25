@@ -519,9 +519,19 @@ def test_the_format_docs_worked_example_passes_the_static_checks(tmp_path):
         (suite / "txns" / f"{name}.sql").write_text(text, encoding="utf-8")
     (suite / "suite.yaml").write_text([b for lang, b in blocks if lang == "yaml"][-1], encoding="utf-8")
     (suite / "domain.yaml").write_text("version: 1\nparams:\n  - {name: a, type: date, min: 1992-01-02, max: 1998-12-01}\n"
-                                       "  - {name: b, type: derived, from: a, add_months: 3}\n  - {name: c, type: choice, values: [\"'F'\"]}\n",
+                                       "  - {name: b, type: date, min: 1992-01-02, max: 1998-12-01}\n  - {name: c, type: choice, values: [\"'F'\"]}\n",
                                        encoding="utf-8")
     (suite / "write_mix.yaml").write_text("version: 1\nfrequency_pct: {min: 1, max: 50, samples: 3, distribution: log}\n"
                                           "kinds: {point_update: 5, point_insert: 2, point_delete: 2, bulk_insert: 1}\n", encoding="utf-8")
     query = "SELECT kind, count(*) FROM events WHERE ts >= $1 AND ts < $2 AND status = $3 GROUP BY 1 ORDER BY 1"
     assert ts.validate_static(suite, query_sql=query, param_names=["a", "b", "c"], dependent_tables=["events"], aux=True) == []
+
+
+def test_fixed_tuples_must_follow_a_derived_parameter():
+    from accel_pipeline.test_suite import _check_derived
+
+    domain = {"params": [{"name": "start", "type": "date"}, {"name": "end", "type": "derived", "from": "start", "add_months": 1}]}
+    good = "DATE '1995-01-31', DATE '1995-02-28'"
+    assert _check_derived(domain, [good, "NULL, NULL"]) == []
+    bad = _check_derived(domain, ["DATE '1995-01-01', DATE '1995-01-01'"])
+    assert len(bad) == 1 and "DATE '1995-02-01'" in bad[0]

@@ -255,6 +255,29 @@ def _check_edges(manifest: dict[str, Any], tuples: int) -> list[str]:
     return problems
 
 
+_DATE_LITERAL = re.compile(r"^DATE\s*'(\d{4}-\d{2}-\d{2})'$", re.I)
+
+
+def _check_derived(domain: dict[str, Any], tuples: list[str]) -> list[str]:
+    """A fixed tuple must give every derived parameter the value the domain derives it as."""
+    params = domain.get("params") or []
+    names = [str(spec.get("name")) for spec in params]
+    problems = []
+    for j, spec in enumerate(params):
+        if spec.get("type") != "derived" or spec.get("from") not in names:
+            continue
+        i, months = names.index(spec["from"]), int(spec.get("add_months") or 0)
+        for n, t in enumerate(tuples, 1):
+            values = split_tuple(t)
+            if max(i, j) >= len(values) or not (source := _DATE_LITERAL.match(values[i].strip())):
+                continue
+            want = _add_months(dt.date.fromisoformat(source.group(1)), months).isoformat()
+            if (got := _DATE_LITERAL.match(values[j].strip())) is None or got.group(1) != want:
+                problems.append(f"{PARAMS} tuple {n}: {spec['name']} is derived as {spec['from']} + {months} month(s) "
+                                f"= DATE '{want}', not {values[j].strip()}: {t}")
+    return problems
+
+
 def validate_static(suite: Path, *, query_sql: str, param_names: list[str], dependent_tables: list[str],
                     aux: bool) -> list[str]:
     """What is wrong with the suite's files, without running anything (empty: nothing)."""
@@ -275,6 +298,7 @@ def validate_static(suite: Path, *, query_sql: str, param_names: list[str], depe
             bad = _check_domain(domain, param_names, want)
             problems += bad
             if not bad:
+                problems += _check_derived(domain, tuples)
                 problems += [f"{DOMAIN} draws a tuple of {len(split_tuple(t))} values, the query takes {want}: {t}"
                              for t in draw_tuples(domain, 3, 1) if len(split_tuple(t)) != want]
         except ValueError as exc:
