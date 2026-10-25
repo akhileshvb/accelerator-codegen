@@ -37,7 +37,8 @@ def _ts(s: str) -> float:
 
 
 def session_usage(codex_home: Path, session_id: str, since: float) -> dict[str, Any]:
-    """Tokens, model calls and tool calls of the part of a session after `since` (epoch seconds)."""
+    """Tokens, model calls and tool calls of the part of a session after `since` (epoch seconds). A forked session's
+    counts start from its parent's running total, which is the parent's usage, not the fork's."""
     path = rollout_path(codex_home, session_id)
     if path is None:
         return {}
@@ -46,6 +47,7 @@ def session_usage(codex_home: Path, session_id: str, since: float) -> dict[str, 
     after = dict.fromkeys(keys, 0)
     model_calls = tool_calls = 0
     last_total = None
+    forked = False
     with path.open(encoding="utf-8") as f:
         for line in f:
             try:
@@ -55,11 +57,17 @@ def session_usage(codex_home: Path, session_id: str, since: float) -> dict[str, 
             p = j.get("payload") or {}
             t = p.get("type")
             new = _ts(j.get("timestamp", "")) >= since - 1.0
-            if t == "token_count":
-                total = (p.get("info") or {}).get("total_token_usage")
+            if j.get("type") == "session_meta":
+                forked = bool(p.get("forked_from_id"))
+            elif t == "token_count":
+                info = p.get("info") or {}
+                total = info.get("total_token_usage")
                 if not total:
                     continue
                 vals = {k: int(total.get(k) or 0) for k in keys}
+                if forked and last_total is None:  # the parent's total when the fork's first response started
+                    last = info.get("last_token_usage") or {}
+                    before = after = {k: vals[k] - int(last.get(k) or 0) for k in keys}
                 if new:
                     if vals != last_total:  # one per model response (repeats carry no new usage)
                         model_calls += 1
