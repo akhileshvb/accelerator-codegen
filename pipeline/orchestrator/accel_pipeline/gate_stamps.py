@@ -4,13 +4,18 @@ run_gate records the code stamp (build_stamp.code_stamp) of every passing gate; 
 wants to skip a gate asks reusable_gate_result. The stamp covers the query's directory and every
 shared file changed since the commit, so an edit anywhere the gate could see invalidates it.
 
+A pass also carries the check version (check_version): the digest of the files that define the checks (gate
+scripts, harness), which the code stamp leaves out. A pass recorded under older rules does not count.
+
 Timing gates (TIMING_GATES) measure acceptance numbers: they are reused only from a run of the
-same stage's acceptance tier, never from another stage and never from the iteration tier.
+same stage's acceptance tier, never from another stage and never from the iteration tier. The exit run is
+reused by any stage's acceptance tier (not the iteration tier's lighter checks), as the code is unchanged.
 """
 
 from __future__ import annotations
 
 import fcntl
+import hashlib
 import json
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -29,6 +34,17 @@ ITERATION_TIER = "optimization"  # the change_kind whose gate runs use the cheap
 TIMING_GATES = frozenset({
     "aux_bench_sweep", "aux_cost_model_calibrate", "aux_speedup_verification", "baseline", "fairness", "profile", "sf10",
 })
+ACCEPTANCE_TIER_GATES = frozenset({"aux_exit"})
+CHECK_FILES = ("pipeline/gates/*", "eval/harness/*", "backends/*/tests/harness/*",
+               "pipeline/orchestrator/accel_pipeline/quick.py", "pipeline/orchestrator/accel_pipeline/write_cost.py")  # what defines the checks
+
+
+def check_version(repo_root: Path) -> str:
+    """Digest of the files that define the checks: a pass (or an admission) recorded under another version is void."""
+    digest = hashlib.sha256()
+    for path in sorted(p for pattern in CHECK_FILES for p in repo_root.glob(pattern) if p.is_file()):
+        digest.update(f"\0{path.relative_to(repo_root)}\0".encode() + path.read_bytes())
+    return digest.hexdigest()[:16]
 
 
 def current_stamp(pipeline_config: PipelineConfig, workload: dict[str, Any], query: int) -> str:
@@ -55,7 +71,8 @@ def record_pass(pipeline_config: PipelineConfig, workload: dict[str, Any], query
     """`gate` passed on the code with `stamp`, in a run of `change_kind`, and wrote `result`."""
     path = _stamps_path(pipeline_config, workload, query)
     path.parent.mkdir(parents=True, exist_ok=True)
-    entry = {"stamp": stamp, "change_kind": change_kind, "result": str(result or "")}
+    entry = {"stamp": stamp, "check_version": check_version(pipeline_config.repo_root), "change_kind": change_kind,
+             "result": str(result or "")}
     with path.with_suffix(".lock").open("a") as lock:  # parallel gates record concurrently
         fcntl.flock(lock, fcntl.LOCK_EX)
         path.write_text(json.dumps({**_read(path), gate: entry}, indent=2), encoding="utf-8")
@@ -69,6 +86,10 @@ def passed_at_current_stamp(pipeline_config: PipelineConfig, workload: dict[str,
     stamp = entry.get("stamp")
     if not stamp or stamp != current_stamp(pipeline_config, workload, query):
         return False
+    if entry.get("check_version") != check_version(pipeline_config.repo_root):
+        return False
+    if gate in ACCEPTANCE_TIER_GATES:
+        return ITERATION_TIER not in (change_kind, entry.get("change_kind"))
     if gate in TIMING_GATES:
         return bool(change_kind) and change_kind != ITERATION_TIER and entry.get("change_kind") == change_kind
     return True
