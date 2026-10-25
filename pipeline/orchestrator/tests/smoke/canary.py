@@ -67,6 +67,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--work", type=Path, default=None)
     parser.add_argument("--timeout", type=float, default=float(os.environ.get("ACCEL_CANARY_TIMEOUT_SEC", 4 * 3600)))
     parser.add_argument("--probe-models", action="store_true")
+    parser.add_argument("--resume", action="store_true",
+                        help="continue the run in --work: the pipeline and backend of --rev are committed into its tree first")
     args = parser.parse_args(argv)
     try:
         for tool in ("bwrap", "codex", "git", "cmake", "rsync"):
@@ -76,24 +78,31 @@ def main(argv: list[str] | None = None) -> int:
         env = smoke.run_inputs(args.engine, fixture)
         key = api_key()
         work = args.work or CANARY_HOME / "runs" / time.strftime("%Y%m%d-%H%M%S")
-        work.mkdir(parents=True)
-        base = smoke.base_tree(args.rev, args.engine, fixture, env)
-        tree = smoke.new_tree(base, work, fixture, env)
+        if args.resume:
+            tree = work / "tree"
+            smoke.git_archive(args.rev, ["pipeline", f"backends/{args.engine}"], tree)
+            smoke.run([*smoke.GIT, "add", "-A", "pipeline", f"backends/{args.engine}"], cwd=tree)
+            smoke.run([*smoke.GIT, "commit", "-q", "--allow-empty", "-m", f"pipeline and backend from {args.rev}"], cwd=tree)
+            (work / "pipeline.log").replace(work / f"pipeline.{time.strftime('%H%M%S')}.log")
+        else:
+            work.mkdir(parents=True)
+            base = smoke.base_tree(args.rev, args.engine, fixture, env)
+            tree = smoke.new_tree(base, work, fixture, env)
     except (smoke.EnvironmentUnavailable, smoke.SmokeError, OSError) as exc:
         print(f"canary cannot run: {exc}", file=sys.stderr)
         return 2
     (tree / ".env").write_text(f"OPENROUTER_API_KEY={key}\n")
     (tree / ".env").chmod(0o600)
     inputs = work / "inputs"
-    inputs.mkdir()
+    inputs.mkdir(exist_ok=True)
     models = inputs / "models.yaml"
     shutil.copyfile(args.models, models)
     config = tree / "pipeline/config/default.yaml"
     query = int(fixture["query"])
-    pipeline = smoke.pipeline_args(args.workload, query, args.engine, models, config)
+    pipeline = smoke.pipeline_args(args.workload, query, args.engine, models, config) + (["--resume"] if args.resume else [])
     print(f"[canary] {work}: tail -f {work / 'pipeline.log'}", flush=True)
 
-    if args.probe_models:
+    if args.probe_models and not args.resume:
         probe = smoke.launch(tree, work, env, ["accel_pipeline.preflight", "--workload", args.workload, "--query", str(query),
                                                "--engine", args.engine, "--models-config", str(models), "--config", str(config),
                                                "--models", "--only", "live_models"], data=(inputs,), log_name="models_probe.log")
