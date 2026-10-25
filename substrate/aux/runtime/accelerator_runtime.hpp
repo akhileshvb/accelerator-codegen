@@ -142,6 +142,8 @@ public:
   // ---- builds ----
   // Ensures a build is running or scheduled (no-op if synced or building).
   void RequestBuild();
+  // Waits for the build RequestBuild scheduled, if any.
+  void AwaitScheduledBuild();
   // Runs one build on the calling thread (waiting for one already running).
   // Returns true if installed and synced.
   bool BuildNow();

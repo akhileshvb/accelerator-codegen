@@ -59,6 +59,8 @@ public:
   // Builds every registered accelerator that is not synced, in parallel on
   // the thread budget (in-process), and waits.
   void BuildAll();
+  // Waits for the builds that commits or reads scheduled.
+  void AwaitScheduledBuilds();
   // Host-thread placement (S6: Postgres): runs queued engine work (builds,
   // shipped applies) on the calling thread; returns whether anything ran.
   bool RunEngineWork();

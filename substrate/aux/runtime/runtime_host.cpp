@@ -254,6 +254,12 @@ void RuntimeHost::BuildAll() {
   impl->threads.ParallelFor(stale.size(), [&](std::size_t i) { stale[i]->BuildNow(); });
 }
 
+void RuntimeHost::AwaitScheduledBuilds() {
+  for (auto *runtime : All()) {
+    runtime->AwaitScheduledBuild();
+  }
+}
+
 bool RuntimeHost::RunEngineWork() {
   std::deque<std::function<void()>> work;
   {
