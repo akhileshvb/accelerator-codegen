@@ -10,7 +10,8 @@ import os
 import re
 from typing import Any
 
-MIN_TIMED_BUILD_S = 0.2  # a one-thread build shorter than this is mostly fixed cost: no verdict on its scaling
+MIN_TIMED_BUILD_S = 1.0  # a subset build shorter than this is mostly fixed cost (per-partition scans, thread start):
+                         # no verdict on its scaling or its full-scale projection
 MIN_THREADS = 4
 SCALING_FLOOR = 1.5  # the N-thread build must be at least this much faster than the one-thread build
 _SERIAL_PLAN = re.compile(r"^\s*(n/a|none|serial|single)\b", re.IGNORECASE)
@@ -50,8 +51,8 @@ def build_report(reports: list[dict], *, scale: float, threads: int, budget_s: f
                  sweep_scaling: dict[str, Any] | None = None) -> tuple[str, str]:
     """(the build line, the defect or ""): the build's seconds at N and at 1 thread on the subset, its speedup, and the
     N-thread build projected to the full dataset (rows scale). `reports`: the suite reports of the N-thread and the
-    one-thread run, the second missing when the cap is one thread. When the subset build is too short to time, the
-    scaling is judged on `sweep_scaling`, the last bench sweep's builds at full scale."""
+    one-thread run, the second missing when the cap is one thread. A subset build too short to time is judged on
+    `sweep_scaling`, the last bench sweep's builds at full scale, and not projected."""
     if not reports or not float(reports[0].get("build_seconds") or 0.0):
         return "", ""
     at_n = float(reports[0]["build_seconds"])
@@ -59,11 +60,12 @@ def build_report(reports: list[dict], *, scale: float, threads: int, budget_s: f
     speedup = at_1 / at_n if at_1 else 0.0
     full_s = at_n * scale
     line = f"{at_n:.2f} s at {threads} threads" + (f", {at_1:.2f} s at 1 thread ({speedup:.1f}x)" if at_1 else "")
+    if max(at_n, at_1) < MIN_TIMED_BUILD_S:
+        line += " on the subset, too short to time (the exit gate times the full build)"
+        return line, full_scale_defect(sweep_scaling or {}) if expected_scaling else ""
     line += f" on the subset; projected {full_s:.0f} s on the full dataset (budget {budget_s:.0f} s)"
     if expected_scaling and threads >= MIN_THREADS and at_1 >= MIN_TIMED_BUILD_S and speedup < SCALING_FLOOR:
         return line, _not_scaling(at_n, at_1, threads, "on the subset")
-    if expected_scaling and at_1 < MIN_TIMED_BUILD_S and (defect := full_scale_defect(sweep_scaling or {})):
-        return line, defect
     if full_s > budget_s:
         return line, (
             f"the state build is too slow for the full dataset: {at_n:.2f} s on the subset at {threads} threads, "

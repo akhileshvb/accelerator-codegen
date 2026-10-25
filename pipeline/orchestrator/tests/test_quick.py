@@ -134,11 +134,11 @@ def test_the_gate_runs_on_the_subset_and_a_sanitizer_run_on_the_tiny_database(co
 
 
 def test_a_passing_check_reports_build_read_and_counters(config, monkeypatch):
-    ReportGate(monkeypatch, stage_reports(config, build_n=0.04, build_1=0.20))
+    ReportGate(monkeypatch, stage_reports(config, build_n=0.2, build_1=1.0))
     monkeypatch.setattr(quick, "ensure_cut_datasets", lambda *a: cuts())
     result = run_quick_check(config, WORKLOAD, 6)
     assert result.status == "pass"
-    assert result.report["build"] == "0.04 s at 40 threads, 0.20 s at 1 thread (5.0x) on the subset; projected 2 s on the full dataset (budget 15 s)"
+    assert result.report["build"] == "0.20 s at 40 threads, 1.00 s at 1 thread (5.0x) on the subset; projected 10 s on the full dataset (budget 15 s)"
     assert result.report["read"] == "engine SQL 2000 us, accelerator 250 us (8.0x faster)"
     assert result.report["counters"].startswith("per read 650.0k instructions, 900.0k cycles, 400 cache misses; build run 2.0G")
     assert FakeBench.instances[-1] == {"engine_instance": "i-quick", "engine_state_dir": "/s-quick", "dataset": "/d"}
@@ -146,11 +146,11 @@ def test_a_passing_check_reports_build_read_and_counters(config, monkeypatch):
 
 
 def test_a_serial_build_fails_the_check_as_a_defect_with_the_next_step(config, monkeypatch):
-    ReportGate(monkeypatch, stage_reports(config, build_n=0.80, build_1=0.82))
+    ReportGate(monkeypatch, stage_reports(config, build_n=1.60, build_1=1.64))
     monkeypatch.setattr(quick, "ensure_cut_datasets", lambda *a: cuts())
     result = run_quick_check(config, WORKLOAD, 6)
     assert result.status == "fail" and result.failure.kind == "code"
-    assert "does not scale with threads: 0.80 s at 40 threads vs 0.82 s at 1 (1.0x)" in result.summary
+    assert "does not scale with threads: 1.60 s at 40 threads vs 1.64 s at 1 (1.0x)" in result.summary
     assert "PartitionedBuild" in result.summary
     assert quick.admission_refusal(config, WORKLOAD, 6, "aux_correctness")  # a failed check admits nothing
 
@@ -169,7 +169,7 @@ def test_a_build_too_slow_for_the_full_dataset_fails_even_when_it_scales(config,
 
 
 def test_an_unchanged_check_hands_back_its_report(config, monkeypatch):
-    ReportGate(monkeypatch, stage_reports(config, build_n=0.04, build_1=0.20))
+    ReportGate(monkeypatch, stage_reports(config, build_n=0.2, build_1=1.0))
     monkeypatch.setattr(quick, "ensure_cut_datasets", lambda *a: cuts())
     first = run_quick_check(config, WORKLOAD, 6)
     again = run_quick_check(config, WORKLOAD, 6)
@@ -177,7 +177,7 @@ def test_an_unchanged_check_hands_back_its_report(config, monkeypatch):
 
 
 def test_a_bench_that_cannot_run_is_reported_not_fatal(config, monkeypatch):
-    ReportGate(monkeypatch, stage_reports(config, build_n=0.04, build_1=0.20))
+    ReportGate(monkeypatch, stage_reports(config, build_n=0.2, build_1=1.0))
     monkeypatch.setattr(quick, "ensure_cut_datasets", lambda *a: cuts())
 
     class Broken(FakeBench):

@@ -13,21 +13,21 @@ def build(n, one=None, scale=50.0, threads=40, budget=15.0, expected=True):
 
 
 def test_a_parallel_build_inside_the_budget_is_a_line_and_no_defect():
-    line, defect = build(0.04, 0.20)
-    assert line == "0.04 s at 40 threads, 0.20 s at 1 thread (5.0x) on the subset; projected 2 s on the full dataset (budget 15 s)"
+    line, defect = build(0.2, 1.0)
+    assert line == "0.20 s at 40 threads, 1.00 s at 1 thread (5.0x) on the subset; projected 10 s on the full dataset (budget 15 s)"
     assert defect == ""
 
 
 def test_a_build_that_ignores_its_threads_is_a_defect_naming_the_primitive_to_use():
-    line, defect = build(0.78, 0.80)
-    assert "(1.0x)" in line
-    assert defect.startswith("the state build does not scale with threads: 0.78 s at 40 threads vs 0.80 s at 1 (1.0x)")
+    line, defect = build(1.9, 2.0, scale=1.0)
+    assert "(1.1x)" in line
+    assert defect.startswith("the state build does not scale with threads: 1.90 s at 40 threads vs 2.00 s at 1 (1.1x)")
     assert "core::PartitionedBuild" in defect
 
 
 def test_a_build_the_analysis_did_not_plan_to_split_only_has_to_fit_the_budget():
     assert build(0.10, 0.10, expected=False)[1] == ""
-    assert "too slow for the full dataset" in build(0.40, 0.40, expected=False)[1]
+    assert "too slow for the full dataset" in build(1.2, 1.2, expected=False)[1]
 
 
 def test_a_slow_build_is_a_defect_with_the_projection():
@@ -35,14 +35,19 @@ def test_a_slow_build_is_a_defect_with_the_projection():
     assert "0.50 s on the subset at 40 threads, projected ~25 s at full scale" in defect and "budget 15 s" in defect
 
 
-def test_scaling_is_not_judged_on_a_build_too_short_to_time_or_with_few_threads():
-    assert build(0.05, 0.06)[1] == ""
-    assert "does not scale" not in build(0.50, 0.55, threads=2)[1]
+def test_a_build_too_short_to_time_gets_no_verdict_from_the_subset():
+    # the clean Q3 run: 0.67 s at 8 threads vs 0.24 s at 1 on the subset, 6.6 s vs 21 s on the full SF1 build
+    line, defect = build(0.67, 0.24, threads=8, scale=130.0)
+    assert defect == "" and line.endswith("too short to time (the exit gate times the full build)")
+
+
+def test_scaling_is_not_judged_with_few_threads():
+    assert "does not scale" not in build(1.5, 1.6, threads=2, scale=1.0)[1]
 
 
 def test_without_a_one_thread_run_there_is_only_the_projection():
-    line, defect = build(0.1, None)
-    assert line == "0.10 s at 40 threads on the subset; projected 5 s on the full dataset (budget 15 s)" and defect == ""
+    line, defect = build(1.0, None, scale=10.0)
+    assert line == "1.00 s at 40 threads on the subset; projected 10 s on the full dataset (budget 15 s)" and defect == ""
 
 
 def test_no_report_no_line():
