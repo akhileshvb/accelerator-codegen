@@ -1,0 +1,84 @@
+{
+  "rebuild_on_write": {
+    "about": "implementation rebuilds the state on every write; quick_check at the exit batch refuses it (the differential sees reads fall back to SQL; the fidelity check behind it is unit-tested in test_write_cost)",
+    "expect": [
+      "gate complete: quick_check \\(gate\\) status=fail.*differential failed",
+      "\\[repair\\] code failure in gate:quick_check; round 1"
+    ],
+    "escaped": "=== stage: optimization ==="
+  },
+  "serial_fold": {
+    "about": "a parallel section runs as one slice while the plan is parallel (a serial build)",
+    "xfail": "TODO pipe/rd-check: quick_check has no N-thread build speedup budget and the fixture analysis no scale_plan; today the write-cost fidelity check trips on the slowdown instead",
+    "expect": [
+      "quick_check: .*(serial|speedup)"
+    ],
+    "escaped": "gate complete: quick_check \\(gate\\) status=pass|\\[repair\\] code failure in gate:quick_check"
+  },
+  "data_race": {
+    "about": "a data race in the maintenance path; the agent's thread-sanitizer quick_check reports it",
+    "expect": [
+      "\\[tool quick_check\\].*sanitizer report\\(s\\) with a frame in the query's own directory"
+    ],
+    "escaped": "=== stage: optimization ===",
+    "timeout": 1800
+  },
+  "heavy_gate_first": {
+    "about": "the agent asks for a heavy gate without a passing quick_check",
+    "expect": [
+      "\\[tool request_gate\\].*aux_correctness refused: run quick_check first"
+    ],
+    "escaped": "\\[tool request_gate\\] \\{[^}]*\"status\": \"(pass|fail)\""
+  },
+  "dismissed_check": {
+    "about": "the agent sees its quick_check fail, calls it a budget matter and ends its turn; the exit batch's quick_check catches it",
+    "expect": [
+      "\\[tool quick_check\\].*differential failed",
+      "\\[agent\\] the check failed",
+      "\\[repair\\] code failure in gate:quick_check; round 1"
+    ],
+    "escaped": "=== stage: optimization ==="
+  },
+  "false_blocker": {
+    "about": "the agent reports a slow gate as a blocker; the stage's own gates run and pass, the stage completes",
+    "expect": [
+      "the agent reported a blocker \\(.*\\); running the stage's gates once",
+      "gate complete: \\[\\d+/\\d+\\] aux_correctness \\(implementation\\) status=pass"
+    ],
+    "escaped": "agent-reported blocker persists"
+  },
+  "stalled": {
+    "about": "no edits: the footer nudges, the watchdog ends the turn, the advisor is consulted",
+    "config": {
+      "session": {
+        "no_progress": {
+          "nudge_sec": 6,
+          "redirect_sec": 20
+        }
+      }
+    },
+    "expect": [
+      "\\[tool discover_host_sdk\\].*No progress for",
+      "\\[repair\\] timeout failure in no_progress",
+      "advisor_consult: stage=implementation trigger=stall",
+      "the advisor diagnosed the stall"
+    ],
+    "escaped": "\\[tool quick_check\\]"
+  },
+  "no_units_probe": {
+    "about": "analysis without a simulated read per candidate; the validation message reaches the analysis session",
+    "stage": "analysis",
+    "expect": [
+      "\\[prompt resumed analysis\\].*units_probe is required"
+    ],
+    "escaped": "=== stage: test_suite ==="
+  },
+  "one_primitive": {
+    "about": "analysis holds every state component in one mega-primitive; the validation message reaches the analysis session",
+    "stage": "analysis",
+    "expect": [
+      "\\[prompt resumed analysis\\].*narrowest generic primitive"
+    ],
+    "escaped": "=== stage: test_suite ==="
+  }
+}

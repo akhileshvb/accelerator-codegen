@@ -8,6 +8,7 @@ import sys
 import traceback
 from pathlib import Path
 
+from accel_pipeline import preflight
 from accel_pipeline.workload_facts import workload_facts
 from accel_pipeline.config import apply_workload_overrides, load_model_config, load_pipeline_config, load_workload
 from accel_pipeline.engine_quarantine import apply_foreign_engine_quarantine, restore_quarantine
@@ -335,6 +336,8 @@ def _main(argv: list[str] | None = None) -> int:
     mode = args.mode or str(workload.get("mode") or "cpp")
     if mode == "cpp" and not args.dry_run and pipeline_config.sandbox == "bwrap":
         _sandbox_preflight(pipeline_config, query)
+    if mode == "cpp" and not args.dry_run and workload.get("workload_kind") == "aux_state":
+        preflight.require(preflight.Probe(pipeline_config, model_config, workload, args.workload, query))
 
     if workload.get("workload_kind") == "engine_backend":
         from accel_pipeline.stages import engine_backend as engine_backend_stage

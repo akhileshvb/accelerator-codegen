@@ -76,3 +76,23 @@ def test_the_pipeline_passes_end_to_end_with_a_scripted_agent():
                            os.environ.get("ACCEL_SMOKE_ENGINE", "duckdb")],
                           env=env, capture_output=True, text=True)
     assert proc.returncode == 0, proc.stdout[-6000:] + proc.stderr[-2000:]
+
+
+CASE = {"about": "x", "expect": ["refused: run quick_check first", "\\[repair\\] code failure"], "escaped": "=== stage: optimization ==="}
+
+
+def test_case_is_decided_when_its_messages_appear_or_the_misbehaviour_gets_through():
+    assert not smoke_report.case_decided(CASE, "refused: run quick_check first")
+    assert smoke_report.case_decided(CASE, "refused: run quick_check first\n[repair] code failure in quick_check")
+    assert smoke_report.case_decided(CASE, "=== stage: optimization ===")
+
+
+def test_case_verdicts(tmp_path, capsys):
+    (tmp_path / "state").mkdir()
+    (tmp_path / "pipeline.log").write_text("refused: run quick_check first\n[repair] code failure in quick_check\n")
+    assert smoke_report.verify_case("c", CASE, tmp_path, tmp_path, []) == 0
+    (tmp_path / "pipeline.log").write_text("=== stage: optimization ===\n")
+    assert smoke_report.verify_case("c", CASE, tmp_path, tmp_path, []) == 1
+    assert smoke_report.verify_case("c", {**CASE, "xfail": "TODO"}, tmp_path, tmp_path, []) == 0  # expected to get through
+    (tmp_path / "pipeline.log").write_text("refused: run quick_check first\n[repair] code failure in quick_check\n")
+    assert smoke_report.verify_case("c", {**CASE, "xfail": "TODO"}, tmp_path, tmp_path, []) == 1  # caught: drop the xfail

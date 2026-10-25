@@ -145,6 +145,7 @@ generated:
   - pipeline/orchestrator/tests/smoke/**
   - pipeline/orchestrator/tests/test_pipeline_smoke.py
   - scripts/pipeline_smoke.sh
+  - scripts/canary.sh
 
 drop:
   # the clean-tree machinery itself: it names every generated file (that is how it prunes them),

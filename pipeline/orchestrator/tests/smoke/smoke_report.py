@@ -102,3 +102,40 @@ def verify(tree: Path, work: Path, rc: int | None, timings: list[tuple[str, floa
         return 1
     print("\nSMOKE TEST PASSED: every stage ran, every announced gate passed, nothing was repaired")
     return 0
+
+
+# ---------------------------------------------------------------- adversarial cases
+
+def evidence(work: Path, tree: Path) -> str:
+    """Everything a case asserts on: the pipeline log, what the tools answered the agent, the pipeline's events."""
+    parts = [work / "pipeline.log", work / "state" / "agent_tools.log", *tree.glob("pipeline/artifacts/*/q*/*/pipeline_events.jsonl")]
+    return "\n".join(p.read_text(errors="replace") for p in parts if p.is_file())
+
+
+def _seen(pattern: str, text: str) -> bool:
+    return re.search(pattern, text, re.S) is not None
+
+
+def case_decided(case: dict, text: str) -> bool:
+    """The guardrail's message appeared, or the misbehaviour got through."""
+    return all(_seen(p, text) for p in case["expect"]) or bool(case.get("escaped") and _seen(case["escaped"], text))
+
+
+def verify_case(name: str, case: dict, work: Path, tree: Path, timings: list[tuple[str, float]]) -> int:
+    text = evidence(work, tree)
+    missing = [p for p in case["expect"] if not _seen(p, text)]
+    got_through = bool(case.get("escaped") and _seen(case["escaped"], text))
+    caught = not missing and not got_through
+    seconds = dict(timings).get("pipeline", 0)
+    if case.get("xfail"):
+        if caught:
+            print(f"case {name}: caught now, remove its xfail ({case['xfail']})")
+            return 1
+        print(f"case {name}: XFAIL, not caught yet ({seconds:.0f}s): {case['xfail']}")
+        return 0
+    if caught:
+        print(f"case {name}: CAUGHT ({seconds:.0f}s): {case['about']}")
+        return 0
+    print(f"case {name}: NOT CAUGHT: {'the misbehaviour got through' if got_through else 'missing ' + ' | '.join(missing)}")
+    print(f"evidence tail ({work}):\n" + "\n".join(text.splitlines()[-25:]))
+    return 1

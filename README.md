@@ -144,16 +144,33 @@ backends implement are in `substrate/aux/runtime/README.md`.
 
 ### Before launching real runs
 
-Run the pipeline smoke test. It makes a fresh clean tree, runs `--stage all` for one query inside the real
-sandbox with a scripted agent instead of a model (no model calls; `OPENROUTER_API_KEY` must be unset), and fails
-on any stage that did not complete, any announced gate that did not pass, or any repair round or stop: with
-known-good artifacts, those mean the pipeline's own plumbing is broken. It prints a per-stage timing table
-(about ten minutes, mostly the gates' builds and benchmarks).
+Two gates, in this order, both without a model call. A real run starts only when both are green on the pipeline
+commit it records.
+
+1. **Preflight** (`python -m accel_pipeline.preflight --workload W --query N --engine E`; `run_pipeline` also runs
+   it before any model call and refuses to start on a failure, one message per failed item, about 30 s). In the
+   sandboxes the run uses: `perf stat` returns counters; the codex command line carries the configured context
+   window, compaction limit and compact prompt; the MCP server serves every stage's tools and answers parallel
+   data-tool calls; no gate script pastes log text into Python source; the test subset database exists or can be
+   built; the thread-sanitizer build dir is writable; every stage prompt renders with no unresolved placeholder and
+   only existing pipeline paths. `--models` adds one tiny tool-calling `codex exec` turn per configured model (cents):
+   run it when a model is new.
+2. **Adversarial smoke** (the smoke driver with `--adversarial`, about 10 minutes, three cases at a time). Scripted agents misbehave in one way each (rebuild-on-write, a serial parallel section, a data
+   race, heavy gates without quick_check, a dismissed failed check, a false blocker on a slow gate, no edits, an
+   analysis without simulated reads or with one mega-primitive); each must be stopped by the guardrail meant for it,
+   with its message in the log or the tools' answers. `--case NAME` runs one; a case that documents a guardrail
+   not built yet is marked `xfail` in `fixtures/cases.json` and fails the suite once it is caught, so the mark is
+   removed. The always-behaving run stays the happy path (no case): it makes a fresh
+   clean tree, runs `--stage all` inside the real sandbox with a scripted agent (`OPENROUTER_API_KEY` must be
+   unset), and fails on any stage that did not complete, any gate that did not pass, or any repair round.
 
 ```bash
-cd scripts && ./pipeline_smoke.sh --workload <workload> --engine <engine>
-ACCEL_RUN_PIPELINE_SMOKE=1 pytest -m pipeline_smoke pipeline/orchestrator/tests   # the same, as a test (opt in)
+cd scripts && ./pipeline_smoke.sh --workload <workload> --engine <engine> [--case NAME | --adversarial]
+ACCEL_RUN_PIPELINE_SMOKE=1 pytest -m pipeline_smoke pipeline/orchestrator/tests   # the happy path, as a test (opt in)
 ```
+
+3. **Canary** (`canary.sh --workload W --models models.yaml` next to the smoke driver, 20-30 minutes, about $1): one real-model
+   query end to end in a fresh clean tree; read its `TIMELINE.md` (wall time and cost per stage) before a big run.
 
 A workload or engine is added as fixture data next to the smoke driver (analysis output, a test suite, the machine
 inputs of the run); the known-good accelerator is taken from `--reference-rev` (default: the revision under test).
