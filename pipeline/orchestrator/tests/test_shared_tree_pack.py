@@ -8,14 +8,14 @@ from pathlib import Path
 
 import pytest
 
-from accel_pipeline.run_pack import load_pack, parse_pack_queries
-from accel_pipeline.shared_file_lease import (
+from accel_pipeline.pack.run import load_pack, parse_pack_queries
+from accel_pipeline.pack.shared_file_lease import (
     SharedFileLease,
     ensure_sticky_lease_for_write,
     is_shared_path,
     release_sticky_lease,
 )
-from accel_pipeline.worker_isolation import (
+from accel_pipeline.pack.worker_isolation import (
     apply_worker_isolation,
     rewrite_command_build_dir,
     worker_id_for_query,
@@ -115,7 +115,7 @@ def test_pack_expands_queries_by_engine(tmp_path: Path):
 
 
 def test_pack_engine_runs_get_their_own_worker(tmp_path: Path):
-    from accel_pipeline.worker_isolation import worker_id_for_query
+    from accel_pipeline.pack.worker_isolation import worker_id_for_query
 
     ids = {worker_id_for_query(q.query, q.workload, q.engine) for q in parse_pack_queries(
         {"engines": ["duckdb", "postgres"], "queries": [1]}
@@ -181,7 +181,7 @@ def test_gate_build_env_helper():
 
 
 def test_ensure_worker_build_dir_creates(tmp_path: Path, monkeypatch):
-    from accel_pipeline.worker_isolation import ensure_worker_build_dir
+    from accel_pipeline.pack.worker_isolation import ensure_worker_build_dir
 
     cfg = PipelineConfig(
         repo_root=tmp_path,
@@ -211,7 +211,7 @@ def test_ensure_worker_build_dir_creates(tmp_path: Path, monkeypatch):
 
 
 def test_ensure_worker_build_dir_retargets_source(tmp_path: Path, monkeypatch):
-    from accel_pipeline.worker_isolation import ensure_worker_build_dir
+    from accel_pipeline.pack.worker_isolation import ensure_worker_build_dir
 
     old_src = tmp_path / "primary"
     new_src = tmp_path / "worktree"
@@ -313,7 +313,7 @@ def test_shell_blocks_python_foreign_rewrite():
 
 
 def test_rewrite_and_reject_shared_build_dir(tmp_path: Path):
-    from accel_pipeline.worker_isolation import (
+    from accel_pipeline.pack.worker_isolation import (
         reject_shared_build_dir_cmd,
         rewrite_command_build_dir,
     )
@@ -344,7 +344,7 @@ def test_rewrite_and_reject_shared_build_dir(tmp_path: Path):
 
 
 def test_repo_context_pack_roundtrip(tmp_path: Path):
-    from accel_pipeline.repo_context_pack import (
+    from accel_pipeline.pack.repo_context_pack import (
         ensure_repo_context_pack,
         format_seed_pointer,
         pack_path,

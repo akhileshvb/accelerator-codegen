@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from accel_pipeline.optimization_worker import (
+from accel_pipeline.optimization.worker import (
     CANDIDATE_READY,
     _parse_cannot_test,
     _parse_hypothesis_json,

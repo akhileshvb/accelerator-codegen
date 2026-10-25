@@ -10,7 +10,7 @@ import pytest
 
 from accel_pipeline.config import ModelConfig, load_model_config
 from accel_pipeline.models import resolve_preset, resolve_stage_provider
-from accel_pipeline.optimization_worker import worker_enabled
+from accel_pipeline.optimization.worker import worker_enabled
 from accel_pipeline.config import PipelineConfig
 
 

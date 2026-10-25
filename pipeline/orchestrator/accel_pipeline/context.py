@@ -18,9 +18,9 @@ from accel_pipeline.analysis_context import (
     compact_optimization_state,
     stage_analysis_json,
 )
-from accel_pipeline.aux_bench import load_bench_summary, load_optimization_state
+from accel_pipeline.optimization.aux_bench import load_bench_summary, load_optimization_state
 from accel_pipeline.backend_api import render_accelerator_engine_profile, render_backend_api
-from accel_pipeline.base_bench import (
+from accel_pipeline.optimization.base_bench import (
     compact_base_optimization_state,
     compact_summary_for_prompt,
     load_base_optimization_state,
@@ -31,7 +31,7 @@ from accel_pipeline.engine_profile import render_engine_profile
 from accel_pipeline.implementation_bootstrap import build_implementation_bootstrap
 from accel_pipeline.layout import suite_dir
 from accel_pipeline.models import is_critique_stage, is_implementation_stage
-from accel_pipeline.optimization_runtime import runtime_path_for_prompt
+from accel_pipeline.optimization.runtime import runtime_path_for_prompt
 from accel_pipeline.workload_facts import with_facts
 from accel_pipeline.paths import (
     load_query_analysis,

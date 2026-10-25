@@ -7,7 +7,13 @@ import time
 
 import pytest
 
-from accel_pipeline import config, host_bootstrap, repo_context_pack, run_pack
+from accel_pipeline import config
+
+from accel_pipeline.engine_backend import host_bootstrap
+
+from accel_pipeline.pack import repo_context_pack
+
+from accel_pipeline.pack import run as run_pack
 
 
 @pytest.fixture()

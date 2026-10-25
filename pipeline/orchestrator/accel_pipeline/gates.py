@@ -320,7 +320,7 @@ def run_gate(
     # would reset the backend switch and the generator, or fight a build that runs in the
     # engine's own environment under another source path.
     from accel_pipeline.engine_host import host_script
-    from accel_pipeline.worker_isolation import ensure_worker_build_dir
+    from accel_pipeline.pack.worker_isolation import ensure_worker_build_dir
 
     engine = pipeline_config.engine_name
     has_host = bool(engine) and host_script(Path(pipeline_config.repo_root), engine).is_file()

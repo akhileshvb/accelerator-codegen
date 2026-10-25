@@ -36,7 +36,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
 
-from accel_pipeline.core_budget import build_jobs
+from accel_pipeline.pack.core_budget import build_jobs
 from accel_pipeline.textutil import tail_marked
 
 PRIMS_REL = "accelerators/prims"

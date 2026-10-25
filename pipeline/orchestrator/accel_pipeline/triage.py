@@ -8,7 +8,7 @@ import subprocess
 from pathlib import Path
 from typing import Any, Mapping
 
-from accel_pipeline import measurement_lease
+from accel_pipeline.pack import measurement_lease
 from accel_pipeline.layout import query_dir
 
 _TEXT_KEYS = ("log_tail", "stderr", "stdout", "notes", "reason")
@@ -116,7 +116,7 @@ def _loaded(repo_root: Path | None, load_factor: float, text: str = "") -> bool:
         return True
     if repo_root is None:
         return False
-    from accel_pipeline.shared_file_lease import SharedFileLease, worker_id_from_env
+    from accel_pipeline.pack.shared_file_lease import SharedFileLease, worker_id_from_env
 
     holder = SharedFileLease(repo_root).holder()
     return holder is not None and holder != worker_id_from_env("")

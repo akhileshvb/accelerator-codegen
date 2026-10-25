@@ -9,7 +9,7 @@ from accel_pipeline.gate_capture import (
     log_tail_for_agent,
 )
 from accel_pipeline.gates import GateResult
-from accel_pipeline.stages.engine_backend import format_layer_gate_feedback
+from accel_pipeline.engine_backend.stage import format_layer_gate_feedback
 from accel_pipeline.tools.gate_tools import _compact_gate_payload
 
 
@@ -127,7 +127,7 @@ def test_run_gate_persists_enriched_fail_json(monkeypatch, tmp_path):
         lambda script, query, cwd, env: fake_run(["bash", str(script), str(query)], cwd=cwd, env=env),
     )
     monkeypatch.setattr(
-        "accel_pipeline.worker_isolation.ensure_worker_build_dir",
+        "accel_pipeline.pack.worker_isolation.ensure_worker_build_dir",
         lambda *a, **k: None,
     )
     result = run_gate(pc, "engine_epochs", 0, workload=workload, raise_on_failure=False)

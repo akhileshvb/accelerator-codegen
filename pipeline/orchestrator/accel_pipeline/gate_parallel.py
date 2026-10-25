@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from typing import Any, Literal, Sequence
 
 from accel_pipeline.config import PipelineConfig
-from accel_pipeline.core_budget import jobs_per_gate
+from accel_pipeline.pack.core_budget import jobs_per_gate
 from accel_pipeline.engine_host import instance_tag
 from accel_pipeline.gate_stamps import reusable_gate_result
 from accel_pipeline.gates import GATES_ALLOW_SKIP, GateResult, run_gate

@@ -15,7 +15,7 @@ from accel_pipeline.config import (
     load_workload,
 )
 from accel_pipeline.gates import GateFailure, GateResult
-from accel_pipeline.host_bootstrap import (
+from accel_pipeline.engine_backend.host_bootstrap import (
     engines_needing_bootstrap_from_workloads,
     format_host_bootstrap_gate_feedback,
     host_bootstrap_passed,
@@ -41,7 +41,7 @@ def _passing_status(tmp_path, monkeypatch, gate_data):
         path.mkdir(parents=True, exist_ok=True)
         return path
 
-    monkeypatch.setattr("accel_pipeline.host_bootstrap.host_bootstrap_dir", _fake_dir)
+    monkeypatch.setattr("accel_pipeline.engine_backend.host_bootstrap.host_bootstrap_dir", _fake_dir)
     write_host_bootstrap_status(tmp_path, "postgres", status="pass", extra={"gate_data": gate_data})
 
 
@@ -143,7 +143,7 @@ def _patch_bootstrap_dirs(tmp_path, monkeypatch):
         path.mkdir(parents=True, exist_ok=True)
         return path
 
-    monkeypatch.setattr("accel_pipeline.host_bootstrap.host_bootstrap_dir", _fake_dir)
+    monkeypatch.setattr("accel_pipeline.engine_backend.host_bootstrap.host_bootstrap_dir", _fake_dir)
     monkeypatch.setattr(
         "accel_pipeline.playbook.append_experiment_log", lambda *a, **k: tmp_path
     )
@@ -207,11 +207,11 @@ def test_host_bootstrap_gate_fail_reinvokes(tmp_path, monkeypatch):
             encoding="utf-8",
         )
 
-    monkeypatch.setattr("accel_pipeline.host_bootstrap.load_workload", fake_load)
-    monkeypatch.setattr("accel_pipeline.stages.host_bootstrap.run", fake_stage)
+    monkeypatch.setattr("accel_pipeline.engine_backend.host_bootstrap.load_workload", fake_load)
+    monkeypatch.setattr("accel_pipeline.engine_backend.host_bootstrap_stage.run", fake_stage)
     monkeypatch.setattr("accel_pipeline.gates.run_gate", fake_gate)
     monkeypatch.setattr(
-        "accel_pipeline.stages.host_bootstrap_critique.run_host_bootstrap_critique_agent",
+        "accel_pipeline.engine_backend.host_bootstrap_critique.run_host_bootstrap_critique_agent",
         fake_critique,
     )
 
@@ -256,8 +256,8 @@ def test_host_bootstrap_gate_exhausted_rounds_is_a_clean_stop(tmp_path, monkeypa
             path=tmp_path / "host_bootstrap.json",
         )
 
-    monkeypatch.setattr("accel_pipeline.host_bootstrap.load_workload", fake_load)
-    monkeypatch.setattr("accel_pipeline.stages.host_bootstrap.run", fake_stage)
+    monkeypatch.setattr("accel_pipeline.engine_backend.host_bootstrap.load_workload", fake_load)
+    monkeypatch.setattr("accel_pipeline.engine_backend.host_bootstrap_stage.run", fake_stage)
     monkeypatch.setattr("accel_pipeline.gates.run_gate", fake_gate)
 
     with pytest.raises(StageStopped, match="host_bootstrap"):
@@ -329,11 +329,11 @@ def test_host_bootstrap_critique_fail_reinvokes(tmp_path, monkeypatch):
             encoding="utf-8",
         )
 
-    monkeypatch.setattr("accel_pipeline.host_bootstrap.load_workload", fake_load)
-    monkeypatch.setattr("accel_pipeline.stages.host_bootstrap.run", fake_stage)
+    monkeypatch.setattr("accel_pipeline.engine_backend.host_bootstrap.load_workload", fake_load)
+    monkeypatch.setattr("accel_pipeline.engine_backend.host_bootstrap_stage.run", fake_stage)
     monkeypatch.setattr("accel_pipeline.gates.run_gate", fake_gate)
     monkeypatch.setattr(
-        "accel_pipeline.stages.host_bootstrap_critique.run_host_bootstrap_critique_agent",
+        "accel_pipeline.engine_backend.host_bootstrap_critique.run_host_bootstrap_critique_agent",
         fake_critique,
     )
 
@@ -402,7 +402,7 @@ def test_other_stages_still_cannot_write_a_backend_harness():
 def test_recorded_defects_reach_their_owner_once(tmp_path):
     import json
 
-    from accel_pipeline import backend_requests as br
+    from accel_pipeline.engine_backend import backend_requests as br
 
     path = br.requests_path(tmp_path, "anyengine")
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -442,9 +442,9 @@ def test_an_existing_harness_that_passes_the_gate_needs_no_agent_run(tmp_path, m
         calls["gates"] += 1
         return GateResult(name="host_bootstrap", status="pass", data={"status": "pass"}, path=tmp_path / "hb.json")
 
-    monkeypatch.setattr("accel_pipeline.stages.host_bootstrap.run", fake_stage)
+    monkeypatch.setattr("accel_pipeline.engine_backend.host_bootstrap_stage.run", fake_stage)
     monkeypatch.setattr("accel_pipeline.gates.run_gate", fake_gate)
-    monkeypatch.setattr("accel_pipeline.host_bootstrap.pending_harness_requests", lambda *a: "")
+    monkeypatch.setattr("accel_pipeline.engine_backend.host_bootstrap.pending_harness_requests", lambda *a: "")
     out = run_host_bootstrap(pc, load_model_config(repo_root=REPO_ROOT), engine_name=_any_engine(),
                              representative_workload="tpch_q1_aux")
     assert out == {**out, "status": "pass", "skipped": True}
@@ -455,8 +455,8 @@ def test_pending_harness_requests_still_run_the_agent(tmp_path, monkeypatch):
     pc = load_pipeline_config(repo_root=REPO_ROOT)
     _patch_bootstrap_dirs(tmp_path, monkeypatch)
     ran = []
-    monkeypatch.setattr("accel_pipeline.host_bootstrap.pending_harness_requests", lambda *a: "add a bench column")
-    monkeypatch.setattr("accel_pipeline.host_bootstrap._bootstrap_under_repair", lambda *a, **k: ran.append(1) or {"status": "pass"})
+    monkeypatch.setattr("accel_pipeline.engine_backend.host_bootstrap.pending_harness_requests", lambda *a: "add a bench column")
+    monkeypatch.setattr("accel_pipeline.engine_backend.host_bootstrap._bootstrap_under_repair", lambda *a, **k: ran.append(1) or {"status": "pass"})
     run_host_bootstrap(pc, load_model_config(repo_root=REPO_ROOT), engine_name=_any_engine(),
                        representative_workload="tpch_q1_aux")
     assert ran == [1]

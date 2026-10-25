@@ -208,7 +208,8 @@ def ensure_base_accelerator_prerequisite(
         return True
 
     from accel_pipeline.config import load_model_config
-    from accel_pipeline.stages import analysis, audit, implementation, optimization
+    from accel_pipeline.optimization import stage as optimization
+    from accel_pipeline.stages import analysis, audit, implementation
 
     resolved_model_config = model_config or load_model_config(repo_root=pipeline_config.repo_root)
     overrides = model_overrides or {}

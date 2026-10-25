@@ -221,7 +221,7 @@ def audit_context(pipeline_config: PipelineConfig, workload: dict[str, Any], que
     paths.sort(key=lambda p: (not p.startswith(query_dir + "/"), p))  # the query's own files first
     diff = cumulative_diff(repo_root, base, paths)
     digest = query_digest(pipeline_config, workload, query)
-    from accel_pipeline.optimization_structural import design_revisions_markdown
+    from accel_pipeline.optimization.structural import design_revisions_markdown
 
     return (f"{digest}\n\n{design_revisions_markdown(art)}\n"
             f"## Cumulative diff since implementation began ({len(paths)} files; base `{base[:12]}`)\n\n"

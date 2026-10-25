@@ -10,12 +10,12 @@ import subprocess
 import pytest
 from test_repair import _implement, _stage_world
 
-from accel_pipeline import optimization_attempt as attempt_mod
+from accel_pipeline.optimization import attempt as attempt_mod
 from accel_pipeline import repair as repair_mod
 from accel_pipeline.crash_debug import run_post_stage_gates_with_crash_debug
 from accel_pipeline.gate_stamps import current_stamp, record_pass
 from accel_pipeline.gates import GateResult
-from accel_pipeline.optimization_eval import BenchmarkSample, MultiSampleBenchmark
+from accel_pipeline.optimization.eval import BenchmarkSample, MultiSampleBenchmark
 from accel_pipeline.repair import RepairCtx, run_with_repair
 
 WORKLOAD = {"benchmark_name": "toybench", "workload_kind": "aux_state", "query_number": 3}

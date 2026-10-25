@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from accel_pipeline.paths import query_artifacts_dir
-from accel_pipeline.shared_file_lease import release_sticky_lease, worker_id_from_env
+from accel_pipeline.pack.shared_file_lease import release_sticky_lease, worker_id_from_env
 
 _UNSUPPORTED = re.compile(r"unsupported shared query(?:\s+binding)?", re.IGNORECASE)
 _REBUILD_REVERT = re.compile(r"rebuild after (?:revert|restore) failed", re.IGNORECASE)

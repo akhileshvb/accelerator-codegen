@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
-from accel_pipeline.optimization_saturation import (
+from accel_pipeline.optimization.saturation import (
     evaluate_saturation_claim,
     parse_optimization_saturated,
 )

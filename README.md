@@ -134,7 +134,7 @@ cd pipeline/orchestrator && pip install -e ".[dev]"
 python -m accel_pipeline.run_pipeline --query 3 --workload tpch_q3 --engine <engine>            # one query on one engine
 python -m accel_pipeline.run_pipeline --query 21 --workload tpch_q21_aux --engine <engine> --mode verus
 python -m accel_pipeline.run_pipeline --query 0 --workload engine_<engine>                       # engine backend onboarding
-python -m accel_pipeline.run_pack --pack tpch_aux_parallel                                       # many runs, one worker each
+python -m accel_pipeline.pack.run --pack tpch_aux_parallel                                       # many runs, one worker each
 ```
 
 `--stage <name>` runs one stage, `--resume` continues a run, `--dry-run` orchestrates

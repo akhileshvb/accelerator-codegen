@@ -37,7 +37,7 @@ from accel_pipeline.frozen_paths import FROZEN
 from accel_pipeline.prims_library import PROVENANCE_REL, primary_root
 from accel_pipeline.prims_library import DENY_MESSAGE as _PRIMS_DENY
 from accel_pipeline.prims_library import is_staging_path
-from accel_pipeline.shared_file_lease import is_shared_path, shared_path_globs
+from accel_pipeline.pack.shared_file_lease import is_shared_path, shared_path_globs
 
 _OPTIMIZATION_STAGES = frozenset(
     {

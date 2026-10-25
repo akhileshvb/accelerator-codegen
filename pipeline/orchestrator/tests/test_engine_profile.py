@@ -16,7 +16,7 @@ from accel_pipeline.engine_profile import (
     validate_engine_profile,
 )
 from accel_pipeline.prompts import render_prompt
-from accel_pipeline.stages.engine_backend import _layer_extra_context, implementation_layers
+from accel_pipeline.engine_backend.stage import _layer_extra_context, implementation_layers
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 PIPELINE_ROOT = REPO_ROOT / "pipeline"

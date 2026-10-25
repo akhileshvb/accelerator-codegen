@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from accel_pipeline.optimization_eval import EvalConfig, evaluate_attempt_outcome
+from accel_pipeline.optimization.eval import EvalConfig, evaluate_attempt_outcome
 
 
 def test_accept_on_read_improvement():

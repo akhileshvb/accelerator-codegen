@@ -199,7 +199,7 @@ _engine_run() {
 	set_phase "run $1"
 	live="$(mktemp "${ACCEL_GATE_OUT:-${TMPDIR:-/tmp}/gate.json}.run.XXXXXX.log")"
 	[[ -z "${lease}" ]] ||
-		wrap=(env "PYTHONPATH=${ACCEL_PIPELINE_PYTHONPATH:-${GATE_ROOT}/pipeline/orchestrator}:${PYTHONPATH:-}" python3 -m accel_pipeline.measurement_lease
+		wrap=(env "PYTHONPATH=${ACCEL_PIPELINE_PYTHONPATH:-${GATE_ROOT}/pipeline/orchestrator}:${PYTHONPATH:-}" python3 -m accel_pipeline.pack.measurement_lease
 			--holder "${ACCEL_INSTANCE_TAG:-${ACCEL_PIPELINE_WORKER_ID:-w0}}" --reason "${lease}" --)
 	"${wrap[@]}" timeout --kill-after=15 "${limit}" "${ENGINE_HOST}" run "$@" >"${live}" 2>&1 && RC=0 || RC=$?
 	LOG="$(<"${live}")"

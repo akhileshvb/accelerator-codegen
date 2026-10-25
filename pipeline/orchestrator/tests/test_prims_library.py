@@ -403,7 +403,7 @@ def test_refresh_prims_mirrors_primary(primary, tmp_path):
 
 
 def test_sync_owned_never_copies_prims(primary, tmp_path):
-    from accel_pipeline.worker_worktree import sync_owned_to_primary
+    from accel_pipeline.pack.worker_worktree import sync_owned_to_primary
 
     wt = tmp_path / "wt"
     (wt / P).mkdir(parents=True)
@@ -432,7 +432,7 @@ def test_write_policy_allows_staging(primary):
 
 
 def test_prims_are_shared_lease_paths(primary):
-    from accel_pipeline.shared_file_lease import DEFAULT_SHARED_PATH_GLOBS, is_shared_path
+    from accel_pipeline.pack.shared_file_lease import DEFAULT_SHARED_PATH_GLOBS, is_shared_path
 
     assert is_shared_path(primary, primary / P / "existing.hpp")
     assert is_shared_path(primary, primary / pl.TESTS_REL)

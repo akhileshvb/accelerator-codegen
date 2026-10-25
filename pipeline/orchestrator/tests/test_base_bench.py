@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from accel_pipeline.base_bench import (
+from accel_pipeline.optimization.base_bench import (
     build_optimization_diagnosis,
     format_optimization_feedback,
     parse_benchmark_log,

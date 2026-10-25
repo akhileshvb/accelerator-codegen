@@ -19,7 +19,7 @@ from accel_pipeline.engine_profile import (
 )
 from accel_pipeline.layout import backend_glob, query_dir, query_glob
 from accel_pipeline.paths import find_repo_root, pipeline_root
-from accel_pipeline.shared_file_lease import DEFAULT_SHARED_PATH_GLOBS
+from accel_pipeline.pack.shared_file_lease import DEFAULT_SHARED_PATH_GLOBS
 from accel_pipeline.test_suite import SuiteConfig
 
 
@@ -643,7 +643,7 @@ def load_pipeline_config(
         bdir = Path(env_build)
         if not bdir.is_absolute():
             bdir = root / bdir
-        from accel_pipeline.worker_isolation import _rewrite_build_dir_patterns
+        from accel_pipeline.pack.worker_isolation import _rewrite_build_dir_patterns
 
         cfg = replace(
             cfg,

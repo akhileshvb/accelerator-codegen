@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from accel_pipeline.aux_bench import parse_aux_benchmark_output, summarize_sweep_rows
-from accel_pipeline.tools.ab_tools import (
+from accel_pipeline.optimization.aux_bench import parse_aux_benchmark_output, summarize_sweep_rows
+from accel_pipeline.optimization.ab_tools import (
     _aux_quick_metrics,
     _aux_quick_write_frequencies,
     _is_aux_workload,
@@ -155,7 +155,7 @@ def test_the_shipped_quick_tier_is_cheaper_than_the_optimization_tier():
 def test_a_quick_bench_that_overruns_its_limit_reports_it(monkeypatch, tmp_path):
     import subprocess
 
-    from accel_pipeline.tools import ab_tools
+    from accel_pipeline.optimization import ab_tools
 
     def hang(*a, **k):
         raise subprocess.TimeoutExpired("bench", k["timeout"])
@@ -174,7 +174,7 @@ def _quick_benchmark_world(monkeypatch, tmp_path, rows):
     from types import SimpleNamespace
 
     from accel_pipeline.config import MeasurementConfig
-    from accel_pipeline.tools import ab_tools
+    from accel_pipeline.optimization import ab_tools
 
     art = tmp_path / "art"
     art.mkdir()
@@ -182,7 +182,7 @@ def _quick_benchmark_world(monkeypatch, tmp_path, rows):
         {"trial_id": "t", "reference_score": 1.0, "last_metrics": {"stale": True}, "last_score": 9.0}))
     paths = {"aux_bench_target": "bench", "dataset_db": "/d", "db_env_var": "X"}
     monkeypatch.setattr(ab_tools, "resolve_workload_paths", lambda cfg, wl, q: paths)
-    monkeypatch.setattr("accel_pipeline.worker_isolation.ensure_private_dataset_db", lambda cfg, db, query: db)
+    monkeypatch.setattr("accel_pipeline.pack.worker_isolation.ensure_private_dataset_db", lambda cfg, db, query: db)
     monkeypatch.setattr(ab_tools, "query_artifacts_dir", lambda root, q, workload=None: art)
     monkeypatch.setattr(ab_tools.subprocess, "run", lambda *a, **k: SimpleNamespace(returncode=0, stdout="", stderr=""))
     monkeypatch.setattr(ab_tools, "_run_aux_quick_sweep", lambda *a, **k: (rows, "out"))

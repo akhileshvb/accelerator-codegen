@@ -13,13 +13,17 @@ from pathlib import Path
 
 import pytest
 
-from accel_pipeline import core_budget, measurement_lease, triage
+from accel_pipeline import triage
+
+from accel_pipeline.pack import core_budget
+
+from accel_pipeline.pack import measurement_lease
 from accel_pipeline.config import ConcurrencyConfig
 from accel_pipeline.engine_host import instance_tag
-from accel_pipeline.host_lock import FairLock, LockTimeout, try_lock
-from accel_pipeline.shared_file_lease import SharedFileLease
+from accel_pipeline.pack.host_lock import FairLock, LockTimeout, try_lock
+from accel_pipeline.pack.shared_file_lease import SharedFileLease
 
-PACKAGE_ROOT = str(Path(core_budget.__file__).resolve().parents[1])
+PACKAGE_ROOT = str(Path(core_budget.__file__).resolve().parents[2])
 CPUS = sorted(os.sched_getaffinity(0))
 needs_two_cpus = pytest.mark.skipif(len(CPUS) < 2, reason="needs two CPUs")
 
@@ -98,7 +102,7 @@ def test_workers_claim_distinct_slots_host_wide(host_dir, monkeypatch):
 def test_a_dead_workers_slot_is_free_again(host_dir):
     code = f"""
         import sys
-        from accel_pipeline import core_budget
+        from accel_pipeline.pack import core_budget
         from accel_pipeline.config import ConcurrencyConfig
         b = core_budget.resolve(ConcurrencyConfig(workers=2, measure_cores=0))
         print(b.slot, flush=True)
@@ -117,7 +121,7 @@ def test_a_dead_workers_slot_is_free_again(host_dir):
 def test_activate_pins_the_process_and_derives_job_caps(host_dir):
     code = """
         import os
-        from accel_pipeline import core_budget
+        from accel_pipeline.pack import core_budget
         from accel_pipeline.config import ConcurrencyConfig
         core_budget.activate(ConcurrencyConfig(workers=1, measure_cores=1))
         print(sorted(os.sched_getaffinity(0)), os.environ["ACCEL_BUILD_JOBS"], os.environ["ACCEL_CTEST_JOBS"],
@@ -176,7 +180,7 @@ def test_a_crashed_holder_releases_the_lock(tmp_path):
     code = """
         import sys
         from pathlib import Path
-        from accel_pipeline.host_lock import FairLock
+        from accel_pipeline.pack.host_lock import FairLock
         held = FairLock(Path(sys.argv[1]), "t").acquire(timeout_sec=5)
         print("held", flush=True)
         sys.stdin.read()
@@ -194,7 +198,7 @@ def test_a_crashed_waiters_ticket_does_not_block_the_queue(tmp_path):
     code = """
         import sys
         from pathlib import Path
-        from accel_pipeline.host_lock import FairLock
+        from accel_pipeline.pack.host_lock import FairLock
         FairLock(Path(sys.argv[1]), "t").acquire(timeout_sec=60)
     """
     lock = FairLock(tmp_path, "t")
@@ -236,7 +240,7 @@ def test_a_crashed_shared_lease_holder_is_not_reported(tmp_path):
 def window_script(hold_sec: float) -> str:
     return f"""
         import sys, time
-        from accel_pipeline.measurement_lease import measurement_window
+        from accel_pipeline.pack.measurement_lease import measurement_window
         with measurement_window(sys.argv[1], "test") as w:
             print("in", w.waited_sec, flush=True)
             time.sleep({hold_sec})
@@ -269,7 +273,7 @@ def test_a_crashed_measurement_holder_frees_the_lease(host_dir):
 
 def test_measurement_waits_are_bounded_and_beat(host_dir, monkeypatch):
     monkeypatch.setenv(measurement_lease.WAIT_ENV, "1.5")
-    monkeypatch.setattr("accel_pipeline.host_lock.BEAT_SEC", 0.2)
+    monkeypatch.setattr("accel_pipeline.pack.host_lock.BEAT_SEC", 0.2)
     holder = spawn(window_script(5), "slow")
     holder.stdout.readline()
     beats = []
@@ -286,8 +290,8 @@ def test_slots_let_benchmarks_measure_at_once_on_disjoint_cpus(host_dir, monkeyp
     monkeypatch.setenv(core_budget.MEASURE_SLOTS_ENV, "3")
     code = """
         import sys, time
-        from accel_pipeline.measurement_lease import measurement_window
-        from accel_pipeline.core_budget import format_cpus
+        from accel_pipeline.pack.measurement_lease import measurement_window
+        from accel_pipeline.pack.core_budget import format_cpus
         with measurement_window(sys.argv[1], "t") as w:
             print(format_cpus(w.cpus), w.waited_sec, flush=True)
             time.sleep(2)
@@ -319,7 +323,7 @@ def test_the_wrapper_pins_the_command_and_holds_the_lease_until_it_exits(host_di
     env = {**os.environ, "PYTHONPATH": PACKAGE_ROOT, core_budget.MEASURE_SET_ENV: str(measure)}
     code = "import os, sys, time; print(sorted(os.sched_getaffinity(0)), os.environ['ACCEL_MEASURE_THREADS'], flush=True); time.sleep(1.5)"
     proc = subprocess.Popen(
-        [sys.executable, "-m", "accel_pipeline.measurement_lease", "--holder", "h", "--reason", "bench", "--", sys.executable, "-c", code],
+        [sys.executable, "-m", "accel_pipeline.pack.measurement_lease", "--holder", "h", "--reason", "bench", "--", sys.executable, "-c", code],
         env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
     )
     assert proc.stdout.readline().strip() == f"[{measure}] 1"
@@ -334,7 +338,7 @@ def test_the_wrapper_reports_its_queueing_and_a_timeout(host_dir):
     holder.stdout.readline()
     env = {**os.environ, "PYTHONPATH": PACKAGE_ROOT, measurement_lease.WAIT_ENV: "1"}
     run = subprocess.run(
-        [sys.executable, "-m", "accel_pipeline.measurement_lease", "--holder", "h2", "--", "true"],
+        [sys.executable, "-m", "accel_pipeline.pack.measurement_lease", "--holder", "h2", "--", "true"],
         env=env, text=True, capture_output=True,
     )
     assert run.returncode == measurement_lease.BUSY_EXIT
@@ -343,7 +347,7 @@ def test_the_wrapper_reports_its_queueing_and_a_timeout(host_dir):
     holder.wait()
     env[measurement_lease.WAIT_ENV] = "10"
     done = subprocess.run(
-        [sys.executable, "-m", "accel_pipeline.measurement_lease", "--holder", "h2", "--", "true"],
+        [sys.executable, "-m", "accel_pipeline.pack.measurement_lease", "--holder", "h2", "--", "true"],
         env=env, text=True, capture_output=True,
     )
     assert done.returncode == 0 and measurement_lease.waited_seconds(done.stderr) is not None

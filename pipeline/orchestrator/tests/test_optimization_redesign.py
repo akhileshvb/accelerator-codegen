@@ -9,9 +9,13 @@ from types import SimpleNamespace
 
 import pytest
 
-from accel_pipeline import frozen_paths, optimization_attempt, optimization_structural as structural
-from accel_pipeline.optimization_eval import EvalConfig, evaluate_attempt_outcome
-from accel_pipeline.optimization_saturation import (
+from accel_pipeline import frozen_paths
+
+from accel_pipeline.optimization import attempt as optimization_attempt
+
+from accel_pipeline.optimization import structural as structural
+from accel_pipeline.optimization.eval import EvalConfig, evaluate_attempt_outcome
+from accel_pipeline.optimization.saturation import (
     REANALYSIS_MARKER_FILE,
     Verdict,
     judge_saturation_claim,
@@ -19,8 +23,8 @@ from accel_pipeline.optimization_saturation import (
     profile_guidance_error,
     record_trial_protocol,
 )
-from accel_pipeline.optimization_scoreboard import build_scoreboard, read_axes
-from accel_pipeline.optimization_runtime import _read_axis_lines
+from accel_pipeline.optimization.scoreboard import build_scoreboard, read_axes
+from accel_pipeline.optimization.runtime import _read_axis_lines
 
 CFG = SimpleNamespace(optimization_early_stop={"enabled": True}, optimization_structural={}, repo_root=Path("."))
 

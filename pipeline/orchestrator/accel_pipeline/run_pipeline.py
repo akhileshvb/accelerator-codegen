@@ -11,7 +11,7 @@ from pathlib import Path
 from accel_pipeline import preflight
 from accel_pipeline.workload_facts import workload_facts
 from accel_pipeline.config import apply_workload_overrides, load_model_config, load_pipeline_config, load_workload
-from accel_pipeline.engine_quarantine import apply_foreign_engine_quarantine, restore_quarantine
+from accel_pipeline.pack.engine_quarantine import apply_foreign_engine_quarantine, restore_quarantine
 from accel_pipeline.env_loader import load_repo_dotenv
 from accel_pipeline.paths import find_repo_root, query_artifacts_dir
 from accel_pipeline.prerequisites import ensure_base_accelerator_prerequisite
@@ -19,7 +19,8 @@ from accel_pipeline.failure import Failure
 from accel_pipeline.repair import EXIT_STOPPED, REPAIR_STATE_FILE, RepairCtx, StageStopped, stop_stage
 from accel_pipeline.state import STAGE_ALIASES, STAGES, PipelineState, advance_stage, load_or_create, state_path
 from accel_pipeline.verus.stages import STAGES as VERUS_STAGES
-from accel_pipeline.stages import analysis, audit, implementation, optimization, test_suite
+from accel_pipeline.optimization import stage as optimization
+from accel_pipeline.stages import analysis, audit, implementation, test_suite
 from accel_pipeline.structural_reanalysis import process_after_stage
 from accel_pipeline.pipeline_log import log_event, log_pipeline_summary
 
@@ -301,7 +302,7 @@ def _main(argv: list[str] | None = None) -> int:
     pipeline_config = apply_workload_overrides(pipeline_config, workload)
     # Concurrent pack workers: separate build dir + CODEX_HOME (+ optional worktree).
     if os.environ.get("ACCEL_PIPELINE_WORKER_ID") or os.environ.get("ACCEL_PIPELINE_BUILD_DIR"):
-        from accel_pipeline.worker_isolation import apply_worker_isolation, isolation_summary
+        from accel_pipeline.pack.worker_isolation import apply_worker_isolation, isolation_summary
 
         pipeline_config = apply_worker_isolation(
             pipeline_config,
@@ -312,7 +313,7 @@ def _main(argv: list[str] | None = None) -> int:
         print(f"worker isolation: {isolation_summary(pipeline_config)}", file=sys.stderr)
     repo_root = Path(pipeline_config.repo_root)
     if not args.dry_run:
-        from accel_pipeline.core_budget import activate, format_cpus
+        from accel_pipeline.pack.core_budget import activate, format_cpus
 
         budget = activate(pipeline_config.concurrency)
         print(f"core budget: cpus={format_cpus(budget.cpus)} measure={format_cpus(budget.measure) or '-'} slot={budget.slot}", file=sys.stderr)
@@ -340,7 +341,7 @@ def _main(argv: list[str] | None = None) -> int:
         preflight.require(preflight.Probe(pipeline_config, model_config, workload, args.workload, query))
 
     if workload.get("workload_kind") == "engine_backend":
-        from accel_pipeline.stages import engine_backend as engine_backend_stage
+        from accel_pipeline.engine_backend import stage as engine_backend_stage
 
         print(f"=== engine_backend workload: {args.workload} ===", file=sys.stderr)
         engine_backend_stage.run_engine_pipeline(
@@ -392,8 +393,8 @@ def _main(argv: list[str] | None = None) -> int:
 
     # One-shot query-host bootstrap (engines without a query-scoped harness) before per-query stages.
     if args.stage in {"all", "host_bootstrap"}:
-        from accel_pipeline.backend_requests import reopen_engine_backend
-        from accel_pipeline.host_bootstrap import ensure_host_bootstrap_for_workload
+        from accel_pipeline.engine_backend.backend_requests import reopen_engine_backend
+        from accel_pipeline.engine_backend.host_bootstrap import ensure_host_bootstrap_for_workload
 
         if pipeline_config.engine_name and repo_root == primary_root:
             # Backend defects earlier query runs recorded go back to the engine's backend run first

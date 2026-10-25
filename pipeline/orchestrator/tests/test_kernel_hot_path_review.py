@@ -1,7 +1,7 @@
 from pathlib import Path
 
-from accel_pipeline.base_bench import build_optimization_diagnosis
-from accel_pipeline.kernel_hot_path_review import analyze_kernel_source, format_kernel_review_for_prompt
+from accel_pipeline.optimization.base_bench import build_optimization_diagnosis
+from accel_pipeline.optimization.kernel_hot_path_review import analyze_kernel_source, format_kernel_review_for_prompt
 
 
 def test_analyze_kernel_detects_string_keyed_map(tmp_path: Path):

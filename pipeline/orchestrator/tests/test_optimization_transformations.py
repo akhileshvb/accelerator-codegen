@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from accel_pipeline.optimization_transformations import (
+from accel_pipeline.optimization.transformations import (
     load_transformation_catalog,
     retrieve_transformations,
 )

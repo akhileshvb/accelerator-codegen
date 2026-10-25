@@ -5,8 +5,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from accel_pipeline.optimization_pending import PendingFeedback
-from accel_pipeline.optimization_worker_checkpoint import (
+from accel_pipeline.optimization.pending import PendingFeedback
+from accel_pipeline.optimization.worker_checkpoint import (
     build_semantic_worker_checkpoint,
     load_worker_checkpoint,
     save_worker_checkpoint,

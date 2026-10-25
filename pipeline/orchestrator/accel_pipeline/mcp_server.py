@@ -12,7 +12,7 @@ from typing import Any, Callable
 from accel_pipeline.gates import tool_call_limit
 from accel_pipeline.jsonio import read_json
 from accel_pipeline.no_progress import record_check
-from accel_pipeline.optimization_saturation import mark_profile_run
+from accel_pipeline.optimization.saturation import mark_profile_run
 from accel_pipeline.quick import profile_hot_spots
 from accel_pipeline.session import keep_alive
 
@@ -70,7 +70,7 @@ def build_mcp_tool_callables(
 ) -> dict[str, Callable[..., str]]:
     from accel_pipeline.gate_stamps import current_stamp
     from accel_pipeline.gates import run_gate
-    from accel_pipeline.tools.ab_tools import AbToolContext, make_ab_tools
+    from accel_pipeline.optimization.ab_tools import AbToolContext, make_ab_tools
     from accel_pipeline.tools.gate_tools import ToolContext as GateCtx
     from accel_pipeline.tools.gate_tools import admission_refusal_payload, make_gate_tools
     from accel_pipeline.tools.reanalysis_tools import ToolContext as ReanalysisCtx
@@ -79,7 +79,7 @@ def build_mcp_tool_callables(
     from accel_pipeline.tools.shell_tools import make_shell_tools
     from accel_pipeline.tools.gate_tools import _compact_gate_payload
     from accel_pipeline.tools.quick_tools import make_quick_tools
-    from accel_pipeline.tools.quick_layer_tools import make_quick_layer_tool
+    from accel_pipeline.engine_backend.quick_layer_tools import make_quick_layer_tool
     from accel_pipeline.tools.data_tools import DataToolContext, make_data_tools
 
     gate_ctx = GateCtx(pipeline_config, query, workload=workload, stage=stage, workload_name=workload_name)
@@ -165,7 +165,7 @@ def build_mcp_tool_callables(
     def get_profile_digest() -> str:
         """Compact phase counters / dominant bottleneck from last profile artifacts."""
         from accel_pipeline.config import resolve_optimization_edit_paths
-        from accel_pipeline.optimization_scoreboard import (
+        from accel_pipeline.optimization.scoreboard import (
             build_scoreboard,
             custom_profiling_contract,
             profile_freshness,
@@ -177,7 +177,7 @@ def build_mcp_tool_callables(
         is_aux = workload.get("workload_kind") == "aux_state"
 
         if is_aux:
-            from accel_pipeline.aux_profile import build_aux_profile_digest
+            from accel_pipeline.optimization.aux_profile import build_aux_profile_digest
 
             payload = build_aux_profile_digest(
                 art,
@@ -238,7 +238,7 @@ def build_mcp_tool_callables(
     def get_store_diagnostics() -> str:
         """Aux store diagnostics from bench/opt state when present."""
         if workload.get("workload_kind") == "aux_state":
-            from accel_pipeline.aux_profile import load_aux_store_diagnostics
+            from accel_pipeline.optimization.aux_profile import load_aux_store_diagnostics
 
             diag, source = load_aux_store_diagnostics(art)
             if diag:
@@ -262,7 +262,7 @@ def build_mcp_tool_callables(
 
     def acquire_shared_lease(reason: str = "", timeout_sec: float = 300.0) -> str:
         """Hold shared-file lease before editing catalog/CMake/shared registration files."""
-        from accel_pipeline.shared_file_lease import (
+        from accel_pipeline.pack.shared_file_lease import (
             ensure_sticky_lease_for_write,
             worker_id_from_env,
         )
@@ -286,7 +286,7 @@ def build_mcp_tool_callables(
 
     def release_shared_lease() -> str:
         """Release sticky shared-file lease after shared edits + rebuild."""
-        from accel_pipeline.shared_file_lease import release_sticky_lease, worker_id_from_env
+        from accel_pipeline.pack.shared_file_lease import release_sticky_lease, worker_id_from_env
 
         holder = pipeline_config.worker_id or worker_id_from_env(f"q{query}")
         ok = release_sticky_lease(pipeline_config.repo_root, holder=holder)

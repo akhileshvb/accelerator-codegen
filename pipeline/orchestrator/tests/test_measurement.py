@@ -10,8 +10,8 @@ import pytest
 
 from accel_pipeline.config import MeasurementConfig
 from accel_pipeline.failure import StageFailure, render_failure
-from accel_pipeline.measurement import check_measurement
-from accel_pipeline.optimization_eval import EvalConfig, MultiSampleBenchmark, BenchmarkSample, evaluate_attempt_outcome
+from accel_pipeline.optimization.measurement import check_measurement
+from accel_pipeline.optimization.eval import EvalConfig, MultiSampleBenchmark, BenchmarkSample, evaluate_attempt_outcome
 
 
 def row(freq=0, **over):
@@ -172,7 +172,7 @@ def test_attempt_without_a_hit_rate_metric_is_unaffected():
 
 
 def test_baseline_with_zero_hit_rate_raises(monkeypatch, tmp_path):
-    from accel_pipeline import optimization_attempt as attempt
+    from accel_pipeline.optimization import attempt as attempt
 
     bench = MultiSampleBenchmark(
         samples=[BenchmarkSample(metrics=row(0, accel_hit_rate=0.0), score=1.0)],
@@ -191,7 +191,7 @@ def test_baseline_with_zero_hit_rate_raises(monkeypatch, tmp_path):
 
 
 def test_baseline_that_did_not_run_raises(monkeypatch, tmp_path):
-    from accel_pipeline import optimization_attempt as attempt
+    from accel_pipeline.optimization import attempt as attempt
 
     def failing(*args, errors=None, **kwargs):
         errors.append("build failed: undefined reference")
@@ -212,8 +212,8 @@ def test_hit_contract_gate_is_registered():
 
 
 def test_sweep_records_measurement_ok(tmp_path, monkeypatch):
-    from accel_pipeline import kernel_snapshot
-    from accel_pipeline.aux_bench import process_aux_bench_after_gates
+    from accel_pipeline.optimization import kernel_snapshot
+    from accel_pipeline.optimization.aux_bench import process_aux_bench_after_gates
 
     snapshots = []
     monkeypatch.setattr(kernel_snapshot, "snapshot_best_kernel", lambda *a, **k: snapshots.append(k))
@@ -237,7 +237,7 @@ def test_sweep_records_measurement_ok(tmp_path, monkeypatch):
 
 def _write_summary(repo, workload, summary):
     import json
-    from accel_pipeline.aux_bench import bench_summary_path
+    from accel_pipeline.optimization.aux_bench import bench_summary_path
 
     path = bench_summary_path(repo, 6, workload)
     path.parent.mkdir(parents=True, exist_ok=True)

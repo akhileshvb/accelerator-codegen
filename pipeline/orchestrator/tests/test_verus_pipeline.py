@@ -193,7 +193,7 @@ def test_front_end_routes_verus_mode(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_pack_passes_mode() -> None:
-    from accel_pipeline.run_pack import parse_pack_queries
+    from accel_pipeline.pack.run import parse_pack_queries
 
     qs = parse_pack_queries({"mode": "verus", "queries": [21, {"query": 3, "mode": "cpp"}]})
     assert [q.mode for q in qs] == ["verus", "cpp"]

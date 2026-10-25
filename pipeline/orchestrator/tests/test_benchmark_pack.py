@@ -110,7 +110,7 @@ def test_aux_write_paths_register_from_query_dir_not_backend() -> None:
 
 
 def test_a_querys_workloads_run_one_after_another_per_engine():
-    from accel_pipeline.run_pack import _chains_by_artifact_dir, parse_pack_queries
+    from accel_pipeline.pack.run import _chains_by_artifact_dir, parse_pack_queries
 
     pack = {"engines": ["engine_a", "engine_b"], "queries": [1, 6],
             "workload_template": ["tpch_q{q}_aux", "tpch_q{q}"]}

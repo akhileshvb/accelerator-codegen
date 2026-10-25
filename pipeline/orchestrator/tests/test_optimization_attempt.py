@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from accel_pipeline.optimization_attempt import _parse_cannot_test, _parse_hypothesis_json
+from accel_pipeline.optimization.attempt import _parse_cannot_test, _parse_hypothesis_json
 
 
 def test_parse_hypothesis_json():

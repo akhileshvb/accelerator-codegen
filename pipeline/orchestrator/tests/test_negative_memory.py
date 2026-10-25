@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from accel_pipeline.negative_memory import (
+from accel_pipeline.optimization.negative_memory import (
     append_negative_memory,
     ensure_negative_memory,
     format_negative_memory_markdown,
@@ -18,7 +18,7 @@ def test_ensure_seeds_and_dedupes(tmp_path: Path, monkeypatch):
     (repo / "pipeline").mkdir(parents=True)
 
     # Point pipeline_root via monkeypatch on negative_memory.pipeline_root
-    import accel_pipeline.negative_memory as nm
+    import accel_pipeline.optimization.negative_memory as nm
 
     monkeypatch.setattr(nm, "pipeline_root", lambda root: root / "pipeline")
 
@@ -76,7 +76,7 @@ def test_ensure_seeds_and_dedupes(tmp_path: Path, monkeypatch):
 def test_traps_are_per_engine(tmp_path: Path, monkeypatch):
     repo = tmp_path / "repo"
     (repo / "pipeline").mkdir(parents=True)
-    import accel_pipeline.negative_memory as nm
+    import accel_pipeline.optimization.negative_memory as nm
 
     monkeypatch.setattr(nm, "pipeline_root", lambda root: root / "pipeline")
     trap = "Do not rebuild the whole hash table on every point write"

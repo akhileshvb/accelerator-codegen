@@ -6,8 +6,8 @@ import json
 import time
 from pathlib import Path
 
-from accel_pipeline.aux_profile import build_aux_profile_digest, write_aux_profile_artifacts
-from accel_pipeline.optimization_scoreboard import (
+from accel_pipeline.optimization.aux_profile import build_aux_profile_digest, write_aux_profile_artifacts
+from accel_pipeline.optimization.scoreboard import (
     aggregate_custom_profile_events,
     build_scoreboard,
     primary_score_from_metrics,

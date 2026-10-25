@@ -14,7 +14,7 @@ import yaml
 
 from accel_pipeline import repair as repair_mod
 from accel_pipeline import test_suite as ts
-from accel_pipeline.aux_bench import aggregate_sweep_repeats
+from accel_pipeline.optimization.aux_bench import aggregate_sweep_repeats
 from accel_pipeline.config import PipelineConfig, RepairConfig
 from accel_pipeline.failure import Failure, failure_from_gate
 from accel_pipeline.gates import GateResult
@@ -449,7 +449,7 @@ def test_repeated_sweeps_report_the_median_with_its_spread():
 
 
 def test_the_optimization_bench_samples_the_suites_distribution_up_to_its_cap(tmp_path, monkeypatch):
-    from accel_pipeline import aux_write_freqs as freqs
+    from accel_pipeline.optimization import aux_write_freqs as freqs
 
     (tmp_path / "pipeline").mkdir()
     (tmp_path / "CMakeLists.txt").write_text("")
