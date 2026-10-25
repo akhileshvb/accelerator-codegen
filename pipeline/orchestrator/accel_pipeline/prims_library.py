@@ -391,7 +391,7 @@ def _rebuild_dependents(primary: Path, changed_existing: set[str], build_dir: Pa
     if not targets:
         return None
     jobs = str(build_jobs())
-    rc, out = _run(["cmake", "--build", str(build_dir), "--target", *targets, "-j", jobs, "--", "-k"],
+    rc, out = _run(["cmake", "--build", str(build_dir), "--target", *targets, "-j", jobs, "--", "-k", "0"],
                    cwd=primary, env=env, timeout=3600)
     if rc != 0:
         return _fail("a dependent no longer builds; nothing published", targets=targets, log_tail=tail_marked(out))

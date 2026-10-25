@@ -443,3 +443,16 @@ def test_real_prims_are_workload_agnostic():
     r = subprocess.run(["python3", str(REAL_ROOT / "scripts/check_backend_query_free.py"), "--prims-only"],
                        capture_output=True, text=True)
     assert r.returncode == 0, r.stdout
+
+
+def test_rebuilding_dependents_keeps_going_with_a_numeric_k(tmp_path, monkeypatch):
+    from accel_pipeline import prims_library as lib
+
+    (tmp_path / "build").mkdir()
+    (tmp_path / "build" / "compile_commands.json").write_text("[]")
+    calls = []
+    monkeypatch.setattr(lib, "_headers_including", lambda primary, changed: (set(), {primary / "a.cpp"}))
+    monkeypatch.setattr(lib, "_targets_for_sources", lambda build_dir, sources: {"dep"})
+    monkeypatch.setattr(lib, "_run", lambda cmd, **kw: (calls.append(cmd), (1, "boom"))[1])
+    result = lib._rebuild_dependents(tmp_path, {"x.hpp"}, tmp_path / "build", {})
+    assert result and calls[0][-3:] == ["--", "-k", "0"]
