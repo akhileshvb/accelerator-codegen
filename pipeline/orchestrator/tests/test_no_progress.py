@@ -165,8 +165,9 @@ def test_read_counter_counts_only_guarded_shell_reads_since_the_turn_started(tmp
     assert counter.count == 3
 
 
-def test_report_blocker_ends_the_turn_and_becomes_an_agent_blocker_failure(tmp_path, monkeypatch):
-    result = _backend(tmp_path, monkeypatch, "blocker", nudge=0, redirect=0).run_stage(_request())
+@pytest.mark.parametrize("mode", ["blocker", "blocker_exit"])  # blocker_exit: the agent stops at once, as the tool says
+def test_report_blocker_ends_the_turn_and_becomes_an_agent_blocker_failure(tmp_path, monkeypatch, mode):
+    result = _backend(tmp_path, monkeypatch, mode, nudge=0, redirect=0).run_stage(_request())
     assert result.metadata["stop_reason"] == "blocker"
     failure = stage_failure("implementation", "codex_exec", result)
     assert failure.kind == "infra" and failure.infra_reason == AGENT_BLOCKER and "summary" in failure.evidence

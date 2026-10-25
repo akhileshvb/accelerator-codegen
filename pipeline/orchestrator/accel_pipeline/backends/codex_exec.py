@@ -36,6 +36,7 @@ def sidecar_env_line(key: str, value: Any) -> str:
 
 
 _CODEX_DIR = Path(__file__).resolve().parents[3] / "codex"
+BLOCKER_STOP = "the agent reported a blocker (report_blocker)"
 
 
 def ensure_codex_config(path: Path) -> Path:
@@ -449,7 +450,7 @@ class CodexExecBackend:
                     _kill(proc)
                     break
                 elif watched and (blocker := self._blocker_since(since)):
-                    killed, reason, detail = "the agent reported a blocker (report_blocker)", "blocker", blocker
+                    killed, reason, detail = BLOCKER_STOP, "blocker", blocker
                 elif clock is not None and clock.poll(rollout) == "redirect":
                     killed = f"codex exec made no progress for {clock.idle_sec():.0f}s"
                     reason, detail = "no_progress", clock.redirect_report()
@@ -460,6 +461,8 @@ class CodexExecBackend:
                     servicer.poll(self._live_session)
             if servicer is not None:
                 servicer.join()
+            if watched and not reason and (blocker := self._blocker_since(since)):  # the agent stopped as told
+                killed, reason, detail = BLOCKER_STOP, "blocker", blocker
             return _Outcome(0 if reason == "exit_gate" else proc.returncode, out_path.read_text(errors="replace"),
                             err_path.read_text(errors="replace"), killed, reason, detail)
 
