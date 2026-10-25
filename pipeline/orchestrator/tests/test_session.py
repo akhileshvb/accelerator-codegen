@@ -143,6 +143,7 @@ def test_keep_alive_beats_while_a_tool_call_blocks_and_stops_after(tmp_path):
         time.sleep(0.2)
         assert beat.stat().st_mtime > first
     last = beat.stat().st_mtime
+    assert time.time() - last > 60  # aged at exit: polling a tool does not read as a running call
     time.sleep(0.2)
     assert beat.stat().st_mtime == last
 

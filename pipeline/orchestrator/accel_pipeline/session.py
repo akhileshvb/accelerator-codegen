@@ -6,7 +6,7 @@ import json
 import os
 import threading
 import time
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, Callable, Iterator
@@ -199,6 +199,14 @@ def keep_alive(art: Path | None, every_sec: float = 30.0) -> Iterator[None]:
     finally:
         done.set()
         thread.join(timeout=1)
+        _age_heartbeat(art)  # the call is over: a fresh beat must not make the next minute look busy
+
+
+def _age_heartbeat(art: Path) -> None:
+    beat = art / HEARTBEAT_FILE
+    stale = time.time() - 120
+    with suppress(OSError):
+        os.utime(beat, (stale, stale))
 
 
 def budget_footer(pipeline_config: Any, stage: str, query: int) -> str:
