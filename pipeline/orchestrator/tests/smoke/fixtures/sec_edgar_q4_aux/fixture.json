@@ -1,0 +1,15 @@
+{
+  "benchmark": "sec_edgar",
+  "query": 4,
+  "environment": {
+    "ACCEL_DATASET_DIR": "/flash1/akhilvb/datasets/sec_edgar_sf3_tbl",
+    "ACCEL_BENCH_TIMEOUT_SEC": "300"
+  },
+  "databases": {
+    "ACCEL_SEC_EDGAR_DB": "/home/akhilvb/accelerator-codegen-duckdb/sec_edgar_sf3.duckdb"
+  },
+  "base_sources": [
+    "eval/bench/sec_edgar/params"
+  ],
+  "registration_probe": "accelerators/sec_edgar/q1/{engine}/aux/register.cpp"
+}

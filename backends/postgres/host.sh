@@ -106,8 +106,10 @@ cmd_load() { # schema.sql [constraints.sql]
   fi
   psql_in -d "${DB}" -c 'DROP SCHEMA public CASCADE; CREATE SCHEMA public'
   sed -E -f "${HOST_DIR}/schema_to_pg.sed" "${schema}" | psql_in -d "${DB}" -f -
-  for tbl in "${ACCEL_DATASET_DIR}"/*.tbl; do
-    table="$(basename "${tbl}" .tbl)"
+  # in the schema's table order, so a foreign key's referenced table is loaded first
+  for table in $(grep -oiE 'create table +[a-z_0-9]+' "${schema}" | awk '{print $3}'); do
+    tbl="${ACCEL_DATASET_DIR}/${table}.tbl"
+    [[ -f "${tbl}" ]] || continue
     # dbgen lines end with a delimiter: strip it.
     sed 's/|$//' "${tbl}" | psql_in -d "${DB}" -c "COPY ${table} FROM STDIN WITH (FORMAT text, DELIMITER '|')"
   done
