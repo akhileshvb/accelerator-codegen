@@ -77,8 +77,8 @@ def sweep(repo, tmp_path, **env):
 
 
 def test_bench_sweep_reports_the_read_speedup_of_n_threads_over_one(repo, tmp_path):
-    # ACCEL_AUX_THREADS is the ambient cap here; the extra point overrides it to 1 for that one run.
-    proc, _, log, gj, _ = sweep(repo, tmp_path, ACCEL_AUX_THREADS="")
+    # N is the configured cap (4), measured on 4 CPUs of the worker's core set although the lease slot is smaller.
+    proc, _, log, gj, _ = sweep(repo, tmp_path, ACCEL_CORE_SET="0-7")
     assert proc.returncode == 0, proc.stdout + proc.stderr
     gate = result(gj, "aux_bench_sweep")
     scaling = gate["thread_scaling"]
@@ -86,6 +86,7 @@ def test_bench_sweep_reports_the_read_speedup_of_n_threads_over_one(repo, tmp_pa
     assert scaling["read_us_at_1"] == 400 and scaling["read_us_at_N"] == 100
     assert scaling["read_speedup_at_N_vs_1"] == 4.0
     assert scaling["build_speedup_at_N_vs_1"] == 4.0
+    assert "cpus 0,1,2,3)" in gate["log_tail"]
     summary = json.loads((repo / "art" / "aux_bench_summary.json").read_text())
     assert summary["thread_scaling"] == scaling
     assert gate["status"] == "pass"
