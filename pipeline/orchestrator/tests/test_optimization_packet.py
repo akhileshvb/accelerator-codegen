@@ -1,8 +1,8 @@
-"""Tests for optimization context packet size budget."""
+"""Tests for optimization packet size budget."""
 
 from __future__ import annotations
 
-from accel_pipeline.optimization.context import CONTEXT_MAX_CHARS, CONTEXT_MAX_LINES, format_context_markdown
+from accel_pipeline.optimization.packet import CONTEXT_MAX_CHARS, CONTEXT_MAX_LINES, format_context_markdown
 
 
 def test_context_packet_hard_caps():

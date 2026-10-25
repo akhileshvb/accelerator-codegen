@@ -641,6 +641,9 @@ def format_reloop_failure_sections(
     return lines
 
 
+# --- the build directory the gates build in
+
+
 def _wipe_cmake_configure_state(bdir: Path) -> None:
     """Remove CMake configure artifacts so ``-S`` can retarget the build dir."""
     cache = bdir / "CMakeCache.txt"

@@ -3,10 +3,9 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
-from typing import Any, Callable
+from typing import Callable
 
-from accel_pipeline.config import PipelineConfig, resolve_optimization_edit_paths
+from accel_pipeline.config import resolve_optimization_edit_paths
 from accel_pipeline.jsonio import read_json
 from accel_pipeline.optimization.ab_tools import AbToolContext, make_ab_tools
 from accel_pipeline.optimization.aux_profile import build_aux_profile_digest, load_aux_store_diagnostics
@@ -16,6 +15,8 @@ from accel_pipeline.optimization.scoreboard import (
     profile_freshness,
     write_scoreboard,
 )
+from accel_pipeline.paths import query_artifacts_dir
+from accel_pipeline.tools.gate_tools import ToolContext
 
 _FEEDBACK_TAIL_CHARS = 4000
 _DIGEST_MAX_CHARS = 50_000
@@ -23,11 +24,12 @@ _EVIDENCE_PART_CHARS = 40_000
 _EVIDENCE_MAX_CHARS = 80_000
 
 
-def callables(pipeline_config: PipelineConfig, workload: dict[str, Any], query: int, optimization_iter: int,
-              art: Path) -> dict[str, Callable[..., str]]:
+def callables(ctx: ToolContext) -> dict[str, Callable[..., str]]:
+    pipeline_config, workload, query = ctx.pipeline_config, ctx.workload, ctx.query
+    art = query_artifacts_dir(pipeline_config.repo_root, query, workload=workload)
     is_aux = workload.get("workload_kind") == "aux_state"
     begin_ab_trial, run_quick_benchmark, end_ab_trial = make_ab_tools(
-        AbToolContext(pipeline_config=pipeline_config, query=query, workload=workload, optimization_iter=optimization_iter)
+        AbToolContext(pipeline_config=pipeline_config, query=query, workload=workload, optimization_iter=ctx.optimization_iter)
     )
 
     def feedback_tail() -> str:

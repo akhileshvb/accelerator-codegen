@@ -101,7 +101,8 @@ def build_mcp_tool_callables(
     from accel_pipeline.tools.shell_tools import make_shell_tools
 
     is_aux = workload.get("workload_kind") == "aux_state"
-    gate_ctx = GateCtx(pipeline_config, query, workload=workload, stage=stage, workload_name=workload_name)
+    gate_ctx = GateCtx(pipeline_config, query, workload=workload, stage=stage, workload_name=workload_name,
+                       optimization_iter=optimization_iter)
     request_gate, gate_status = make_gate_tools(gate_ctx)
     run_pipeline_command = make_shell_tools(ShellCtx(pipeline_config, query))
 
@@ -234,21 +235,9 @@ def build_mcp_tool_callables(
         **make_data_tools(DataToolContext(pipeline_config, workload, query, art)),
     }
     for mode in active_modes(stage, workload_name):
-        tools.update(_mode_callables(mode, pipeline_config, workload, query, stage, workload_name, optimization_iter, art))
+        if mode != "verus":  # the verus tools run on their own, outside this context
+            tools.update(mode_tools(mode).callables(gate_ctx))
     return tools
-
-
-def _mode_callables(mode, pipeline_config, workload, query, stage, workload_name, optimization_iter, art):
-    module = mode_tools(mode)
-    if mode == "optimization":
-        return module.callables(pipeline_config, workload, query, optimization_iter, art)
-    if mode == "engine_backend":
-        from accel_pipeline.tools.gate_tools import ToolContext
-
-        return module.callables(ToolContext(pipeline_config, query, workload=workload, stage=stage))
-    if mode == "pack":
-        return module.callables(pipeline_config, query)
-    return {}
 
 
 def main(argv: list[str] | None = None) -> int:

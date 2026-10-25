@@ -16,6 +16,7 @@ class ToolContext:
     workload: dict[str, Any] | None = None
     stage: str = ""
     workload_name: str = ""
+    optimization_iter: int = 0
 
 
 def _compact_gate_payload(gate_name: str, data: dict) -> dict:

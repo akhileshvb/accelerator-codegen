@@ -5,16 +5,17 @@ from __future__ import annotations
 import json
 from typing import Callable
 
-from accel_pipeline.config import PipelineConfig
 from accel_pipeline.pack.shared_file_lease import (
     ensure_sticky_lease_for_write,
     release_sticky_lease,
     worker_id_from_env,
 )
+from accel_pipeline.tools.gate_tools import ToolContext
 
 
-def callables(pipeline_config: PipelineConfig, query: int) -> dict[str, Callable[..., str]]:
-    holder = pipeline_config.worker_id or worker_id_from_env(f"q{query}")
+def callables(ctx: ToolContext) -> dict[str, Callable[..., str]]:
+    pipeline_config = ctx.pipeline_config
+    holder = pipeline_config.worker_id or worker_id_from_env(f"q{ctx.query}")
 
     def acquire_shared_lease(reason: str = "", timeout_sec: float = 300.0) -> str:
         """Hold shared-file lease before editing catalog/CMake/shared registration files."""

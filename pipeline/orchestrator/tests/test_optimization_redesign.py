@@ -13,7 +13,7 @@ from accel_pipeline import frozen_paths
 
 from accel_pipeline.optimization import attempt as optimization_attempt
 
-from accel_pipeline.optimization import structural as structural
+from accel_pipeline.optimization import structural
 from accel_pipeline.optimization.eval import EvalConfig, evaluate_attempt_outcome
 from accel_pipeline.optimization.saturation import (
     REANALYSIS_MARKER_FILE,

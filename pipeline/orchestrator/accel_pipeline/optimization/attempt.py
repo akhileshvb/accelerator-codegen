@@ -36,7 +36,7 @@ from accel_pipeline.optimization.checkpoint import (
     save_experimental_branch,
     snapshot_best_valid_baseline_files,
 )
-from accel_pipeline.optimization.context import (
+from accel_pipeline.optimization.packet import (
     build_context_packet,
     build_initial_worker_seed,
     build_optimization_user_message,
