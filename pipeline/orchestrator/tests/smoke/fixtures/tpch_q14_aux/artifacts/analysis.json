@@ -305,8 +305,8 @@
       {
         "table": "lineitem",
         "mutation": "update",
-        "behavior": "supported_delta",
-        "notes": "Apply inverse old values and forward new values for all watched columns; update both old and new day/key locations as needed."
+        "behavior": "bounded_rebuild",
+        "notes": "The reference kernel resyncs on an update sequence over edge-case rows (suite 032); Apply inverse old values and forward new values for all watched columns; update both old and new day/key locations as needed."
       },
       {
         "table": "lineitem",

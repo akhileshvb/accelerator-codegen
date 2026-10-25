@@ -9,7 +9,7 @@
   },
   "serial_fold": {
     "about": "a parallel section runs as one slice while the plan is parallel (a serial build)",
-    "xfail": "TODO pipe/rd-check: quick_check has no N-thread build speedup budget and the fixture analysis no scale_plan; today the write-cost fidelity check trips on the slowdown instead",
+    "xfail": "the smoke kernel builds in ~10 ms on the subset, under the 0.2 s floor where quick_check judges build scaling (that check is unit-tested in test_check_measure and caught the q3b serial build on the real tree)",
     "expect": [
       "quick_check: .*(serial|speedup)"
     ],
@@ -43,7 +43,7 @@
     "about": "the agent reports a slow gate as a blocker; the stage's own gates run and pass, the stage completes",
     "expect": [
       "the agent reported a blocker \\(.*\\); running the stage's gates once",
-      "gate complete: \\[\\d+/\\d+\\] aux_correctness \\(implementation\\) status=pass"
+      "gate complete: \\[\\d+/\\d+\\] aux_exit \\(implementation\\) status=pass"
     ],
     "escaped": "agent-reported blocker persists"
   },
