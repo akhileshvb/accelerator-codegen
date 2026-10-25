@@ -145,9 +145,7 @@ def test_every_stage_tool_is_served() -> None:
     for stage, names in STAGE_TOOLS.items():
         assert stage.startswith("verus_")
         assert set(names) <= set(TOOLS), (stage, set(names) - set(TOOLS))
-    mcp = (REPO / "pipeline" / "orchestrator" / "accel_pipeline" / "mcp_server.py").read_text()
-    for name in TOOLS:
-        assert f"def {name}(" in mcp, name
+    assert set(_registered_wrappers()) == set(TOOLS)
 
 
 def test_verus_steps_are_codex_exec() -> None:
@@ -328,19 +326,27 @@ def test_parallel_jobs_overlap_and_failures_stop_the_run(tmp_path: Path) -> None
     assert seen == ["tests"]  # the other job still finished before the stop
 
 
+def _registered_wrappers() -> dict:
+    from accel_pipeline.verus import tools
+
+    wrappers = {}
+
+    def tool(*, read_only):
+        return lambda fn: wrappers.setdefault(fn.__name__, fn)
+
+    tools.register(tool, lambda name, *args: None)
+    return wrappers
+
+
 def test_mcp_wrappers_pass_every_tool_parameter() -> None:
     """Each verus_* MCP wrapper takes exactly its tool's parameters (a dropped one is silently ignored)."""
-    import ast
     import inspect
 
     from accel_pipeline.verus.tools import TOOLS
 
-    src = (REPO / "pipeline" / "orchestrator" / "accel_pipeline" / "mcp_server.py").read_text()
-    wrappers = {n.name: [a.arg for a in n.args.args] for n in ast.walk(ast.parse(src))
-                if isinstance(n, ast.FunctionDef) and n.name in TOOLS}
+    wrappers = _registered_wrappers()
     for name, fn in TOOLS.items():
-        assert name in wrappers, f"{name} has no MCP wrapper"
-        assert wrappers[name] == list(inspect.signature(fn).parameters), name
+        assert list(inspect.signature(wrappers[name]).parameters) == list(inspect.signature(fn).parameters), name
 
 
 def test_stalled_fix_rounds_get_a_second_opinion(monkeypatch: pytest.MonkeyPatch) -> None:

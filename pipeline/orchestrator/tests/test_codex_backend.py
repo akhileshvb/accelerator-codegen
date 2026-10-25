@@ -117,7 +117,6 @@ def test_mcp_tool_callables_include_profile_digest(tmp_path):
         pipeline_config, workload, "tpch_q3", 3, "optimization_worker", 1, art
     )
     assert "get_profile_digest" in tools
-    assert "run_fairness" in tools
     assert "run_correctness" in tools
     assert "run_multi_connection" in tools
     digest = tools["get_profile_digest"]()
@@ -303,7 +302,7 @@ def test_codex_exec_whitelists_engine_impl_mcp_tools(monkeypatch):
 
 
 def test_impl_stage_tools_include_layer_gates():
-    from accel_pipeline.tools.gate_tools import layer_gate_from_stage
+    from accel_pipeline.engine_backend.tools import layer_gate_from_stage
     from accel_pipeline.backends.codex_exec import CodexExecBackend
 
     assert layer_gate_from_stage("impl_epochs") == "engine_epochs"

@@ -147,3 +147,74 @@ TOOLS: dict[str, Callable[..., str]] = {
               verus_bench,
               verus_profile, prooflib_verify, prooflib_publish, playbook_append, backend_addition_record)
 }
+
+
+def call(name: str, *args: Any) -> str:
+    try:
+        return TOOLS[name](*args)
+    except Exception as exc:  # noqa: BLE001 — surfaced to the agent
+        return json.dumps({"error": str(exc), "tool": name})
+
+
+def register(tool, call) -> None:
+    @tool(read_only=False)
+    def verus_check_inputs() -> str:
+        """Check inputs/q.inputs with sql2verus: accepted (and its obligations) or the refusal."""
+        return call("verus_check_inputs")
+
+    @tool(read_only=True)
+    def verus_sql(query: str, max_rows: int = 50) -> str:
+        """Read-only SQL on the test dataset database, to explore the data."""
+        return call("verus_sql", query, max_rows)
+
+    @tool(read_only=False)
+    def verus_validate_tests() -> str:
+        """Check tests/: setup runs, every params tuple runs the query, every txn applies (rolled back)."""
+        return call("verus_validate_tests")
+
+    @tool(read_only=False)
+    def verus_glue_check() -> str:
+        """Build with glue/ and check what the glue delivers against the declared inputs (record mode)."""
+        return call("verus_glue_check")
+
+    @tool(read_only=False)
+    def verus_verify() -> str:
+        """Verify the kernel crate with Verus (errors on failure) plus the trusted-base check."""
+        return call("verus_verify")
+
+    @tool(read_only=False)
+    def verus_test(snapshots: bool = False, proofs: bool = True) -> str:
+        """Build the accelerator; run the frozen tests on the Verus store (differential; snapshots if asked).
+        proofs=false: compile the kernel without checking its proofs (code first)."""
+        return call("verus_test", snapshots, proofs)
+
+    @tool(read_only=False)
+    def verus_bench(write_mixes: str = "0.01,0.05") -> str:
+        """Build and benchmark on SF1 (Verus store): read speedups, write mixes, score."""
+        return call("verus_bench", write_mixes)
+
+    @tool(read_only=False)
+    def verus_profile() -> str:
+        """perf profile of a short SF1 bench: hotspots by symbol and area."""
+        return call("verus_profile")
+
+    @tool(read_only=True)
+    def prooflib_verify() -> str:
+        """Verify this workspace's copy of the proof library (prooflib/src/lib.rs) on its own, without publishing."""
+        return call("prooflib_verify")
+
+    @tool(read_only=False)
+    def prooflib_publish(note: str) -> str:
+        """Publish prooflib/src/lib.rs (additions only; dependents re-verified first)."""
+        return call("prooflib_publish", note)
+
+    @tool(read_only=False)
+    def playbook_append(section: str, title: str, body: str, evidence: str) -> str:
+        """Add an evidence-backed lesson to the playbook (section: performance | proofs)."""
+        return call("playbook_append", section, title, body, evidence)
+
+    @tool(read_only=False)
+    def backend_addition_record(engine: str, helper: str, reason: str) -> str:
+        """Request a generic engine-level helper from the engine_backend run (logs the request only;
+        query runs never write backends/, so it is not available in this run)."""
+        return call("backend_addition_record", engine, helper, reason)
