@@ -45,8 +45,8 @@ smaller layout at the same read and write speed.
 Name the cost that dominates the measured read (or the maintenance or memory), then find a candidate that
 removes it: a per-entry bound instead of a global one, a bound that depends on the parameter, a different
 sort or partition key, a finer or coarser grain, two families combined, or a family the analysis skipped.
-Simulate it the same way. If it visits materially fewer entries, maintains cheaper, or is materially smaller
-at the same speed, the verdict is `revise`.
+Simulate it the same way. If it is materially faster in time (not just fewer entries once reads take about a
+microsecond), maintains cheaper, or is materially smaller at the same speed, the verdict is `revise`.
 
 ## 5. Checks
 

@@ -104,6 +104,9 @@ def run_with_repair(ctx: RepairCtx, attempt: Callable[[], T], *, gates: list[str
 
         _record(ctx, failure)
         if blocker is not None:
+            if _revise_test_suite(ctx):  # the blocker was the frozen suite: the tester decides, then the check reruns
+                blocker = None
+                continue
             raise stop_stage(ctx, _persisting(blocker, failure), f"agent-reported blocker persists: {blocker.summary}")
         if failure.infra_reason == AGENT_BLOCKER:
             if gates and from_attempt:  # the stage's own checks decide whether the obstacle is real

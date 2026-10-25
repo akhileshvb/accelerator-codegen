@@ -387,3 +387,11 @@ def test_a_blocker_without_gates_stops_at_once(world):
     with pytest.raises(StageStopped):
         run_with_repair(world.ctx(), _blocked)
     assert world.gate_calls == []
+
+
+def test_a_blocker_on_the_frozen_suite_goes_to_the_tester_then_the_gates_rerun(world, monkeypatch):
+    revisions = [True, False]
+    monkeypatch.setattr(repair_mod, "_revise_test_suite", lambda ctx: revisions.pop(0))
+    world.gate_script = [gate_fail()]  # the bad tuple fails the stage's check once; after the tester's fix it passes
+    run_with_repair(world.ctx(), _blocked, gates=["aux_correctness"])
+    assert world.gate_calls == [["aux_correctness"], ["aux_correctness"]] and revisions == [False]
