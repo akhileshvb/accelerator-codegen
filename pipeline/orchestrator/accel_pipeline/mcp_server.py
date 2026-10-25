@@ -372,9 +372,10 @@ def register_core(tool, call) -> None:
         return call("quick_check", targets, differential, sanitizer, threads)
 
     @tool(read_only=True)
-    def run_profile() -> str:
-        """Run profile (or aux bench) gate."""
-        return call("run_profile")
+    def run_profile(scale: Literal["subset", "full"] = "subset") -> str:
+        """Hot spots by symbol of the read, write and build paths. "subset" (default, about 20 s): direction on code
+        paths; "full": the full gate dataset, where time goes at scale (state build, big-write maintenance, caches); minutes."""
+        return call("run_profile", scale)
 
     @tool(read_only=True)
     def run_correctness() -> str:

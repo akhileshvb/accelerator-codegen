@@ -300,3 +300,20 @@ def test_data_calls_are_not_progress_while_implementing(tmp_path):
         _data_call(tmp_path / "art")
         _poll_for(clock, 0.1)
     assert clock.poll() == "redirect"
+
+
+NARROWED = {"run_pipeline_command"}  # the agent passes the command only, never the cwd or timeout
+
+
+def test_every_mcp_proxy_takes_the_parameters_of_the_tool_it_forwards_to(tmp_path):
+    import inspect
+
+    from accel_pipeline.mcp_server import build_mcp_tool_callables, register_core
+
+    proxies = {}
+    register_core(lambda read_only: lambda fn: proxies.setdefault(fn.__name__, fn), lambda *args: "")
+    tools = build_mcp_tool_callables(_config(tmp_path), {}, "w", 1, "optimization", 0, tmp_path)
+    params = lambda fn: list(inspect.signature(fn).parameters)
+    drift = {name: (params(proxy), params(tools[name])) for name, proxy in proxies.items()
+             if name in tools and name not in NARROWED and params(proxy) != params(tools[name])}
+    assert drift == {}
