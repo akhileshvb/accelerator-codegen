@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from accel_pipeline.config import load_pipeline_config, load_workload
+from accel_pipeline.config import load_pipeline_config, load_workload, workload_supported_engines
 from accel_pipeline.gate_parallel import DEFAULT_GROUPS
 from accel_pipeline.gates import GATE_SCRIPTS, SUBSET_DATASET_GATES
 from accel_pipeline.stages.gate_plan import (
@@ -22,7 +22,7 @@ def test_the_exit_run_is_a_gate_with_its_script_and_the_subset_dataset():
 
 
 def test_every_stage_exit_runs_it_after_the_unit_checks():
-    workload = load_workload("tpch_q3_aux", REPO_ROOT, engine="duckdb")
+    workload = load_workload("tpch_q3_aux", REPO_ROOT, engine=workload_supported_engines("tpch_q3_aux", REPO_ROOT)[0])
     for gates in (workload_post_implementation_gates(workload), workload_post_optimization_gates(workload),
                   workload_post_audit_gates(workload)):
         assert gates.index("aux_unit") < gates.index("aux_exit")

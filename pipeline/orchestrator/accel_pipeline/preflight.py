@@ -251,16 +251,16 @@ def gate_writers(probe: Probe) -> list[str]:
 
 
 def test_database(probe: Probe) -> list[str]:
-    """The differential's subset database exists or can be built now."""
-    from accel_pipeline.quick import ensure_subset_dataset
+    """The join-closed test databases (the differential subset and the tiny sanitizer cut) exist or can be built now."""
+    from accel_pipeline.test_db import ensure_cut_datasets
 
     try:
-        subset = ensure_subset_dataset(probe.cfg, probe.workload)
-    except Exception as exc:  # noqa: BLE001 - any failure to build it is the finding
-        return [f"the test subset cannot be built: {type(exc).__name__}: {exc}"]
-    if subset is None:
-        return []  # no subset for this workload: the quick tier runs on the full dataset
-    return [] if any(Path(subset).glob("*.tbl")) else [f"test subset {subset} holds no tables"]
+        cuts = ensure_cut_datasets(probe.cfg, probe.workload, probe.query)
+    except Exception as exc:  # noqa: BLE001 - any failure to build them is the finding
+        return [f"the test databases cannot be built: {type(exc).__name__}: {exc}"]
+    if cuts is None:
+        return []  # no cuts for this workload: the quick tier runs on the full dataset
+    return [f"test database {d} holds no tables" for d in (cuts.subset, cuts.tiny) if not any(Path(d).glob("*.tbl"))]
 
 
 def tsan_build(probe: Probe) -> list[str]:
