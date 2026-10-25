@@ -21,7 +21,7 @@ optimization:
   early_stop:
     enabled: true
     saturation_min_read_speedup: 20
-    saturation_required_attempts: 3
+    saturation_required_attempts: 8
 
 # Turn caps per stage; 0 = unlimited. aux_state.yaml overrides them for aux workloads.
 stage_max_turns:

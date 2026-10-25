@@ -34,7 +34,8 @@ from accel_pipeline.optimization.scoreboard import (
 )
 
 
-CFG = SimpleNamespace(optimization_early_stop={"enabled": True}, optimization_structural={}, repo_root=Path("."))
+EARLY_STOP = {"enabled": True, "saturation_required_attempts": 3}
+CFG = SimpleNamespace(optimization_early_stop=EARLY_STOP, optimization_structural={}, repo_root=Path("."))
 def _best_valid(art: Path, read: float) -> None:
     (art / "best_valid_baseline.json").write_text(json.dumps({"score": read, "metrics": {"read_only_query_speedup": read}}))
 def _trials(art: Path, *strategies: str) -> None:
@@ -66,11 +67,16 @@ def test_saturation_triggers_one_structural_reanalysis_then_is_honored(tmp_path)
     (tmp_path / REANALYSIS_MARKER_FILE).write_text(detail)
     verdict, detail, _ = judge_saturation_claim(CFG, tmp_path, {"reason": "stuck"})
     assert verdict is Verdict.HONOR and "already spent" in detail
-def test_saturation_honored_at_or_above_floor_and_without_a_read_axis(tmp_path):
-    _best_valid(tmp_path, 24.0)
+def test_saturation_above_the_floor_still_needs_the_trials(tmp_path):
+    # the clean Q3 run claimed saturation at 292x after five trials, before a build win could be kept
+    _best_valid(tmp_path, 292.0)
+    verdict, detail, _ = judge_saturation_claim(CFG, tmp_path, None)
+    assert verdict is Verdict.REJECT and "not saturated yet" in detail and "3 more profile-guided trial(s)" in detail
+    _trials(tmp_path, "structural", "low_level", "other")
     assert judge_saturation_claim(CFG, tmp_path, None)[0] is Verdict.HONOR
     other = tmp_path / "base"
     other.mkdir()
+    _trials(other, "structural", "low_level", "other")
     assert judge_saturation_claim(CFG, other, None)[0] is Verdict.HONOR
 def test_trial_needs_a_fresh_profile_and_a_named_target(tmp_path):
     assert "run_profile" in profile_guidance_error(tmp_path, hot_spot="x", expected_gain="y", strategy="other")
@@ -317,7 +323,8 @@ OPTIMIZATION_SATURATED
 def test_evaluate_honors_agent_without_numeric_floors(tmp_path: Path):
     art = tmp_path / "art"
     art.mkdir()
-    cfg = SimpleNamespace(optimization_early_stop={"enabled": True})
+    _trials(art, "structural", "low_level", "other")
+    cfg = SimpleNamespace(optimization_early_stop=EARLY_STOP)
     ok, detail, _ = evaluate_saturation_claim(
         cfg,
         {"workload_kind": "aux_state", "name": "tpch_q16_aux"},

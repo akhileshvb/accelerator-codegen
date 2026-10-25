@@ -44,7 +44,7 @@ Pipeline files (`pipeline/`, `substrate/`, `backends/` gates and prompts, `cmake
 6. End with one marker (a task that ends without one fails the attempt):
    - Hypothesis JSON `{"bottleneck": "...", "why": "...", "expected_effect": "...", "ab_signal": "improve|regress|skipped"}` and `CANDIDATE_READY`, only after an A/B that did not regress.
    - `CANNOT_TEST` with `{"status": "cannot_test", "reason": "..."}`.
-   - `OPTIMIZATION_SATURATED` with `{"status": "optimization_saturated", "reason": "...", "remaining_headroom": "low"}`, once bold attempts on both axes no longer move the score. Not while write-mix is collapsed or a clear redesign is untried. While the read speedup over the engine's own SQL is below the floor in the scoreboard, the orchestrator rejects it unless the last trials were each profile-guided and distinct, with one `structural` and one `low_level`.
+   - `OPTIMIZATION_SATURATED` with `{"status": "optimization_saturated", "reason": "...", "remaining_headroom": "low"}`, once bold attempts on both axes no longer move the score. Not while write-mix is collapsed or a clear redesign is untried. The orchestrator rejects it until the last 8 trials were each profile-guided and distinct, with at least one `structural` and one `low_level`; below the read floor it then asks for a re-analysis.
 
 The orchestrator then runs the authoritative gates. Before relying on a bench number, check it measured the accelerator (below).
 

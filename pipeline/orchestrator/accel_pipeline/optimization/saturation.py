@@ -34,7 +34,7 @@ _STRATEGY_HELP = {
 }
 
 DEFAULT_MIN_READ_SPEEDUP = 20.0
-DEFAULT_REQUIRED_ATTEMPTS = 3
+DEFAULT_REQUIRED_ATTEMPTS = 8  # profile-guided, distinct trials before any saturation claim is honored
 
 
 REDESIGN_HINT = (
@@ -176,17 +176,14 @@ def judge_saturation_claim(
 
     floor = cfg["saturation_min_read_speedup"]
     speedup = best_valid_read_speedup(art)
-    if speedup <= 0 or speedup >= floor or floor <= 0:  # no read axis measured, or fast enough
-        return Verdict.HONOR, reason, cfg
-
+    below_floor = 0 < speedup < floor
     missing = missing_saturation_work(load_trial_protocol(art), cfg["saturation_required_attempts"])
     if missing:
-        return (
-            Verdict.REJECT,
-            f"read speedup over the engine's own SQL is {speedup:.2f}x, below the {floor:g}x floor; "
-            "still to do: " + "; ".join(missing) + ". " + REDESIGN_HINT,
-            cfg,
-        )
+        where = (f"read speedup over the engine's own SQL is {speedup:.2f}x, below the {floor:g}x floor; " if below_floor
+                 else "not saturated yet (reads, writes and the state build all still count); ")
+        return Verdict.REJECT, where + "still to do: " + "; ".join(missing) + ". " + REDESIGN_HINT, cfg
+    if not below_floor:
+        return Verdict.HONOR, reason, cfg
     if (art / REANALYSIS_MARKER_FILE).exists():
         return Verdict.HONOR, f"{reason} (read speedup {speedup:.2f}x; structural re-analysis already spent)", cfg
     return (
