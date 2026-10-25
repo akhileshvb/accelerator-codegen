@@ -264,6 +264,8 @@ def _main(argv: list[str] | None = None) -> int:
         help="cpp: C++ accelerator pipeline (default); verus: the Verus accelerator pipeline "
         "(accel_pipeline/verus; same front end, its own stages). Default: the workload's `mode`.",
     )
+    parser.add_argument("--until", choices=STAGES[:-1], default=None,
+                        help="with --stage all: pause after this stage completes (--resume continues with the next)")
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--dry-run", action="store_true", help="Render prompts; skip LLM calls")
     parser.add_argument(
@@ -281,6 +283,8 @@ def _main(argv: list[str] | None = None) -> int:
     parser.add_argument("--model", action="append", dest="models", default=[])
     args = parser.parse_args(argv)
     args.stage = STAGE_ALIASES.get(args.stage, args.stage)
+    if args.until and args.stage != "all":
+        parser.error("--until applies to --stage all")
 
     if args.dry_run:
         os.environ["ACCEL_PIPELINE_DRY_RUN"] = "1"
@@ -504,6 +508,12 @@ def _main(argv: list[str] | None = None) -> int:
 
         if stage != STAGES[-1] and not args.dry_run:
             advance_stage(state, repo_root)
+        if stage == args.until:
+            if not args.dry_run:
+                state.status = f"paused:until {stage}"
+                state.save(state_path(repo_root, query, args.workload, pipeline_config.engine_name))
+            print(f"pipeline paused after {stage}; --resume continues", file=sys.stderr)
+            return 0
         idx += 1
 
     if args.dry_run:
