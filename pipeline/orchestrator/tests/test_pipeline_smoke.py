@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -69,6 +70,14 @@ def test_a_stop_report_a_repair_call_or_a_timeout_fails_the_run(tmp_path):
 
 @pytest.mark.pipeline_smoke
 @pytest.mark.skipif(not os.environ.get("ACCEL_RUN_PIPELINE_SMOKE"), reason="builds a clean tree and runs the pipeline: set ACCEL_RUN_PIPELINE_SMOKE=1")
+@pytest.mark.parametrize("threads, speedup, flagged", [(8, 1.04, True), (8, 4.4, False), (2, 1.04, False)])
+def test_a_serial_build_fails_the_run_only_where_threads_could_speed_it_up(tmp_path, threads, speedup, flagged):
+    gate = tmp_path / "pipeline/artifacts/tpch/q14/duckdb/gates/aux_bench_sweep.json"
+    gate.parent.mkdir(parents=True)
+    gate.write_text(json.dumps({"thread_scaling": {"threads": threads, "build_speedup_at_N_vs_1": speedup}}))
+    assert bool(smoke_report.serial_builds(tmp_path)) is flagged
+
+
 def test_the_pipeline_passes_end_to_end_with_a_scripted_agent():
     env = {k: v for k, v in os.environ.items() if k != "OPENROUTER_API_KEY"}
     proc = subprocess.run([sys.executable, str(SMOKE / "pipeline_smoke.py"), "--workload",
