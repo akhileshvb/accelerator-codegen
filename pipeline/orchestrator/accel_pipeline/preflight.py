@@ -282,7 +282,7 @@ def tsan_build(probe: Probe) -> list[str]:
 
 PROMPTS = {"analysis": "01_analysis.md", "test_suite": "01b_test_suite.md", "implementation": "02_implementation.md",
            "optimization": "03_optimization_unified.md", "audit": "04_audit.md", "advisor": "05_advisor.md"}
-SOURCE_PATH = re.compile(r"`((?:pipeline/(?!artifacts)|scripts/|substrate/|workloads/)[\w./-]+?)`")  # not a path the run creates
+SOURCE_PATH = re.compile(r"`((?:pipeline/(?!artifacts|prims_staging)|scripts/|substrate/|workloads/)[\w./-]+?)`")  # not a path the run creates
 
 
 def prompt_problems(text: str, root: Path) -> list[str]:
