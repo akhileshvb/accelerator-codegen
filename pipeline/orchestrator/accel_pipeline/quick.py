@@ -1,40 +1,42 @@
 """The seconds-level inner loop: incremental build, the query's tests, a subset differential.
 
-run_quick_check runs the quick_check gate (gates/run_aux_quick_check.sh) on the subset dataset
-and turns its result into a QuickResult.
+run_quick_check runs the quick_check gate (gates/run_aux_quick_check.sh) on the test databases (test_db.py) and
+turns its result into a QuickResult: correctness, and on a plain pass the compact report of check_report.py
+(build time and scaling, read latency, write cost per kind, perf counters).
 """
 
 from __future__ import annotations
 
-import fcntl
-import hashlib
 import json
 import os
-import re
-import tempfile
+import subprocess
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from accel_pipeline.build_stamp import code_stamp
+from accel_pipeline import check_report, write_cost
 from accel_pipeline import test_suite as ts
-from accel_pipeline import write_cost
+from accel_pipeline.build_stamp import code_stamp
+from accel_pipeline.check_measure import Bench
 from accel_pipeline.config import PipelineConfig
 from accel_pipeline.failure import Failure, render_failure
 from accel_pipeline.gate_stamps import current_stamp
 from accel_pipeline.gates import run_gate
-from accel_pipeline.layout import query_dir, workload_schema_sql
-from accel_pipeline.paths import gates_dir_for_query, query_artifacts_dir
+from accel_pipeline.layout import query_dir
+from accel_pipeline.perf_profile import render_for_agent
+from accel_pipeline.paths import gates_dir_for_query, load_query_analysis, query_artifacts_dir
+from accel_pipeline.test_db import CutDatasets, ensure_cut_datasets
 from accel_pipeline.test_suite import suite_path
-from accel_pipeline.workload_facts import scratch_connection
 
 QUICK_GATE = "quick_check"
 # What kills one differential run inside a gate (aux_gate_common.sh engine_run): the budget the projection must fit.
 GATE_RUN_TIMEOUT_S = float(os.environ.get("ACCEL_GATE_RUN_TIMEOUT", 900))
 ADMISSION_FILE = f"{QUICK_GATE}.admitted"
 PROJECTION_LINES = 5  # the costliest write kinds a passing check reports
-SUBSET_MAX_SOURCE_GB = float(os.environ.get("ACCEL_SUBSET_MAX_SOURCE_GB", 30))
+INSTANCE_KEYS = ("engine_instance", "engine_state_dir", "dataset")  # what the gate result names of the instance it ran in
+REPORT_FILE = f"{QUICK_GATE}.report.json"  # what plain passes left: their reports and the engine instance
 
 
 @dataclass
@@ -43,70 +45,7 @@ class QuickResult:
     phase_timings: dict[str, float] = field(default_factory=dict)
     failure: Failure | None = None
     summary: str = ""
-    projection: list[str] = field(default_factory=list)  # the projected full-gate write cost per transaction kind
-
-
-def _sql_statements(path: Path) -> list[str]:
-    text = re.sub(r"--[^\n]*", "", path.read_text(encoding="utf-8"))
-    return [stmt.strip() for stmt in text.split(";") if stmt.strip()]
-
-
-def _subset_key(source: Path, subset_sql: Path, schema_sql: Path) -> str:
-    digest = hashlib.sha256(str(source.resolve()).encode())
-    digest.update(subset_sql.read_bytes() + schema_sql.read_bytes())
-    for tbl in sorted(source.glob("*.tbl")):
-        digest.update(f"{tbl.name}{tbl.stat().st_size}{tbl.stat().st_mtime_ns}".encode())
-    return digest.hexdigest()[:16]
-
-
-def _write_subset(source: Path, subset_sql: Path, schema_sql: Path, dest: Path) -> None:
-    """Load `source` into a scratch database, cut the subset out of it with `subset_sql` (written
-    against the source attached as `src`) and export its tables as <table>.tbl files into `dest`."""
-    with tempfile.TemporaryDirectory() as scratch:
-        full = scratch_connection(f"{scratch}/full.db")
-        for stmt in _sql_statements(schema_sql):
-            full.execute(stmt)
-        for tbl in sorted(source.glob("*.tbl")):
-            full.execute(f"COPY {tbl.stem} FROM '{tbl}' (DELIMITER '|', HEADER false)")
-        full.close()
-        subset = scratch_connection(f"{scratch}/subset.db")
-        subset.execute(f"ATTACH '{scratch}/full.db' AS src (READ_ONLY)")
-        for stmt in _sql_statements(subset_sql):
-            subset.execute(stmt)
-        tables = subset.execute(
-            "SELECT table_name FROM information_schema.tables "
-            "WHERE table_schema = 'main' AND table_catalog = current_database()"
-        ).fetchall()
-        for (table,) in tables:
-            subset.execute(f"COPY {table} TO '{dest}/{table}.tbl' (DELIMITER '|', HEADER false)")
-        subset.close()
-
-
-def ensure_subset_dataset(pipeline_config: PipelineConfig, workload: dict[str, Any]) -> Path | None:
-    """Directory of <table>.tbl files holding the workload's test subset (workloads/<bench>/test_db_subset.sql
-    cut out of the full dataset), built once per dataset. None when the workload has no subset, the
-    dataset is missing, or it is too large to load here (ACCEL_SUBSET_MAX_SOURCE_GB): the quick tier
-    then runs on the full dataset."""
-    if os.environ.get("ACCEL_SUBSET_DATASET_DIR"):
-        return Path(os.environ["ACCEL_SUBSET_DATASET_DIR"])
-    bench = str(workload.get("benchmark_name") or "")
-    repo = pipeline_config.repo_root
-    subset_sql = repo / "workloads" / bench / "test_db_subset.sql"
-    schema_sql = repo / workload_schema_sql(str(workload.get("dataset_benchmark") or bench))
-    source = Path(str(workload.get("dataset_dir") or os.environ.get("ACCEL_DATASET_DIR") or ""))
-    if not (subset_sql.is_file() and schema_sql.is_file() and source.is_dir() and any(source.glob("*.tbl"))):
-        return None
-    if sum(t.stat().st_size for t in source.glob("*.tbl")) > SUBSET_MAX_SOURCE_GB * 2**30:
-        return None
-    dest = Path(f"{pipeline_config.build_dir}.subset") / f"{bench}-{_subset_key(source, subset_sql, schema_sql)}"
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    with (dest.parent / f"{dest.name}.lock").open("a") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
-        if not (dest / ".done").is_file():
-            dest.mkdir(exist_ok=True)
-            _write_subset(source, subset_sql, schema_sql, dest)
-            (dest / ".done").touch()
-    return dest
+    report: dict[str, Any] = field(default_factory=dict)  # build / read / writes / counters, see check_report.py
 
 
 def _result_stamp(pipeline_config: PipelineConfig, workload: dict[str, Any], query: int,
@@ -145,7 +84,7 @@ def admission_refusal(pipeline_config: PipelineConfig, workload: dict[str, Any],
     return f"{gate} refused: run quick_check first and iterate until it passes on the current code (it takes seconds), then request {gate} once."
 
 
-def _project_write_cost(pipeline_config: PipelineConfig, workload: dict[str, Any], query: int, subset: Path | None) -> write_cost.Projection | None:
+def _project_write_cost(pipeline_config: PipelineConfig, workload: dict[str, Any], query: int, cuts: CutDatasets | None) -> write_cost.Projection | None:
     """The full gate's write time, projected from the timings of the quick differential (None: no timings)."""
     bench = str(workload.get("benchmark_name") or "")
     art = query_artifacts_dir(pipeline_config.repo_root, query, workload=workload)
@@ -153,11 +92,10 @@ def _project_write_cost(pipeline_config: PipelineConfig, workload: dict[str, Any
     suite = suite_path(pipeline_config.repo_root, bench, query)
     if not reports or not (suite / ts.MANIFEST).is_file():
         return None
-    full = Path(str(workload.get("dataset_dir") or os.environ.get("ACCEL_DATASET_DIR") or ""))
     probes = int(((ts._yaml(suite / ts.MANIFEST).get("point_writes") or {}).get("max_probes")) or 5)
     return write_cost.project(
         reports, profiles=ts.txn_profiles(suite), dependent=ts.dependent_tables(art),
-        scale=write_cost.table_scale(full if full.is_dir() else None, subset), probes_full=probes,
+        scale=cuts.scale if cuts else (lambda tables: 1.0), probes_full=probes,
         budget_s=GATE_RUN_TIMEOUT_S * pipeline_config.quick_tier.write_cost_budget_share)
 
 
@@ -170,6 +108,45 @@ def _unfaithful_rebuilds(pipeline_config: PipelineConfig, workload: dict[str, An
     coverage = (json.loads(analysis.read_text(encoding="utf-8")).get("correctness_facts") or {}).get("mutation_coverage") or []
     suite = suite_path(pipeline_config.repo_root, str(workload.get("benchmark_name", "")), query)
     return write_cost.unfaithful_rebuilds(reports, ts.txn_files(suite), coverage, ts.statements)
+
+
+def _plain_report(pipeline_config: PipelineConfig, workload: dict[str, Any], query: int, cuts: CutDatasets | None,
+                  instance: dict[str, str]) -> tuple[dict[str, Any], list[str]]:
+    """(the compact report of a passing plain check, the defects it shows): rebuild-on-write, writes and a build that
+    would not fit the gates, a build that does not scale with threads; then the reads and perf counters."""
+    art = query_artifacts_dir(pipeline_config.repo_root, query, workload=workload)
+    defects = _unfaithful_rebuilds(pipeline_config, workload, query)
+    defects = [f"{len(defects)} write transaction(s) rebuild the state where the analysis maintains them incrementally "
+               f"(at full scale each is a full scan). First: {defects[0]}"] if defects else []
+    report: dict[str, Any] = {}
+    reports = write_cost.load_reports(gates_dir_for_query(art))
+    dependent = ts.dependent_tables(art)
+    line, defect = check_report.build_report(
+        reports, scale=cuts.scale(dependent) if cuts else 1.0, threads=check_report.gate_threads(),
+        budget_s=pipeline_config.quick_tier.build_budget_sec,
+        expected_scaling=check_report.expects_scaling(load_query_analysis(pipeline_config.repo_root, query, workload=workload)[1]))
+    report.update({"build": line} if line else {})
+    defects += [defect] if defect else []
+    projection = _project_write_cost(pipeline_config, workload, query, cuts)
+    if projection:
+        report["writes"] = projection.lines[:PROJECTION_LINES]
+        report["writes_total"] = projection.summary()
+        if projection.over:
+            defects.append(f"{projection.summary()}: the full gate would time out. Costliest: {projection.worst}")
+    report.update(_measure(pipeline_config, workload, query, instance))
+    return report, defects
+
+
+def _measure(pipeline_config: PipelineConfig, workload: dict[str, Any], query: int, instance: dict[str, str]) -> dict[str, str]:
+    """Read latency against the engine's SQL, and perf counters, from the aux bench on the subset."""
+    if not instance:
+        return {}
+    bench = Bench(pipeline_config, workload, query, instance)
+    try:
+        row = bench.row()
+    except (RuntimeError, OSError, subprocess.SubprocessError) as exc:
+        return {"read": f"unavailable ({str(exc)[-300:]})"}
+    return {"read": check_report.read_line(row), "counters": check_report.counters_line(bench.counters(row))}
 
 
 def _sanitizer_evidence(data: dict[str, Any]) -> str:
@@ -198,7 +175,25 @@ def _failure(data: dict[str, Any], timings: dict[str, float]) -> Failure:
 
 
 SANITIZERS = ("thread", "address")
+PROFILE_SECONDS = 8.0  # of each sampled loop in run_profile (read, write)
 SANITIZER_TIMEOUT_SEC = 3600  # the first instrumented build of a worker; later checks are incremental
+
+
+def prepare_inner_loop(pipeline_config: PipelineConfig, workload: dict[str, Any], query: int) -> threading.Thread | None:
+    """Once per run, before analysis: make the test databases, and start building the sanitizer variant of the
+    substrate and harness in the background, so the agent's first sanitizer check compiles only the query's files."""
+    if not pipeline_config.quick_tier.enabled or workload.get("workload_kind") != "aux_state":
+        return None
+    cuts = ensure_cut_datasets(pipeline_config, workload, query)
+    gates_dir = gates_dir_for_query(query_artifacts_dir(pipeline_config.repo_root, query, workload=workload))
+
+    def build() -> None:
+        run_gate(pipeline_config, QUICK_GATE, query, workload, out_dir=gates_dir / "prebuild", timeout_s=SANITIZER_TIMEOUT_SEC,
+                 env={"ACCEL_QUICK_SANITIZER": "thread", "ACCEL_QUICK_PREBUILD": "1",
+                      **({"ACCEL_SUBSET_DATASET_DIR": str(cuts.tiny)} if cuts else {})})
+    thread = threading.Thread(target=build, name="sanitizer-prebuild", daemon=True)
+    thread.start()
+    return thread
 
 
 def run_quick_check(pipeline_config: PipelineConfig, workload: dict, query: int, *, targets: list[str] | None = None,
@@ -226,14 +221,15 @@ def run_quick_check(pipeline_config: PipelineConfig, workload: dict, query: int,
     if stamp and passed_path.is_file() and passed_path.read_text(encoding="utf-8") == stamp:
         if admits:
             record_admission(pipeline_config, workload, query)
-        return QuickResult(status="pass", summary="unchanged since the last passing quick_check")
+        return QuickResult(status="pass", summary="unchanged since the last passing quick_check",
+                           report=saved_report(pipeline_config, workload, query).get("reports", {}).get(stamp, {}))
 
     started = time.monotonic()
-    subset = ensure_subset_dataset(pipeline_config, workload)
+    cuts = ensure_cut_datasets(pipeline_config, workload, query)
     gates_dir = gates_dir_for_query(query_artifacts_dir(pipeline_config.repo_root, query, workload=workload))
     for stale in write_cost.report_paths(gates_dir):
         stale.unlink(missing_ok=True)
-    timings = {"subset_dataset": round(time.monotonic() - started, 3)}
+    timings = {"test_databases": round(time.monotonic() - started, 3)}
     result = run_gate(
         pipeline_config, QUICK_GATE, query, workload,
         env={
@@ -241,6 +237,7 @@ def run_quick_check(pipeline_config: PipelineConfig, workload: dict, query: int,
             "ACCEL_QUICK_DIFFERENTIAL": "1" if differential else "0",
             "ACCEL_QUICK_PROBES": str(quick.differential_probes),
             "ACCEL_BUILD_STAMP_CACHE": "1" if quick.build_stamp_cache else "0",
+            **({"ACCEL_SUBSET_DATASET_DIR": str(cuts.tiny if sanitizer else cuts.subset)} if cuts else {}),
             **({"ACCEL_QUICK_SANITIZER": sanitizer, "ACCEL_QUICK_THREADS": str(threads)} if sanitizer else {}),
         },
         timeout_s=max(quick.timeout_sec, SANITIZER_TIMEOUT_SEC) if sanitizer else quick.timeout_sec,
@@ -248,42 +245,72 @@ def run_quick_check(pipeline_config: PipelineConfig, workload: dict, query: int,
     timings.update(result.data.get("phase_timings") or {})
     if result.status == "skip":
         return QuickResult(status="skip", phase_timings=timings, summary=str(result.data.get("reason") or "skipped"))
-    if result.status == "pass":
-        unfaithful = _unfaithful_rebuilds(pipeline_config, workload, query) if admits else []
-        if unfaithful:
-            passed_path.unlink(missing_ok=True)
-            failure = Failure(
-                kind="code", stage=QUICK_GATE, source=QUICK_GATE,
-                summary=f"quick_check: {len(unfaithful)} write transaction(s) rebuild the state where the analysis "
-                        f"maintains them incrementally (at full scale each is a full scan). First: {unfaithful[0]}",
-                evidence="\n".join(unfaithful))
-            return QuickResult(status="fail", phase_timings=timings, failure=failure, summary=failure.summary)
-        projection = _project_write_cost(pipeline_config, workload, query, subset) if admits else None
-        if projection and projection.over:
-            passed_path.unlink(missing_ok=True)
-            failure = Failure(
-                kind="code", stage=QUICK_GATE, source=QUICK_GATE,
-                summary=f"quick_check: {projection.summary()}: the full gate would time out. Costliest: {projection.worst}",
-                evidence="\n".join(projection.lines),
-                diagnosis=[f"{name}: {seconds:.1f}s" for name, seconds in timings.items()])
-            return QuickResult(status="fail", phase_timings=timings, failure=failure, summary=failure.summary)
-        if stamp:
-            passed_path.parent.mkdir(parents=True, exist_ok=True)
-            passed_path.write_text(stamp, encoding="utf-8")
-        if admits:
-            record_admission(pipeline_config, workload, query)
-        return QuickResult(status="pass", phase_timings=timings, summary="quick_check passed" + (f"; {projection.summary()}" if projection else ""),
-                           projection=projection.lines[:PROJECTION_LINES] if projection else [])
-    passed_path.unlink(missing_ok=True)
-    failure = _failure(result.data, timings)
-    return QuickResult(status="fail", phase_timings=timings, failure=failure, summary=failure.summary)
+    if result.status != "pass":
+        passed_path.unlink(missing_ok=True)
+        failure = _failure(result.data, timings)
+        return QuickResult(status="fail", phase_timings=timings, failure=failure, summary=failure.summary)
+    instance = {} if sanitizer else {k: str(result.data[k]) for k in INSTANCE_KEYS if result.data.get(k)}
+    report, defects = _plain_report(pipeline_config, workload, query, cuts, instance) if admits else ({}, [])
+    if defects:
+        passed_path.unlink(missing_ok=True)
+        failure = Failure(kind="code", stage=QUICK_GATE, source=QUICK_GATE, summary=f"quick_check: {defects[0]}",
+                          diagnosis=defects[1:])
+        return QuickResult(status="fail", phase_timings=timings, failure=failure, summary=failure.summary, report=report)
+    if stamp:
+        passed_path.parent.mkdir(parents=True, exist_ok=True)
+        passed_path.write_text(stamp, encoding="utf-8")
+        if not sanitizer:
+            _save_report(pipeline_config, workload, query, stamp, report, instance)
+    if admits:
+        record_admission(pipeline_config, workload, query)
+    return QuickResult(status="pass", phase_timings=timings, summary="quick_check passed", report=report)
+
+
+def profile_hot_spots(pipeline_config: PipelineConfig, workload: dict[str, Any], query: int) -> str:
+    """run_profile: samples of the read, write and build paths on the subset, as JSON. A tree that does not pass the
+    plain check, or a profiler that cannot run, is a failure to fix or report; a server engine is not applicable."""
+    checked = run_quick_check(pipeline_config, workload, query, differential=False)
+    instance = saved_report(pipeline_config, workload, query).get("instance")
+    if checked.status != "pass" or not instance:
+        return render_quick_result(checked) if checked.status != "pass" else json.dumps(
+            {"status": "fail", "summary": "no quick_check instance to profile in: run quick_check first"})
+    profiles = Bench(pipeline_config, workload, query, instance).profile(PROFILE_SECONDS)
+    broken = {path: p["reason"] for path, p in profiles.items() if p["status"] == "error"}
+    if broken:
+        failure = Failure(kind="infra", stage="run_profile", source="perf", summary="run_profile could not sample: " + "; ".join(
+            f"{path}: {reason}" for path, reason in broken.items()),
+            diagnosis=["profiling failed because of the host or the harness, not because there is nothing to profile: fix what "
+                       "the message names, or report it (report_blocker) if it is outside the query's files"])
+        return json.dumps({"status": "fail", "failure": render_failure(failure)}, indent=2)
+    return json.dumps({"status": "pass", **{f"{path}_path": render_for_agent(p).splitlines() for path, p in profiles.items()}}, indent=2)
+
+
+def _report_path(pipeline_config: PipelineConfig, workload: dict[str, Any], query: int) -> Path:
+    return _passed_stamp_path(pipeline_config, workload, query).with_name(REPORT_FILE)
+
+
+def saved_report(pipeline_config: PipelineConfig, workload: dict[str, Any], query: int) -> dict[str, Any]:
+    """What plain passes left: {"instance": the engine instance and dataset the quick gate loaded (the profile runs
+    in it), "reports": {result stamp: report}}; {} before the first."""
+    try:
+        return json.loads(_report_path(pipeline_config, workload, query).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def _save_report(pipeline_config: PipelineConfig, workload: dict[str, Any], query: int, stamp: str,
+                 report: dict[str, Any], instance: dict[str, str]) -> None:
+    saved = saved_report(pipeline_config, workload, query)
+    saved = {"instance": instance, "reports": {**saved.get("reports", {}), stamp: report}}
+    _report_path(pipeline_config, workload, query).write_text(json.dumps(saved), encoding="utf-8")
 
 
 def render_quick_result(result: QuickResult) -> str:
-    """Compact JSON for the agent: status, seconds per phase, and on failure the rendered failure."""
-    payload: dict[str, Any] = {"status": result.status, "summary": result.summary}
-    if result.projection:
-        payload["projected_full_gate_write_cost"] = result.projection
+    """Compact JSON for the agent: status, the report, seconds per phase, and on failure the rendered failure."""
+    payload: dict[str, Any] = {"status": result.status}
+    if not result.failure:  # the failure text carries the summary
+        payload["summary"] = result.summary
+    payload.update(result.report)
     if result.phase_timings:
         payload["phase_seconds"] = result.phase_timings
     if result.failure:

@@ -152,6 +152,7 @@ class QuickTierConfig:
     )
     parallel_gates: bool = True
     gate_jobs: int = 0  # concurrent gates in a parallel group; 0 = one per gate
+    build_budget_sec: float = 15.0  # the state build projected to the full dataset (N threads) may take this long; the gates build it several times
     write_cost_budget_share: float = 0.5  # of one gate differential run's timeout (ACCEL_GATE_RUN_TIMEOUT) that quick_check lets the projected writes and builds use
     admission_gates: tuple[str, ...] = ("aux_correctness", "aux_bench_sweep", "aux_tsan")  # run only after quick_check passed
 
@@ -167,6 +168,7 @@ def _quick_tier_config(data: dict[str, Any]) -> QuickTierConfig:
         background_gates=tuple(str(g) for g in block.get("background_gates", default.background_gates)),
         parallel_gates=bool(block.get("parallel_gates", default.parallel_gates)),
         gate_jobs=int(block.get("gate_jobs", default.gate_jobs)),
+        build_budget_sec=float(block.get("build_budget_sec", default.build_budget_sec)),
         write_cost_budget_share=float(block.get("write_cost_budget_share", default.write_cost_budget_share)),
         admission_gates=tuple(str(g) for g in block.get("admission_gates", default.admission_gates)),
     )

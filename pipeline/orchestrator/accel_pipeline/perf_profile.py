@@ -12,8 +12,9 @@ hit loop under `perf` and reports
 Counters and samples cover only the bench's measured read loop: perf starts disabled and the bench opens the
 window through the `ACCEL_PROFILE_CONTROL` fifos (`eval/bench/driver/profile_window.hpp`).
 
-An engine whose hit path does not run inside the bench process (a server engine) or a machine that cannot
-run `perf` gets an explicit `not_applicable` with the reason, never an empty summary.
+An engine whose hit path does not run inside the bench process (a server engine) is `not_applicable`, with the
+reason. A machine where `perf` cannot run, or a bench that never opens the window, is an `error` the caller fails
+on: a broken profiler is never read as "nothing to profile".
 """
 
 from __future__ import annotations
@@ -41,10 +42,10 @@ STAT_EVENTS = (
 )
 PROFILE_CONTROL_ENV = "ACCEL_PROFILE_CONTROL"
 MIN_QUERIES = 100
-MAX_QUERIES = 2000
+MAX_QUERIES = 100_000
 TARGET_LOOP_SEC = 6.0
 ACCELERATOR_DSO_MARKER = "accelerator_codegen"
-MODULE_NAMESPACE = "::query::"
+MODULE_NAMESPACE = re.compile(r"::(query|q\d+)::")  # accelerators/<bench>/q<N> code, and templates instantiated over its types
 PERF_TIMEOUT_SEC = 300
 WIDE_VECTOR_RE = re.compile(r"\b[yz]mm\d+")
 SAMPLE_LINE_RE = re.compile(r"^\s*(?P<pct>\d+(?:\.\d+)?)%\s+(?P<rest>.+?)\s*$")
@@ -54,6 +55,10 @@ Runner = Callable[..., subprocess.CompletedProcess]
 
 def not_applicable(reason: str) -> dict[str, Any]:
     return {"status": "not_applicable", "reason": reason}
+
+
+def failed(reason: str) -> dict[str, Any]:
+    return {"status": "error", "reason": reason}
 
 
 def perf_binary() -> str | None:
@@ -109,7 +114,7 @@ def bucket_of(dso: str, symbol: str) -> str:
     rest of the accelerator library or binary; engine_or_system: the engine, libc, libstdc++."""
     if ACCELERATOR_DSO_MARKER not in dso and not dso.startswith("benchmark"):
         return "engine_or_system"
-    return "own_code" if MODULE_NAMESPACE in symbol else "substrate_or_backend"
+    return "own_code" if MODULE_NAMESPACE.search(symbol) else "substrate_or_backend"
 
 
 def shorten(symbol: str, limit: int = 120) -> str:
@@ -161,11 +166,11 @@ def vectorization_of(annotate_text: str) -> dict[str, Any]:
     }
 
 
-def window_query_count(hit_us: float | None) -> int:
-    """Measured queries in the profile window: about TARGET_LOOP_SEC of the hit loop."""
+def window_query_count(hit_us: float | None, loop_seconds: float = TARGET_LOOP_SEC) -> int:
+    """Measured queries in the profile window: about `loop_seconds` of the hit loop."""
     if not hit_us or hit_us <= 0:
         return 2 * MIN_QUERIES
-    return max(MIN_QUERIES, min(MAX_QUERIES, int(TARGET_LOOP_SEC * 1e6 / hit_us)))
+    return max(MIN_QUERIES, min(MAX_QUERIES, int(loop_seconds * 1e6 / hit_us)))
 
 
 def work_counter_report(diagnostics: dict[str, Any], estimate: dict[str, Any]) -> dict[str, Any]:
@@ -205,50 +210,49 @@ def profile_hit_path(
     diagnostics: dict[str, Any] | None = None,
     estimate: dict[str, Any] | None = None,
     runner: Runner = subprocess.run,
+    loop_seconds: float = TARGET_LOOP_SEC,
+    record: bool = True,
 ) -> dict[str, Any]:
-    """Profile `bench_cmd` (the read-only point of the aux bench); `env` carries its parameters."""
+    """Profile `bench_cmd` (the aux bench at one write-frequency point); `env` carries its parameters. The window
+    is about `loop_seconds` of the measured loop (`hit_us` per operation). With record=False only the counters
+    are taken (no samples, no disassembly)."""
     perf = perf_binary()
     if perf is None:
-        return not_applicable("perf is not installed")
-    queries = window_query_count(hit_us)
+        return failed("perf is not installed on this host")
+    queries = window_query_count(hit_us, loop_seconds)
     events = ",".join(STAT_EVENTS)
     with tempfile.TemporaryDirectory(prefix="accel-perf-") as tmp:
         tmpdir = Path(tmp)
-        ack_fds = [_make_fifo(tmpdir / "stat.ctl"), _make_fifo(tmpdir / "record.ctl")]
+        controls = [_make_fifo(tmpdir / "stat.ctl")] + ([_make_fifo(tmpdir / "record.ctl")] if record else [])
         data, stat_file = tmpdir / "perf.data", tmpdir / "window.stat"
-        cmd = [
-            perf, "stat", "-x,", "-e", events, "-o", str(stat_file), "-D", "-1",
-            "--control", f"fifo:{tmpdir / 'stat.ctl'},{tmpdir / 'stat.ack'}", "--",
-            perf, "record", "-F", str(SAMPLE_HZ), "-o", str(data), "-D", "-1",
-            "--control", f"fifo:{tmpdir / 'record.ctl'},{tmpdir / 'record.ack'}", "--", *bench_cmd,
-        ]
+        window = ["-D", "-1", "--control"]
+        measured = [perf, "record", "-F", str(SAMPLE_HZ), "-o", str(data), *window,
+                    f"fifo:{tmpdir / 'record.ctl'},{tmpdir / 'record.ack'}", "--", *bench_cmd] if record else bench_cmd
+        cmd = [perf, "stat", "-x,", "-e", events, "-o", str(stat_file), *window,
+               f"fifo:{tmpdir / 'stat.ctl'},{tmpdir / 'stat.ack'}", "--", *measured]
         window_env = {
             **env,
             "ACCEL_BENCH_QUERIES": str(queries),
-            PROFILE_CONTROL_ENV: f"{tmpdir / 'stat.ctl'},{tmpdir / 'record.ctl'}",
+            PROFILE_CONTROL_ENV: ",".join(str(tmpdir / f"{n}.ctl") for n in (("stat", "record") if record else ("stat",))),
         }
         try:
             run = _run(runner, cmd, window_env, cwd)
-            if not data.is_file():
-                detail = (run.stderr or run.stdout or "").strip()[-300:]
-                return not_applicable(f"perf could not profile the bench: {detail}")
-            report = _run(
-                runner,
-                [perf, "report", "-i", str(data), "--stdio", "--no-children", "--sort", "dso,sym", "-F", "overhead,dso,sym"],
-                env, cwd)
             window_stat = parse_stat(stat_file.read_text(encoding="utf-8")) if stat_file.is_file() else {}
-            sampled = parse_report(report.stdout or "")
-            vector = _vectorization(runner, perf, data, sampled["top"], env, cwd) if sampled["top"] else None
+            if not window_stat or (record and not data.is_file()):
+                detail = (run.stderr or run.stdout or "").strip()[-300:]
+                return failed(f"perf could not profile the bench (exit {run.returncode}): {detail}")
+            sampled = _sample_report(runner, perf, data, env, cwd) if record else None
+            vector = _vectorization(runner, perf, data, sampled["top"], env, cwd) if record and sampled["top"] else None
         except subprocess.TimeoutExpired:
-            return not_applicable(f"perf did not finish within {PERF_TIMEOUT_SEC}s")
+            return failed(f"perf did not finish within {PERF_TIMEOUT_SEC}s")
         finally:
-            for fd in ack_fds:
+            for fd in controls:
                 os.close(fd)
-    if not sampled["top"]:
-        return not_applicable(
-            f"no samples fell in the profile window: the bench did not open it through {PROFILE_CONTROL_ENV}"
-        )
+    if record and not sampled["top"]:
+        return failed(f"no samples fell in the profile window: the bench did not open it through {PROFILE_CONTROL_ENV}")
     counters = per_query_counters(window_stat, queries)
+    if not record:
+        return {"status": "ok", "counters_per_query": counters}
     notes = []
     cpu_ms = counters.get("cpu_ms")
     if hit_us and cpu_ms is not None and cpu_ms * 1000.0 < 0.5 * hit_us:
@@ -262,16 +266,42 @@ def profile_hit_path(
         "sampling": {
             "frequency_hz": SAMPLE_HZ,
             "window_queries": queries,
-            "note": "self time over the bench's measured read loop only; rows are functions",
+            "note": "self time over the bench's measured loop only; rows are functions",
             "self_pct_by_bucket": sampled["self_pct_by_bucket"],
             "top_functions": [
                 {k: v for k, v in row.items() if k != "full_symbol"} for row in function_totals(sampled["top"])[:TOP_N]
             ],
-                    },
+        },
         "counters_per_query": counters,
         "vectorization_of_hottest_own_function": vector,
         "work_counters": work_counter_report(diagnostics or {}, estimate or {}),
     }
+
+
+def profile_build(bench_cmd: list[str], env: dict[str, str], *, cwd: Path | None = None,
+                  runner: Runner = subprocess.run) -> dict[str, Any]:
+    """Samples of a one-query run of the bench, which the state build dominates: the hot spots of the build."""
+    perf = perf_binary()
+    if perf is None:
+        return failed("perf is not installed on this host")
+    with tempfile.TemporaryDirectory(prefix="accel-perf-") as tmp:
+        data = Path(tmp) / "perf.data"
+        try:
+            run = _run(runner, [perf, "record", "-F", str(SAMPLE_HZ), "-o", str(data), "--", *bench_cmd],
+                       {**env, "ACCEL_BENCH_QUERIES": "1"}, cwd)
+            sampled = _sample_report(runner, perf, data, env, cwd) if data.is_file() else {"top": []}
+        except subprocess.TimeoutExpired:
+            return failed(f"perf did not finish within {PERF_TIMEOUT_SEC}s")
+    if not sampled["top"]:
+        return failed(f"perf recorded no samples of the build (exit {run.returncode}): {(run.stderr or run.stdout or '').strip()[-300:]}")
+    top = [{k: v for k, v in row.items() if k != "full_symbol"} for row in function_totals(sampled["top"])[:TOP_N]]
+    return {"status": "ok", "sampling": {"self_pct_by_bucket": sampled["self_pct_by_bucket"], "top_functions": top}}
+
+
+def _sample_report(runner: Runner, perf: str, data: Path, env: dict[str, str], cwd: Path | None) -> dict[str, Any]:
+    report = _run(runner, [perf, "report", "-i", str(data), "--stdio", "--no-children", "--sort", "dso,sym",
+                           "-F", "overhead,dso,sym"], env, cwd)
+    return parse_report(report.stdout or "")
 
 
 def _vectorization(
@@ -289,55 +319,22 @@ def _vectorization(
 
 def render_for_agent(profile: dict[str, Any]) -> str:
     """The profile as the compact text the agent reads first."""
+    if profile.get("status") == "error":
+        return f"profile FAILED: {profile.get('reason')}"
     if profile.get("status") != "ok":
-        return f"hit-path profile: not applicable ({profile.get('reason')})"
-    lines = ["hit-path profile (self time over the measured read loop):"]
+        return f"profile: not applicable ({profile.get('reason')})"
+    lines = ["self time (share of samples):"]
     buckets = profile["sampling"]["self_pct_by_bucket"]
     lines.append("  by code: " + ", ".join(f"{k} {v}%" for k, v in buckets.items()))
     for row in profile["sampling"]["top_functions"]:
         lines.append(f"  {row['self_pct']:6.2f}%  [{row['bucket']}]  {row['symbol']}")
-    counters = profile["counters_per_query"]
-    lines.append("counters per query: " + ", ".join(f"{k}={v}" for k, v in counters.items() if v is not None))
-    vec = profile.get("vectorization_of_hottest_own_function")
-    if vec:
+    if counters := profile.get("counters_per_query"):
+        lines.append("counters per operation: " + ", ".join(f"{k}={v}" for k, v in counters.items() if v is not None))
+    if vec := profile.get("vectorization_of_hottest_own_function"):
         lines.append(f"vectorization: {vec}")
     lines.extend(f"note: {note}" for note in profile.get("notes") or [])
-    lines.append(f"work counters: {profile['work_counters']}")
+    if work := profile.get("work_counters"):
+        lines.append(f"work counters: {work}")
     return "\n".join(lines)
 
 
-def profile_workload_hit_path(
-    pipeline_config: Any,
-    workload: dict[str, Any],
-    query: int,
-    art: Path,
-    *,
-    diagnostics: dict[str, Any],
-    hit_us: float | None,
-) -> dict[str, Any]:
-    """Profile the built aux bench of `workload` at its read-only point (the quick bench has built it)."""
-    from accel_pipeline.config import resolve_workload_paths
-    from accel_pipeline.engine_host import host_info
-    from accel_pipeline.paths import load_query_analysis
-    from accel_pipeline.tools.ab_tools import _aux_quick_benchmark_env, _benchmark_build_target
-    from accel_pipeline.worker_isolation import ensure_private_dataset_db
-
-    gap = engine_profile_gap(host_info(pipeline_config.repo_root, str(workload.get("engine_name") or ""), pipeline_config.build_dir))
-    if gap:
-        return not_applicable(gap)
-    paths = resolve_workload_paths(pipeline_config, workload, query)
-    private_db = ensure_private_dataset_db(pipeline_config, paths["dataset_db"], query=query)
-    paths = {**paths, "dataset_db": str(private_db)}
-    bench = pipeline_config.build_dir / _benchmark_build_target(paths, workload)
-    env = {
-        **os.environ,
-        **_aux_quick_benchmark_env(paths, query=query, workload=workload, art_dir=art, freqs=[0], acceptance=False),
-    }
-    env.pop(f"ACCEL_Q{query}_WRITE_FREQUENCY_PCT", None)
-    _, analysis = load_query_analysis(pipeline_config.repo_root, query, workload=workload)
-    design = ((analysis or {}).get("correctness_facts") or {}).get("state_design") or {}
-    estimate = {key: design.get(key) for key in ("estimated_state_units_read", "read_work_ratio") if design.get(key)}
-    return profile_hit_path(
-        [str(bench), "--query", str(query), "0"], env,
-        cwd=pipeline_config.repo_root, hit_us=hit_us, diagnostics=diagnostics, estimate=estimate,
-    )

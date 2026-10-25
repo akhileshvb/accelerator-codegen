@@ -13,7 +13,7 @@ from accel_pipeline.gates import tool_call_limit
 from accel_pipeline.jsonio import read_json
 from accel_pipeline.no_progress import record_check
 from accel_pipeline.optimization_saturation import mark_profile_run
-from accel_pipeline.perf_profile import not_applicable, profile_workload_hit_path, render_for_agent
+from accel_pipeline.quick import profile_hot_spots
 from accel_pipeline.session import keep_alive
 
 
@@ -124,36 +124,14 @@ def build_mcp_tool_callables(
         return payload
 
     def run_profile() -> str:
-        """Refresh profile artifacts. Aux: quick instrumented bench (not full fair sweep)."""
-
-        def measure() -> str:
-            if workload.get("workload_kind") == "aux_state":
-                # Full aux_bench_sweep is too heavy mid-loop; use the same quick path as A/B.
-                out = run_quick_benchmark(True)
-                digest = get_profile_digest()
-                digest_json = json.loads(digest) if digest.startswith("{") else {"raw": digest}
-                summary = digest_json.get("profile_summary") or {}
-                try:
-                    hit_path = profile_workload_hit_path(
-                        pipeline_config, workload, query, art,
-                        diagnostics=dict(summary.get("store_diagnostics") or {}),
-                        hit_us=float(summary.get("accel_hit_median_us") or 0.0) or None,
-                    )
-                except Exception as exc:  # noqa: BLE001 - a profiler failure is reported, not fatal
-                    hit_path = not_applicable(f"{type(exc).__name__}: {exc}")
-                return json.dumps(
-                    {
-                        "mode": "aux_hit_path_profile",
-                        "hit_path_profile": hit_path,
-                        "hit_path_profile_text": render_for_agent(hit_path),
-                        "quick_benchmark": out[:12_000],
-                        "digest": digest_json,
-                    },
-                    indent=2,
-                )[:50_000]
-            return _run_named_gate("profile", env={"ACCEL_BENCH_WARMUP": "1", "ACCEL_BENCH_ITERS": "3"})
-
-        payload = _cached_by_code_stamp("profile", measure)
+        """Hot spots by symbol. Aux: perf samples of the read, write and build paths on the test subset (about 20 s)."""
+        if workload.get("workload_kind") == "aux_state":
+            payload = profile_hot_spots(pipeline_config, workload, query)
+            if json.loads(payload).get("status") == "pass":
+                mark_profile_run(art)
+            return payload
+        payload = _cached_by_code_stamp(
+            "profile", lambda: _run_named_gate("profile", env={"ACCEL_BENCH_WARMUP": "1", "ACCEL_BENCH_ITERS": "3"}))
         mark_profile_run(art)
         return payload
 

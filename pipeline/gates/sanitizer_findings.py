@@ -6,7 +6,8 @@ usage: sanitizer_findings.py <log dir> <query dir fragment>
 A report is the query's own when, in the stack of any of its accesses, the first frame that is not a system
 header or runtime library is a source path under the query directory (the fragment, e.g.
 accelerators/<bench>/q<N>/): the racing access is in the query's code, however deep a container or atomic
-beneath it. A race inside the (uninstrumented) engine or the substrate that merely sits under a call from the
+beneath it, or the location the race names (a global, or a heap block allocated by a frame) is under the query
+directory. A race inside the (uninstrumented) engine or the substrate that merely sits under a call from the
 query is not the query's. Every other report is summarized as infrastructure and never fails the check. Prints JSON:
 {"yours": [{"summary", "frames"}], "infra": {"count", "summaries": [...]}}.
 """
@@ -63,7 +64,22 @@ def access_stacks(rep: list[str]) -> list[list[str]]:
     return stacks
 
 
+def location_lines(rep: list[str]) -> list[str]:
+    """The "Location is ..." section of a TSan report: what the racing address belongs to."""
+    out, inside = [], False
+    for line in rep:
+        if line.strip().startswith("Location is"):
+            inside = True
+        elif not line.strip():
+            inside = False
+        if inside:
+            out.append(line)
+    return out
+
+
 def is_yours(rep: list[str], fragment: str) -> bool:
+    if any(fragment in line for line in location_lines(rep)):
+        return True
     for stack in access_stacks(rep):
         first = next((f for f in stack if not SYSTEM.search(" " + f)), None)
         if first and fragment in first:
@@ -80,7 +96,7 @@ def classify(log_dir: Path, fragment: str) -> dict:
             summary = next((l for l in rep if SUMMARY.match(l)), rep[0]).strip()
             frames = [l.strip() for l in rep if FRAME.match(l) and "libtsan" not in l and "libasan" not in l]
             mine = [f for f in frames if fragment in f]
-            if mine and is_yours(rep, fragment):
+            if is_yours(rep, fragment):
                 yours.append({"summary": summary, "frames": (mine + [f for f in frames if f not in mine])[:MAX_FRAMES]})
             else:
                 infra.append(summary)

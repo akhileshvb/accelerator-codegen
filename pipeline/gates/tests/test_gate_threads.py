@@ -176,3 +176,19 @@ def test_an_engine_race_under_a_call_from_the_query_is_infrastructure(tmp_path):
     found = sanitizer_findings.classify(tmp_path, Q + "/")
     assert found["yours_count"] == 1 and found["yours"][0]["frames"][0].startswith("#1 Add") or "module.cpp:9" in found["yours"][0]["frames"][0]
     assert found["infra"]["count"] == 1
+
+
+def test_a_race_on_a_global_of_the_query_is_the_querys_even_when_the_access_frames_are_the_runtimes(tmp_path):
+    import sanitizer_findings
+
+    Q = qdir("b", 1)
+    (tmp_path / "tsan.1").write_text(
+        "WARNING: ThreadSanitizer: data race (pid=1)\n"
+        "  Write of size 8 at 0x1 by thread T1:\n"
+        "    #0 std::thread::_State_impl::_M_run() /usr/include/c++/16/bits/std_thread.h:76 (lib+0x1)\n\n"
+        "  Previous read of size 8 at 0x1 by thread T2:\n"
+        "    #0 std::thread::_State_impl::_M_run() /usr/include/c++/16/bits/std_thread.h:76 (lib+0x1)\n\n"
+        f"  Location is global 'query::g_total' of size 8 at 0x1 (/r/{Q}/module.cpp:3)\n\n"
+        "SUMMARY: ThreadSanitizer: data race in std::thread::_State_impl::_M_run()\n")
+    found = sanitizer_findings.classify(tmp_path, Q + "/")
+    assert found["yours_count"] == 1 and found["infra"]["count"] == 0

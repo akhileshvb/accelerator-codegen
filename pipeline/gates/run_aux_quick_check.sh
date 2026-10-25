@@ -9,6 +9,10 @@
 #                         (the substrate's ACCEL_AUX_*THREADS variables) and report sanitizer findings: only reports
 #                         with a frame in the query's own directory fail the check, the rest is counted as infrastructure.
 #                         A host that cannot build the variant (host.sh info embedded=false) reports "not applicable".
+#                         The orchestrator points ACCEL_SUBSET_DATASET_DIR at the tiny test database for these runs.
+#   ACCEL_QUICK_PREBUILD=1   with a sanitizer: only build the differential harness (substrate and harness objects) so the
+#                         agent's first sanitizer check compiles just the query's files; the pipeline runs this in the
+#                         background during analysis.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -74,19 +78,31 @@ fail_step() { # step reproduce-command
     "reproduce=ACCEL_ENGINE_INSTANCE=${ACCEL_ENGINE_INSTANCE} ACCEL_ENGINE_STATE_DIR=${ACCEL_ENGINE_STATE_DIR} ACCEL_BUILD_DIR=${ACCEL_BUILD_DIR} ${SANITIZER:+ACCEL_QUICK_SANITIZER=${SANITIZER} ACCEL_QUICK_THREADS=${THREADS} }$2" "${SAN_EXTRAS[@]}" "${SUITE_EXTRAS[@]}"
 }
 
+if [[ "${ACCEL_QUICK_PREBUILD:-0}" == 1 ]]; then
+  [[ -n "${SANITIZER}" && -n "${DIFF_BINARY}" ]] || emit_result "${JSON}" quick_check skip "nothing to prebuild" ""
+  engine_ready "${DIFF_BINARY}" || fail_step build "${ENGINE_HOST} build ${DIFF_BINARY}"
+  emit_result "${JSON}" quick_check pass "" "${ENGINE_LOG}"
+fi
+
 # The query's other registered ctest tests (the aux smoke test is run directly below).
 PATTERN="^${BENCHMARK_NAME}_q${QUERY}_aux"
 CTEST_TARGETS="$(ctest_targets "${PATTERN}" smoke | tr '\n' ' ')"
 
-TARGETS=("${AUX_TEST_TARGET}")
+# The module's unit smoke runs on the shared test database; a sanitizer run (5-10x slower) uses the tiny one through the
+# differential instead.
+TARGETS=()
+[[ -n "${SANITIZER}" ]] || TARGETS+=("${AUX_TEST_TARGET}")
 [[ ${WITH_DIFF} -eq 1 ]] && TARGETS+=("${DIFF_BINARY}")
+[[ -z "${SANITIZER}" && -n "${AUX_BENCH_TARGET}" ]] && TARGETS+=("${AUX_BENCH_TARGET}")  # read latency, counters, run_profile
 read -r -a EXTRA_TARGETS <<<"${ACCEL_QUICK_TARGETS:-}"
 read -r -a CTEST_TARGET_LIST <<<"${CTEST_TARGETS}"
 engine_ready "${TARGETS[@]}" "${CTEST_TARGET_LIST[@]}" "${EXTRA_TARGETS[@]}" ||
   fail_step build "${ENGINE_HOST} build ${TARGETS[*]} ${CTEST_TARGETS} ${ACCEL_QUICK_TARGETS:-}"
 
-engine_run "${AUX_TEST_TARGET}"
-[[ ${RC} -eq 0 ]] || fail_step smoke "${HOST_RUN} ${AUX_TEST_TARGET}"
+if [[ -z "${SANITIZER}" ]]; then
+  engine_run "${AUX_TEST_TARGET}"
+  [[ ${RC} -eq 0 ]] || fail_step smoke "${HOST_RUN} ${AUX_TEST_TARGET}"
+fi
 if [[ -n "${CTEST_TARGETS// /}" ]]; then
   engine_run ctest --test-dir "${ACCEL_BUILD_DIR}" --no-tests=ignore -j "${ACCEL_CTEST_JOBS:-$(nproc)}" \
     --stop-on-failure -R "${PATTERN}" -E smoke --output-on-failure
@@ -126,4 +142,5 @@ if [[ ${THREAD_LINT_RC} -ne 0 ]]; then
   echo "${THREAD_WARNING}" >&2
 fi
 emit_result "${JSON}" quick_check pass "" "${ENGINE_LOG}${LOG}" "dataset=${ACCEL_DATASET_DIR}" "thread_lint_warning=${THREAD_WARNING}" \
+  "engine_instance=${ACCEL_ENGINE_INSTANCE}" "engine_state_dir=${ACCEL_ENGINE_STATE_DIR}" \
   "${SAN_EXTRAS[@]}" "${SUITE_EXTRAS[@]}"
