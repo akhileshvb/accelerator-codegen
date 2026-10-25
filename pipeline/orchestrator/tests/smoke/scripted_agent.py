@@ -285,16 +285,11 @@ def extend_primitive() -> None:
         raise SystemExit(f"primitive_publish of the extension failed: {json.dumps(result)[:4000]}")
 
 
-def is_repair_turn() -> bool:
-    """The stage was launched before (the launch log has this launch's own line too)."""
-    launches = [json.loads(l) for l in Path(ENV["ACCEL_SMOKE_CALLS"]).read_text().splitlines()]
-    return sum(c.get("stage") == STAGE for c in launches) > 1
-
-
 def report_blocker_on_failing_code() -> None:
-    """Calls its failing code a blocker; the repair turn it resumes in has the code fixed."""
+    """Calls its failing code a blocker (and lingers, as a real agent does until the watchdog ends the turn)."""
     call_tool("quick_check", {})
     call_tool("report_blocker", {"summary": "quick_check fails and I cannot see why", "evidence": "differential failed"})
+    time.sleep(60)
 
 
 def blocker_then_linger() -> None:
@@ -343,8 +338,8 @@ BEHAVIOURS = {
         then=lambda: call_tool("request_gate", {"gate_name": "aux_correctness"}))},
     "dismissed_check": {"implementation": lambda: implementation(rebuild_every_write, dismiss_failed_check)},
     "false_blocker": {"implementation": lambda: implementation(then=blocker_then_linger)},
-    "real_blocker": {"implementation": lambda: implementation(
-        *((None, None) if is_repair_turn() else (rebuild_every_write, report_blocker_on_failing_code)))},
+    "real_blocker": {"implementation": lambda: implementation(rebuild_every_write, report_blocker_on_failing_code),
+                     "crash_debug": implementation},  # the repair turn replaces the broken code with the good one
     "primitive_extension": {"implementation": lambda: implementation(then=extend_primitive)},
     "stalled": {"implementation": stall},
     "no_units_probe": {"analysis": lambda: broken_analysis(drop_units_probes)},
