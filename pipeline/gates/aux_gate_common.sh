@@ -60,7 +60,7 @@ load_aux_gate_context() {
 # unique on the host), its state under the worker's build dir, so parallel runs never collide.
 # Sets ENGINE_HOST; exports the host contract env.
 # ACCEL_GATE_TIER=quick with ACCEL_SUBSET_DATASET_DIR set loads that small dataset into
-# its own instance (<instance>-quick), so the full instance stays loaded and warm.
+# its own instance (<instance>-quick, state in <state dir>/quick), so the full instance stays loaded and warm.
 setup_engine_host() {
 	local root="$1" tier_suffix=""
 	if [[ "${ACCEL_GATE_TIER:-full}" == quick && -n "${ACCEL_SUBSET_DATASET_DIR:-}" ]]; then
@@ -69,7 +69,8 @@ setup_engine_host() {
 		export ACCEL_DATASET_DIR="${DATASET_DIR}"
 	fi
 	ENGINE_HOST="${root}/backends/${ENGINE_NAME}/host.sh"
-	[[ -z "${tier_suffix}" || -z "${ACCEL_ENGINE_STATE_DIR:-}" ]] || ACCEL_ENGINE_STATE_DIR+="${tier_suffix}"
+	# inside the state dir, which the agents' sandbox mounts (a sibling would exist only in one agent session)
+	[[ -z "${tier_suffix}" || -z "${ACCEL_ENGINE_STATE_DIR:-}" ]] || ACCEL_ENGINE_STATE_DIR+="/${tier_suffix#-}"
 	export ACCEL_ENGINE_INSTANCE="${ACCEL_ENGINE_INSTANCE:-${ACCEL_INSTANCE_TAG:-${ACCEL_PIPELINE_WORKER_ID:-w0}}-${ENGINE_NAME}${tier_suffix}}"
 	export ACCEL_BUILD_DIR="${ACCEL_PIPELINE_BUILD_DIR:-${ACCEL_BUILD_DIR:-${root}/build-release}}"
 	export ACCEL_ENGINE_STATE_DIR="${ACCEL_ENGINE_STATE_DIR:-${ACCEL_BUILD_DIR}/engine_state/${ACCEL_ENGINE_INSTANCE}}"
