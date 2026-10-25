@@ -43,8 +43,8 @@ int main() {
   run.costs.push_back({"001.sql", 1, 2, 3, "RebuildAll"});
   run.costs.push_back({"002.sql", 1, 2, -1});
   Expect(run.CostFields().find("\"maint_ms\":3.000000,\"action\":\"RebuildAll\"}") != std::string::npos &&
-             run.CostFields().find("\"action\":\"unknown\"") != std::string::npos,
-         "each write's report carries the maintenance action, unknown when the engine does not tell");
+             run.CostFields().rfind("\"action\"") == run.CostFields().find("\"action\""),
+         "each write's report carries the maintenance action, none when the engine does not tell");
 
   const auto dir = std::filesystem::temp_directory_path() / ("suite_format_" + std::to_string(::getpid()));
   Write(dir / "params.sql", "-- fixed\n'A', 1\n\n  'B', 2\n");

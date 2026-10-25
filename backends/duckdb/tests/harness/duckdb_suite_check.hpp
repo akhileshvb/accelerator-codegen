@@ -98,7 +98,7 @@ public:
       if (rebuilt)
         return std::string("RebuildAll");
       return stats.last_decision ? std::string(maintenance::MaintenanceActionName(stats.last_decision->staged_action))
-                                 : std::string("module");
+                                 : std::string();
     };
     run_ = suite::RunDifferentialLoop(tally_, spec_, query_sql_, ordering_, query_, std::stoi(SuiteEnv("ACCEL_SUITE_EVERY", "10")), seed_,
                                       [&](const std::string &, const std::string &tuple) { return Answer(tuple); }, apply, abort,

@@ -76,7 +76,7 @@ def summary(report_path: str) -> int:
         print(json.dumps({"ran": False, "why": "the engine's differential harness wrote no suite report (it does not consume ACCEL_SUITE_*)"}))
         return 0
     keep = ("ok", "seed", "params", "txns", "checks", "mismatches", "order_mismatches", "write_errors", "reference_errors",
-            "executes", "seconds", "examples", "write_error_examples")
+            "executes", "seconds", "examples", "write_error_examples", "threads", "build_threads", "build_seconds", "phases")
     print(json.dumps({"ran": True, **{k: report[k] for k in keep if k in report},
                       "param_tuples": report.get("param_tuples"), "hash": os.environ.get("ACCEL_SUITE_HASH", "")}))
     return 0

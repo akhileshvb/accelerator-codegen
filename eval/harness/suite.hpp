@@ -500,7 +500,7 @@ inline std::string Project(const std::string &tuple, std::size_t n) {
 struct WriteCost {
   std::string txn;
   double write_ms = 0, read_ms = 0, maint_ms = -1;
-  std::string action = "unknown"; // what the module did for the write (the engine's last_action), when it tells
+  std::string action; // the maintenance action the module took (ApplyDelta, RebuildPartition, RebuildAll, NoOp); empty: not observable
 };
 
 // Seconds of each phase of a harness run, in order (the report's `phases`), printed as they end.
@@ -546,7 +546,8 @@ struct DifferentialRun {
     for (std::size_t i = 0; i < costs.size(); ++i)
       out += (i ? "," : "") + std::string("{\"txn\":") + Json(costs[i].txn) + ",\"write_ms\":" +
              std::to_string(costs[i].write_ms) + ",\"read_ms\":" + std::to_string(costs[i].read_ms) +
-             ",\"maint_ms\":" + std::to_string(costs[i].maint_ms) + ",\"action\":" + Json(costs[i].action) + "}";
+             ",\"maint_ms\":" + std::to_string(costs[i].maint_ms) +
+             (costs[i].action.empty() ? "" : ",\"action\":" + Json(costs[i].action)) + "}";
     out += "],\"probe_costs_ms\":[";
     for (std::size_t i = 0; i < ProbeCostsMs().size(); ++i)
       out += (i ? "," : "") + std::to_string(ProbeCostsMs()[i]);
