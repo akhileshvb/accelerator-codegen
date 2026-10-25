@@ -17,7 +17,7 @@ from accel_pipeline.config import load_model_config, load_pipeline_config, load_
 from accel_pipeline.failure import StageFailure, Failure
 from accel_pipeline.gates.run import GateResult
 from accel_pipeline.repair import StageStopped
-from accel_pipeline.session import SessionStore, run_in_session
+from accel_pipeline.session import run_in_session
 from accel_pipeline.engine_backend import stage as eb
 from accel_pipeline.engine_backend.progress import Progress
 

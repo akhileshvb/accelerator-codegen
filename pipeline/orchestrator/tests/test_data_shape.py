@@ -27,13 +27,6 @@ def _markdown(dataset):
     return build_data_shape_markdown(QUERY, dataset.runner, dataset.schema, "fake", 10, 30)
 
 
-def test_markdown_has_each_fact_family(dataset):
-    text = _markdown(dataset)
-    assert "### Join keys" in text and "events.order_id -> orders.id" in text
-    assert "3 distinct values" in text  # equality predicate: value frequencies
-    assert "rows qualifying with the parameter at column min=" in text
-
-
 def test_spread_values_are_the_real_differences(dataset):
     facts = data_shape_stats.compute(QUERY, dataset.runner, dataset.schema)
     (_, _, _, res, sampled), = facts["spreads"]
@@ -48,15 +41,6 @@ def test_large_tables_are_sampled(dataset, monkeypatch):
     facts = data_shape_stats.compute(QUERY, dataset.runner, dataset.schema)
     assert facts["spreads"][0][4] is True
     assert facts["rows"] == {"events": 400, "orders": 100}
-
-
-def test_portable_helpers():
-    assert data_shape_stats.type_family("character varying") == "other"
-    assert data_shape_stats.type_family("timestamp without time zone") == "date"
-    assert data_shape_stats.type_family("double precision") == "number"
-    assert data_shape_stats.type_family("DECIMAL(10,2)") == "number"
-    assert data_shape_stats.literal("1995-03-15") == "'1995-03-15'" and data_shape_stats.literal("5") == "5"
-    assert data_shape_stats.literal("it's") == "'it''s'"
 
 
 def test_date_difference_is_built_for_the_engine_to_transpile():

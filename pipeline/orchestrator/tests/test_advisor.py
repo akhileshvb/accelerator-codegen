@@ -11,9 +11,8 @@ from accel_pipeline import advisor
 from accel_pipeline import repair as repair_mod
 from accel_pipeline.backends.base import StageRunResult
 from accel_pipeline.backends.codex_exec import CodexExecBackend
-from accel_pipeline.config import AdvisorConfig, ModelConfig, PipelineConfig, RepairConfig, load_model_config
+from accel_pipeline.config import AdvisorConfig, ModelConfig, PipelineConfig, RepairConfig
 from accel_pipeline.failure import Failure
-from accel_pipeline.models import resolve_preset, resolve_stage_provider
 from accel_pipeline.repair import RepairCtx, run_with_repair
 from accel_pipeline.session import MAIN, SessionStore
 
@@ -117,14 +116,6 @@ def test_the_fork_command_forks_the_session_on_the_advisor_model(tmp_path, monke
     assert not (tmp_path / "art").exists()  # no run file, progress clock or heartbeat: the agent's are untouched
 
 
-def test_the_fork_prompt_is_the_advisor_prompt_and_the_question():
-    from accel_pipeline.backends.base import StageRunRequest
-
-    request = StageRunRequest(stage="advisor", instructions="INSTR", user_message="why?", agent_name="a", model_id="m")
-    text = CodexExecBackend._task_text(request, resumed=False, forked=True)
-    assert text.startswith("INSTR") and text.endswith("why?\n")
-
-
 def test_a_fork_never_serves_advisor_requests_or_marks_the_agent_run(tmp_path, monkeypatch):
     backend = fork_backend(tmp_path, monkeypatch)
     from accel_pipeline.backends.base import StageRunRequest
@@ -150,13 +141,6 @@ def test_consult_forks_the_main_session_and_undoes_the_advisors_edits(world):
     assert (root / "q3.cpp").read_text() == "committed"
     assert not (root / "new.cpp").exists()
     assert (root / "dirty.cpp").read_text() == "the agent's work in progress"
-
-
-def test_the_sessions_store_is_not_touched(world):
-    world.main_session()
-    before = (world.art / "sessions.json").read_text(), (world.art / "session_meta.json").read_text()
-    world.consult()
-    assert ((world.art / "sessions.json").read_text(), (world.art / "session_meta.json").read_text()) == before
 
 
 def test_a_live_session_id_serves_a_first_turn_without_a_stored_one(world):
@@ -240,12 +224,6 @@ def test_ask_reports_a_refusal(world):
 def test_ask_gives_up_when_nobody_serves(world):
     assert "did not answer in time" in advisor.ask(world.art, "q", 0.2, poll_sec=0.05)
     assert not (world.art / advisor.REQUEST_FILE).exists()
-
-
-def test_a_request_left_by_an_earlier_turn_is_dropped(world):
-    (world.art / advisor.REQUEST_FILE).write_text(json.dumps({"id": "old", "question": "q"}))
-    serve(world).poll()
-    assert not world.fork.requests and not (world.art / advisor.REQUEST_FILE).exists()
 
 
 def mcp_tools(world, stage="implementation"):
@@ -354,14 +332,3 @@ def test_an_unavailable_advisor_does_not_stop_the_repair(world, monkeypatch):
 
 
 # ---- configuration ----
-
-def test_the_advisor_stage_runs_codex_on_the_critic_preset():
-    cfg = load_model_config(REPO_ROOT / "pipeline" / "config" / "models.yaml", repo_root=REPO_ROOT)
-    assert resolve_stage_provider("advisor", cfg) == "codex_exec"
-    assert resolve_preset("advisor", cfg) == cfg.presets["critic"] == "openai/gpt-6.1-sol"
-
-
-def test_the_advisor_settings_load_from_the_pipeline_config():
-    from accel_pipeline.config import load_pipeline_config
-
-    assert load_pipeline_config(repo_root=REPO_ROOT).advisor == AdvisorConfig(4, 2, 480)

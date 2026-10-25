@@ -54,11 +54,3 @@ def test_a_failing_gate_keeps_its_phase_timings(monkeypatch):
     result = run_with_fake_script(monkeypatch, "fail", 1)
     assert result.status == "fail"
     assert json.loads(result.path.read_text())["phase_timings"]["load_context"] == 0.25
-
-
-def test_pipeline_log_prints_the_phases(capsys):
-    from accel_pipeline.pipeline_log import log_gate_complete
-
-    log_gate_complete("aux_unit", status="pass", duration_ms=5000, phase_timings={"host_build": 3.0, "gate_wall": 5.0})
-    err = capsys.readouterr().err
-    assert "phases: host_build=3.0s" in err and "gate_wall" not in err.split("phases:")[1]

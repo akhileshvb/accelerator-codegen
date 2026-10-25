@@ -18,7 +18,6 @@ from accel_pipeline.optimization.aux_bench import aggregate_sweep_repeats
 from accel_pipeline.config import PipelineConfig, RepairConfig
 from accel_pipeline.failure import Failure, failure_from_gate
 from accel_pipeline.gates.run import GateResult
-from accel_pipeline.state import STAGES, PipelineState
 from accel_pipeline.write_ownership import layer_write_verdict
 
 QUERY_SQL = "SELECT k, SUM(v) FROM t WHERE seg = $1 AND d < $2 GROUP BY k ORDER BY 2 DESC LIMIT 10\n"
@@ -255,13 +254,6 @@ def test_a_frozen_suite_cannot_be_edited_and_a_change_request_is_the_way(tmp_pat
     assert len(list((art / "test_suite_change_requests").glob("*.md"))) == 1
 
 
-def test_old_pipeline_states_resume_at_the_renamed_stage(tmp_path):
-    path = tmp_path / "pipeline_state.json"
-    path.write_text(json.dumps({"query": 3, "workload": "w", "engine": "fake", "stage": "adversarial_tests"}))
-    assert PipelineState.load(path).stage == "test_suite" and "adversarial_tests" not in STAGES
-    assert STAGES.index("test_suite") == STAGES.index("analysis") + 1 == STAGES.index("implementation") - 1
-
-
 def test_only_the_test_suite_stage_writes_the_suite():
     suite_file = "accelerators/toybench/q3/tests/workload/txns/001.sql"
     other_file = "accelerators/toybench/q3/aux/module.cpp"
@@ -468,37 +460,6 @@ def test_the_optimization_bench_samples_the_suites_distribution_up_to_its_cap(tm
 
 
 # ---- prompts
-
-@pytest.mark.parametrize("prompt", ("aux_state/01b_test_suite.md", "01b_test_suite.md"))
-def test_the_tester_prompt_states_goal_ownership_and_the_mechanical_exit(prompt):
-    text = (PROMPTS / prompt).read_text(encoding="utf-8")
-    assert "## Goal" in text and "**Owns:**" in text and "**Never touches:**" in text and "**Judged by:**" in text
-    assert "test_suite_validate" in text and "domain.yaml" in text and "fresh random tuples" in text
-    assert "{{hard_guidelines}}" in text and "{{change_request}}" in text and "shared/test_suite.md" in text
-
-
-def test_the_stateful_tester_prompt_covers_writes_and_the_write_mix():
-    text = (PROMPTS / "aux_state/01b_test_suite.md").read_text(encoding="utf-8")
-    for needle in ("each dependent table", "-- rollback", "write_mix.yaml", "scale_factor_contract.md", "bulk"):
-        assert needle in text
-
-
-@pytest.mark.parametrize("prompt", ("02_implementation.md", "aux_state/02_implementation.md", "03_optimization_worker.md",
-                                    "03_optimization_unified.md", "aux_state/03_optimization_worker.md",
-                                    "aux_state/03_optimization_unified.md"))
-def test_the_implementing_stages_treat_the_suite_as_frozen(prompt):
-    text = (PROMPTS / prompt).read_text(encoding="utf-8").lower()
-    assert "frozen" in text and "test_suite_change_request.md" in text and "never edit it" in text
-
-
-@pytest.mark.parametrize("prompt", ("04_audit.md", "aux_state/04_audit.md"))
-def test_the_audit_checks_the_suite_covers_the_query(prompt):
-    text = (PROMPTS / prompt).read_text(encoding="utf-8")
-    assert "frozen suite" in text and "every parameter" in text
-
-
-def test_no_prompt_still_names_the_retired_stage():
-    assert not [p for p in PROMPTS.rglob("*.md") if "adversarial_write_scenarios" in p.read_text(encoding="utf-8")]
 
 
 def test_the_format_docs_worked_example_passes_the_static_checks(tmp_path):

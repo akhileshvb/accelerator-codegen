@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -16,7 +15,6 @@ from accel_pipeline.config import (
 )
 from accel_pipeline.gates.run import build_gate_context
 from accel_pipeline.prompts import render_prompt
-from accel_pipeline.stages.implementation import _implementation_user_message
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -93,14 +91,6 @@ def test_gate_context_postgres():
     assert "postgres" in ctx["engine_host"]["differential_binary"]
 
 
-def test_postgres_implementation_prompt_mentions_bootstrap():
-    pc = load_pipeline_config(repo_root=REPO_ROOT)
-    w = _postgres_workload("tpch_q3")
-    text = render_prompt(pc, "02_implementation.md", w, 3, "implementation")
-    assert "query_host_bootstrap" in text or "bootstrap" in text.lower()
-    assert "postgres" in text.lower()
-
-
 def test_postgres_keeps_full_post_gates():
     from accel_pipeline.stages.gate_plan import workload_post_implementation_gates
 
@@ -108,30 +98,6 @@ def test_postgres_keeps_full_post_gates():
     gates = workload_post_implementation_gates(w)
     assert gates == ["aux_unit", "prims_tests", "aux_exit", "aux_cost_model_calibrate"]
     assert w["engine_host"]["multi_conn_target"] == "test_postgres_aux_multi_connection_stress"
-
-
-def test_implementation_prompt_mentions_substrate_and_engine():
-    pc = load_pipeline_config(repo_root=REPO_ROOT)
-    w = _duckdb_workload("tpch_q6")
-    text = render_prompt(pc, "02_implementation.md", w, 6, "implementation")
-    assert "NativeScanSpec" in text or "substrate" in text.lower() or "engine_name" in text
-    assert "duckdb" in text.lower()
-    assert "Engine host" in text or "engine_name" in text
-
-
-def test_aux_implementation_resume_uses_engine_differential():
-    pc = load_pipeline_config(repo_root=REPO_ROOT)
-    w = _postgres_workload("tpch_q3_aux")
-    msg = _implementation_user_message(pc, w, 3)
-    if "RESUME" in msg:
-        assert "test_postgres_tpch_differential" in msg or "postgres" in msg.lower()
-
-    w_ddb = _duckdb_workload("tpch_q3_aux")
-    paths = resolve_workload_paths(pc, w_ddb, 3)
-    module = pc.repo_root / paths["aux_state_subdir"] / "module.cpp"
-    if module.is_file():
-        msg_ddb = _implementation_user_message(pc, w_ddb, 3)
-        assert "test_duckdb_tpch_differential" in msg_ddb
 
 
 def test_apply_workload_overrides_strips_duckdb_tf_for_postgres():

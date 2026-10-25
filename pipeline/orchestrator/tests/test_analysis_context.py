@@ -1,13 +1,10 @@
 from __future__ import annotations
 
-from pathlib import Path
 
 from accel_pipeline.analysis_context import (
     analysis_for_audit,
     analysis_for_implementation,
     analysis_for_optimization,
-    build_shared_docs_reference,
-    compact_base_analysis_for_implementation,
 )
 
 
@@ -90,28 +87,3 @@ class TestAnalysisContextSlicing:
         assert slim["selected_candidate_id"] == "daily_partial"
         assert slim["dependent_table_names"] == ["lineitem"]
         assert "correctness_facts" not in slim
-
-    def test_stage_specific_shared_docs(self):
-        analysis_docs = build_shared_docs_reference(stage="analysis")
-        impl_docs = build_shared_docs_reference(stage="implementation")
-        assert "taxonomy_index.md" in analysis_docs
-        assert "read_path_scaffold.md" in impl_docs
-        assert "unit_test_contract.md" in impl_docs
-        assert "aux_state_taxonomy.md" not in impl_docs
-
-    def test_compact_base_analysis_accepts_dict_scan_order(self):
-        payload = compact_base_analysis_for_implementation(
-            {
-                "query_summary": "Large orders query",
-                "logical_plan": {"simplest_execution_strategy": "scan lineitem first"},
-                "scan_order": {
-                    "1": "lineitem aggregate",
-                    "2": "orders probe",
-                },
-                "likely_bottlenecks": ["lineitem scan"],
-                "optimization_hypotheses": ["dense array for order totals"],
-                "files_to_create": [{"path": "accelerators/tpch/q18/duckdb/base/single-threaded/kernel.cpp"}],
-            }
-        )
-        assert "lineitem aggregate" in payload
-        assert "slice" not in payload

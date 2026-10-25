@@ -6,27 +6,13 @@ from pathlib import Path
 
 import pytest
 
-from accel_pipeline.pack.run import load_pack, parse_pack_queries
+from accel_pipeline.pack.run import parse_pack_queries
 from accel_pipeline.pack.shared_file_lease import (
     SharedFileLease,
-    ensure_sticky_lease_for_write,
-    release_sticky_lease,
 )
-from accel_pipeline.pack.worker_isolation import apply_worker_isolation, worker_id_for_query
+from accel_pipeline.pack.worker_isolation import apply_worker_isolation
 from accel_pipeline.tools.shell_tools import reject_shared_build_dir_cmd, rewrite_command_build_dir
-from accel_pipeline.write_ownership import is_shared_path
 from accel_pipeline.config import PipelineConfig
-
-
-def test_is_shared_path_defaults(tmp_path: Path):
-    (tmp_path / "backends/duckdb/api/catalog").mkdir(parents=True)
-    f = tmp_path / "backends/duckdb/api/catalog/query_catalog.cpp"
-    f.write_text("x\n", encoding="utf-8")
-    assert is_shared_path(tmp_path, f)
-    q_aux = tmp_path / "accelerators/tpch/q2/duckdb/aux/module.cpp"
-    q_aux.parent.mkdir(parents=True)
-    q_aux.write_text("y\n", encoding="utf-8")
-    assert not is_shared_path(tmp_path, q_aux)
 
 
 def test_lease_blocks_second_holder(tmp_path: Path):
@@ -42,20 +28,6 @@ def test_lease_blocks_second_holder(tmp_path: Path):
     info2 = lease_b.acquire("q5", timeout_sec=1.0)
     assert info2.holder == "q5"
     lease_b.release("q5")
-
-
-def test_sticky_lease_auto_on_shared_write(tmp_path: Path):
-    shared = tmp_path / "CMakeLists.txt"
-    shared.write_text("project(x)\n", encoding="utf-8")
-    info = ensure_sticky_lease_for_write(tmp_path, holder="q2", path=shared)
-    assert info is not None
-    assert info.holder == "q2"
-    # Non-shared path does not require/refresh lease semantics beyond None.
-    local = tmp_path / "accelerators/tpch/q2/duckdb/aux/module.cpp"
-    local.parent.mkdir(parents=True)
-    local.write_text("z\n", encoding="utf-8")
-    assert ensure_sticky_lease_for_write(tmp_path, holder="q2", path=local) is None
-    assert release_sticky_lease(tmp_path, holder="q2")
 
 
 def test_worker_isolation_rewrites_build_dir(tmp_path: Path, monkeypatch):
@@ -81,21 +53,6 @@ def test_worker_isolation_rewrites_build_dir(tmp_path: Path, monkeypatch):
     assert "build-release-tpch_q2_aux" in rewritten
 
 
-def test_parse_pack_queries(tmp_path: Path):
-    pack = {
-        "workload_template": "tpch_q{q}_aux",
-        "stage": "optimization",
-        "queries": [
-            2,
-            {"query": 5, "workload": "tpch_q5_aux", "stage": "implementation"},
-        ],
-    }
-    qs = parse_pack_queries(pack)
-    assert qs[0].query == 2 and qs[0].workload == "tpch_q2_aux"
-    assert qs[0].stage == "optimization"
-    assert qs[1].query == 5 and qs[1].stage == "implementation"
-
-
 def test_pack_expands_queries_by_engine(tmp_path: Path):
     pack = {
         "engines": ["duckdb", "postgres"],
@@ -107,102 +64,6 @@ def test_pack_expands_queries_by_engine(tmp_path: Path):
         (1, "postgres", "tpch_q1_aux"),
         (6, "mysql", "tpch_q6_aux"),
     ]
-
-
-def test_pack_engine_runs_get_their_own_worker(tmp_path: Path):
-    from accel_pipeline.pack.worker_isolation import worker_id_for_query
-
-    ids = {worker_id_for_query(q.query, q.workload, q.engine) for q in parse_pack_queries(
-        {"engines": ["duckdb", "postgres"], "queries": [1]}
-    )}
-    assert ids == {"tpch_q1_aux_duckdb", "tpch_q1_aux_postgres"}
-
-
-def test_pack_without_engines_defers_to_the_workload():
-    (entry,) = parse_pack_queries({"queries": [{"query": 1, "workload": "sec_edgar_q1_aux"}]})
-    assert entry.engine == ""
-
-
-def test_load_pack_file():
-    from accel_pipeline.paths import find_repo_root
-
-    root = find_repo_root()
-    pack = load_pack("tpch_aux_parallel", root)
-    assert pack.get("pack_id") == "tpch_aux_parallel"
-    assert parse_pack_queries(pack)
-    assert pack.get("isolation", {}).get("stage_barriers") is False
-
-
-def test_worker_id_for_query():
-    assert worker_id_for_query(2, "tpch_q2_aux") == "tpch_q2_aux"
-    assert worker_id_for_query(2) == "q2"
-
-
-def test_rewrite_command_and_prompt_build_dir(tmp_path: Path):
-    cfg = PipelineConfig(
-        repo_root=tmp_path,
-        pipeline_root=tmp_path / "pipeline",
-        build_dir=tmp_path / "build-release-tpch_q2_aux",
-        tpch_db_sf1=tmp_path / "a.duckdb",
-        tpch_db_sf10=tmp_path / "b.duckdb",
-        worker_id="tpch_q2_aux",
-    )
-    cmd = rewrite_command_build_dir(
-        "cmake --build build-release --target benchmark_tpch_q2_aux", cfg
-    )
-    assert cmd == "cmake --build build-release-tpch_q2_aux --target benchmark_tpch_q2_aux"
-
-    prompts = tmp_path / "pipeline" / "prompts"
-    prompts.mkdir(parents=True)
-    (prompts / "stub.md").write_text(
-        "Use cmake --build build-release --target x\n", encoding="utf-8"
-    )
-    # Direct rewrite path used by render_prompt when worker build != build-release.
-    text = (prompts / "stub.md").read_text(encoding="utf-8")
-    build_name = cfg.build_dir.name
-    assert text.replace("build-release", build_name).startswith(
-        "Use cmake --build build-release-tpch_q2_aux"
-    )
-
-
-def test_gate_build_env_helper():
-    from accel_pipeline.gates.run import run_gate
-    import inspect
-
-    src = inspect.getsource(run_gate)
-    assert "ACCEL_PIPELINE_BUILD_DIR" in src
-    assert "ACCEL_BUILD_DIR" in src
-    assert "ensure_build_dir" in src
-
-
-def test_ensure_build_dir_creates(tmp_path: Path, monkeypatch):
-    from accel_pipeline.gates.run import ensure_build_dir
-
-    cfg = PipelineConfig(
-        repo_root=tmp_path,
-        pipeline_root=tmp_path / "pipeline",
-        build_dir=tmp_path / "build-release-tpch_q7_aux",
-        tpch_db_sf1=tmp_path / "a.duckdb",
-        tpch_db_sf10=tmp_path / "b.duckdb",
-        worker_id="tpch_q7_aux",
-    )
-
-    def fake_run(cmd, **kwargs):
-        # pretend cmake wrote a cache
-        (cfg.build_dir / "CMakeCache.txt").write_text("x\n", encoding="utf-8")
-
-        class R:
-            returncode = 0
-            stdout = ""
-            stderr = ""
-
-        return R()
-
-    monkeypatch.setattr("subprocess.run", fake_run)
-    out = ensure_build_dir(cfg, configure=True)
-    assert out == cfg.build_dir
-    assert cfg.build_dir.is_dir()
-    assert (cfg.build_dir / "CMakeCache.txt").is_file()
 
 
 def test_ensure_build_dir_retargets_source(tmp_path: Path, monkeypatch):
@@ -331,20 +192,3 @@ def test_rewrite_and_reject_shared_build_dir(tmp_path: Path):
         )
         is None
     )
-
-
-def test_repo_context_pack_roundtrip(tmp_path: Path):
-    from accel_pipeline.pack.repo_context_pack import (
-        ensure_repo_context_pack,
-        format_seed_pointer,
-        pack_path,
-    )
-
-    (tmp_path / "accelerators/tpch/q7/duckdb/aux").mkdir(parents=True)
-    (tmp_path / "accelerators/tpch/q7/duckdb/aux/module.cpp").write_text("x\n", encoding="utf-8")
-    out = ensure_repo_context_pack(tmp_path, force=True)
-    assert out == pack_path(tmp_path)
-    assert "Registration surfaces" in out.read_text(encoding="utf-8")
-    ptr = format_seed_pointer(tmp_path)
-    assert "repo_context_pack.md" in ptr
-

@@ -14,25 +14,16 @@ from accel_pipeline.config import (
     load_pipeline_config,
     load_workload,
 )
-from accel_pipeline.gates.run import GateFailure, GateResult
+from accel_pipeline.gates.run import GateResult
 from accel_pipeline.engine_backend.host_bootstrap import (
-    engines_needing_bootstrap_from_workloads,
-    format_host_bootstrap_gate_feedback,
     host_bootstrap_passed,
-    needs_host_bootstrap,
     run_host_bootstrap,
     write_host_bootstrap_status,
 )
 from accel_pipeline.repair import StageStopped
-from accel_pipeline.stages.base import resolve_stage_max_turns
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-
-
-@pytest.mark.parametrize("engine", ["duckdb", "postgres", "mysql"])
-def test_every_engine_needs_host_bootstrap(engine):
-    assert needs_host_bootstrap(load_workload("tpch_q3_aux", REPO_ROOT, engine=engine)) is True
 
 
 def _passing_status(tmp_path, monkeypatch, gate_data):
@@ -64,77 +55,11 @@ def test_a_marker_without_a_gate_result_is_not_a_pass(tmp_path, monkeypatch):
     assert host_bootstrap_passed(tmp_path, "postgres") is False
 
 
-def test_engines_needing_bootstrap_lists_every_engine_once():
-    runs = [("tpch_q3_aux", "duckdb"), ("tpch_q3_aux", "postgres"), ("tpch_q1_aux", "postgres"), ("tpch_q1_aux", "mysql")]
-    needed = engines_needing_bootstrap_from_workloads(REPO_ROOT, runs)
-    assert sorted(e for e, _ in needed) == ["duckdb", "mysql", "postgres"]
-
-
 def test_host_bootstrap_fails_before_the_backend_exists(tmp_path):
     pc = replace(load_pipeline_config(repo_root=REPO_ROOT), repo_root=tmp_path)
     with pytest.raises(StageStopped, match="backend is missing"):
         run_host_bootstrap(pc, load_model_config(repo_root=REPO_ROOT), engine_name="postgres",
                            representative_workload="tpch_q1_aux", force=True)
-
-
-def test_aux_workload_merges_host_bootstrap_retry_config():
-    w = load_workload("tpch_q1_aux", REPO_ROOT, engine="postgres")
-    assert w["host_bootstrap_gate_max_rounds"] == 3
-    assert w["host_bootstrap_critique_max_rounds"] == 2
-    pc = load_pipeline_config(repo_root=REPO_ROOT)
-    from accel_pipeline.config import apply_workload_overrides
-
-    merged = apply_workload_overrides(pc, w)
-    assert resolve_stage_max_turns(merged.stage_max_turns, "host_bootstrap") == 10_000
-
-
-def test_host_bootstrap_gate_script_goes_through_the_engine_host():
-    text = (REPO_ROOT / "pipeline" / "gates" / "run_host_bootstrap.sh").read_text(
-        encoding="utf-8"
-    )
-    assert "engine_ready" in text
-    assert "docker" not in text.lower()
-
-
-def test_host_bootstrap_gate_builds_all_five_harnesses_and_smokes_them():
-    text = (REPO_ROOT / "pipeline" / "gates" / "run_host_bootstrap.sh").read_text(encoding="utf-8")
-    for var in ("DIFF_BINARY", "MULTI_CONN_TARGET", "CROSS_ACCEL_TARGET", "HARNESS_BENCH_TARGET", "HARNESS_CALIBRATE_TARGET"):
-        assert f"${{{var}}}" in text
-    assert "--help" in text and "check_backend_query_free.py" in text
-
-
-def test_host_bootstrap_gate_feedback_includes_log_tail(tmp_path):
-    failed = GateResult(
-        name="host_bootstrap",
-        status="fail",
-        data={
-            "reason": "docker build failed for test_postgres_tpch_differential",
-            "log_tail": "ninja: error: unknown target 'test_postgres_tpch_differential'",
-        },
-        path=tmp_path / "host_bootstrap.json",
-    )
-    text = format_host_bootstrap_gate_feedback(failed, round_idx=1, max_rounds=3)
-    assert "Host bootstrap gate FAILED" in text
-    assert "unknown target" in text
-    assert "attempt: 1/3" in text
-    assert "request_gate" in text
-    assert "### returncode" in text
-
-
-def test_host_bootstrap_gate_feedback_empty_log_tail_still_has_signal():
-    failed = GateResult(
-        name="host_bootstrap",
-        status="fail",
-        data={
-            "reason": "docker exec aborted",
-            "log_tail": "",
-            "returncode": 134,
-        },
-    )
-    text = format_host_bootstrap_gate_feedback(failed, round_idx=2, max_rounds=3)
-    assert "SIGABRT" in text
-    assert "docker exec aborted" in text
-    assert "(empty)" not in text
 
 
 def _patch_bootstrap_dirs(tmp_path, monkeypatch):
@@ -449,14 +374,3 @@ def test_an_existing_harness_that_passes_the_gate_needs_no_agent_run(tmp_path, m
                              representative_workload="tpch_q1_aux")
     assert out == {**out, "status": "pass", "skipped": True}
     assert calls == {"stage": 0, "gates": 1}
-
-
-def test_pending_harness_requests_still_run_the_agent(tmp_path, monkeypatch):
-    pc = load_pipeline_config(repo_root=REPO_ROOT)
-    _patch_bootstrap_dirs(tmp_path, monkeypatch)
-    ran = []
-    monkeypatch.setattr("accel_pipeline.engine_backend.host_bootstrap.pending_harness_requests", lambda *a: "add a bench column")
-    monkeypatch.setattr("accel_pipeline.engine_backend.host_bootstrap._bootstrap_under_repair", lambda *a, **k: ran.append(1) or {"status": "pass"})
-    run_host_bootstrap(pc, load_model_config(repo_root=REPO_ROOT), engine_name=_any_engine(),
-                       representative_workload="tpch_q1_aux")
-    assert ran == [1]

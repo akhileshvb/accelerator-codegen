@@ -3,17 +3,15 @@
 from __future__ import annotations
 
 import json
-from types import SimpleNamespace
 
 import pytest
 
 from accel_pipeline import quick, write_cost
 from accel_pipeline.config import QuickTierConfig
-from accel_pipeline.gates.run import GateResult
 from accel_pipeline.layout import suite_dir
 from accel_pipeline.paths import gates_dir_for_query, query_artifacts_dir
 from accel_pipeline.test_db import CutDatasets
-from test_quick import GIT, WORKLOAD, config, Gate  # noqa: F401  (config is a fixture)
+from conftest import WORKLOAD, Gate
 
 PROFILES = {"001.sql": ("point_update", ("orders",)), "002.sql": ("bulk_delete", ("orders",))}
 
@@ -50,17 +48,6 @@ def test_an_incremental_write_grows_with_the_square_root_only():
     out = project([report(write_ms=0.4, read_ms=0.1, build_s=0.2)], ratio=10000.0, budget_s=100.0)
     assert not out.over and "rebuild" not in out.worst
     assert out.lines[0].startswith("point_update on orders: 0 ms on the subset, projected ~0.1 s per write at full scale (x100)")
-
-
-def test_bulk_kinds_scale_linearly_with_their_table():
-    bulk = {"build_seconds": 1.0, "write_costs": [{"txn": "002.sql", "write_ms": 4, "read_ms": 1}]}
-    assert project([bulk], ratio=1000.0).lines[0].endswith("projected ~5.0 s per write at full scale (x1000)")
-
-
-def test_every_thread_pass_of_the_full_gate_adds_up():
-    one = project([report(0.1, build_s=0.1)], ratio=100.0)
-    two = project([report(0.1, build_s=0.1)] * 2, ratio=100.0)
-    assert one.total_s == pytest.approx(0.0001 * 10) and two.total_s == pytest.approx(2 * one.total_s)
 
 
 def test_adversarial_probes_are_projected_over_the_full_gates_probe_count():

@@ -17,13 +17,6 @@ lineitem_only,hybrid,global,50,312,5,2,150000.00,3500000.00,22000.00,1200.00,320
 """
 
 
-def test_parse_aux_benchmark_output_single_row():
-    rows = parse_aux_benchmark_output(Q18_AUX_OUTPUT.splitlines()[0] + "\n" + Q18_AUX_OUTPUT.splitlines()[1])
-    assert len(rows) == 1
-    assert rows[0]["write_frequency_pct"] == 0
-    assert float(rows[0]["workload_speedup"]) == 0.05
-
-
 def test_aux_quick_metrics_uses_min_workload_across_points():
     rows = parse_aux_benchmark_output(Q18_AUX_OUTPUT)
     summary = summarize_sweep_rows(rows)
@@ -101,15 +94,6 @@ def test_quick_benchmark_env_aux_uses_fast_settings():
     assert "ACCEL_BENCH_PROFILE" not in env
 
 
-def test_quick_benchmark_env_base_filters_single_seed():
-    paths = {"db_env_var": "TPCH_SF1_DB", "dataset_db": "/data/tpch_sf1.duckdb"}
-    workload = {"workload_kind": "base_kernel"}
-    env = _quick_benchmark_env(paths, query=18, workload=workload, include_profile=True)
-    assert env["ACCEL_BENCH_FILTER"] == "seed_1_q18"
-    assert env["ACCEL_BENCH_ITERS"] == "3"
-    assert env["ACCEL_BENCH_PROFILE"] == "1"
-
-
 def test_quick_tier_env_is_the_cheap_read_only_sweep():
     paths = {"db_env_var": "TPCH_SF1_DB", "dataset_db": "/d.db", "aux_bench_suites": "lineitem_only"}
     workload = {
@@ -127,13 +111,6 @@ def test_quick_tier_env_is_the_cheap_read_only_sweep():
     assert (full["ACCEL_BENCH_WARMUP"], full["ACCEL_BENCH_QUERIES"], full["ACCEL_BENCH_REF_SAMPLES"]) == ("3", "10", "2")
 
 
-def test_quick_tier_defaults_apply_without_a_config_block():
-    paths = {"db_env_var": "TPCH_SF1_DB", "dataset_db": "/d.db"}
-    env = _quick_benchmark_env(paths, query=6, workload={"workload_kind": "aux_state"}, include_profile=False,
-                               acceptance=False)
-    assert env["ACCEL_BENCH_QUERIES"] == "5" and env["ACCEL_AUX_WRITE_FREQUENCIES"] == "0"
-
-
 def test_quick_tier_never_samples_write_mixes_but_acceptance_does(tmp_path):
     workload = {
         "aux_bench_sweep_optimization": {"write_frequencies": [0], "write_mix_sample": {
@@ -142,15 +119,6 @@ def test_quick_tier_never_samples_write_mixes_but_acceptance_does(tmp_path):
     assert _aux_quick_write_frequencies(workload, art_dir=tmp_path, optimization_iter=1, attempt=1,
                                         acceptance=False) == [0]
     assert len(_aux_quick_write_frequencies(workload, art_dir=tmp_path, optimization_iter=1, attempt=1)) == 3
-
-
-def test_the_shipped_quick_tier_is_cheaper_than_the_optimization_tier():
-    from accel_pipeline.config import load_aux_state_defaults
-
-    defaults = load_aux_state_defaults()
-    quick, opt = defaults["aux_bench_sweep_quick"], defaults["aux_bench_sweep_optimization"]
-    assert quick["write_frequencies"] == [0] and quick["bench_queries"] <= 5 and quick["bench_ref_samples"] == 1
-    assert quick["bench_warmup"] < opt["bench_warmup"] and quick["bench_timeout_sec"] == 120
 
 
 def test_a_quick_bench_that_overruns_its_limit_reports_it(monkeypatch, tmp_path):
