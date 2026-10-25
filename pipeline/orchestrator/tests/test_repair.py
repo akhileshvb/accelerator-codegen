@@ -276,7 +276,7 @@ def _stage_world(tmp_path, monkeypatch, mode="ok"):
         "apply_workload_overrides": lambda cfg, workload: cfg,
         "render_prompt": lambda *a, **k: "INSTRUCTIONS",
         "save_rendered_prompt": lambda *a, **k: None,
-        "with_codex_tooling": lambda cfg, prompt: prompt,
+        "with_codex_tooling": lambda cfg, prompt, **_: prompt,
         "make_model_id": lambda *a, **k: "m",
         "create_agent_backend": lambda **k: backend,
         "begin_agent_run": lambda *a, **k: None,

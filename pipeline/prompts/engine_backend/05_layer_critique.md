@@ -10,7 +10,6 @@ only `pipeline/artifacts/**`. **The stage is not done until the JSON is on
 disk.** After the reads below, write the two files (heredoc `cat > …`) and
 **stop**. Do not explore later-layer sources.
 
-{{codex_tooling}}
 
 ## This layer
 

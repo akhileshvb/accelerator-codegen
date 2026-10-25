@@ -5,7 +5,6 @@ Implementation already shipped sequential layer harnesses. Your job is to
 **attack** that backend's slots with **new** tests it has not seen, then fix any
 real bugs until those tests pass.
 
-{{codex_tooling}}
 
 {{engine_host_discovery}}
 

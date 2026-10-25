@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -443,15 +444,11 @@ class TestPromptRendering:
         assert "accelerators/tpch/q14/duckdb/aux" not in lowered
         assert "mirroring q14" not in lowered
         assert "reference implementation" not in lowered
-        assert "{{aux_state_fitness}}" not in prompt
-        assert "fitness" in lowered
-        assert "hints only" in lowered
-        assert "read on demand" in lowered or "read_file" in lowered
-        assert "base-path cost decomposition" in lowered or "cost decomposition" in lowered
-        assert "state candidate search" in lowered or "materially different" in lowered
-        assert "revision evidence" in lowered
-        assert "taxonomy_index" in lowered
-        assert "{{analysis_revision_request}}" not in prompt
+        assert not re.search(r"\{\{\w+\}\}", prompt), "unresolved placeholder"
+        for field in ("fitness_assessment", "base_path_cost_decomposition", "units_probe", "measured_units",
+                      "read_work_ratio", "state_storage", "scale_plan", "mutation_coverage", "files_to_create",
+                      "validate_analysis", "update_analysis"):
+            assert field in prompt, field
         revision_prompt = render_prompt(
             pipeline_config,
             "01_analysis.md",
@@ -463,8 +460,8 @@ class TestPromptRendering:
         assert "Bottleneck: scan_for_scan at 50% writes" in revision_prompt
         assert "revision" in revision_prompt.lower()
         impl = render_prompt(pipeline_config, "02_implementation.md", workload, 14, "implementation")
-        assert "implementation contract" in impl.lower()
-        assert "full analysis" in impl.lower()
+        assert not re.search(r"\{\{\w+\}\}", impl), "unresolved placeholder"
+        assert "## Design contract" in impl and "```json" in impl
         opt = render_prompt(
             pipeline_config, "03_optimization_unified.md", workload, 14, "optimization_unified", optimization_iter=1
         )

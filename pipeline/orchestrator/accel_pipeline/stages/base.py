@@ -141,7 +141,8 @@ def run_agent_stage(
         optimization_iter=optimization_iter,
     )
     max_turns = resolve_stage_max_turns(pipeline_config.stage_max_turns, stage)
-    instructions = with_codex_tooling(pipeline_config, prompt)
+    instructions = with_codex_tooling(pipeline_config, prompt,
+                                      engine_backend=workload.get("workload_kind") == "engine_backend")
 
     begin_agent_run(stage, max_turns=max_turns, prompt_chars=len(instructions))
 

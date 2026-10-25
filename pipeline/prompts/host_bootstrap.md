@@ -6,7 +6,6 @@ You are building the **workload harnesses** of **`{{engine_name}}`**: the query-
 
 {{hard_guidelines}}
 
-{{codex_tooling}}
 
 {{engine_host_discovery}}
 

@@ -72,9 +72,6 @@ CANDIDATE_ALTERNATE_VIABLE_FIELDS = (
     "state_grain",
     "physical_organization",
     "composition_rule",
-    "operators_eliminated",
-    "read_path_bottleneck_risk",
-    "best_regime",
 )
 
 CANDIDATE_REJECTED_FIELDS = (

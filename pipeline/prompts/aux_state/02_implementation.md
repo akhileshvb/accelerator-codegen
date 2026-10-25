@@ -1,76 +1,59 @@
-# Stage 2: Aux-state implementation (stateful module)
+# Stage 2: implement the aux-state accelerator for **{{display_name}}** **Q{{query_number}}**
 
-Implement the aux-state accelerator for **{{display_name}}** **Q{{query_number}}**.
+Build the design in the analysis below as a correct, fast, parallel, thread-safe module with copy-on-write state, sized for SF3000.
 
-## Goal
+## The first version is the analysed design, all of it
 
-**A correct stateful module with fast reads and cheap maintenance from copy-on-write state, at SF3000.**
+- **State:** each component lives in the primitive its `state_storage` entry names. Reuse catalogued primitives (`primitives_used`); publish each proposed one with `primitive_publish` before using it (generic, tested, additions only; `cow_primitives.md`). No private COW containers, no deep copy of state per commit.
+- **Reads:** follow `composition_rule`, apply the same predicates as the SQL fallback, and answer every value of every parameter exactly (NULL included). Call `RecordPartitionsRead(units, bytes)` once per read with what it visited.
+- **Writes:** every write gets the action `mutation_coverage` gives it. A `supported_delta` write is a touched-path COW update whose cost follows the touched rows. A rebuild or resync for it is a defect, not a first draft, even when the subset checks pass: at full scale it makes every write a full scan. Rebuilds exist only where the analysis lists them or the cost model (`ChooseMaintenance`, honest `MaintenanceRequest`) picks one for a refresh-sized batch. A write that duplicates a key the query joins or groups on gets the exact answer (handled, or SQL fallback while keys are not unique).
+- **Parallel and thread-safe:** build through `core::PartitionedBuild` and the scan role's partitioned scan; data-proportional work in `Execute`, build and maintenance splits with `ParallelReduce` / `ParallelEach`, with identical results at any thread count including 1. Thread caps come only from the substrate's thread budget (`ACCEL_AUX_THREADS`, and `ACCEL_AUX_READ_THREADS` / `_BUILD_THREADS` / `_MAINT_THREADS` per phase); never a hard-coded or hardware-derived count. Maintenance does its engine lookups first, serially. A serial build or refresh is a defect.
+- **Scale:** containers sized from table statistics / `DataScaleRows()`, 64-bit keys, offsets and counts (narrow only with a checked cast), sums in 128 bits, exact decimals (`scale_factor_contract.md`).
+- **Low level:** SIMD inner loops with a scalar fallback, cache-conscious layout, branch-free predicates, prefetch, no per-row allocation (`low_level_execution.md`). Target: reads at least 20x faster than the engine's own SQL for the same binding.
+- If part of the plan cannot be built, keep the rest and call `request_structural_reanalysis` with the evidence (`ask_advisor` first). Never substitute a simpler design silently.
 
-1. **Correct first.** `correctness_facts` in the analysis is the semantic contract; the gates must pass. Do not trade correctness, concurrency safety or maintenance semantics for speed.
-1. **Build the analysed design, all of it, from the first version.** Each state component lives in the primitive its `state_storage` entry names, the read path follows `composition_rule`, and every write gets the action `mutation_coverage` gives it. A `supported_delta` write is maintained incrementally (a touched-path COW update whose cost follows the touched rows): a rebuild or resync for it is a defect, not a first draft, even when every subset check passes, because at full scale it turns each write into a full scan. Rebuilds exist only where the analysis lists them or the cost model picks one for a refresh-sized batch. If part of the plan cannot be built, keep the rest and call `request_structural_reanalysis` with the evidence; never substitute a simpler design silently.
-2. **Low-level execution** on the read, build and maintain paths: SIMD inner loops (AVX-512/AVX2 with a scalar fallback), cache-conscious layouts, branch-free predicates, prefetch, no per-row allocation, fused passes. Guide: `pipeline/prompts/shared/low_level_execution.md`.
-3. **State from the COW primitive library.** Reuse a catalogued primitive when it fits (`primitives_used` in the analysis). Otherwise design a bespoke, generic COW primitive for this query template's access pattern (`primitives_proposed`) and publish it with `primitive_publish` **before using it** (additions only, generic, tested). Never hand-roll a private COW container in the module; never deep-copy state per commit. Maintenance cost is proportional to touched data. Guide: `pipeline/prompts/aux_state/shared/cow_primitives.md`.
-4. **Aggressive read target: at least 20x faster than the engine's own SQL for the same binding**. Measure it yourself with your own micro-benchmark from the start; below 20x, optimization keeps pushing (structural redesign or low-level work) and cannot stop.
-4. **The read path reports the state it visits.** Call `RecordPartitionsRead(units, bytes)` (`accelerator_codegen::aux_state::core`) once per read with the entries/nodes/partitions touched and the bytes read: cheap, compiled in. `run_profile` shows it next to the analysis's `read_work_ratio`, so "the read visits too much state" is measured, not guessed.
+## Work like this
 
-**Owns:** the query's module, finalize, layout, tests, benchmark, calibrator, cost-model config and its registrations. **Never touches:** `backends/`, `substrate/`, `cmake/`, other queries, `accelerators/prims/` except through `primitive_publish` (`agent_boundary.md`). **Judged by:** `aux_correctness` and `aux_multi_connection` (you pre-verify both), then the orchestrator's `aux_unit`, `prims_tests`, `aux_cost_model_calibrate`, `aux_cross_accel`, `aux_tsan`, `aux_bench_sweep`.
+1. **Write a small engine-free oracle test first** (`accelerators/{{benchmark_name}}/q{{query_number}}/tests/agent_oracle.cpp`): random rows and random commits (inserts, deletes, updates, key moves, duplicates) applied to your state and to a brute-force answer, compared after each commit. It runs in seconds and catches maintenance bugs long before a gate.
+2. **`quick_check` after every edit** (pass the oracle as a target). It runs the module's tests and the whole frozen suite on the small subset at N and 1 threads, and reports each write's maintenance action and projected full-scale cost, build time and thread speedup, and read time against the engine's SQL. Fix what it reports first: a rebuild where the analysis is incremental, a build that does not scale, a slow read.
+3. **`quick_check(sanitizer="thread", threads=N)`** after touching concurrent code: seconds, on a tiny database.
+4. **`run_profile`** when a number is off: a short perf profile of the read and write paths with the top hot spots.
+5. **Heavy checks run once, at stage exit, started by the orchestrator:** the full-size differential, stress, TSAN and benchmark. Do not run full-size binaries from the shell. One early `request_gate(<gate>, background=True)` after a green `quick_check` is fine; read it once with `gate_status`.
+6. **Stuck on one failure for ~10 minutes,** or about to call part of the plan unbuildable: `ask_advisor`.
 
-The test suite (`tests/workload/`, written by the tester and frozen) is the acceptance: run it with `quick_check`, never edit it; a test you can show is wrong goes into `{{artifacts_path}}/test_suite_change_request.md` (the test, the evidence, what is right) and the tester decides.
+The frozen test suite (`tests/workload/`) is the acceptance. Never edit it; a test you can show is wrong goes to `{{artifacts_path}}/test_suite_change_request.md` (the test, the evidence, what is right).
+
+**You own** the query's module, finalize, layout, tests, benchmark, calibrator, cost-model config and registrations. **Not yours:** `pipeline/`, `substrate/`, `backends/`, `cmake/`, other queries, and `accelerators/prims/` except through `primitive_publish` (`agent_boundary.md`). Edits there are reverted; if blocked on one, `report_blocker`.
 
 {{hard_guidelines}}
 
-Pipeline files (`pipeline/`, `substrate/`, `backends/` gates and prompts, `cmake/`) are not yours: edits there are reverted and warned about in tool footers; if the task is blocked on one, call `report_blocker`.
-
-**Stuck?** Call `ask_advisor(question)` when you have been on one failure for more than ~10 minutes, or before you declare that part of the analysed plan cannot be built or a failed check "only the budget remains". A stronger model reads this whole conversation and the files and returns a diagnosis with next steps; a few consults per stage, so say what you tried.
-
-{{codex_tooling}}
-
 {{fast_loop}}
 
-## Implementation contract
+## Design contract
 
 ```json
 {{implementation_context_json}}
 ```
 
-Full analysis: `{{full_analysis_path}}` · Workload SQL: `{{reference_sql_path}}`
+Full analysis: `{{full_analysis_path}}` (re-read the part you are implementing) · Workload SQL: `{{reference_sql_path}}`
 
 {{implementation_bootstrap}}
 
-## Build the module
+## Wiring
 
-- Implement `files_to_create`; the selected candidate is `correctness_facts.state_design.selected_candidate_id`. Every field, mutation rule and read-path behavior matches `correctness_facts`; re-read the analysis and reference modules instead of guessing.
-- Implement the **whole** surface: state layout, encode/decode/finalize, maintenance, read path, tests, benchmark, calibrator wrapper. A fast but incomplete or wrong module fails.
-- The frozen suite's `suite.yaml` sets the point-write and bulk minimums: the catalog `probe_select`/`build_probe` supports multiple invalidating point writes, bulk coverage matches `bulk_writes`, and each `scale_scenarios` entry runs in the shared differential gate.
-- **Register everywhere.** Wire the query into every registration, allowlist, SQL-helper and CMake surface that neighboring aux queries use for host **`{{engine_name}}`**: search how a peer is registered (`registration_checklist.md`). Missing participation shows up as `unsupported shared query` or a missing SQL entrypoint. The pipeline has already scaffolded the query's registration (a module that declines every call, answered by the fallback SQL; the test suite was validated through it): replace that file's registration with the real one in place (same path), keeping the accelerator id and table function.
-- **Parallel and scale-safe by construction** (`substrate_primitives.md`, `engine_interfaces.md`, `scale_factor_contract.md`; implement the analysis's `scale_plan`). `Build` runs through `core::PartitionedBuild` and the **scan** role's partitioned scan. Data-proportional work in `Execute`, build and maintenance splits with `ParallelReduce` / `ParallelEach`, with the same result at any cap including 1. Thread caps come only from the substrate's thread budget (`substrate/aux/runtime/thread_budget.hpp`): `ACCEL_AUX_THREADS` for every phase, `ACCEL_AUX_READ_THREADS` / `ACCEL_AUX_BUILD_THREADS` / `ACCEL_AUX_MAINT_THREADS` per phase, never a hard-coded or hardware-derived count; the gates check correctness at 1 and N threads and the bench reports the N-thread speedup (a read the analysis showed output-bound stays one slice); maintenance does its engine lookups first, serially. Size containers from table statistics / `DataScaleRows()`, accumulate and emit sums in 128 bits, keep keys, offsets and counts 64-bit (narrow only with a checked cast). Fill `MaintenanceRequest` honestly and go through `ChooseMaintenance`; the cost-model JSON (`{{cost_model_config}}`, calibrated by the gate) records `calibrated_scale_rows`, and `CalibrationWrites()` includes refresh-shaped writes (bulk, keys spread). Populate `interference_us` in `StageMaintenance` from `CostModelParams.interference_*`.
-- Rebuild actions resync state for later hits (never invalidate-only). Irrelevant mutations are NoOp; reads are bounded to the window; reader epoch pin and execution gate follow `read_path_scaffold.md`, `concurrency_contract.md`.
-- Read the bootstrap reference paths once, then write. Do not re-explore the repo for layout.
+- **Register everywhere** a peer aux query is registered for host `{{engine_name}}` (`registration_checklist.md`): replace the scaffolded declining registration in place, keeping the accelerator id and table function.
+- **Benchmark** `benchmark_q{{query_number}}_aux.cpp`: the write-frequency sweep per `bench_sweep_contract.md`, from a peer's, with the shared sweep and invalidating-probe helpers.
+- **Calibrator** `calibrate_q{{query_number}}_aux_cost_model.cpp`: the thin wrapper over the shared calibration helper; `accelerators/{{benchmark_name}}/q{{query_number}}/cost_model.hpp` names the config directory (`{{cost_model_config}}`). Populate `interference_us` in `StageMaintenance` from `CostModelParams.interference_*`.
+- The module unit test is shared (`unit_test_contract.md`): no per-query unit test; the catalog probe and arguments follow the reference SQL predicate contract above.
+- Build harnesses with `backends/{{engine_name}}/host.sh` (`build`, `sql`, `run`; `query_host_bootstrap.md` when a harness lacks this query).
 
 {{backend_api}}
 {{accelerator_engine_profile}}
 {{engine_host_discovery}}
 
-## Benchmark, calibrator, tests
+## Done when
 
-- `benchmark_q{{query_number}}_aux.cpp`: the full write-frequency sweep per `bench_sweep_contract.md`, ported from a peer's `bench/benchmark_q*_aux.cpp` with the shared sweep and invalidating-probe helpers so write ticks invalidate this query's state.
-- `calibrate_q{{query_number}}_aux_cost_model.cpp`: the thin wrapper over the shared calibration helper, in the shape of a peer's. Custom timing code in the calibrator is rejected. `accelerators/{{benchmark_name}}/q{{query_number}}/cost_model.hpp` (written by the scaffold) names the config directory; pass its `AuxCostModelLocation` to the engine's registration.
-- The module unit test is shared (`unit_test_contract.md`): write no per-query unit test; make the catalog probe and arguments follow `reference_sql_path` (SQL polarity: `NOT LIKE`, `<>`, anti-joins) and the **Reference SQL predicate contract** in the bootstrap.
-- Off-spec parameters, rows and keys are the frozen suite's job (fixed tuples, a fresh random draw each run, every write kind); run the host's params test (plain, `--data-perturb`, `--wide-keys`, `--negative-keys`) when it exists.
-
-## Exit criterion (hard)
-
-Compiling is not enough. Do not end the stage until all of these have **passed** (not merely run):
-
-1. After new module, test, bench or calibrator sources: `cmake -S . -B <worker_build_dir>` once. Build the host's differential binary and gate harnesses with `backends/{{engine_name}}/host.sh` (`build`, `sql`, `run`, `slot`; `query_host_bootstrap.md` when a harness lacks this query).
-2. `quick_check` green after every edit. It runs the whole frozen suite at N and 1 threads on the subset and projects each write kind's cost to the full dataset: iterate until it passes with no projected-cost failure (a write that rebuilds the state fails it). The heavy gates below are refused before that, and each then runs once, not as a debugging loop.
-3. `run_correctness` / `request_gate` `aux_correctness` (module smoke plus the SF1 differential on the **{{engine_name}}** host). On failure fix the implementation or registration, never the fixtures.
-4. `run_multi_connection` (the engine's own harness).
-5. `request_gate` `aux_tsan` when the module has `ParallelEach` / `ParallelReduce` / `PartitionedBuild` code: it fails on a data race or a forced-grain mismatch.
-6. The scale verification set of `scale_factor_contract.md` ran and passed: the shared differential on the shifted-key and inflated-value databases including writes, at 1 and N read/build/maintenance threads; `ReadAuxExecuteCounts` and the decision log show no unexpected rebuild or fallback. Report the commands and results.
-7. The module is complete: the selected candidate is fully implemented; `Execute` applies the same predicates as the SQL fallback; every template parameter is exact for any value including NULL; a write that duplicates a key the query joins or groups on still gets the exact answer (handled, or declined to the SQL fallback while the keys are not unique); no key or offset narrower than 64 bits; decimals exact; writes cost O(touched); the state is COW and built from `prims/`.
-
-If a structural bottleneck cannot be fixed by the viable alternates in `analysis.json`, call `request_structural_reanalysis` with evidence (max 2 per pipeline run).
+`quick_check` (plain and thread-sanitized) is green with no rebuild-like write and a scaling build, your oracle test passes, the scale verification set of `scale_factor_contract.md` ran (shifted-key and inflated-value databases with writes, at 1 and N threads), and every item above is implemented. Then end your turn: the orchestrator runs the exit checks and sends you anything that fails.
 
 {{shared_docs_reference}}
 

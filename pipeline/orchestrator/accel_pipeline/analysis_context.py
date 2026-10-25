@@ -34,7 +34,6 @@ _STAGE_SHARED_DOCS: dict[str, list[tuple[str, str]]] = {
         ("Generated layout", "../../shared/generated_layout.md"),
         ("Engine interfaces", "../../shared/engine_interfaces.md"),
         ("Substrate primitives", "../../shared/substrate_primitives.md"),
-        ("Module layout", "module_layout.md"),
         ("Unit-test contract", "unit_test_contract.md"),
         ("Read-path scaffold", "read_path_scaffold.md"),
         ("Bench sweep contract", "bench_sweep_contract.md"),

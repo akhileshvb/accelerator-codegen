@@ -14,7 +14,6 @@ write the two files (heredoc `cat > …`) and **stop**.
 
 {{hard_guidelines}}
 
-{{codex_tooling}}
 
 {{engine_host_discovery}}
 

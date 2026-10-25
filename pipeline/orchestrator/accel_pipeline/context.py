@@ -442,22 +442,6 @@ def build_prompt_context(
         )
         else ""
     )
-    # Injected for Codex exec stages; empty for other providers unless prompt keeps the placeholder.
-    codex_tooling = ""
-    if is_implementation_stage(stage) or is_critique_stage(stage) or stage in (
-        "validation",
-        "test_suite",
-        "architecture_audit",
-        "optimization_unified",
-        "optimization_unified_hypothesis",
-        "optimization_unified_patch",
-        "optimization_worker",
-        "optimization_fix",
-    ):
-        codex_tooling = (
-            "When running under Codex exec, follow `pipeline/prompts/shared/codex_tooling.md` "
-            "(native edit/search/shell + MCP profile/gate/A/B tools)."
-        )
 
     # The fast-loop working rules are inline in every stage that edits code.
     fast_loop = ""
@@ -569,7 +553,6 @@ def build_prompt_context(
         ),
         "hard_guidelines": hard_guidelines,
         "measurement_trust": _read_text(pipe / "prompts" / "shared" / "measurement_trust.md"),
-        "codex_tooling": codex_tooling,
         "fast_loop": fast_loop,
         "audit_result_json": _read_text(art / "audit_result.json", "{}"),
         "retrieval_brief": retrieval_brief,

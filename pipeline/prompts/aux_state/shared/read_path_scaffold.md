@@ -1,26 +1,16 @@
-# Read-path scaffold (agent-generated `aux/module.cpp`)
+# Read-path scaffold (`aux/module.cpp`)
 
-Port from shipped peer modules under `accelerators/<bench>/q*/<engine>/aux/module.cpp` (the workload's reference accelerators). Every aux query implements the same `AuxQueryModule` surface.
-
-## Module methods (required)
+Port from shipped peers `accelerators/<bench>/q*/<engine>/aux/module.cpp`: a peer with one window partition, windowed partitions, prefix/cumulative state, or append-only state, whichever matches.
 
 | Method | Responsibility |
-|--------|----------------|
+|---|---|
 | `CheckValidity` | `services.StateStore().CheckValidity({Id(), window_partitions}, services.CurrentVisibility())` |
-| `Execute` | Fast path: read only partitions overlapping the query window; emit via `AuxRowSink` |
-| `ExecuteFallback` | Recompute from base tables when state is missing, stale, or txn-blocked |
+| `Execute` | Fast path: read only partitions overlapping the query window; emit through `AuxRowSink` |
+| `ExecuteFallback` | Default `services.AnswerFromSql` (SQL at the reader's snapshot) when state is missing, stale or txn-blocked |
 | `StageMaintenance` | Build `MaintenanceRequest`, call `services.ChooseMaintenance(...)`, materialize updates |
 
-## Single-partition pattern
-
 ```cpp
-bool ExampleModule::CheckValidity(core::AuxEngineServices &services,
-                                  const core::QueryArguments &) const {
-  return services.StateStore()
-      .CheckValidity({Id(), {}}, services.CurrentVisibility())
-      .IsValid();
-}
-
+// CheckValidity: services.StateStore().CheckValidity({Id(), {}}, services.CurrentVisibility()).IsValid()
 void ExampleModule::Execute(core::AuxEngineServices &services,
                             const core::QueryArguments &arguments,
                             core::AuxRowSink &sink) {
@@ -34,38 +24,17 @@ void ExampleModule::Execute(core::AuxEngineServices &services,
 }
 ```
 
-## Window / prefix gates (multi-partition queries)
+## Multi-partition windows
 
-When the query spans multiple partitions (prefix state, date windows):
-
-1. Compute the partition ID set for the query window only.
-2. Pass that set to `CheckValidity` / `ReadPartitions` — never scan all slots.
-3. If any required partition is invalid or absent → `ExecuteFallback` for the window.
-4. Do not reject valid partitions solely because their `valid_through` epoch lags unrelated writes.
+1. Compute the partition id set for the query window only.
+2. Pass it to `CheckValidity` / `ReadPartitions`; never scan all slots.
+3. If a required partition is invalid or absent, `ExecuteFallback` for the window.
+4. Do not reject valid partitions only because their `valid_through` epoch lags unrelated writes.
 
 ## Parallel `Execute`
 
-When the read is proportional to selected state (many partitions or groups), take the snapshot first (`ReadHitPartitions`), then split with `core::ParallelReduce` over the borrowed images (`substrate_primitives.md`; slice rules in `engine_interfaces.md`). A read bounded to one small partition stays one slice.
+When the read is proportional to selected state, take the snapshot first (`ReadHitPartitions`), then split with `core::ParallelReduce` over the borrowed images (`substrate_primitives.md`; slice rules in `engine_interfaces.md`). A read bounded to one small partition stays one slice.
 
-## Maintenance hook (write path)
+Write path: `concurrency_contract.md` (irrelevant mutations) and `maintenance_framework.md` (`ChooseMaintenance` with accurate row/partition counts, `interference_us` from calibrated `CostModelParams`, not ad-hoc globals).
 
-In `InterpretMutation` / `AccumulateMutation` / `StageMaintenance`:
-
-- Irrelevant mutations → empty `InvalidationPlan` or `MaintenanceAction::NoOp`
-- Relevant maintenance → `services.ChooseMaintenance` with accurate row/partition counts
-- Populate `interference_us` via calibrated `CostModelParams` fields, not ad-hoc globals
-
-## No state encoding
-
-State images stay typed in the process that hosts the runtime; do not write
-`Encode*` / `Decode*` for state. Only captured batches, arguments and result
-rows cross a process boundary, and the substrate (`runtime/wire.hpp`) encodes them.
-
-## Reference files
-
-| Pattern | Reference |
-|---------|-----------|
-| Single-partition | a peer with one window partition |
-| Multi-partition window | a peer with windowed partitions |
-| Prefix / cumulative | a peer with prefix state |
-| Append workload | a peer with append-only state |
+State images stay typed in the hosting process: write no `Encode*` / `Decode*` for state (`runtime/wire.hpp` encodes batches, arguments and rows).
