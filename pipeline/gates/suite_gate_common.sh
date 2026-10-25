@@ -20,6 +20,9 @@ suite_extras() {
 	[[ -n "${ACCEL_SUITE_DIR:-}" ]] || return 0
 	local summary
 	summary="$(python3 "${SUITE_GATE}" "${ROOT}" summary "${ACCEL_SUITE_REPORT}")"
+	# the full tier's module build time sets the time limit of the runs after it (run_limit)
+	[[ "${SUITE_TIER}" != full ]] ||
+		python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('build_seconds') or '')" "${summary}" >"${GATE_OUT}/build_seconds"
 	SUITE_EXTRAS=("suite:=${summary}"
 		"reproduce=ACCEL_GATE_CONTEXT=${ACCEL_GATE_CONTEXT} ACCEL_GATE_TIER=${SUITE_TIER} ACCEL_SUITE_SEED=${ACCEL_SUITE_SEED} bash pipeline/gates/$1 ${GATE_QUERY}")
 }

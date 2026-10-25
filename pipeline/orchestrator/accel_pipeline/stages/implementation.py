@@ -139,7 +139,7 @@ def _record_baseline(pipeline_config, workload: dict, query: int, analysis_path,
             iteration=0,
             change_kind="implementation",
         )
-    elif "aux_bench_sweep" in impl_gates:
+    elif {"aux_bench_sweep", "aux_exit"} & set(impl_gates):
         selected = ""
         if analysis_path.is_file():
             selected = (

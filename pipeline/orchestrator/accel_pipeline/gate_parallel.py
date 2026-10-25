@@ -35,6 +35,7 @@ class GateGroup:
 # Order matters: failures surface in the cheap gates before the minutes-long ones start.
 DEFAULT_GROUPS: tuple[GateGroup, ...] = (
     GateGroup(("aux_unit", "aux_correctness", "aux_correctness_iterate", "prims_tests"), "serial"),
+    GateGroup(("aux_exit",), "serial"),  # runs its own phases side by side
     GateGroup(("aux_multi_connection", "aux_cross_accel", "aux_cost_model_calibrate"), "parallel"),
     GateGroup(("aux_bench_sweep", "aux_tsan", "module_tsan", "slot_tsan"), "serial"),
 )

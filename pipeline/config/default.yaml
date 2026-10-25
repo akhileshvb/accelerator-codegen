@@ -162,12 +162,12 @@ quick_tier:
   timeout_sec: 120
   build_stamp_cache: true
   differential_probes: 3
-  background_gates: [aux_correctness, aux_unit, prims_tests, aux_multi_connection, aux_cross_accel]
+  background_gates: [aux_exit, aux_correctness, aux_unit, prims_tests, aux_multi_connection, aux_cross_accel]
   parallel_gates: true
   gate_jobs: 0   # 0 = one worker per gate of a parallel group
   build_budget_sec: 15   # quick_check fails when the state build, projected from the subset to the full dataset, takes longer
   write_cost_budget_share: 0.5   # quick_check fails when the projected full-gate writes and builds exceed this share of one gate differential run's timeout (ACCEL_GATE_RUN_TIMEOUT)
-  admission_gates: [aux_correctness, aux_bench_sweep, aux_tsan]   # request_gate refuses these until quick_check passed on the current code
+  admission_gates: [aux_exit, aux_correctness, aux_bench_sweep, aux_tsan]   # request_gate refuses these until quick_check passed on the current code
 
 # CPU budgets and host-wide leases between pipelines running at once (core_budget.py, measurement_lease.py).
 # Each worker takes one of `workers` disjoint CPU sets of the host and pins itself (and so its agent, builds,

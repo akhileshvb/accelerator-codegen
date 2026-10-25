@@ -262,7 +262,7 @@ struct WorkloadTimings {
 };
 
 // What the runtime's counters say about the reads of the measured run: how many the state served,
-// how many fell back to SQL, and how often the state was built (never assumed).
+// how many fell back to SQL, and how often the state was built during the run (never assumed).
 template <typename Stats>
 void RecordReadOutcome(WorkloadTimings &result, const Stats &before, const Stats &after) {
   const auto hits = after.reads_hit - before.reads_hit;
@@ -271,7 +271,7 @@ void RecordReadOutcome(WorkloadTimings &result, const Stats &before, const Stats
   result.accel_hit_rate = reads > 0 ? static_cast<double>(hits) / reads : 0.0;
   result.fallback_rate = reads > 0 ? static_cast<double>(fallbacks) / reads : 0.0;
   result.accel_fallback_reads = static_cast<int64_t>(fallbacks);
-  result.state_builds = static_cast<int64_t>(after.builds);
+  result.state_builds = static_cast<int64_t>(after.builds - before.builds);
 }
 
 const TpchArgVariant &PickArgVariant(const std::vector<TpchArgVariant> &arg_pool,
@@ -453,6 +453,7 @@ struct BenchSession {
   double base_write_median_us = 0.0;
   double engine_ref_query_median_us = 0.0;
   double setup_full_build_ms = 0.0;
+  int64_t setup_builds = 0;
   uint64_t aux_state_bytes = 0;
   double reader_qps = 1.0;
   std::unique_ptr<DuckdbRuntime> runtime;
@@ -516,6 +517,7 @@ struct BenchSession {
             std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() -
                                                                   build_start)
                 .count());
+    setup_builds = static_cast<int64_t>(runtime->Stats().builds);
     aux_state_bytes = bench_diag::CollectAuxStateFootprintBytes(*runtime);
 
     for (int i = 0; i < warmup_queries; i++) {
@@ -549,11 +551,13 @@ struct BenchSession {
                        session.runtime->SetExpectedQueriesBeforeNextWrite(
                            ExpectedQueriesBeforeWrite(write_frequency_pct));
                        session.runtime->ResetStoreDiagnosticsProfiling();
-                       return RunMeasuredWorkload(
+                       auto workload = RunMeasuredWorkload(
                            *session.runtime, session.accel_connection,
                            measured_queries, write_frequency_pct,
                            session.write_probes, session.write_mode,
                            session.rf_chunk_orders, session.arg_pool);
+                       session.UndoPointWrites(workload.writes_executed);
+                       return workload;
                      });
   }
 
@@ -582,6 +586,17 @@ struct BenchSession {
   }
 
 private:
+  // Every point of a sweep starts from the data the first one did: its writes are undone through the runtime,
+  // outside the measured run (refresh chunks cannot be undone).
+  void UndoPointWrites(int64_t writes) {
+    if (write_mode != WriteMode::Point) {
+      return;
+    }
+    for (int64_t seq = writes; seq-- > 0;) {
+      runtime->ApplyWrite(PickWriteProbe(write_probes, static_cast<int>(seq)).restore_sql);
+    }
+  }
+
   template <typename RunFn>
   void RunMeasuredPoint(const std::string &suite, const std::string &locality,
                         int write_frequency_pct, double write_interval_sec,
@@ -656,7 +671,7 @@ private:
               << query_only_speedup << ','
               << blended_query_speedup << ','
               << cold_start_accel_workload_us << ',' << setup_full_build_ms << ','
-              << workload.accel_fallback_reads << ',' << workload.state_builds << ',';
+              << workload.accel_fallback_reads << ',' << setup_builds + workload.state_builds << ',';
     bench_diag::AppendStoreDiagnosticsCsv(std::cout, aux_state_bytes, store_diag);
     std::cout << '\n' << std::flush;
     std::cerr << "tpch_q" << query_num << "_aux_bench: wrote row"

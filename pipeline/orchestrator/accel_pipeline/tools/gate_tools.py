@@ -45,6 +45,8 @@ def _compact_gate_payload(gate_name: str, data: dict) -> dict:
         "reproduce",
         "smoke_exit_code",
         "differential_exit_code",
+        "failed_phases",
+        "phases",
     ):
         if key in data and data[key] is not None:
             compact[key] = data[key]
@@ -62,7 +64,7 @@ def _compact_gate_payload(gate_name: str, data: dict) -> dict:
 
 
 def _compact_background_state(state: dict) -> dict:
-    compact = {k: state[k] for k in ("gate", "status", "reason", "note", "elapsed_sec", "stale") if k in state}
+    compact = {k: state[k] for k in ("gate", "status", "reason", "note", "elapsed_sec", "seconds", "phase", "progress", "stale") if k in state}
     if state.get("data"):
         compact.update({k: v for k, v in _compact_gate_payload(state["gate"], state["data"]).items() if k != "gate"})
     return compact
@@ -85,11 +87,12 @@ def make_gate_tools(ctx: ToolContext):
         increment until ``status`` is ``pass``. Prefer ``run_engine_build`` /
         ``run_layer_gate`` when listed. Docker hosts: this is the in-container
         build+run — do not cmake on the developer machine.
-        Aux: ``aux_correctness`` / ``aux_multi_connection``. Gates are for acceptance and take
-        minutes; for the edit-test loop use ``quick_check``.
+        Aux: ``aux_exit`` (every heavy check in one run, a few minutes) or one of
+        ``aux_correctness`` / ``aux_multi_connection``. Gates are for acceptance; for the
+        edit-test loop use ``quick_check``.
 
         ``background=True`` starts the gate in its own process and returns at once (only
-        aux_correctness, aux_unit, prims_tests, aux_multi_connection and aux_cross_accel);
+        aux_exit, aux_correctness, aux_unit, prims_tests, aux_multi_connection and aux_cross_accel);
         keep working and read the result once with ``gate_status``. Never poll it in a loop.
         """
         if refusal := admission_refusal_payload(ctx, gate_name):

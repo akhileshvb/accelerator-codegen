@@ -22,7 +22,7 @@ from accel_pipeline.build_stamp import code_stamp
 from accel_pipeline.check_measure import Bench
 from accel_pipeline.config import PipelineConfig
 from accel_pipeline.failure import Failure, render_failure
-from accel_pipeline.gate_stamps import current_stamp
+from accel_pipeline.gate_stamps import check_version, current_stamp
 from accel_pipeline.gates import run_gate
 from accel_pipeline.layout import query_dir
 from accel_pipeline.perf_profile import render_for_agent
@@ -55,7 +55,7 @@ def _result_stamp(pipeline_config: PipelineConfig, workload: dict[str, Any], que
         pipeline_config.repo_root,
         query_dir=query_dir(bench, query) if bench else "",
         extra=[QUICK_GATE, *targets, f"differential={differential}", f"sanitizer={sanitizer}:{threads}",
-               str(pipeline_config.build_dir)],
+               str(pipeline_config.build_dir), check_version(pipeline_config.repo_root)],
     )
 
 
@@ -64,12 +64,16 @@ def _passed_stamp_path(pipeline_config: PipelineConfig, workload: dict[str, Any]
     return gates_dir_for_query(art) / f"{QUICK_GATE}.stamp"
 
 
+def _admission_key(pipeline_config: PipelineConfig, workload: dict[str, Any], query: int) -> str:
+    """The code and the checks an admission holds for ("" when there is no code stamp)."""
+    stamp = current_stamp(pipeline_config, workload, query)
+    return f"{stamp}:{check_version(pipeline_config.repo_root)}" if stamp else ""
+
+
 def record_admission(pipeline_config: PipelineConfig, workload: dict[str, Any], query: int) -> None:
     """quick_check passed on the code as it is now: the heavy gates may run."""
-    stamp = current_stamp(pipeline_config, workload, query)
-    if stamp:
-        path = _passed_stamp_path(pipeline_config, workload, query).with_name(ADMISSION_FILE)
-        path.write_text(stamp, encoding="utf-8")
+    if stamp := _admission_key(pipeline_config, workload, query):
+        _passed_stamp_path(pipeline_config, workload, query).with_name(ADMISSION_FILE).write_text(stamp, encoding="utf-8")
 
 
 def admission_refusal(pipeline_config: PipelineConfig, workload: dict[str, Any], query: int, gate: str) -> str:
@@ -78,8 +82,8 @@ def admission_refusal(pipeline_config: PipelineConfig, workload: dict[str, Any],
     if not quick.enabled or gate not in quick.admission_gates or workload.get("workload_kind") != "aux_state":
         return ""
     path = _passed_stamp_path(pipeline_config, workload, query).with_name(ADMISSION_FILE)
-    stamp = current_stamp(pipeline_config, workload, query)
-    if stamp and path.is_file() and path.read_text(encoding="utf-8") == stamp:
+    key = _admission_key(pipeline_config, workload, query)
+    if key and path.is_file() and path.read_text(encoding="utf-8") == key:
         return ""
     return f"{gate} refused: run quick_check first and iterate until it passes on the current code (it takes seconds), then request {gate} once."
 

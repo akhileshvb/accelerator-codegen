@@ -32,7 +32,7 @@ json_dirs() {
 
 cmd_info() {
   # mounts: the external checkouts the verbs need at runtime (absolute, existing); docker: they need the daemon
-  printf '{"engine": "duckdb", "embedded": true, "verbs": ["info", "up", "down", "load", "build", "sql", "run", "slot"], "hit_contract": true, "mounts": {"ro": %s, "rw": []}, "docker": false}\n' \
+  printf '{"engine": "duckdb", "embedded": true, "verbs": ["info", "up", "down", "load", "build", "sql", "run", "slot"], "hit_contract": true, "bench_multi_point": true, "mounts": {"ro": %s, "rw": []}, "docker": false}\n' \
     "$(json_dirs "${DUCKDB_ROOT}")"
 }
 

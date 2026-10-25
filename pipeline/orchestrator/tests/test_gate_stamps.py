@@ -14,7 +14,7 @@ from accel_pipeline import background_gates
 from accel_pipeline.background_gates import background_status, reusable_background_result, start_background_gate
 from accel_pipeline.build_stamp import build_lock, code_stamp
 from accel_pipeline.config import QuickTierConfig
-from accel_pipeline.gate_stamps import current_stamp, passed_at_current_stamp, record_pass, reusable_gate_result
+from accel_pipeline.gate_stamps import check_version, current_stamp, passed_at_current_stamp, record_pass, reusable_gate_result
 from accel_pipeline.layout import BACKENDS, PRIMS
 
 WORKLOAD = {"workload_kind": "aux_state", "benchmark_name": "demo", "engine_name": "eng"}
@@ -105,6 +105,28 @@ def test_a_gate_passes_at_the_stamp_it_was_recorded_for(config):
     assert not passed_at_current_stamp(config, WORKLOAD, 5, "aux_unit")
 
 
+def test_a_pass_recorded_under_older_checks_does_not_count(config):
+    record_pass(config, WORKLOAD, 5, "aux_unit", current_stamp(config, WORKLOAD, 5))
+    write(config, "pipeline/gates/run_aux_unit_tests.sh", "# the check changed\n")
+    assert not passed_at_current_stamp(config, WORKLOAD, 5, "aux_unit")
+    record_pass(config, WORKLOAD, 5, "aux_unit", current_stamp(config, WORKLOAD, 5))
+    assert passed_at_current_stamp(config, WORKLOAD, 5, "aux_unit")
+
+
+def test_a_background_pass_under_older_checks_is_not_reused(config):
+    finished(config, "aux_unit")
+    write(config, "eval/harness/rules.cpp", "// the harness changed\n")
+    assert reusable_background_result(config, WORKLOAD, 5, "aux_unit") is None
+
+
+def test_the_exit_run_is_reused_across_acceptance_stages_but_not_the_iteration_tier(config):
+    record_pass(config, WORKLOAD, 5, "aux_exit", current_stamp(config, WORKLOAD, 5), change_kind="implementation")
+    assert passed_at_current_stamp(config, WORKLOAD, 5, "aux_exit", change_kind="audit")
+    assert not passed_at_current_stamp(config, WORKLOAD, 5, "aux_exit", change_kind="optimization")
+    record_pass(config, WORKLOAD, 5, "aux_exit", current_stamp(config, WORKLOAD, 5), change_kind="optimization")
+    assert not passed_at_current_stamp(config, WORKLOAD, 5, "aux_exit", change_kind="audit")
+
+
 def test_no_stamp_never_counts_as_passed(tmp_path):
     cfg = SimpleNamespace(repo_root=tmp_path, build_dir=tmp_path / "b")
     record_pass(cfg, WORKLOAD, 5, "aux_unit", "")
@@ -143,6 +165,7 @@ def finished(config, gate, *, status="pass", stamp_end=None, stamp_start=None):
     state_path.write_text(json.dumps({
         "gate": gate, "status": status, "data": {"status": status, "reason": "r"},
         "stamp_start": stamp_start or current, "stamp_end": stamp_end or current,
+        "check_version": check_version(config.repo_root),
     }))
 
 
@@ -179,6 +202,25 @@ def test_a_background_run_whose_process_vanished_is_reported_died(config):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps({"gate": "aux_unit", "status": "running", "pid": 2**22 + 12345, "started_at": time.time()}))
     assert background_status(config, WORKLOAD, 5, "aux_unit")["status"] == "died"
+
+
+def test_a_running_background_gate_says_what_it_is_doing_and_how_long(config):
+    import os
+
+    path = background_gates._state_path(config, WORKLOAD, 5, "aux_exit")
+    out = path.parent / "aux_exit"
+    out.mkdir(parents=True)
+    path.write_text(json.dumps({"gate": "aux_exit", "status": "running", "pid": os.getpid(), "started_at": time.time() - 42}))
+    (out / "aux_exit.phase").write_text("running: correctness bench\n")
+    (out / "aux_correctness.json.run.k3j2.log").write_text("phase build: 61.4 s\nphase suite: 70.5 s\n")
+    (out / "aux_bench_sweep.json.run.q9x1.log").write_text("")
+    status = background_status(config, WORKLOAD, 5, "aux_exit")
+    assert status["status"] == "running" and status["elapsed_sec"] >= 42
+    assert status["phase"] == "running: correctness bench"
+    assert status["progress"] == {"aux_correctness": "phase suite: 70.5 s"}
+    from accel_pipeline.tools.gate_tools import _compact_background_state
+
+    assert {"elapsed_sec", "phase", "progress"} <= set(_compact_background_state(status))
 
 
 def test_only_the_listed_gates_run_in_the_background(config):

@@ -8,6 +8,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -20,7 +21,7 @@ echo "$* | instance=${ACCEL_ENGINE_INSTANCE} state=${ACCEL_ENGINE_STATE_DIR} bui
 verb="$1"; shift
 rc_var="FAKE_RC_${verb}"
 case "${verb}" in
-  info) echo "{\"engine\": \"fake\", \"embedded\": ${FAKE_EMBEDDED:-false}, \"verbs\": []}" ;;
+  info) echo "{\"engine\": \"fake\", \"embedded\": ${FAKE_EMBEDDED:-false}, \"verbs\": []${FAKE_MULTI_POINT:+, \"bench_multi_point\": true}}" ;;
   run)
     [[ -z "${FAKE_RUN_HANG:-}" ]] || sleep 30
     if [[ -n "${FAKE_TSAN_REPORT:-}" && "$1" == diff_bin ]]; then  # a TSAN report whose stack has FAKE_TSAN_REPORT as a frame
@@ -28,11 +29,14 @@ case "${verb}" in
       printf 'WARNING: ThreadSanitizer: data race (pid=1)\n  Write of size 8 at 0x1 by thread T1:\n    #0 Add %s/module.cpp:9 (bin+0x1)\n    #1 ParallelEach /x/substrate/pool.cpp:3 (bin+0x2)\n\nSUMMARY: ThreadSanitizer: data race %s/module.cpp:9 in Add\n' "${FAKE_TSAN_REPORT}" "${FAKE_TSAN_REPORT}" > "${path}.1"
       printf 'WARNING: ThreadSanitizer: data race (pid=2)\n  Write of size 8 at 0x1 by thread T1:\n    #0 Foo /engine/src/x.cpp:9 (bin+0x1)\n\nSUMMARY: ThreadSanitizer: data race /engine/src/x.cpp:9 in Foo\n' > "${path}.2"
     fi
+    [[ -z "${FAKE_FAIL_AT_N_THREADS:-}" || "${ACCEL_AUX_THREADS:-}" == 1 || "$1" != diff_bin ]] || exit 1
     [[ -z "${FAKE_FAIL_AT_ONE_THREAD:-}" || "${ACCEL_AUX_THREADS:-}" != 1 || "$1" != diff_bin ]] || exit 1
     if [[ -n "${FAKE_SWEEP:-}" && "$1" == bench_aux ]]; then  # a sweep point: reads and builds scale with the thread budget
       t="${ACCEL_AUX_THREADS:-4}"
       echo "suite,write_frequency_pct,workload_speedup,cold_start_workload_speedup,query_only_speedup,accel_hit_median_us,accel_workload_us,setup_full_build_ms,accel_hit_rate,writes_executed"
-      echo "lineitem_only,$4,3.0,2.0,4.0,$((400 / t)),$((500 / t)),$((800 / t)),1.0,0"
+      for pct in ${ACCEL_AUX_WRITE_FREQUENCIES//,/ }; do
+        echo "lineitem_only,${pct},3.0,2.0,4.0,$((400 / t)),$((500 / t)),$((800 / t)),1.0,0"
+      done
     elif [[ "$1" == benchmark* && "$2" == --query ]]; then  # a bench that counts hits (or, FAKE_BENCH_CONSTANT, one that assumes them)
       echo "suite,accel_hit_rate"
       if [[ -n "${FAKE_BENCH_CONSTANT:-}" || -z "${ACCEL_AUX_FORCE_FALLBACK:-}" ]]; then echo "lineitem_only,1.0"; else echo "lineitem_only,0.0"; fi
@@ -87,7 +91,8 @@ def run_gate(repo, script, *args, ctx_extra=None, env_extra=None, kind="aux_stat
     log = repo / "host.log"
     out_json = repo / "gate_out.json"
     env = {
-        **os.environ, "ACCEL_GATE_CONTEXT": str(ctx_path), "FAKE_LOG": str(log),
+        **os.environ, "PATH": f"{Path(sys.executable).parent}{os.pathsep}{os.environ['PATH']}",
+        "ACCEL_GATE_CONTEXT": str(ctx_path), "FAKE_LOG": str(log),
         "ACCEL_GATE_OUT": str(out_json), "ACCEL_PIPELINE_WORKER_ID": "w7",
         "ACCEL_ENGINE_STATE_ROOT": str(repo / "state"), "FAKE_COST_MODEL": str(repo / "cost_model.json"),
         "ACCEL_PIPELINE_BUILD_DIR": str(repo / "build-release"),

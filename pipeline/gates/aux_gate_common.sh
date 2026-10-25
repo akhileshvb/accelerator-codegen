@@ -17,6 +17,9 @@ record_phase() {
 	PHASE_LOG+="$1=$((us / 1000000)).$(printf '%03d' $((us % 1000000 / 1000)))"$'\n'
 }
 
+# set_phase <text>: what this gate is doing now (gate_status shows <gate json>.phase)
+set_phase() { [[ -z "${ACCEL_GATE_OUT:-}" ]] || printf '%s\n' "$*" >"${ACCEL_GATE_OUT%.json}.phase"; }
+
 # time_phase <name> <command...>: run in this shell, record its seconds, keep its status.
 time_phase() {
 	local name="$1" start rc=0
@@ -93,6 +96,7 @@ engine_steps() {
 	local step out rc started runner
 	for step in "$@"; do
 		started="$(now_us)"
+		set_phase "host ${step}"
 		runner=("${ENGINE_HOST}")
 		[[ "${step%% *}" != build ]] || runner=(flock "${ACCEL_BUILD_DIR}.build.lock" "${ENGINE_HOST}")
 		# shellcheck disable=SC2086
@@ -169,10 +173,18 @@ engine_ready_for_ctest() {
 	[[ ${#targets[@]} -eq 0 ]] || engine_ready "${targets[@]}"
 }
 
-# Run a built target through the host; sets RC and LOG.
-# Run a built target through host.sh with a time limit (ACCEL_GATE_RUN_TIMEOUT seconds,
-# default 900), so a hung harness fails the gate instead of stalling the run. Sets LOG, RC and,
-# on a timeout, RUN_REASON.
+# Seconds one run may take: ACCEL_GATE_RUN_TIMEOUT, else what the build time the last full run measured allows
+# (<gates dir>/build_seconds: a run builds the module a few times, and again for each write it cannot maintain), else 900.
+run_limit() {
+	local built
+	[[ -z "${ACCEL_GATE_RUN_TIMEOUT:-}" ]] || { echo "${ACCEL_GATE_RUN_TIMEOUT}"; return; }
+	built="$(cat "${GATE_OUT:-/nonexistent}/build_seconds" 2>/dev/null)" || built=""
+	python3 -c "import sys; b = float(sys.argv[1] or 0); print(int(max(300, 8 * b + 300)) if b else 900)" "${built}"
+}
+
+# Run a built target through host.sh with a time limit (run_limit), so a hung harness fails the gate instead of
+# stalling the run. Sets LOG, RC and, on a timeout, RUN_REASON. The output goes to <gate json>.run.<random>.log while
+# it runs (gate_status shows its last line).
 engine_run() { _engine_run "" "$@"; }
 
 # engine_run for a benchmark: queues for the host-wide measurement lease (outside the time limit), runs
@@ -180,13 +192,18 @@ engine_run() { _engine_run "" "$@"; }
 engine_measure() { _engine_run "${ACCEL_GATE_NAME:-${GATE_QUERY:-gate}}" "$@"; }
 
 _engine_run() {
-	local lease="$1" limit="${ACCEL_GATE_RUN_TIMEOUT:-900}" started waited wrap=()
+	local lease="$1" limit started waited wrap=() live
 	shift
+	limit="$(run_limit)"
 	started="$(now_us)"
+	set_phase "run $1"
+	live="$(mktemp "${ACCEL_GATE_OUT:-${TMPDIR:-/tmp}/gate.json}.run.XXXXXX.log")"
 	[[ -z "${lease}" ]] ||
 		wrap=(env "PYTHONPATH=${ACCEL_PIPELINE_PYTHONPATH:-${GATE_ROOT}/pipeline/orchestrator}:${PYTHONPATH:-}" python3 -m accel_pipeline.measurement_lease
 			--holder "${ACCEL_INSTANCE_TAG:-${ACCEL_PIPELINE_WORKER_ID:-w0}}" --reason "${lease}" --)
-	LOG="$("${wrap[@]}" timeout --kill-after=15 "${limit}" "${ENGINE_HOST}" run "$@" 2>&1)" && RC=0 || RC=$?
+	"${wrap[@]}" timeout --kill-after=15 "${limit}" "${ENGINE_HOST}" run "$@" >"${live}" 2>&1 && RC=0 || RC=$?
+	LOG="$(<"${live}")"
+	rm -f "${live}"
 	record_phase "run_${1##*/}" "${started}"
 	if [[ -n "${lease}" ]]; then
 		waited="$(sed -n 's/.*waited \([0-9.]*\) s for the measurement lease.*/\1/p' <<<"${LOG}" | head -n1)"

@@ -88,6 +88,8 @@ export ACCEL_AUX_BENCH_BASELINE_CACHE="${ACCEL_AUX_BENCH_BASELINE_CACHE:-${ROOT}
 
 # The acceptance sweep draws its write frequencies from the suite's write_mix.yaml (0% always), anew for each of
 # bench_repeats repeats; the seeds are recorded. Optimization sweeps and trees without a suite use the fixed list.
+# A bench that runs several points in one process (host.sh info: bench_multi_point) gets all the points of every
+# repeat in one call and builds once; the rows come back in order and are split into the repeats.
 SWEEP_LOG="${OUT}/aux_bench_sweep.log"
 mkdir -p "${ACCEL_AUX_BENCH_WORK_DIR}"
 : > "${SWEEP_LOG}"
@@ -96,6 +98,7 @@ DRAWS_JSON="${OUT}/aux_bench_draws.json"
 RESULT_CSVS=()
 FREQ_COUNTS=()
 DRAWS=()
+ALL_FREQS=()
 REPEATS=1
 if [[ "${CHANGE_KIND}" != "optimization" ]]; then
   REPEATS="$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('test_suite', {}).get('config', {}).get('bench_repeats', 1))" "${CTX}")"
@@ -115,26 +118,38 @@ for ((repeat = 1; repeat <= REPEATS; repeat++)); do
     DRAW="{\"frequencies\": [${EXPECTED_FREQS}]}"
   fi
   echo "sweep ${repeat}/${REPEATS}: write frequencies ${EXPECTED_FREQS} (${DRAW})" | tee -a "${SWEEP_LOG}"
-  RESULTS_CSV="${ACCEL_AUX_BENCH_WORK_DIR}/results_${repeat}.csv"
-  : > "${RESULTS_CSV}"
-  IFS=',' read -r -a FREQ_LIST <<< "${EXPECTED_FREQS}"
-  for suite in "${SUITE_LIST[@]}"; do
-    export "ACCEL_Q${QUERY}_BENCH_SUITE=${suite}"
-    for pct in "${FREQ_LIST[@]}"; do
-      export ACCEL_AUX_WRITE_FREQUENCIES="${pct// /}"   # the harness runs the frequencies of this variable: one point per call
-      engine_measure "${BENCH_TARGET}" --query "${QUERY}" "${pct// /}"
-      printf '%s\n' "${LOG}" >> "${SWEEP_LOG}"
-      [[ ${RC} -eq 0 ]] || SWEEP_RC=${RC}
-      # keep the CSV rows (one header), drop banners
-      printf '%s\n' "${LOG}" | awk -F, -v hdr="$([[ -s "${RESULTS_CSV}" ]] && echo 1 || echo 0)" '
-        /^suite,/ { if (!hdr) { print; hdr = 1 }; next }
-        /^speedup_gate/ || /^#/ { next }
-        NF >= 10 { print }' >> "${RESULTS_CSV}"
-    done
-  done
-  RESULT_CSVS+=("${RESULTS_CSV}")
+  IFS=',' read -r -a FREQ_LIST <<< "${EXPECTED_FREQS// /}"
+  ALL_FREQS+=("${FREQ_LIST[@]}")
+  RESULT_CSVS+=("${ACCEL_AUX_BENCH_WORK_DIR}/results_${repeat}.csv")
   FREQ_COUNTS+=("${#FREQ_LIST[@]}")
   DRAWS+=("${DRAW}")
+done
+POINTS_PER_CALL=1
+[[ "$(engine_trait bench_multi_point)" != True ]] || POINTS_PER_CALL=${#ALL_FREQS[@]}
+for csv in "${RESULT_CSVS[@]}"; do : > "${csv}"; done
+for suite in "${SUITE_LIST[@]}"; do
+  export "ACCEL_Q${QUERY}_BENCH_SUITE=${suite}"
+  SUITE_ROWS="${ACCEL_AUX_BENCH_WORK_DIR}/rows_${suite}.csv"
+  : > "${SUITE_ROWS}"
+  for ((first = 0; first < ${#ALL_FREQS[@]}; first += POINTS_PER_CALL)); do
+    points=("${ALL_FREQS[@]:first:POINTS_PER_CALL}")
+    export ACCEL_AUX_WRITE_FREQUENCIES="$(IFS=,; echo "${points[*]}")"   # the harness runs the frequencies of this variable
+    engine_measure "${BENCH_TARGET}" --query "${QUERY}" "${points[0]}"
+    printf '%s\n' "${LOG}" >> "${SWEEP_LOG}"
+    [[ ${RC} -eq 0 ]] || SWEEP_RC=${RC}
+    # keep the CSV rows (one header), drop banners
+    printf '%s\n' "${LOG}" | awk -F, -v hdr="$([[ -s "${SUITE_ROWS}" ]] && echo 1 || echo 0)" '
+      /^suite,/ { if (!hdr) { print; hdr = 1 }; next }
+      /^speedup_gate/ || /^#/ { next }
+      NF >= 10 { print }' >> "${SUITE_ROWS}"
+  done
+  # the suite's rows in order: one header, then each repeat's rows
+  offset=1
+  for i in "${!RESULT_CSVS[@]}"; do
+    [[ -s "${RESULT_CSVS[i]}" ]] || head -n1 "${SUITE_ROWS}" >> "${RESULT_CSVS[i]}"
+    sed -n "$((offset + 1)),$((offset + FREQ_COUNTS[i]))p" "${SUITE_ROWS}" >> "${RESULT_CSVS[i]}"
+    offset=$((offset + FREQ_COUNTS[i]))
+  done
 done
 printf '[%s]' "$(IFS=,; echo "${DRAWS[*]}")" > "${DRAWS_JSON}"
 

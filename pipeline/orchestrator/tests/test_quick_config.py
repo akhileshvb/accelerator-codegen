@@ -18,9 +18,9 @@ def test_the_shipped_quick_tier_block_matches_the_design():
     config = load_pipeline_config(repo_root=REPO).quick_tier
     assert config == QuickTierConfig(
         enabled=True, timeout_sec=120, build_stamp_cache=True, differential_probes=3,
-        background_gates=("aux_correctness", "aux_unit", "prims_tests", "aux_multi_connection", "aux_cross_accel"),
+        background_gates=("aux_exit", "aux_correctness", "aux_unit", "prims_tests", "aux_multi_connection", "aux_cross_accel"),
         parallel_gates=True, gate_jobs=0, write_cost_budget_share=0.5,
-        admission_gates=("aux_correctness", "aux_bench_sweep", "aux_tsan"),
+        admission_gates=("aux_exit", "aux_correctness", "aux_bench_sweep", "aux_tsan"),
     )
 
 

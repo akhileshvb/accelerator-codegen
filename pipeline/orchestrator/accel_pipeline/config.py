@@ -148,13 +148,13 @@ class QuickTierConfig:
     build_stamp_cache: bool = True
     differential_probes: int = 3
     background_gates: tuple[str, ...] = (
-        "aux_correctness", "aux_unit", "prims_tests", "aux_multi_connection", "aux_cross_accel",
+        "aux_exit", "aux_correctness", "aux_unit", "prims_tests", "aux_multi_connection", "aux_cross_accel",
     )
     parallel_gates: bool = True
     gate_jobs: int = 0  # concurrent gates in a parallel group; 0 = one per gate
     build_budget_sec: float = 15.0  # the state build projected to the full dataset (N threads) may take this long; the gates build it several times
     write_cost_budget_share: float = 0.5  # of one gate differential run's timeout (ACCEL_GATE_RUN_TIMEOUT) that quick_check lets the projected writes and builds use
-    admission_gates: tuple[str, ...] = ("aux_correctness", "aux_bench_sweep", "aux_tsan")  # run only after quick_check passed
+    admission_gates: tuple[str, ...] = ("aux_exit", "aux_correctness", "aux_bench_sweep", "aux_tsan")  # run only after quick_check passed
 
 
 def _quick_tier_config(data: dict[str, Any]) -> QuickTierConfig:
