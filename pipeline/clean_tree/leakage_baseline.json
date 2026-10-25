@@ -250,6 +250,9 @@
  "pipeline/config/workloads/tpch_q21_verus_smoke.yaml": {
   "engine": 2
  },
+ "pipeline/config/workloads/tpch_q.template.yaml": {
+  "engine": 1
+ },
  "pipeline/config/workloads/tpch_q_aux.template.yaml": {
   "engine": 1
  },
