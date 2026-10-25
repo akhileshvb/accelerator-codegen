@@ -47,6 +47,23 @@
     ],
     "escaped": "agent-reported blocker persists"
   },
+  "real_blocker": {
+    "about": "the agent reports a blocker while its code really fails quick_check; the stage's gates run once, the next round carries the blocker and the agent fixes its code",
+    "expect": [
+      "the agent reported a blocker \\(.*\\); running the stage's gates once",
+      "the agent reported a blocker \\(.*\\); it adapts in this round",
+      "gate complete: \\[\\d+/\\d+\\] aux_exit \\(implementation\\) status=pass"
+    ],
+    "escaped": "agent-reported blocker persists|pipeline stopped"
+  },
+  "primitive_extension": {
+    "about": "the agent extends a published primitive with an additive API; the publisher rebuilds the dependents and publishes",
+    "expect": [
+      "\\[tool primitive_publish\\] .*\"changed_headers\": \\[\"[^\"]+\"\\]",
+      "gate complete: \\[\\d+/\\d+\\] aux_exit \\(implementation\\) status=pass"
+    ],
+    "escaped": "\\[tool primitive_publish\\] \\{\"ok\": false"
+  },
   "stalled": {
     "about": "no edits: the footer nudges, the watchdog ends the turn, the advisor is consulted",
     "config": {

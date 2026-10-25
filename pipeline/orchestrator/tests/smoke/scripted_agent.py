@@ -275,6 +275,22 @@ def stall() -> str:
     return implementation()
 
 
+def extend_primitive() -> None:
+    """Adds an API to a published primitive (the library only grows), which rebuilds the targets that include it."""
+    name = needed_primitives(query_dir())[0]
+    staged = ROOT / "pipeline" / "prims_staging" / "accelerators" / "prims" / name
+    staged.write_text((ROOT / "accelerators" / "prims" / name).read_text() + "\ninline int ScriptedAdditiveApi() { return 1; }\n")
+    result = call_tool("primitive_publish", {"files": [f"accelerators/prims/{name}"], "rationale": "scripted agent: an additive API"})
+    if not result.get("ok"):
+        raise SystemExit(f"primitive_publish of the extension failed: {json.dumps(result)[:4000]}")
+
+
+def report_blocker_on_failing_code() -> None:
+    """Calls its failing code a blocker; the repair turn it resumes in has the code fixed."""
+    call_tool("quick_check", {})
+    call_tool("report_blocker", {"summary": "quick_check fails and I cannot see why", "evidence": "differential failed"})
+
+
 def blocker_then_linger() -> None:
     """Reports a slow gate as a blocker, but does not stop as told."""
     call_tool("report_blocker", {"summary": "aux_correctness has been running for minutes, it must be hung",
@@ -321,6 +337,9 @@ BEHAVIOURS = {
         then=lambda: call_tool("request_gate", {"gate_name": "aux_correctness"}))},
     "dismissed_check": {"implementation": lambda: implementation(rebuild_every_write, dismiss_failed_check)},
     "false_blocker": {"implementation": lambda: implementation(then=blocker_then_linger)},
+    "real_blocker": {"implementation": lambda: implementation(
+        None if RESUMED else rebuild_every_write, None if RESUMED else report_blocker_on_failing_code)},
+    "primitive_extension": {"implementation": lambda: implementation(then=extend_primitive)},
     "stalled": {"implementation": stall},
     "no_units_probe": {"analysis": lambda: broken_analysis(drop_units_probes)},
     "one_primitive": {"analysis": lambda: broken_analysis(one_primitive_for_everything)},
