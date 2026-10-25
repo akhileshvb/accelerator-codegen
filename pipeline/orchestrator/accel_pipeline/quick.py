@@ -114,6 +114,15 @@ def _unfaithful_rebuilds(pipeline_config: PipelineConfig, workload: dict[str, An
     return write_cost.unfaithful_rebuilds(reports, ts.txn_files(suite), coverage, ts.statements)
 
 
+def _last_sweep_scaling(art: Path) -> dict[str, Any]:
+    """The thread_scaling of the last passing bench sweep (the exit run's), {} when there is none."""
+    try:
+        sweep = json.loads((gates_dir_for_query(art) / "aux_bench_sweep.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return sweep.get("thread_scaling") or {} if sweep.get("status") == "pass" else {}
+
+
 def _plain_report(pipeline_config: PipelineConfig, workload: dict[str, Any], query: int, cuts: CutDatasets | None,
                   instance: dict[str, str]) -> tuple[dict[str, Any], list[str]]:
     """(the compact report of a passing plain check, the defects it shows): rebuild-on-write, writes and a build that
@@ -128,7 +137,8 @@ def _plain_report(pipeline_config: PipelineConfig, workload: dict[str, Any], que
     line, defect = check_report.build_report(
         reports, scale=cuts.scale(dependent) if cuts else 1.0, threads=check_report.gate_threads(),
         budget_s=pipeline_config.quick_tier.build_budget_sec,
-        expected_scaling=check_report.expects_scaling(load_query_analysis(pipeline_config.repo_root, query, workload=workload)[1]))
+        expected_scaling=check_report.expects_scaling(load_query_analysis(pipeline_config.repo_root, query, workload=workload)[1]),
+        sweep_scaling=_last_sweep_scaling(art))
     report.update({"build": line} if line else {})
     defects += [defect] if defect else []
     projection = _project_write_cost(pipeline_config, workload, query, cuts)
