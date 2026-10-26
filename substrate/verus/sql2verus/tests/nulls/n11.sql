@@ -1,0 +1,1 @@
+SELECT s, SUM(a) AS sa FROM t GROUP BY s HAVING SUM(a) > 3 ORDER BY s

@@ -1,0 +1,26 @@
+n01 ok-spec NULL-able
+n02 ok-spec NULL-able
+n03 ok-spec NULL-able
+n04 ok-spec NULL-able
+n05 ok-spec NULL-able
+n06 ok-spec NULL-able
+n07 ok-spec NULL-able
+n08 ok-spec NULL-able
+n09 ok-spec NULL-able
+n10 ok
+n11 ok-spec NULL-able
+n12 ok-spec NULL-able
+n13 ok-spec NULL-able
+n14 ok-spec NULL-able
+n15 ok-spec NULL-able
+n16 ok-spec NULL-able
+n17 ok-spec NULL-able
+n18 ok-spec NULL-able
+r01 refused possibly-NULL
+r02 refused NULL literal
+r03 refused CASE
+r04 refused possibly-NULL
+r05 refused NULL-able
+r06 refused NOT LIKE
+n19 ok
+n20 ok
