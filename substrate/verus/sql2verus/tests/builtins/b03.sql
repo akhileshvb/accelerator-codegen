@@ -1,0 +1,1 @@
+SELECT DATE_TRUNC('minute', ts) AS m, COUNT(*) AS n FROM ev WHERE uid = 62 GROUP BY DATE_TRUNC('minute', ts) ORDER BY DATE_TRUNC('minute', ts) LIMIT 10 OFFSET 5
