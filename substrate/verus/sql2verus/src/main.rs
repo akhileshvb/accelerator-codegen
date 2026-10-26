@@ -165,11 +165,16 @@ fn verus_ty(t: Ty) -> &'static str {
 /// A GROUP BY key value as the key: Option<T> when it may be NULL.
 fn opt_key(v: Val) -> Val {
     let Some(gd) = v.guard.clone() else { return v };
-    let code = match v.code.strip_suffix("->0") {
-        Some(c) if gd == format!("{c} is Some") => c.to_string(),
-        _ => format!("if {gd} {{ Some({}) }} else {{ None }}", v.code),
-    };
-    Val { code, guard: None, opt: true, ..v }
+    Val { code: option_of(&gd, &v.code), guard: None, opt: true, ..v }
+}
+
+/// `value` as an Option, NULL unless `guard`: a NULL-able column read as it is (`c->0`, guard
+/// `c is Some`) is the Option `c` itself.
+fn option_of(guard: &str, value: &str) -> String {
+    match value.strip_suffix("->0") {
+        Some(c) if guard == format!("{c} is Some") => c.to_string(),
+        _ => format!("if {guard} {{ Some({value}) }} else {{ None }}"),
+    }
 }
 
 /// The Verus type of a GROUP BY key.
@@ -2504,12 +2509,7 @@ fn row_expr(c: &OutCol) -> String {
         _ => v.code.clone(),
     };
     if c.nullable {
-        let g = v.guard.clone().unwrap();
-        // a NULL-able value read as it is: the Option itself
-        if let Some(opt) = base.strip_suffix("->0").filter(|o| g == format!("{o} is Some")) {
-            return opt.to_string();
-        }
-        format!("if {g} {{ Some({base}) }} else {{ None }}")
+        option_of(v.guard.as_deref().unwrap(), &base)
     } else {
         base
     }
