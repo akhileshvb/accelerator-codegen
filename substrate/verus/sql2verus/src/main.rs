@@ -74,7 +74,8 @@
 //     output column); comparisons over chosen numbers are exact.  The answer
 //     is that of some admissible choice: `full_result` is `exists|ch..|
 //     chosen(..) && full_result_with(.., ch.., out)`.  Correlated rounded
-//     aggregates and arithmetic on aggregates stay refused.
+//     aggregates and arithmetic on aggregates stay refused.  The choices are
+//     ghost in the kernel obligations: only `exists` in `full_result` sees them.
 //   * Text: = is byte equality; < and ORDER BY are bytes_lt (C collation).
 //     CHAR(n) follows the target engine (--engine): DuckDB has no padded
 //     CHAR (it is VARCHAR), so CHAR compares as bytes, trailing spaces
@@ -3284,9 +3285,7 @@ fn print(tr: &Tr, top: &Top, sql: &str, src_name: &str) -> String {
         writeln!(w, "}}\n").unwrap();
     }
     let avail = print_facts(w, top, approx, &defined);
-    if op.is_empty() {
-        print_defined(w, top, avail, &defined);
-    }
+    print_defined(w, top, avail, &defined);
     let tables: Vec<String> = tr.used.keys().map(|t| table_field(t)).collect();
     tr.perm.print(w, &tables, top, &defined);
     writeln!(w, "}} // verus!").unwrap();
@@ -3848,9 +3847,6 @@ async fn run() -> Res<()> {
     std::fs::write(&out_path, &text).map_err(|e| format!("{out_path}: {e}"))?;
     let opt = |k: &str| args.iter().position(|a| a == k).and_then(|i| args.get(i + 1)).cloned();
     if let Some(ob_path) = opt("--obligations") {
-        if !top.block.outer.is_empty() {
-            return Err("obligations: the engine's rounded float aggregates (chosen values) have no kernel obligations".into());
-        }
         let inputs = match opt("--inputs") {
             Some(p) => {
                 let t = std::fs::read_to_string(&p).map_err(|e| format!("{p}: {e}"))?;

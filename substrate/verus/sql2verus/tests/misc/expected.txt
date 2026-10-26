@@ -19,7 +19,7 @@ m16 ok
 m17 ok
 m18 ok
 m19 ok
-m20 ok-spec rounded float aggregates
+m20 ok
 m21 ok
 m22 ok
 m23 refused window functions
