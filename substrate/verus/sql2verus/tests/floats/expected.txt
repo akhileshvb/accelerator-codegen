@@ -1,0 +1,19 @@
+# <query> ok | <query> refused <text the refusal must contain>
+# <query> ok-spec <text the obligations refusal must contain>: spec only
+f01 ok-spec rounded float aggregates
+f02 ok-spec rounded float aggregates
+f03 ok-spec rounded float aggregates
+f04 ok-spec rounded float aggregates
+f05 ok-spec rounded float aggregates
+f06 ok-spec rounded float aggregates
+f07 ok-spec rounded float aggregates
+f08 ok-spec rounded float aggregates
+f09 ok-spec no runtime type for Flt
+f10 ok-spec rounded float aggregates
+r01 refused comparison of a computed float
+r02 refused arithmetic on float aggregates
+r03 refused rounded float aggregate in a correlated subquery
+r04 refused computed float
+r05 refused arithmetic on float aggregates
+f11 ok-spec rounded float aggregates
+f12 ok-spec rounded float aggregates

@@ -19,7 +19,7 @@ m16 ok
 m17 ok-spec no runtime type for Flt
 m18 ok
 m19 ok
-m20 refused derived table t
+m20 ok-spec rounded float aggregates
 m21 ok
 m22 ok
 m23 refused window functions

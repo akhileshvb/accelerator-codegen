@@ -1,6 +1,6 @@
 s1 ok-spec NULL-able
 s2 ok-spec NULL-able
-s3 refused computed float
+s3 ok-spec rounded float aggregates
 s4 ok-spec NULL-able
 s6 ok-spec NULL-able
 s24 ok-spec NULL-able
