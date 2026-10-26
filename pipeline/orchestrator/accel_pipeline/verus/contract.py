@@ -23,6 +23,7 @@ import datetime as dt
 import json
 import re
 import shutil
+import struct
 from collections import Counter
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -84,6 +85,8 @@ def norm_recorded(v: Any, tag: str) -> Any:
         return "true" if int(v) else "false"
     if tag == "ts":
         return int(v)
+    if tag == "f64":
+        return struct.unpack("<d", struct.pack("<Q", int(v)))[0]
     if tag.startswith("dec"):
         return Decimal(int(v)).scaleb(-int(tag[3:])).normalize()
     return int(v)
@@ -101,6 +104,8 @@ def norm_sql(v: str, tag: str) -> Any:
             return "true" if v.lower() in ("true", "1", "t") else "false"
         if tag == "ts":
             return _ns_of(v)
+        if tag == "f64":
+            return float(v)
         if tag.startswith("dec"):
             return Decimal(v).normalize()
         return int(Decimal(v))

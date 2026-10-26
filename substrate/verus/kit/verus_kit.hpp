@@ -14,7 +14,7 @@
 // only its own generated files: nothing shared is edited.
 //
 // Cells convert exactly or throw Declined (a NULL, or a value outside the
-// kernel's runtime type): the module then rebuilds or answers with SQL.
+// kernel's runtime type, e.g. a non-finite DOUBLE): the module then rebuilds or answers with SQL.
 //
 // Fault injection (tests only): ACCEL_VERUS_KIT_FAULT selects one deliberate
 // bug, so a test suite can show that it catches it:
@@ -56,6 +56,8 @@ int32_t Date(const core::AuxRow &row, std::size_t i);
 int64_t Ts(const core::AuxRow &row, std::size_t i);
 // A boolean as 0 / 1.
 uint8_t Bool(const core::AuxRow &row, std::size_t i);
+// A DOUBLE as its IEEE-754 bits (Declined if NaN or infinite: outside the kernel's type).
+uint64_t F64(const core::AuxRow &row, std::size_t i);
 // Text bytes.
 const std::string &Text(const core::AuxRow &row, std::size_t i);
 
@@ -87,6 +89,8 @@ core::AuxValue OutText(const uint8_t *bytes, std::size_t len);
 core::AuxValue OutI64(int64_t v);
 core::AuxValue OutDate(int32_t days);
 core::AuxValue OutBool(uint8_t v);
+// A DOUBLE from its IEEE-754 bits.
+core::AuxValue OutF64(uint64_t bits);
 // A timestamp (nanoseconds since the epoch) as exact text.
 core::AuxValue OutTs(int64_t ns);
 // An i128 decimal (value * 10^scale) as exact text.

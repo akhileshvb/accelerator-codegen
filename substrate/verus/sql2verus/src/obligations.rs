@@ -29,9 +29,11 @@
 //     projection relation.  The full deltas satisfy bag_step per table.
 //   * Runtime types: integer -> i64, DECIMAL -> i64 (value * 10^s), DATE ->
 //     i32 (days since 1970-01-01), TIMESTAMP -> i64 (ns), text -> Vec<u8>,
-//     boolean -> u8 (nonzero = true).  Results: integer -> i64, DECIMAL ->
-//     i128, AVG / fractions -> (i128, i128) as (num, den), NULL-able ->
-//     Option.  Parameters: text -> &[u8], else as for rows.
+//     boolean -> u8 (nonzero = true), DOUBLE -> u64 (IEEE-754 bits, finite;
+//     the spec value is verus_common::rel::f64_val).  Results: integer ->
+//     i64, DECIMAL -> i128, AVG / fractions -> (i128, i128) as (num, den),
+//     DOUBLE -> u64 bits, NULL-able -> Option.  Parameters: text -> &[u8],
+//     else as for rows.
 //   * A row type without text is #[repr(C)] + Copy and passed as a slice;
 //     one with text is passed as an owned Vec (build) or &Vec (apply).
 //   * The kernel provides crate::kernel::{State, build, execute, apply,
@@ -154,6 +156,7 @@ fn rt_ty(t: Ty) -> Res<&'static str> {
         Ty::Date => "i32",
         Ty::Text => "Vec<u8>",
         Ty::Bool => "u8",
+        Ty::Flt(1) => "u64",
         other => bail!("no runtime type for {other:?} in a scan / delta row"),
     })
 }
@@ -163,6 +166,7 @@ fn rt_view(x: &str, t: Ty) -> String {
     match t {
         Ty::Text => format!("{x}@"),
         Ty::Bool => format!("({x} != 0)"),
+        Ty::Flt(_) => format!("f64_val({x})"),
         _ => format!("{x} as int"),
     }
 }
@@ -512,6 +516,7 @@ fn prim_tag(rt: &str) -> &'static str {
         "i64" => "i64",
         "i32" => "i32",
         "u8" => "u8",
+        "u64" => "u64",
         _ => "bytes",
     }
 }
@@ -528,6 +533,7 @@ fn prim_ty_of(rt: &str) -> Ty {
     match rt {
         "Vec<u8>" => Ty::Text,
         "u8" => Ty::Bool,
+        "u64" => Ty::Flt(1),
         _ => Ty::Int,
     }
 }
@@ -905,9 +911,6 @@ pub(crate) async fn obligations(
     let mut outs_rt: Vec<(&'static str, bool, Ty)> = vec![];
     let mut out_fits = vec![];
     for (k, c) in b.outs.iter().enumerate() {
-        if c.val.approx.is_some() {
-            bail!("result column {}: a rounded float has no exact runtime value", c.sql);
-        }
         let (rt, view): (&str, Box<dyn Fn(&str) -> String>) = match c.val.ty {
             Ty::Text => ("Vec<u8>", Box::new(|x: &str| format!("{x}@"))),
             Ty::Bool => ("bool", Box::new(|x: &str| x.to_string())),
@@ -915,6 +918,7 @@ pub(crate) async fn obligations(
             Ty::Dec(_) => ("i128", Box::new(|x: &str| format!("{x} as int"))),
             Ty::Date => ("i32", Box::new(|x: &str| format!("{x} as int"))),
             Ty::Int | Ty::Ts => ("i64", Box::new(|x: &str| format!("{x} as int"))),
+            Ty::Flt(1) => ("u64", Box::new(|x: &str| format!("f64_val({x})"))),
             other => bail!("result column {}: {other:?}", c.sql),
         };
         outs_rt.push((rt, c.nullable, c.val.ty));
@@ -922,6 +926,7 @@ pub(crate) async fn obligations(
             "i128" => Some(range_of(x, i128::MIN, i128::MAX)),
             "i64" => Some(range_of(x, i64::MIN as i128, i64::MAX as i128)),
             "i32" => Some(range_of(x, i32::MIN as i128, i32::MAX as i128)),
+            "u64" => Some(format!("f64_in_range({x})")),
             "(i128, i128)" => Some(format!("{} && {}", range_of(&format!("{x}.num"), i128::MIN, i128::MAX),
                                            range_of(&format!("{x}.den"), i128::MIN, i128::MAX))),
             _ => None,
@@ -979,6 +984,10 @@ pub(crate) async fn obligations(
             format!("envelope(s.db()) && answer_fits(s.db(), params({})) ==> r is Some", pargs.join(", ")),
         ],
     });
+    if outs_rt.iter().any(|o| o.0 == "u64") {
+        // a rounded float is only bounded by the spec: the bits it returns must still be finite
+        fns.last_mut().unwrap().ensures.push("r matches Some(out) ==> forall|i: int| 0 <= i < out.len() ==> out_fits(#[trigger] out_view(out@)[i])".into());
+    }
     let delta_params = |deltas: &BTreeMap<String, DeltaOut>| -> Vec<P> {
         deltas
             .values()
@@ -1101,7 +1110,13 @@ pub(crate) async fn obligations(
         let bounds: Vec<String> = ob
             .db_cols(t)
             .iter()
-            .filter_map(|c| ob.tr.sch.col_range.get(&(t.clone(), c.clone())).map(|&(lo, hi)| range_of(&format!("r.{}", sanitize(c)), lo, hi)))
+            .filter_map(|c| {
+                let x = format!("r.{}", sanitize(c));
+                match ob.tr.sch.col_ty[&(t.clone(), c.clone())].0 {
+                    Some(Ty::Flt(_)) => Some(format!("f64_in_range({x})")),
+                    _ => ob.tr.sch.col_range.get(&(t.clone(), c.clone())).map(|&(lo, hi)| range_of(&x, lo, hi)),
+                }
+            })
             .collect();
         if !bounds.is_empty() {
             writeln!(w, "/// Each value of {t} lies in the range of its column's SQL type.").unwrap();
@@ -1117,7 +1132,7 @@ pub(crate) async fn obligations(
     }
     writeln!(w, "}}\n").unwrap();
     writeln!(w, "/// An answer row whose values fit the result's runtime types.").unwrap();
-    writeln!(w, "pub open spec fn out_fits(r: OutRow) -> bool {{\n    {}\n}}\n", if out_fits.is_empty() { "true".to_string() } else { out_fits.join("\n    && ") }).unwrap();
+    writeln!(w, "pub open spec fn out_fits(r: OutRow) -> bool {{\n    {}\n}}\n", if out_fits.is_empty() { "true".to_string() } else { out_fits.iter().map(|f| if out_fits.len() > 1 && f.starts_with("match") { format!("({f})") } else { f.clone() }).collect::<Vec<_>>().join("\n    && ") }).unwrap();
     writeln!(w, "/// A correct answer exists (`defined`: no divisor is zero; gen_spec.rs proves").unwrap();
     writeln!(w, "/// `defined <==> exists an answer`) and every correct answer fits: at most max_rows()").unwrap();
     writeln!(w, "/// rows, each in the result's runtime types.  A kernel that declines because no answer").unwrap();

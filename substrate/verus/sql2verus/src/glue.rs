@@ -38,7 +38,8 @@
 //   * text parameter `p`: `const uint8_t *p, size_t p__len`; scalars by value;
 //   * results: <p>_result_len, and per column k <p>_result_c<k>(r, i, out..)
 //     returning 0 for NULL, else 1 and the value in out: text as
-//     (const uint8_t **, size_t *), bool as uint8_t, i32 / i64 as is, i128 as
+//     (const uint8_t **, size_t *), bool as uint8_t, i32 / i64 / u64 as is (a
+//     DOUBLE is its u64 bits), i128 as
 //     (int64_t hi, uint64_t lo), a fraction as two i128 (num, den).
 use super::*;
 use crate::obligations::*;
@@ -348,6 +349,7 @@ impl<'m> Ffi<'m> {
             Ty::Ts => "ts".into(),
             Ty::Bool => "bool".into(),
             Ty::Text => "text".into(),
+            Ty::Flt(_) => "f64".into(),
             _ => "int".into(),
         }
     }
@@ -514,7 +516,7 @@ impl<'m> Ffi<'m> {
                     cp.push("uint8_t *out".into());
                     "*out = *x as u8;"
                 }
-                "i32" | "i64" => {
+                "i32" | "i64" | "u64" => {
                     rp.push(format!("out: *mut {rt}"));
                     cp.push(format!("{} *out", c_prim(rt)));
                     "*out = *x;"
@@ -778,11 +780,11 @@ pub(crate) fn ffi(m: &Model, prefix: &str, header_name: &str) -> Res<(String, St
 //   * a delta row is the captured row of its table's captured columns (by
 //     name; the engine resolves them); a lossy field is computed from it
 //     only for comparisons of columns and literals (anything else: refused);
-//   * cells convert exactly (decimals rescaled without loss, dates as days);
-//     a NULL or mismatched cell declines (the module then rebuilds or answers
+//   * cells convert exactly (decimals rescaled without loss, dates as days,
+//     DOUBLE as its IEEE-754 bits, declined if not finite); a NULL or mismatched cell declines (the module then rebuilds or answers
 //     with SQL);
 //   * results: text, integers, dates and booleans as such, decimals as exact
-//     text, fractions as doubles.
+//     text, fractions as doubles, DOUBLE bits as doubles.
 
 /// A Rust/SQL type's kit cell reader on row `row`, column `i`.
 fn kit_conv(ty: Ty, row: &str, i: usize) -> Res<String> {
@@ -793,6 +795,7 @@ fn kit_conv(ty: Ty, row: &str, i: usize) -> Res<String> {
         Ty::Date => format!("kit::Date({row}, {i})"),
         Ty::Bool => format!("kit::Bool({row}, {i})"),
         Ty::Text => format!("kit::Text({row}, {i})"),
+        Ty::Flt(1) => format!("kit::F64({row}, {i})"),
         other => bail!("host glue: no kit reader for {other:?} columns"),
     })
 }
@@ -1179,6 +1182,7 @@ pub(crate) fn kit(m: &Model, prefix: &str, header: &str, accel_id: &str, workloa
             "i64" if *ty == Ty::Ts => format!("int64_t v{k} = 0;\n      row.values.push_back({acc}(r, i, &v{k}) ? kit::OutTs(v{k}) : kit::OutNull(core::AuxType::String));"),
             "i64" => format!("int64_t v{k} = 0;\n      row.values.push_back({acc}(r, i, &v{k}) ? kit::OutI64(v{k}) : kit::OutNull(core::AuxType::Int64));"),
             "i32" => format!("int32_t v{k} = 0;\n      row.values.push_back({acc}(r, i, &v{k}) ? kit::OutDate(v{k}) : kit::OutNull(core::AuxType::Date));"),
+            "u64" => format!("uint64_t v{k} = 0;\n      row.values.push_back({acc}(r, i, &v{k}) ? kit::OutF64(v{k}) : kit::OutNull(core::AuxType::Double));"),
             "bool" => format!("uint8_t v{k} = 0;\n      row.values.push_back({acc}(r, i, &v{k}) ? kit::OutBool(v{k}) : kit::OutNull(core::AuxType::Boolean));"),
             "i128" => {
                 let sc = if let Ty::Dec(s) = ty { *s } else { 0 };
