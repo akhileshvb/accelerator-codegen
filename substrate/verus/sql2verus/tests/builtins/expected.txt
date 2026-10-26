@@ -1,0 +1,12 @@
+# small built-ins (DuckDB), ORDER BY keys outside the SELECT list, COUNT(*) alone, SQL-standard type names
+b01 ok
+b02 ok
+b03 ok
+b04 ok
+b05 ok
+b06 ok
+b07 ok
+b08 ok
+b09 refused date_trunc(quarter)
+b10 refused EXTRACT(HOUR) from Date
+b11 refused only output columns

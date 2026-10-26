@@ -71,6 +71,11 @@ pub open spec fn civil_year(d: int) -> int {
     civil_yoe(d) + ((d + 719468) / 146097) * 400 + (if civil_month(d) <= 2 { 1int } else { 0 })
 }
 
+/// The day number of January 1st of year y.
+pub open spec fn year_start(y: int) -> int {
+    365 * (y - 1970) + (y - 1969) / 4 - (y - 1901) / 100 + (y - 1601) / 400
+}
+
 /// a/b < c/d for non-zero b and d (multiply through by (b d)^2 > 0).
 pub open spec fn ratio_lt(a: int, b: int, c: int, d: int) -> bool {
     a * b * d * d < c * d * b * b

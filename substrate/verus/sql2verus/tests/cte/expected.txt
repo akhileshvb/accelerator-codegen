@@ -1,0 +1,11 @@
+# a CTE (or an alias of one) read more than once; INTERSECT / EXCEPT stay refused
+c01 ok
+c02 ok
+c03 ok
+c04 ok
+c05 ok
+c06 ok
+c07 ok
+c08 refused INTERSECT / EXCEPT
+c09 refused INTERSECT / EXCEPT
+c10 ok

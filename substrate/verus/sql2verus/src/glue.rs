@@ -1207,7 +1207,7 @@ pub(crate) fn kit(m: &Model, prefix: &str, header: &str, accel_id: &str, workloa
     }
     writeln!(w, "  {p}_result *r = {p}_execute({});\n  if (!r)\n    return false;", eargs.join(", ")).unwrap();
     writeln!(w, "  const size_t n = {p}_result_len(r);\n  out.reserve(out.size() + n);\n  for (size_t i = 0; i < n; ++i) {{\n    core::AuxRow row;").unwrap();
-    for (k, (rt, _, ty)) in m.outs.iter().enumerate() {
+    for (k, (rt, _, ty)) in m.outs.iter().take(m.visible).enumerate() {
         let acc = format!("{p}_result_c{k}");
         let line = match *rt {
             "Vec<u8>" => format!("const uint8_t *b{k} = nullptr;\n      size_t l{k} = 0;\n      row.values.push_back({acc}(r, i, &b{k}, &l{k}) ? kit::OutText(b{k}, l{k}) : kit::OutNull(core::AuxType::String));"),

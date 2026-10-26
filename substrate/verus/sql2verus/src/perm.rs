@@ -18,7 +18,7 @@
 // A construct without a lemma here (e.g. a join of several indexes inside
 // EXISTS) makes `skip` non-empty: the spec is then emitted without the
 // section, with a comment saying why.
-use crate::{as_bag, bool_code, camel, cut, key_cols, key_tuple_args, key_tuple_ty, key_tuple_val, key_ty, row_expr, table_field, Block, Shape, Top};
+use crate::{as_bag, bool_code, camel, cut, key_cols, key_tuple_args, key_tuple_ty, key_tuple_val, key_ty, row_expr, Block, Shape, Top};
 use std::fmt::Write;
 
 const HIDE: &str = "    /*HIDE*/\n";

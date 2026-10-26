@@ -4,10 +4,10 @@ g03 refused integer / integer
 g04 ok
 g05 refused integer / integer
 g06 ok
-g07 ok-spec an empty row type
+g07 ok
 g08 ok
 g09 ok
-g10 refused ORDER BY an expression
+g10 ok
 g11 ok
 g12 ok
 g13 ok

@@ -1,0 +1,5 @@
+# TPC-DS (NOT NULL schema): a CTE referenced more than once
+q01 ok
+q30 ok
+q81 ok
+q64 ok
