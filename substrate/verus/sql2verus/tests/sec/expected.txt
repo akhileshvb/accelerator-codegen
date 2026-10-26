@@ -1,0 +1,5 @@
+# <query> ok | <query> refused <text the refusal must contain>
+# <query> ok-spec <text the obligations refusal must contain>: spec only
+s1 ok
+s4 ok
+s6 ok

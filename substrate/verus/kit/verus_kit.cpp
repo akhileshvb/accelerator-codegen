@@ -951,6 +951,10 @@ uint8_t Bool(const core::AuxRow &row, std::size_t i) {
   throw Declined("not a boolean cell");
 }
 
+bool IsNull(const core::AuxRow &row, std::size_t i) { return i >= row.values.size() || row.values[i].is_null; }
+
+const std::string kNoText;
+
 uint64_t F64(const core::AuxRow &row, std::size_t i) {
   const auto &v = Cell(row, i);
   double d;

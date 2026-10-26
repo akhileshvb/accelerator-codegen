@@ -357,25 +357,34 @@ impl<'m> Ffi<'m> {
     /// Record-mode description of a row element: field `name:tag`s and the
     /// Rust statements writing row `r`'s values (flattened) as JSON.
     fn rec_row(&self, el: &Elem, prim: Ty, r: &str, prefix: &str, fields: &mut Vec<String>, stmts: &mut Vec<String>) {
-        let val = |ty: Ty, rt: &str, expr: String, fields: &mut Vec<String>, stmts: &mut Vec<String>, name: String| {
+        // `null`: the NULL flag of a NULL-able value, logged as JSON null
+        let val = |ty: Ty, rt: &str, expr: String, null: Option<String>, fields: &mut Vec<String>, stmts: &mut Vec<String>, name: String| {
             fields.push(format!("{name}:{}", Self::rec_tag(ty)));
-            stmts.push(if rt == "Vec<u8>" { format!("rec_text(&{expr}, o);") } else { format!("o.push_str(&({expr}).to_string());") });
+            let write = if rt == "Vec<u8>" { format!("rec_text(&{expr}, o);") } else { format!("o.push_str(&({expr}).to_string());") };
+            stmts.push(match null {
+                Some(flag) => format!("if {flag} != 0 {{ o.push_str(\"null\"); }} else {{ {write} }}"),
+                None => write,
+            });
         };
         match el {
-            Elem::Prim(rt) => val(prim, rt, format!("*{r}"), fields, stmts, if prefix.is_empty() { "value".into() } else { prefix.trim_end_matches('.').into() }),
+            Elem::Prim(rt) => val(prim, rt, format!("*{r}"), None, fields, stmts, if prefix.is_empty() { "value".into() } else { prefix.trim_end_matches('.').into() }),
             Elem::Struct(n) => {
                 let st = strukt(self.m, n);
                 for (i, (f, fe)) in st.fields.iter().enumerate() {
                     match fe {
                         Elem::Struct(_) => self.rec_row(fe, Ty::Int, &format!("{r}.{f}"), &format!("{prefix}{f}."), fields, stmts),
-                        Elem::Prim(rt) => val(st.tys[i], rt, format!("{r}.{f}"), fields, stmts, format!("{prefix}{f}")),
+                        Elem::Prim(_) if st.is_flag(f) => {}
+                        Elem::Prim(rt) => {
+                            let null = st.cell_of(f).is_some_and(|c| c.1).then(|| format!("{r}.{}", null_flag(f)));
+                            val(st.tys[i], rt, format!("{r}.{f}"), null, fields, stmts, format!("{prefix}{f}"))
+                        }
                         Elem::Pair(_) => unreachable!(),
                     }
                 }
             }
             Elem::Pair(n) => {
                 self.rec_row(&Elem::Struct(n.clone()), Ty::Int, &format!("{r}.0"), &format!("{prefix}row."), fields, stmts);
-                val(Ty::Int, "i64", format!("{r}.1"), fields, stmts, format!("{prefix}sign"));
+                val(Ty::Int, "i64", format!("{r}.1"), None, fields, stmts, format!("{prefix}sign"));
             }
         }
     }
@@ -800,6 +809,26 @@ fn kit_conv(ty: Ty, row: &str, i: usize) -> Res<String> {
     })
 }
 
+/// A struct field's value from cell `i` of `row`: the cell, the NULL-flag of a NULL-able
+/// cell, or (for a NULL-able cell) the type's zero in place of a NULL.
+fn kit_field(ty: Ty, row: &str, i: usize, nullable: bool, flag: bool) -> Res<String> {
+    if flag {
+        return Ok(format!("static_cast<uint8_t>(kit::IsNull({row}, {i}))"));
+    }
+    let v = kit_conv(ty, row, i)?;
+    if !nullable {
+        return Ok(v);
+    }
+    let zero = match ty {
+        Ty::Text => "kit::kNoText",
+        Ty::Date => "int32_t{0}",
+        Ty::Bool => "uint8_t{0}",
+        Ty::Flt(_) => "uint64_t{0}",
+        _ => "int64_t{0}",
+    };
+    Ok(format!("(kit::IsNull({row}, {i}) ? {zero} : {v})"))
+}
+
 /// A C++ string literal of exact bytes.
 fn cpp_bytes(s: &str) -> String {
     let mut o = String::from("std::string(\"");
@@ -960,7 +989,8 @@ impl<'m> Ffi<'m> {
             (Elem::Struct(n), [f]) => {
                 let s = strukt(self.m, n);
                 let i = s.fields.iter().position(|x| &x.0 == f).ok_or_else(|| format!("host glue: {n} has no field {f}"))?;
-                kit_conv(s.tys[i], "r", i)
+                let (cell, nullable) = s.cell_of(f).unwrap();
+                kit_field(s.tys[i], "r", cell, nullable, s.is_flag(f))
             }
             _ => bail!("host glue: scan {}: unexpected field path {path:?}", sd.name),
         }
@@ -975,7 +1005,8 @@ impl<'m> Ffi<'m> {
                 [f] => {
                     let (_, src, ty) = dd.fields.iter().find(|x| &x.0 == *f).ok_or_else(|| format!("host glue: delta {}: no field {f}", dd.table))?;
                     match src {
-                        FieldSrc::Col(i) => kit_conv(*ty, "c.row", *i),
+                        FieldSrc::Col(i, nullable) => kit_field(*ty, "c.row", *i, *nullable, false),
+                        FieldSrc::NullOf(i) => kit_field(*ty, "c.row", *i, true, true),
                         FieldSrc::Expr(e) => {
                             let (code, k) = kit_expr(e, &dd.cols, "c.row")?;
                             match (ty, k) {

@@ -13,8 +13,10 @@
 // that finds registered Glues (see the engine runtimes).  A new query adds
 // only its own generated files: nothing shared is edited.
 //
-// Cells convert exactly or throw Declined (a NULL, or a value outside the
-// kernel's runtime type, e.g. a non-finite DOUBLE): the module then rebuilds or answers with SQL.
+// Cells convert exactly or throw Declined (a value outside the kernel's runtime
+// type, e.g. a non-finite DOUBLE): the module then rebuilds or answers with SQL.
+// A NULL cell throws too, except where the glue tests IsNull first: the kernel's
+// NULL-able fields carry an explicit flag.
 //
 // Fault injection (tests only): ACCEL_VERUS_KIT_FAULT selects one deliberate
 // bug, so a test suite can show that it catches it:
@@ -58,6 +60,10 @@ int64_t Ts(const core::AuxRow &row, std::size_t i);
 uint8_t Bool(const core::AuxRow &row, std::size_t i);
 // A DOUBLE as its IEEE-754 bits (Declined if NaN or infinite: outside the kernel's type).
 uint64_t F64(const core::AuxRow &row, std::size_t i);
+// Whether the cell is NULL (a missing cell counts as NULL).
+bool IsNull(const core::AuxRow &row, std::size_t i);
+// The text of a NULL cell, for a NULL-able field's value slot.
+extern const std::string kNoText;
 // Text bytes.
 const std::string &Text(const core::AuxRow &row, std::size_t i);
 

@@ -77,6 +77,8 @@ def _ns_of(text: str) -> int:
 
 
 def norm_recorded(v: Any, tag: str) -> Any:
+    if v is None:
+        return None
     if tag == "text":
         return bytes.fromhex(v)
     if tag == "date":
