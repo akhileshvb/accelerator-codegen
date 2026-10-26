@@ -26,6 +26,7 @@
 //     prepared_free / begin / abort / install / read / state_release /
 //     invalidate_all / version_count).
 // Marshalling (fixed):
+//   * a NULL flag `<field>__null` is one more u8 field (column) after its value;
 //   * rows (`x`): `size_t x__n`, then
 //       - a primitive without text, or a struct without text: one array
 //         `x` (#[repr(C)] structs; the header declares them as

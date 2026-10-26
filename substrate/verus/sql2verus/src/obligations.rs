@@ -34,6 +34,11 @@
 //     i64, DECIMAL -> i128, AVG / fractions -> (i128, i128) as (num, den),
 //     DOUBLE -> u64 bits, NULL-able -> Option.  Parameters: text -> &[u8],
 //     else as for rows.
+//   * A NULL-able column is a row field plus a u8 flag `<field>__null`
+//     (nonzero: NULL, the value is then unspecified); its spec view is an
+//     Option and NULL is inside the envelope.  A scan of one NULL-able
+//     column, a NULL-able KEYS column, and a lossy delta over NULL-able
+//     values are refused.
 //   * A row type without text is #[repr(C)] + Copy and passed as a slice;
 //     one with text is passed as an owned Vec (build) or &Vec (apply).
 //   * The kernel provides crate::kernel::{State, build, execute, apply,
