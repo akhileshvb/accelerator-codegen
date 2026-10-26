@@ -1,6 +1,6 @@
 s1 ok
 s2 ok
-s3 ok-spec rounded float aggregates
+s3 ok
 s4 ok
 s6 ok
 s24 ok

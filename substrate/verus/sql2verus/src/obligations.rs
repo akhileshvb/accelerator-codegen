@@ -34,6 +34,10 @@
 //     i64, DECIMAL -> i128, AVG / fractions -> (i128, i128) as (num, den),
 //     DOUBLE -> u64 bits, NULL-able -> Option.  Parameters: text -> &[u8],
 //     else as for rows.
+//   * Engine-chosen floats (main.rs, `chosen`) stay ghost: `query_result`
+//     quantifies over them.  The kernel returns the rows, whose float columns
+//     carry the values it chose, and proves them (HAVING outcomes included)
+//     for some choice within the bounds, e.g. the exact value rounded.
 //   * A NULL-able column is a row field plus a u8 flag `<field>__null`
 //     (nonzero: NULL, the value is then unspecified); its spec view is an
 //     Option and NULL is inside the envelope.  A scan of one NULL-able
