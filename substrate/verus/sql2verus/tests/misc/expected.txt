@@ -1,33 +1,33 @@
 # <query> ok | <query> refused <text the refusal must contain>
 # <query> ok-spec <text the obligations refusal must contain>: spec only
-m01 ok-spec no runtime type for Flt
-m02 ok-spec no runtime type for Flt
+m01 ok
+m02 ok-spec result column a: Flt(2)
 m03 ok
 m04 ok
 m05 ok
 m06 ok
 m07 ok
 m08 ok
-m09 ok-spec NULL-able
+m09 ok
 m10 ok
-m11 ok-spec no runtime type for Flt
+m11 ok
 m12 ok
 m13 ok
-m14 ok-spec no runtime type for Flt
+m14 ok
 m15 ok
 m16 ok
-m17 ok-spec no runtime type for Flt
+m17 ok
 m18 ok
 m19 ok
 m20 ok-spec rounded float aggregates
 m21 ok
 m22 ok
 m23 refused window functions
-m24 ok-spec no runtime type for Flt
+m24 ok
 m25 ok
 m26 ok
 m27 refused comparison of a computed float
-m28 ok-spec no runtime type for Flt
+m28 ok
 m29 refused Full join
 m30 ok
 m31 ok

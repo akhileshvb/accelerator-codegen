@@ -1,0 +1,1 @@
+SELECT x, COUNT(*) AS n FROM m GROUP BY x ORDER BY x

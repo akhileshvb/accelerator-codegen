@@ -26,6 +26,7 @@
 //     prepared_free / begin / abort / install / read / state_release /
 //     invalidate_all / version_count).
 // Marshalling (fixed):
+//   * a NULL flag `<field>__null` is one more u8 field (column) after its value;
 //   * rows (`x`): `size_t x__n`, then
 //       - a primitive without text, or a struct without text: one array
 //         `x` (#[repr(C)] structs; the header declares them as
@@ -38,7 +39,8 @@
 //   * text parameter `p`: `const uint8_t *p, size_t p__len`; scalars by value;
 //   * results: <p>_result_len, and per column k <p>_result_c<k>(r, i, out..)
 //     returning 0 for NULL, else 1 and the value in out: text as
-//     (const uint8_t **, size_t *), bool as uint8_t, i32 / i64 as is, i128 as
+//     (const uint8_t **, size_t *), bool as uint8_t, i32 / i64 / u64 as is (a
+//     DOUBLE is its u64 bits), i128 as
 //     (int64_t hi, uint64_t lo), a fraction as two i128 (num, den).
 use super::*;
 use crate::obligations::*;
@@ -348,6 +350,7 @@ impl<'m> Ffi<'m> {
             Ty::Ts => "ts".into(),
             Ty::Bool => "bool".into(),
             Ty::Text => "text".into(),
+            Ty::Flt(_) => "f64".into(),
             _ => "int".into(),
         }
     }
@@ -355,25 +358,34 @@ impl<'m> Ffi<'m> {
     /// Record-mode description of a row element: field `name:tag`s and the
     /// Rust statements writing row `r`'s values (flattened) as JSON.
     fn rec_row(&self, el: &Elem, prim: Ty, r: &str, prefix: &str, fields: &mut Vec<String>, stmts: &mut Vec<String>) {
-        let val = |ty: Ty, rt: &str, expr: String, fields: &mut Vec<String>, stmts: &mut Vec<String>, name: String| {
+        // `null`: the NULL flag of a NULL-able value, logged as JSON null
+        let val = |ty: Ty, rt: &str, expr: String, null: Option<String>, fields: &mut Vec<String>, stmts: &mut Vec<String>, name: String| {
             fields.push(format!("{name}:{}", Self::rec_tag(ty)));
-            stmts.push(if rt == "Vec<u8>" { format!("rec_text(&{expr}, o);") } else { format!("o.push_str(&({expr}).to_string());") });
+            let write = if rt == "Vec<u8>" { format!("rec_text(&{expr}, o);") } else { format!("o.push_str(&({expr}).to_string());") };
+            stmts.push(match null {
+                Some(flag) => format!("if {flag} != 0 {{ o.push_str(\"null\"); }} else {{ {write} }}"),
+                None => write,
+            });
         };
         match el {
-            Elem::Prim(rt) => val(prim, rt, format!("*{r}"), fields, stmts, if prefix.is_empty() { "value".into() } else { prefix.trim_end_matches('.').into() }),
+            Elem::Prim(rt) => val(prim, rt, format!("*{r}"), None, fields, stmts, if prefix.is_empty() { "value".into() } else { prefix.trim_end_matches('.').into() }),
             Elem::Struct(n) => {
                 let st = strukt(self.m, n);
                 for (i, (f, fe)) in st.fields.iter().enumerate() {
                     match fe {
                         Elem::Struct(_) => self.rec_row(fe, Ty::Int, &format!("{r}.{f}"), &format!("{prefix}{f}."), fields, stmts),
-                        Elem::Prim(rt) => val(st.tys[i], rt, format!("{r}.{f}"), fields, stmts, format!("{prefix}{f}")),
+                        Elem::Prim(_) if st.is_flag(f) => {}
+                        Elem::Prim(rt) => {
+                            let null = st.cell_of(f).is_some_and(|c| c.1).then(|| format!("{r}.{}", null_flag(f)));
+                            val(st.tys[i], rt, format!("{r}.{f}"), null, fields, stmts, format!("{prefix}{f}"))
+                        }
                         Elem::Pair(_) => unreachable!(),
                     }
                 }
             }
             Elem::Pair(n) => {
                 self.rec_row(&Elem::Struct(n.clone()), Ty::Int, &format!("{r}.0"), &format!("{prefix}row."), fields, stmts);
-                val(Ty::Int, "i64", format!("{r}.1"), fields, stmts, format!("{prefix}sign"));
+                val(Ty::Int, "i64", format!("{r}.1"), None, fields, stmts, format!("{prefix}sign"));
             }
         }
     }
@@ -514,7 +526,7 @@ impl<'m> Ffi<'m> {
                     cp.push("uint8_t *out".into());
                     "*out = *x as u8;"
                 }
-                "i32" | "i64" => {
+                "i32" | "i64" | "u64" => {
                     rp.push(format!("out: *mut {rt}"));
                     cp.push(format!("{} *out", c_prim(rt)));
                     "*out = *x;"
@@ -778,11 +790,12 @@ pub(crate) fn ffi(m: &Model, prefix: &str, header_name: &str) -> Res<(String, St
 //   * a delta row is the captured row of its table's captured columns (by
 //     name; the engine resolves them); a lossy field is computed from it
 //     only for comparisons of columns and literals (anything else: refused);
-//   * cells convert exactly (decimals rescaled without loss, dates as days);
-//     a NULL or mismatched cell declines (the module then rebuilds or answers
-//     with SQL);
+//   * cells convert exactly (decimals rescaled without loss, dates as days,
+//     DOUBLE as its IEEE-754 bits); a NULL cell of a NULL-able field sets its
+//     flag; any other NULL, a mismatched or a non-finite cell declines (the
+//     module then rebuilds or answers with SQL);
 //   * results: text, integers, dates and booleans as such, decimals as exact
-//     text, fractions as doubles.
+//     text, fractions as doubles, DOUBLE bits as doubles.
 
 /// A Rust/SQL type's kit cell reader on row `row`, column `i`.
 fn kit_conv(ty: Ty, row: &str, i: usize) -> Res<String> {
@@ -793,8 +806,29 @@ fn kit_conv(ty: Ty, row: &str, i: usize) -> Res<String> {
         Ty::Date => format!("kit::Date({row}, {i})"),
         Ty::Bool => format!("kit::Bool({row}, {i})"),
         Ty::Text => format!("kit::Text({row}, {i})"),
+        Ty::Flt(1) => format!("kit::F64({row}, {i})"),
         other => bail!("host glue: no kit reader for {other:?} columns"),
     })
+}
+
+/// A struct field's value from cell `i` of `row`: the cell, the NULL-flag of a NULL-able
+/// cell, or (for a NULL-able cell) the type's zero in place of a NULL.
+fn kit_field(ty: Ty, row: &str, i: usize, nullable: bool, flag: bool) -> Res<String> {
+    if flag {
+        return Ok(format!("static_cast<uint8_t>(kit::IsNull({row}, {i}))"));
+    }
+    let v = kit_conv(ty, row, i)?;
+    if !nullable {
+        return Ok(v);
+    }
+    let zero = match ty {
+        Ty::Text => "kit::kNoText",
+        Ty::Date => "int32_t{0}",
+        Ty::Bool => "uint8_t{0}",
+        Ty::Flt(_) => "uint64_t{0}",
+        _ => "int64_t{0}",
+    };
+    Ok(format!("(kit::IsNull({row}, {i}) ? {zero} : {v})"))
 }
 
 /// A C++ string literal of exact bytes.
@@ -957,7 +991,8 @@ impl<'m> Ffi<'m> {
             (Elem::Struct(n), [f]) => {
                 let s = strukt(self.m, n);
                 let i = s.fields.iter().position(|x| &x.0 == f).ok_or_else(|| format!("host glue: {n} has no field {f}"))?;
-                kit_conv(s.tys[i], "r", i)
+                let (cell, nullable) = s.cell_of(f).unwrap();
+                kit_field(s.tys[i], "r", cell, nullable, s.is_flag(f))
             }
             _ => bail!("host glue: scan {}: unexpected field path {path:?}", sd.name),
         }
@@ -972,7 +1007,8 @@ impl<'m> Ffi<'m> {
                 [f] => {
                     let (_, src, ty) = dd.fields.iter().find(|x| &x.0 == *f).ok_or_else(|| format!("host glue: delta {}: no field {f}", dd.table))?;
                     match src {
-                        FieldSrc::Col(i) => kit_conv(*ty, "c.row", *i),
+                        FieldSrc::Col(i, nullable) => kit_field(*ty, "c.row", *i, *nullable, false),
+                        FieldSrc::NullOf(i) => kit_field(*ty, "c.row", *i, true, true),
                         FieldSrc::Expr(e) => {
                             let (code, k) = kit_expr(e, &dd.cols, "c.row")?;
                             match (ty, k) {
@@ -1179,6 +1215,7 @@ pub(crate) fn kit(m: &Model, prefix: &str, header: &str, accel_id: &str, workloa
             "i64" if *ty == Ty::Ts => format!("int64_t v{k} = 0;\n      row.values.push_back({acc}(r, i, &v{k}) ? kit::OutTs(v{k}) : kit::OutNull(core::AuxType::String));"),
             "i64" => format!("int64_t v{k} = 0;\n      row.values.push_back({acc}(r, i, &v{k}) ? kit::OutI64(v{k}) : kit::OutNull(core::AuxType::Int64));"),
             "i32" => format!("int32_t v{k} = 0;\n      row.values.push_back({acc}(r, i, &v{k}) ? kit::OutDate(v{k}) : kit::OutNull(core::AuxType::Date));"),
+            "u64" => format!("uint64_t v{k} = 0;\n      row.values.push_back({acc}(r, i, &v{k}) ? kit::OutF64(v{k}) : kit::OutNull(core::AuxType::Double));"),
             "bool" => format!("uint8_t v{k} = 0;\n      row.values.push_back({acc}(r, i, &v{k}) ? kit::OutBool(v{k}) : kit::OutNull(core::AuxType::Boolean));"),
             "i128" => {
                 let sc = if let Ty::Dec(s) = ty { *s } else { 0 };

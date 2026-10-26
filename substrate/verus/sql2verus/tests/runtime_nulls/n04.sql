@@ -1,0 +1,1 @@
+SELECT COUNT(a) AS ca, COUNT(DISTINCT b) AS cb, AVG(e) AS ae FROM t

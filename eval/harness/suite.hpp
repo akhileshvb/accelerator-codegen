@@ -167,6 +167,9 @@ inline Rows RunAccel(duckdb::Connection &c, const std::string &function, const s
   return Collect(*r);
 }
 
+// Numeric cells agree within a relative 1e-9: the engine and the kernel sum DOUBLEs in different
+// orders, so their results differ in the last bits.  This slack is for testing only; what is trusted
+// is the generated spec's error bound (verus_common::rel::float_within), not this tolerance.
 inline bool SameCell(const std::string &a, const std::string &b) {
   if (a == b)
     return true;

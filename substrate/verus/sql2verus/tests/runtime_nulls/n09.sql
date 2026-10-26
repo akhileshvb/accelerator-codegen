@@ -1,0 +1,1 @@
+SELECT a, COUNT(*) AS n FROM t GROUP BY a

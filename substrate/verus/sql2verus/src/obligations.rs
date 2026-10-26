@@ -29,9 +29,16 @@
 //     projection relation.  The full deltas satisfy bag_step per table.
 //   * Runtime types: integer -> i64, DECIMAL -> i64 (value * 10^s), DATE ->
 //     i32 (days since 1970-01-01), TIMESTAMP -> i64 (ns), text -> Vec<u8>,
-//     boolean -> u8 (nonzero = true).  Results: integer -> i64, DECIMAL ->
-//     i128, AVG / fractions -> (i128, i128) as (num, den), NULL-able ->
-//     Option.  Parameters: text -> &[u8], else as for rows.
+//     boolean -> u8 (nonzero = true), DOUBLE -> u64 (IEEE-754 bits, finite;
+//     the spec value is verus_common::rel::f64_val).  Results: integer ->
+//     i64, DECIMAL -> i128, AVG / fractions -> (i128, i128) as (num, den),
+//     DOUBLE -> u64 bits, NULL-able -> Option.  Parameters: text -> &[u8],
+//     else as for rows.
+//   * A NULL-able column is a row field plus a u8 flag `<field>__null`
+//     (nonzero: NULL, the value is then unspecified); its spec view is an
+//     Option and NULL is inside the envelope.  A scan of one NULL-able
+//     column, a NULL-able KEYS column, and a lossy delta over NULL-able
+//     values are refused.
 //   * A row type without text is #[repr(C)] + Copy and passed as a slice;
 //     one with text is passed as an owned Vec (build) or &Vec (apply).
 //   * The kernel provides crate::kernel::{State, build, execute, apply,
@@ -154,6 +161,7 @@ fn rt_ty(t: Ty) -> Res<&'static str> {
         Ty::Date => "i32",
         Ty::Text => "Vec<u8>",
         Ty::Bool => "u8",
+        Ty::Flt(1) => "u64",
         other => bail!("no runtime type for {other:?} in a scan / delta row"),
     })
 }
@@ -163,6 +171,7 @@ fn rt_view(x: &str, t: Ty) -> String {
     match t {
         Ty::Text => format!("{x}@"),
         Ty::Bool => format!("({x} != 0)"),
+        Ty::Flt(_) => format!("f64_val({x})"),
         _ => format!("{x} as int"),
     }
 }
@@ -176,6 +185,25 @@ struct RtField {
     name: String,
     col: String, // SQL column ("" when computed)
     ty: Ty,
+    null: bool, // NULL-able: a flag field (null_flag) says whether it is NULL
+}
+
+/// The flag field of NULL-able field `f`: nonzero when the value is NULL.
+pub(crate) fn null_flag(f: &str) -> String {
+    format!("{f}__null")
+}
+
+impl RtField {
+    /// The spec value of this field on row `r`.
+    fn view(&self, r: &str) -> String {
+        let x = format!("{r}.{}", self.name);
+        let v = rt_view(&x, self.ty);
+        if self.null { format!("(if {r}.{} != 0 {{ None }} else {{ Some({v}) }})", null_flag(&self.name)) } else { v }
+    }
+
+    fn spec_ty(&self) -> String {
+        if self.null { format!("Option<{}>", verus_ty(self.ty)) } else { verus_ty(self.ty).to_string() }
+    }
 }
 
 /// A runtime row struct and what it is a view of.
@@ -256,6 +284,19 @@ pub(crate) struct CStruct {
     pub(crate) copy: bool,
 }
 
+impl CStruct {
+    pub(crate) fn is_flag(&self, f: &str) -> bool {
+        self.fields.iter().any(|(g, _)| null_flag(g) == f)
+    }
+
+    /// The SELECT column of field `f` (of its NULL flag, if `f` is one), and whether it is NULL-able.
+    pub(crate) fn cell_of(&self, f: &str) -> Option<(usize, bool)> {
+        let value = if self.is_flag(f) { f.strip_suffix("__null")? } else { f };
+        let cell = self.fields.iter().filter(|(g, _)| !self.is_flag(g)).position(|(g, _)| g == value)?;
+        Some((cell, self.fields.iter().any(|(g, _)| *g == null_flag(value))))
+    }
+}
+
 /// A declared scan or rescan, as the host glue runs it.
 pub(crate) struct ScanDecl {
     pub(crate) name: String,
@@ -269,8 +310,10 @@ pub(crate) struct ScanDecl {
 
 /// Where a delta field's value comes from, on a captured row of its table.
 pub(crate) enum FieldSrc {
-    /// A captured column (index into `DeltaDecl::cols`).
-    Col(usize),
+    /// A captured column (index into `DeltaDecl::cols`), and whether it may be NULL.
+    Col(usize, bool),
+    /// Whether a captured column is NULL (the flag of a NULL-able `Col`).
+    NullOf(usize),
     /// A computed (lossy) field: its SQL expression over the captured columns.
     Expr(Expr),
 }
@@ -387,7 +430,7 @@ impl<'t, 'a> Ob<'t, 'a> {
                     _ => bail!("{what}: SELECT {e}: a scan returns columns; computing is the kernel's job"),
                 };
                 let v = self.tr.expr(e, &Ctx::Row { tuple: None })?;
-                if v.ty == Ty::Rat || v.approx.is_some() || v.guard.is_some() || v.nonlit_div || !v.den_conds.is_empty() {
+                if v.ty == Ty::Rat || v.approx.is_some() || (v.guard.is_some() && col.is_none()) || v.nonlit_div || !v.den_conds.is_empty() {
                     bail!("{what}: SELECT {e}: not an exact row value");
                 }
                 outs.push((sql_name, col, v));
@@ -429,7 +472,7 @@ impl<'t, 'a> Ob<'t, 'a> {
                 bail!("{what}: two columns named {name}");
             }
             rt_ty(v.ty).map_err(|e| format!("{what}: {e}"))?;
-            fs.push(RtField { name, col: col.clone(), ty: v.ty });
+            fs.push(RtField { name, col: col.clone(), ty: v.ty, null: v.guard.is_some() });
         }
         Ok(fs)
     }
@@ -466,9 +509,9 @@ impl<'t, 'a> Ob<'t, 'a> {
         if self.full(name) {
             table_row(&s.table)
         } else if s.fields.len() == 1 {
-            verus_ty(s.fields[0].ty).into()
+            s.fields[0].spec_ty()
         } else {
-            format!("({})", s.fields.iter().map(|f| verus_ty(f.ty)).collect::<Vec<_>>().join(", "))
+            format!("({})", s.fields.iter().map(|f| f.spec_ty()).collect::<Vec<_>>().join(", "))
         }
     }
 
@@ -514,6 +557,7 @@ fn prim_tag(rt: &str) -> &'static str {
         "i64" => "i64",
         "i32" => "i32",
         "u8" => "u8",
+        "u64" => "u64",
         _ => "bytes",
     }
 }
@@ -530,6 +574,7 @@ fn prim_ty_of(rt: &str) -> Ty {
     match rt {
         "Vec<u8>" => Ty::Text,
         "u8" => Ty::Bool,
+        "u64" => Ty::Flt(1),
         _ => Ty::Int,
     }
 }
@@ -556,11 +601,6 @@ pub(crate) async fn obligations(
     query_sql: &str,
 ) -> Res<(String, String, Model)> {
     let query_sql = query_sql.to_string();
-    for (t, cs) in &tr.used {
-        if let Some(c) = cs.iter().find(|c| tr.sch.col_ty[&(t.clone(), (*c).clone())].1) {
-            return Err(format!("column {t}.{c} is NULL-able: kernel rows have no NULL representation yet"));
-        }
-    }
     let (inputs_name, inputs_text) = match inputs {
         Some((n, t)) => (n.to_string(), t),
         None => ("(default)".to_string(), default_inputs(tr)?),
@@ -609,6 +649,9 @@ pub(crate) async fn obligations(
                 if sel.outs[0].1.is_none() {
                     bail!("{what}: computed column");
                 }
+                if v.guard.is_some() {
+                    bail!("{what}: a NULL-able column needs AS <Type> (the row carries its NULL flag)");
+                }
                 let rt = rt_ty(v.ty).map_err(|e| format!("{what}: {e}"))?;
                 (rt.to_string(), rt != "Vec<u8>", verus_ty(v.ty).to_string(), v.code.clone())
             }
@@ -624,6 +667,9 @@ pub(crate) async fn obligations(
             }
             if ty == Ty::Text {
                 bail!("{what}: KEYS {k}: text keys are not supported");
+            }
+            if ob.tr.sch.col_ty[&(sel.table.clone(), k.clone())].1 {
+                bail!("{what}: KEYS {k} is NULL-able");
             }
             let rt = rt_ty(ty)?;
             key_rt = Some(rt);
@@ -752,7 +798,15 @@ pub(crate) async fn obligations(
                 DeltaDecl {
                     table: d.name.clone(),
                     cols: rs.fields.iter().map(|f| (f.col.clone(), f.ty)).collect(),
-                    fields: rs.fields.iter().enumerate().map(|(i, f)| (f.name.clone(), FieldSrc::Col(i), f.ty)).collect(),
+                    fields: rs
+                        .fields
+                        .iter()
+                        .enumerate()
+                        .flat_map(|(i, f)| {
+                            let flag = f.null.then(|| (null_flag(&f.name), FieldSrc::NullOf(i), Ty::Bool));
+                            [(f.name.clone(), FieldSrc::Col(i, f.null), f.ty)].into_iter().chain(flag)
+                        })
+                        .collect(),
                 },
             );
             deltas.insert(d.name.clone(), DeltaOut { table: d.name.clone(), elem, copy, lossy: false, view, el });
@@ -767,6 +821,9 @@ pub(crate) async fn obligations(
                 let f = sanitize(n);
                 if f == "sign" || fields.iter().any(|(x, _): &(String, &str)| *x == f) {
                     bail!("{what}: field name {f}");
+                }
+                if v.guard.is_some() {
+                    bail!("{what}: field {f} is NULL-able; a lossy delta carries NOT NULL values");
                 }
                 let rt = rt_ty(v.ty).map_err(|e| format!("{what}: {e}"))?;
                 let lhs = rt_view(&format!("d[i].{f}"), v.ty);
@@ -826,7 +883,7 @@ pub(crate) async fn obligations(
                 .zip(&sel.exprs)
                 .zip(&sel.outs)
                 .map(|(((f, _), e), o)| match strip_alias(e) {
-                    Expr::Column(c) => (f.clone(), FieldSrc::Col(cols.iter().position(|x| *x == c.name).unwrap()), o.2.ty),
+                    Expr::Column(c) => (f.clone(), FieldSrc::Col(cols.iter().position(|x| *x == c.name).unwrap(), false), o.2.ty),
                     other => (f.clone(), FieldSrc::Expr(other.clone()), o.2.ty),
                 })
                 .collect();
@@ -860,6 +917,10 @@ pub(crate) async fn obligations(
         for f in &s.fields {
             writeln!(defs, "    /// {}.{} ({})", s.table, f.col, ty_doc(f.ty)).unwrap();
             writeln!(defs, "    pub {}: {},", f.name, rt_ty(f.ty)?).unwrap();
+            if f.null {
+                writeln!(defs, "    /// Nonzero: {} is NULL and the value above is unspecified.", f.name).unwrap();
+                writeln!(defs, "    pub {}: u8,", null_flag(&f.name)).unwrap();
+            }
         }
         writeln!(defs, "}}\n").unwrap();
         let spec = ob.spec_of(&n);
@@ -869,14 +930,14 @@ pub(crate) async fn obligations(
                 .iter()
                 .map(|c| {
                     let f = s.fields.iter().find(|f| &f.col == c).unwrap();
-                    format!("        {}: {},", sanitize(c), rt_view(&format!("r.{}", f.name), f.ty))
+                    format!("        {}: {},", sanitize(c), f.view("r"))
                 })
                 .collect();
             format!("{spec} {{\n{}\n    }}", fs.join("\n"))
         } else if s.fields.len() == 1 {
-            rt_view(&format!("r.{}", s.fields[0].name), s.fields[0].ty)
+            s.fields[0].view("r")
         } else {
-            format!("({})", s.fields.iter().map(|f| rt_view(&format!("r.{}", f.name), f.ty)).collect::<Vec<_>>().join(", "))
+            format!("({})", s.fields.iter().map(|f| f.view("r")).collect::<Vec<_>>().join(", "))
         };
         writeln!(defs, "pub open spec fn {}(r: {n}) -> {spec} {{\n    {body}\n}}\n", ob.view(&n)).unwrap();
         writeln!(defs, "pub open spec fn {}(s: Seq<{n}>) -> Seq<{spec}> {{\n    s.map_values(|r: {n}| {}(r))\n}}\n", ob.seq_view(&n), ob.view(&n)).unwrap();
@@ -912,9 +973,6 @@ pub(crate) async fn obligations(
     let mut outs_rt: Vec<(&'static str, bool, Ty)> = vec![];
     let mut out_fits = vec![];
     for (k, c) in b.outs.iter().enumerate() {
-        if c.val.approx.is_some() {
-            bail!("result column {}: a rounded float has no exact runtime value", c.sql);
-        }
         let (rt, view): (&str, Box<dyn Fn(&str) -> String>) = match c.val.ty {
             Ty::Text => ("Vec<u8>", Box::new(|x: &str| format!("{x}@"))),
             Ty::Bool => ("bool", Box::new(|x: &str| x.to_string())),
@@ -922,6 +980,7 @@ pub(crate) async fn obligations(
             Ty::Dec(_) => ("i128", Box::new(|x: &str| format!("{x} as int"))),
             Ty::Date => ("i32", Box::new(|x: &str| format!("{x} as int"))),
             Ty::Int | Ty::Ts => ("i64", Box::new(|x: &str| format!("{x} as int"))),
+            Ty::Flt(1) => ("u64", Box::new(|x: &str| format!("f64_val({x})"))),
             other => bail!("result column {}: {other:?}", c.sql),
         };
         outs_rt.push((rt, c.nullable, c.val.ty));
@@ -929,6 +988,7 @@ pub(crate) async fn obligations(
             "i128" => Some(range_of(x, i128::MIN, i128::MAX)),
             "i64" => Some(range_of(x, i64::MIN as i128, i64::MAX as i128)),
             "i32" => Some(range_of(x, i32::MIN as i128, i32::MAX as i128)),
+            "u64" => Some(format!("f64_in_range({x})")),
             "(i128, i128)" => Some(format!("{} && {}", range_of(&format!("{x}.num"), i128::MIN, i128::MAX),
                                            range_of(&format!("{x}.den"), i128::MIN, i128::MAX))),
             _ => None,
@@ -986,6 +1046,10 @@ pub(crate) async fn obligations(
             format!("envelope(s.db()) && answer_fits(s.db(), params({})) ==> r is Some", pargs.join(", ")),
         ],
     });
+    if outs_rt.iter().any(|o| o.0 == "u64") {
+        // a rounded float is only bounded by the spec: the bits it returns must still be finite
+        fns.last_mut().unwrap().ensures.push("r matches Some(out) ==> forall|i: int| 0 <= i < out.len() ==> out_fits(#[trigger] out_view(out@)[i])".into());
+    }
     let delta_params = |deltas: &BTreeMap<String, DeltaOut>| -> Vec<P> {
         deltas
             .values()
@@ -1108,7 +1172,16 @@ pub(crate) async fn obligations(
         let bounds: Vec<String> = ob
             .db_cols(t)
             .iter()
-            .filter_map(|c| ob.tr.sch.col_range.get(&(t.clone(), c.clone())).map(|&(lo, hi)| range_of(&format!("r.{}", sanitize(c)), lo, hi)))
+            .filter_map(|c| {
+                let x = format!("r.{}", sanitize(c));
+                let (ty, null) = ob.tr.sch.col_ty[&(t.clone(), c.clone())];
+                let v = if null { format!("{x}->0") } else { x.clone() };
+                let bound = match ty {
+                    Some(Ty::Flt(_)) => Some(format!("f64_in_range({v})")),
+                    _ => ob.tr.sch.col_range.get(&(t.clone(), c.clone())).map(|&(lo, hi)| range_of(&v, lo, hi)),
+                };
+                bound.map(|b| if null { format!("({x} is Some ==> {b})") } else { b })
+            })
             .collect();
         if !bounds.is_empty() {
             writeln!(w, "/// Each value of {t} lies in the range of its column's SQL type.").unwrap();
@@ -1124,7 +1197,7 @@ pub(crate) async fn obligations(
     }
     writeln!(w, "}}\n").unwrap();
     writeln!(w, "/// An answer row whose values fit the result's runtime types.").unwrap();
-    writeln!(w, "pub open spec fn out_fits(r: OutRow) -> bool {{\n    {}\n}}\n", if out_fits.is_empty() { "true".to_string() } else { out_fits.join("\n    && ") }).unwrap();
+    writeln!(w, "pub open spec fn out_fits(r: OutRow) -> bool {{\n    {}\n}}\n", if out_fits.is_empty() { "true".to_string() } else { out_fits.iter().map(|f| if out_fits.len() > 1 && f.starts_with("match") { format!("({f})") } else { f.clone() }).collect::<Vec<_>>().join("\n    && ") }).unwrap();
     writeln!(w, "/// A correct answer exists (`defined`: no divisor is zero; gen_spec.rs proves").unwrap();
     writeln!(w, "/// `defined <==> exists an answer`) and every correct answer fits: at most max_rows()").unwrap();
     writeln!(w, "/// rows, each in the result's runtime types.  A kernel that declines because no answer").unwrap();
@@ -1155,8 +1228,16 @@ pub(crate) async fn obligations(
     let mut structs: Vec<CStruct> = vec![];
     for n in &ob.order {
         let s = &ob.structs[n];
-        let fields = s.fields.iter().map(|f| Ok((f.name.clone(), Elem::Prim(rt_ty(f.ty)?)))).collect::<Res<Vec<_>>>()?;
-        let tys = s.fields.iter().map(|f| f.ty).collect();
+        let mut fields = vec![];
+        let mut tys = vec![];
+        for f in &s.fields {
+            fields.push((f.name.clone(), Elem::Prim(rt_ty(f.ty)?)));
+            tys.push(f.ty);
+            if f.null {
+                fields.push((null_flag(&f.name), Elem::Prim("u8")));
+                tys.push(Ty::Bool);
+            }
+        }
         structs.push(CStruct { name: n.clone(), fields, tys, copy: copyable(&s.fields) });
     }
     structs.extend(delta_structs);

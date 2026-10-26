@@ -8,7 +8,7 @@ f05 ok-spec rounded float aggregates
 f06 ok-spec rounded float aggregates
 f07 ok-spec rounded float aggregates
 f08 ok-spec rounded float aggregates
-f09 ok-spec no runtime type for Flt
+f09 ok
 f10 ok-spec rounded float aggregates
 r01 refused comparison of a computed float
 r02 refused arithmetic on float aggregates

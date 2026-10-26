@@ -1,0 +1,12 @@
+# <query> ok | <query> refused <text the refusal must contain>
+# <query> ok-spec <text the obligations refusal must contain>: spec only
+d01 ok
+d02 ok
+d03 ok
+d04 ok
+d05 ok
+d06 ok-spec DOUBLE parameters have no runtime type
+d07 ok
+d08 ok-spec result column a: Flt(2)
+d09 ok
+d10 ok

@@ -1,21 +1,21 @@
-n01 ok-spec NULL-able
-n02 ok-spec NULL-able
-n03 ok-spec NULL-able
-n04 ok-spec NULL-able
-n05 ok-spec NULL-able
-n06 ok-spec NULL-able
-n07 ok-spec NULL-able
-n08 ok-spec NULL-able
-n09 ok-spec NULL-able
+n01 ok
+n02 ok
+n03 ok
+n04 ok
+n05 ok
+n06 ok
+n07 ok
+n08 ok
+n09 ok
 n10 ok
-n11 ok-spec NULL-able
-n12 ok-spec NULL-able
-n13 ok-spec NULL-able
-n14 ok-spec NULL-able
-n15 ok-spec NULL-able
-n16 ok-spec NULL-able
-n17 ok-spec NULL-able
-n18 ok-spec NULL-able
+n11 ok
+n12 ok
+n13 ok
+n14 ok
+n15 ok
+n16 ok
+n17 ok
+n18 ok
 r01 refused possibly-NULL
 r02 refused NULL literal
 r03 refused CASE

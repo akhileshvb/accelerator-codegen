@@ -1,0 +1,2 @@
+scan t_rows AS TRt: SELECT a FROM t;
+delta t AS TDelta: SELECT a + 1 AS a1 FROM t;
