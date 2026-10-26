@@ -66,6 +66,15 @@
 //     the spec bounds the result (verus_common::rel::float_within, gamma_m
 //     with u = 2^-53) instead of fixing it.  Float arithmetic elsewhere is
 //     refused.
+//   * A rounded float aggregate that is consumed (compared, or a column of a
+//     derived table or subquery) is a number `ch(keys)` per group that the
+//     spec bounds by float_within against the exact value computed from the
+//     chosen numbers it reads, so bounds compose.  Every use reads that one
+//     number (the same aggregate in a block, each derived-table cell, the
+//     output column); comparisons over chosen numbers are exact.  The answer
+//     is that of some admissible choice: `full_result` is `exists|ch..|
+//     chosen(..) && full_result_with(.., ch.., out)`.  Correlated rounded
+//     aggregates and arithmetic on aggregates stay refused.
 //   * Text: = is byte equality; < and ORDER BY are bytes_lt (C collation).
 //     CHAR(n) follows the target engine (--engine): DuckDB has no padded
 //     CHAR (it is VARCHAR), so CHAR compares as bytes, trailing spaces
@@ -212,11 +221,20 @@ struct Val {
     char_col: bool,
     param: Option<u32>,
     approx: Option<(String, String)>, // computed float: (abs code, rounded-operation count)
+    rounded: Option<Rounded>,         // a SUM / AVG of floats: its group
     guard: Option<String>,            // the value is NULL unless guard holds
     nullcmp: bool,                    // a boolean that reads NULL as false
     opt: bool,                        // code is an Option<..> (a GROUP BY key that may be NULL)
     nonlit_div: bool,                 // divides by a non-literal
     den_conds: Vec<String>,           // divisors that must be non-zero
+}
+
+/// The group of a rounded float aggregate, for choosing its value.
+#[derive(Clone, Debug)]
+struct Rounded {
+    prefix: String,
+    keys: Vec<(String, String)>, // (key variable, its type)
+    nonempty: String, // the group has rows
 }
 
 impl Val {
@@ -231,6 +249,7 @@ impl Val {
             char_col: false,
             param: None,
             approx: None,
+            rounded: None,
             guard: None,
             nullcmp: false,
             opt: false,
@@ -669,12 +688,14 @@ struct RelInfo {
     func: String,                          // rel_x
     row: String,                           // XRow
     cols: Vec<(String, String, Ty, bool, bool)>, // (sql name, field, ty, char, nullable)
+    chs: Vec<Binder>,                            // the chosen floats its rows are built from
 }
 
 #[derive(Clone, Debug)]
 enum Src {
     Base(String),
     Rel(RelInfo),
+    Choice(String), // the engine's value of a rounded float aggregate per group; its type
 }
 
 #[derive(Clone, Debug)]
@@ -691,13 +712,18 @@ impl Binder {
         match &self.src {
             Src::Base(t) => table_row(t),
             Src::Rel(r) => r.row.clone(),
+            Src::Choice(t) => t.clone(),
         }
     }
     fn seq(&self) -> String {
         match &self.src {
             Src::Base(t) => format!("db.{}", table_field(t)),
-            Src::Rel(r) => format!("{}(db, params)", r.func),
+            Src::Rel(r) => format!("{}(db, params{})", r.func, r.chs.iter().map(|c| format!(", {}", c.var)).collect::<String>()),
+            Src::Choice(_) => unreachable!("a rounded value is not a FROM item"),
         }
+    }
+    fn is_choice(&self) -> bool {
+        matches!(self.src, Src::Choice(_))
     }
     fn vty(&self) -> String {
         if self.optional { format!("Option<{}>", self.row()) } else { self.row() }
@@ -710,6 +736,18 @@ struct Frame {
     outer: Vec<Binder>,
     uses_params: bool,
     calls: bool, // calls a subquery's functions (needs db)
+    own: Vec<Choice>, // the block's rounded float aggregates (choice mode)
+}
+
+/// Choice mode: a rounded float aggregate (SUM / AVG of floats) is a value the
+/// engine picks per group, a function `name(keys)` that the spec only bounds
+/// (`name_ok`); everything that reads the aggregate reads this one value.
+#[derive(Clone)]
+struct Choice {
+    var: Binder,      // name and type, to pass it on like an outer reference
+    keys: Vec<(String, String)>,
+    exact: Val,       // the exact value (numerator `code`, `den`) and its bound `approx`
+    group: String,    // the groups it is chosen for: `group_count > 0` or the aggregate's guard
 }
 
 /// How column references render.
@@ -744,7 +782,9 @@ struct Block {
     prefix: String,
     tuple: String,
     binders: Vec<Binder>,
-    outer: Vec<Binder>,
+    outer: Vec<Binder>, // the enclosing query's rows it reads, then the rounded values it reads, then `own`
+    own: Vec<Choice>,
+    ntuple: usize, // the first `ntuple` of `outer` are what the tuples (FROM, WHERE, groups) read
     shape: Shape,
     outs: Vec<OutCol>,
     having: Vec<Val>,
@@ -755,11 +795,29 @@ struct Block {
 
 impl Block {
     fn outer_params(&self) -> String {
-        self.outer.iter().map(|b| format!(", {}: {}", b.var, b.vty())).collect()
+        params_of(&self.outer)
     }
     fn outer_args(&self) -> String {
-        self.outer.iter().map(|b| format!(", {}", b.var)).collect()
+        args_of(&self.outer)
     }
+    fn tuple_params(&self) -> String {
+        params_of(&self.outer[..self.ntuple])
+    }
+    fn tuple_args(&self) -> String {
+        args_of(&self.outer[..self.ntuple])
+    }
+    /// What the block reads, without its own rounded values.
+    fn read_outer(&self) -> &[Binder] {
+        &self.outer[..self.outer.len() - self.own.len()]
+    }
+}
+
+fn params_of(bs: &[Binder]) -> String {
+    bs.iter().map(|b| format!(", {}: {}", b.var, b.vty())).collect()
+}
+
+fn args_of(bs: &[Binder]) -> String {
+    bs.iter().map(|b| format!(", {}", b.var)).collect()
 }
 
 #[derive(Clone, PartialEq, Debug)]
@@ -798,6 +856,7 @@ struct Tr<'a> {
     notes: BTreeSet<String>,
     pfx: String, // prefix of subquery helper names (obligations)
     perm: perm::Perm,
+    ok_calls: Vec<String>, // the `name_ok(..)` of every chosen float
     guarded_vals: HashSet<String>, // blocks (prefixes) whose aggregates skip NULL values
 }
 
@@ -920,6 +979,11 @@ impl<'a> Tr<'a> {
         let rel = self.derived(name, plan)?;
         let var = self.var_for(alias);
         self.frame().uses_params = true;
+        for c in &rel.chs {
+            if !self.frame().outer.iter().any(|o| o.var == c.var) {
+                self.frame().outer.push(c.clone());
+            }
+        }
         Ok(Binder { alias: alias.into(), var, src: Src::Rel(rel), optional: false, on: vec![] })
     }
 
@@ -970,6 +1034,7 @@ impl<'a> Tr<'a> {
                 let col = r.cols.iter().find(|x| x.0 == c.name).ok_or_else(|| format!("column {alias}.{} not found", c.name))?;
                 (col.1.clone(), col.2, col.3, col.4)
             }
+            Src::Choice(_) => unreachable!("a chosen float has no columns"),
         };
         if nullable && ty == Ty::Rat {
             bail!("column {alias}.{} is a NULL-able fraction", c.name);
@@ -1509,8 +1574,13 @@ impl<'a> Tr<'a> {
                 self.params.get_mut(&n).unwrap().1 = true;
             }
         }
-        if lv.approx.is_some() || rv.approx.is_some() {
-            bail!("comparison of a computed float (rounding decides it): {whole}");
+        for v in [&mut lv, &mut rv] {
+            if v.approx.is_some() {
+                if v.rounded.is_none() {
+                    bail!("comparison of a computed float (rounding decides it): {whole}");
+                }
+                *v = self.choose(v.clone())?;
+            }
         }
         if lv.nonlit_div || rv.nonlit_div {
             bail!("comparison involving division by a non-literal: {whole}");
@@ -1806,7 +1876,9 @@ impl<'a> Tr<'a> {
                         let (abs, k) = v.approx.clone().unwrap_or((format!("abs({})", v.code), "0".into()));
                         // rounded operations on a path: n - 1 additions + k per tuple (+ 1 division for AVG, added in row_ok)
                         let m = simplify_k(&format!("{n} - 1 + {k}"));
-                        let mut out = Val { approx: Some((sum(&abs), m)), ..Val::atom(sum(&v.code), Ty::Flt(p)) };
+                        let keys = g.keys.iter().map(|(n, k)| (n.clone(), key_ty(k))).collect();
+                        let rounded = Some(Rounded { prefix: g.prefix.clone(), keys, nonempty: format!("{}) > 0", g.call("group_count")) });
+                        let mut out = Val { approx: Some((sum(&abs), m)), rounded, ..Val::atom(sum(&v.code), Ty::Flt(p)) };
                         if fname == "avg" {
                             out.den = Some(n); // AVG: the value is about code / den
                         }
@@ -1836,6 +1908,30 @@ impl<'a> Tr<'a> {
             }
             other => bail!("aggregate function {other}"),
         }
+    }
+
+    /// The value of a consumed rounded float aggregate: the number the engine
+    /// picked for the group, `name(keys)`.  The same aggregate in a block is one number.
+    fn choose(&mut self, exact: Val) -> Res<Val> {
+        let Some(r) = exact.rounded.clone() else { bail!("computed float {}", exact.code) };
+        if self.frame().outer.iter().any(|b| !b.is_choice()) {
+            bail!("rounded float aggregate in a correlated subquery");
+        }
+        self.perm.unsupported("rounded float aggregates the engine chooses");
+        let same = |c: &Choice| c.exact.code == exact.code && c.exact.den == exact.den;
+        let name = match self.frame().own.iter().find(|c| same(c)) {
+            Some(c) => c.var.var.clone(),
+            None => {
+                let name = format!("ch_{}{}", r.prefix, self.frame().own.len() + 1);
+                let ty = if r.keys.is_empty() { "int".to_string() } else { format!("spec_fn({}) -> int", r.keys.iter().map(|k| k.1.as_str()).collect::<Vec<_>>().join(", ")) };
+                let group = exact.guard.clone().unwrap_or(r.nonempty);
+                let var = Binder { alias: String::new(), var: name.clone(), src: Src::Choice(ty), optional: false, on: vec![] };
+                self.frame().own.push(Choice { var, keys: r.keys.clone(), exact: exact.clone(), group });
+                name
+            }
+        };
+        let code = if r.keys.is_empty() { name } else { format!("{name}({})", r.keys.iter().map(|k| k.0.as_str()).collect::<Vec<_>>().join(", ")) };
+        Ok(Val { guard: exact.guard, ..Val::atom(code, Ty::Flt(1)) })
     }
 
     // ── subqueries ──
@@ -2130,7 +2226,7 @@ impl<'a> Tr<'a> {
         let r = self.block(plan, format!("{base}_"), false);
         let f = self.frames.pop().unwrap();
         let b = r?;
-        if !f.outer.is_empty() {
+        if f.outer.iter().any(|o| !o.is_choice()) {
             bail!("derived table {alias} refers to an enclosing query (LATERAL)");
         }
         for o in &b.outs {
@@ -2142,10 +2238,11 @@ impl<'a> Tr<'a> {
             func: format!("rel_{base}"),
             row: format!("{}Row", camel(&base)),
             cols: b.outs.iter().map(|o| (o.sql.clone(), o.field.clone(), o.val.ty, o.val.char_col, o.nullable)).collect(),
+            chs: f.outer,
         };
         let mut w = String::new();
         writeln!(w, "/// The rows of derived table {alias} (a bag).").unwrap();
-        writeln!(w, "pub open spec fn {}(db: Db, params: Params) -> Seq<{}> {{\n    {base}_rows(db, params)\n}}\n", info.func, info.row).unwrap();
+        writeln!(w, "pub open spec fn {}(db: Db, params: Params{}) -> Seq<{}> {{\n    {base}_rows(db, params{})\n}}\n", info.func, params_of(&info.chs), info.row, args_of(&info.chs)).unwrap();
         self.items.push(w);
         self.perm.lemma(&info.func, "", &vec![], perm::Kind::Bag, &format!("{}(db, params)", info.func), &format!("{base}_rows("), "");
         self.rels.insert(key, info.clone());
@@ -2327,11 +2424,20 @@ impl<'a> Tr<'a> {
                 }
             }
         }
-        let outer = self.frames.last().unwrap().outer.clone();
-        if outer.len() != outer0.len() {
+        // a rounded float is chosen once consumed: a column of a nested block, or one that HAVING compared
+        for i in 0..outs.len() {
+            if outs[i].val.rounded.is_some() && (!top || self.frame().own.iter().any(|c| c.exact.code == outs[i].val.code && c.exact.den == outs[i].val.den)) {
+                outs[i].val = self.choose(outs[i].val.clone())?;
+            }
+        }
+        let rows_read = |bs: &[Binder]| bs.iter().filter(|b| !b.is_choice()).count();
+        if rows_read(&self.frames.last().unwrap().outer) != rows_read(&outer0) {
             bail!("a correlated subquery whose SELECT list / HAVING refers to the enclosing query");
         }
-        let blk = Block { prefix: prefix.clone(), tuple, binders, outer, shape, outs, having: hv, keys: keys.clone(), distinct, union_rows: None };
+        let own = std::mem::take(&mut self.frame().own);
+        self.frame().outer.extend(own.iter().map(|c| c.var.clone()));
+        let outer = self.frames.last().unwrap().outer.clone();
+        let blk = Block { prefix: prefix.clone(), tuple, binders, outer, own, ntuple: outer0.len(), shape, outs, having: hv, keys: keys.clone(), distinct, union_rows: None };
         if top && as_bag(&blk) && blk.outs.iter().any(|o| o.val.approx.is_some()) {
             bail!("a rounded float aggregate in a query whose GROUP BY columns are not all selected");
         }
@@ -2396,7 +2502,9 @@ impl<'a> Tr<'a> {
             prefix: prefix.clone(),
             tuple: String::new(),
             binders: vec![],
+            ntuple: outer.len(),
             outer,
+            own: vec![],
             shape: Shape::Plain,
             outs,
             having: vec![],
@@ -2437,8 +2545,8 @@ impl<'a> Tr<'a> {
         let mut w = String::new();
         let p = &b.prefix;
         let tt = &b.tuple;
-        let op = b.outer_params();
-        let oa = b.outer_args();
+        let (op, oa) = (b.tuple_params(), b.tuple_args());
+        let (vp, va) = (b.outer_params(), b.outer_args()); // for the functions that read the rounded values
         let keys = &b.keys;
         let row = if top { "OutRow".to_string() } else { format!("{}Row", camel(p.trim_end_matches('_'))) };
         let what = if p.is_empty() { "the query".to_string() } else { format!("block {}", p.trim_end_matches('_')) };
@@ -2537,7 +2645,7 @@ impl<'a> Tr<'a> {
         if b.shape != Shape::Plain {
             writeln!(w, "/// The output row of {}{}.", if keys.is_empty() { "the aggregate".to_string() } else { "a group: its keys and its aggregates".to_string() },
                 if b.outs.iter().any(|c| c.val.approx.is_some()) { " (float aggregates at their exact value)" } else { "" }).unwrap();
-            writeln!(w, "pub open spec fn {p}row_of(db: Db, params: Params{op}{key_params}) -> {row} {{").unwrap();
+            writeln!(w, "pub open spec fn {p}row_of(db: Db, params: Params{vp}{key_params}) -> {row} {{").unwrap();
             writeln!(w, "    {row} {{").unwrap();
             for c in &b.outs {
                 writeln!(w, "        {}: {},", c.field, row_expr(c)).unwrap();
@@ -2547,24 +2655,24 @@ impl<'a> Tr<'a> {
         if b.shape == Shape::Grouped || !b.having.is_empty() {
             let hv: Vec<String> = b.having.iter().map(bool_code).collect();
             writeln!(w, "/// HAVING (true when absent).").unwrap();
-            writeln!(w, "pub open spec fn {p}having(db: Db, params: Params{op}{key_params}) -> bool {{").unwrap();
+            writeln!(w, "pub open spec fn {p}having(db: Db, params: Params{vp}{key_params}) -> bool {{").unwrap();
             writeln!(w, "    {}", if hv.is_empty() { "true".to_string() } else { hv.join(" && ") }).unwrap();
             writeln!(w, "}}\n").unwrap();
         }
         writeln!(w, "/// The result rows of {what}, as a bag (in no particular order).").unwrap();
-        writeln!(w, "pub open spec fn {p}rows(db: Db, params: Params{op}) -> Seq<{row}> {{").unwrap();
+        writeln!(w, "pub open spec fn {p}rows(db: Db, params: Params{vp}) -> Seq<{row}> {{").unwrap();
         match b.shape {
             Shape::Plain => {
                 let fs: Vec<String> = b.outs.iter().map(|c| format!("{}: {}", c.field, row_expr(c))).collect();
                 let r = format!("{p}tuples(db, params{oa}).map_values(|t: {tt}| {row} {{ {} }})", fs.join(", "));
                 writeln!(w, "    {}", if b.distinct { format!("dedup({r})") } else { r }).unwrap();
             }
-            Shape::Scalar if b.having.is_empty() => writeln!(w, "    seq![{p}row_of(db, params{oa})]").unwrap(),
-            Shape::Scalar => writeln!(w, "    if {p}having(db, params{oa}) {{ seq![{p}row_of(db, params{oa})] }} else {{ Seq::empty() }}").unwrap(),
+            Shape::Scalar if b.having.is_empty() => writeln!(w, "    seq![{p}row_of(db, params{va})]").unwrap(),
+            Shape::Scalar => writeln!(w, "    if {p}having(db, params{va}) {{ seq![{p}row_of(db, params{va})] }} else {{ Seq::empty() }}").unwrap(),
             Shape::Grouped => {
                 let tkeys: String = keys.iter().map(|(_, v)| format!(", {}", v.code)).collect();
                 let r = format!(
-                    "dedup(map_where({p}tuples(db, params{oa}), |t: {tt}| {p}having(db, params{oa}{tkeys}), |t: {tt}| {}))\n        .map_values(|k: {}| {p}row_of(db, params{oa}{}))",
+                    "dedup(map_where({p}tuples(db, params{oa}), |t: {tt}| {p}having(db, params{va}{tkeys}), |t: {tt}| {}))\n        .map_values(|k: {}| {p}row_of(db, params{va}{}))",
                     key_tuple_val(keys),
                     key_tuple_ty(keys),
                     key_tuple_args(keys, "k")
@@ -2574,6 +2682,22 @@ impl<'a> Tr<'a> {
             }
         }
         writeln!(w, "}}\n").unwrap();
+        for c in &b.own {
+            let name = &c.var.var;
+            let (read, ro) = (params_of(b.read_outer()), args_of(b.read_outer()));
+            let kd: Vec<String> = c.keys.iter().map(|(g, t)| format!("{g}: {t}")).collect();
+            let call = if c.keys.is_empty() { name.clone() } else { format!("{name}({})", c.keys.iter().map(|k| k.0.as_str()).collect::<Vec<_>>().join(", ")) };
+            writeln!(w, "/// {name} is within the rounding bound of its exact value, in every group it is chosen for.").unwrap();
+            writeln!(w, "pub open spec fn {name}_ok(db: Db, params: Params{read}, {name}: {}) -> bool {{", c.var.row()).unwrap();
+            let bound = format!("{} ==> {}", c.group, within(&call, &c.exact));
+            if kd.is_empty() {
+                writeln!(w, "    {bound}").unwrap();
+            } else {
+                writeln!(w, "    forall|{}| #![trigger {call}] {bound}", kd.join(", ")).unwrap();
+            }
+            writeln!(w, "}}\n").unwrap();
+            self.ok_calls.push(format!("{name}_ok(db, params{ro}, {name})"));
+        }
         self.items.push(w);
     }
 }
@@ -2603,11 +2727,21 @@ fn row_expr(c: &OutCol) -> String {
     }
 }
 
+/// The engine's value `x` (at scale 1) is within the rounding bound of the exact value of `v`.
+fn within(x: &str, v: &Val) -> String {
+    let (abs, m) = v.approx.as_ref().unwrap();
+    let pp = flt_p(v.ty);
+    let lhs = if pp > 1 { format!("{x} * pow2({})", 1074 * (pp - 1)) } else { x.to_string() };
+    let lhs = match &v.den { Some(d) => format!("{lhs} * ({d})"), None => lhs };
+    let m = if v.den.is_some() { simplify_k(&format!("{m} + 1")) } else { m.clone() };
+    format!("float_within({lhs}, {}, {abs}, {m})", v.code)
+}
+
 /// The tuples extending the first `i` FROM items (level `i` of the nest):
 /// iterate over FROM item i, continuing at level i + 1.
 fn nest(b: &Block, i: usize) -> String {
     let p = &b.prefix;
-    let oa = b.outer_args();
+    let oa = b.tuple_args();
     let vars: Vec<String> = b.binders.iter().map(|x| x.var.clone()).collect();
     if i == b.binders.len() {
         return format!(
@@ -2855,6 +2989,9 @@ fn translate(tr: &mut Tr, plan: &LogicalPlan, explicit_nulls: &[Option<bool>]) -
     let schema = p.schema().clone();
     tr.frames.push(Frame::default());
     let block = tr.block(p, String::new(), true)?;
+    if !block.outer.is_empty() && block.outs.iter().any(|o| !o.val.den_conds.is_empty()) {
+        bail!("division by a non-literal next to rounded float aggregates");
+    }
     let mut order = vec![];
     let sort = sort.unwrap_or_default();
     let nkeys = sort.len();
@@ -3002,18 +3139,14 @@ fn print(tr: &Tr, top: &Top, sql: &str, src_name: &str) -> String {
     writeln!(w, "// ── The answer ──\n").unwrap();
     let keys = &b.keys;
     let approx = b.outs.iter().any(|c| c.val.approx.is_some());
+    let (op, oa, ta) = (b.outer_params(), b.outer_args(), b.tuple_args()); // the rounded values (choice mode), for the tuples and for the rows
     let row_ok_body = |w: &mut String, r: &str| {
         for c in &b.outs {
             let v = &c.val;
             let f = format!("{r}.{}", c.field);
             match &v.approx {
-                Some((abs, m)) => {
-                    let pp = flt_p(v.ty);
-                    let x = if c.nullable { format!("{f}->0") } else { f.clone() };
-                    let lhs = if pp > 1 { format!("{x} * pow2({})", 1074 * (pp - 1)) } else { x };
-                    let lhs = match &v.den { Some(d) => format!("{lhs} * ({d})"), None => lhs };
-                    let m = if v.den.is_some() { simplify_k(&format!("{m} + 1")) } else { m.clone() };
-                    let within = format!("float_within({lhs}, {}, {abs}, {m})", v.code);
+                Some(_) => {
+                    let within = within(&if c.nullable { format!("{f}->0") } else { f.clone() }, v);
                     if c.nullable {
                         let g = v.guard.clone().unwrap();
                         writeln!(w, "    &&& ({f} is Some <==> {g}) && ({f} is Some ==> {within})").unwrap();
@@ -3034,14 +3167,14 @@ fn print(tr: &Tr, top: &Top, sql: &str, src_name: &str) -> String {
         Shape::Grouped if !as_bag(b) => {
             writeln!(w, "/// Row r is a group's row: the group is non-empty and passes HAVING, and").unwrap();
             writeln!(w, "/// the other columns are its aggregates.").unwrap();
-            writeln!(w, "pub open spec fn row_ok(db: Db, params: Params, r: OutRow) -> bool {{").unwrap();
+            writeln!(w, "pub open spec fn row_ok(db: Db, params: Params{op}, r: OutRow) -> bool {{").unwrap();
             for c in &b.outs {
                 if let Some(i) = c.key {
                     writeln!(w, "    let {} = r.{};", keys[i].0, c.field).unwrap();
                 }
             }
-            writeln!(w, "    &&& group_count(db, params{ka}) > 0").unwrap();
-            writeln!(w, "    &&& having(db, params{ka})").unwrap();
+            writeln!(w, "    &&& group_count(db, params{ta}{ka}) > 0").unwrap();
+            writeln!(w, "    &&& having(db, params{oa}{ka})").unwrap();
             row_ok_body(w, "r");
             writeln!(w, "}}\n").unwrap();
             writeln!(w, "/// Rows a and b are for the same group.").unwrap();
@@ -3052,7 +3185,7 @@ fn print(tr: &Tr, top: &Top, sql: &str, src_name: &str) -> String {
         }
         Shape::Scalar => {
             writeln!(w, "/// Row r is the aggregate row.").unwrap();
-            writeln!(w, "pub open spec fn row_ok(db: Db, params: Params, r: OutRow) -> bool {{").unwrap();
+            writeln!(w, "pub open spec fn row_ok(db: Db, params: Params{op}, r: OutRow) -> bool {{").unwrap();
             writeln!(w, "    &&& true").unwrap();
             row_ok_body(w, "r");
             writeln!(w, "}}\n").unwrap();
@@ -3073,11 +3206,19 @@ fn print(tr: &Tr, top: &Top, sql: &str, src_name: &str) -> String {
     writeln!(w, "    {}", lex_lt(b, &top.order)).unwrap();
     writeln!(w, "}}\n").unwrap();
     let defined: Vec<String> = b.outs.iter().flat_map(|c| c.val.den_conds.clone()).collect();
-    writeln!(w, "/// `out` is the full answer (before any LIMIT), sorted by ORDER BY (ties in any order).").unwrap();
-    writeln!(w, "pub open spec fn full_result(db: Db, params: Params, out: Seq<OutRow>) -> bool {{").unwrap();
+    if !op.is_empty() {
+        writeln!(w, "/// The engine's rounded float aggregates have values within their bounds.").unwrap();
+        writeln!(w, "pub open spec fn chosen(db: Db, params: Params{op}) -> bool {{").unwrap();
+        for c in &tr.ok_calls {
+            writeln!(w, "    &&& {c}").unwrap();
+        }
+        writeln!(w, "}}\n").unwrap();
+    }
+    writeln!(w, "/// `out` is the full answer (before any LIMIT), sorted by ORDER BY (ties in any order){}.", if op.is_empty() { "" } else { ", for these values of the rounded float aggregates" }).unwrap();
+    writeln!(w, "pub open spec fn {}(db: Db, params: Params{op}, out: Seq<OutRow>) -> bool {{", if op.is_empty() { "full_result" } else { "full_result_with" }).unwrap();
     match b.shape {
         Shape::Grouped if !as_bag(b) => {
-            writeln!(w, "    &&& forall|i: int| 0 <= i < out.len() ==> row_ok(db, params, #[trigger] out[i])").unwrap();
+            writeln!(w, "    &&& forall|i: int| 0 <= i < out.len() ==> row_ok(db, params{oa}, #[trigger] out[i])").unwrap();
             writeln!(w, "    &&& forall|i: int, j: int| 0 <= i < j < out.len() ==>").unwrap();
             writeln!(w, "        !same_group(#[trigger] out[i], #[trigger] out[j]) && !row_lt(out[j], out[i])").unwrap();
             let gq: Vec<String> = keys.iter().map(|(g, v)| format!("{g}: {}", key_ty(v))).collect();
@@ -3089,22 +3230,29 @@ fn print(tr: &Tr, top: &Top, sql: &str, src_name: &str) -> String {
                     if n == 0 { format!("(#[trigger] out[i]).{} == {g}", c.field) } else { format!("out[i].{} == {g}", c.field) }
                 })
                 .collect();
-            writeln!(w, "    &&& forall|{}| #[trigger] group_count(db, params{ka}) > 0 && having(db, params{ka}) ==>", gq.join(", ")).unwrap();
+            writeln!(w, "    &&& forall|{}| #[trigger] group_count(db, params{ta}{ka}) > 0 && having(db, params{oa}{ka}) ==>", gq.join(", ")).unwrap();
             writeln!(w, "        exists|i: int| 0 <= i < out.len() && {}", gm.join(" && ")).unwrap();
         }
         Shape::Plain | Shape::Grouped => {
-            writeln!(w, "    &&& out.to_multiset() == rows(db, params).to_multiset()").unwrap();
+            writeln!(w, "    &&& out.to_multiset() == rows(db, params{oa}).to_multiset()").unwrap();
             writeln!(w, "    &&& forall|i: int, j: int| 0 <= i < j < out.len() ==> !row_lt(#[trigger] out[j], #[trigger] out[i])").unwrap();
             if !defined.is_empty() {
                 writeln!(w, "    &&& {}", tuple_defined(b, &defined)).unwrap();
             }
         }
         Shape::Scalar => {
-            writeln!(w, "    &&& out.len() == rows(db, params).len()").unwrap();
-            writeln!(w, "    &&& forall|i: int| 0 <= i < out.len() ==> row_ok(db, params, #[trigger] out[i])").unwrap();
+            writeln!(w, "    &&& out.len() == rows(db, params{oa}).len()").unwrap();
+            writeln!(w, "    &&& forall|i: int| 0 <= i < out.len() ==> row_ok(db, params{oa}, #[trigger] out[i])").unwrap();
         }
     }
     writeln!(w, "}}\n").unwrap();
+    if !op.is_empty() {
+        let vars: Vec<String> = b.outer.iter().map(|c| format!("{}: {}", c.var, c.vty())).collect();
+        writeln!(w, "/// `out` is the full answer for some admissible values of the rounded float aggregates.").unwrap();
+        writeln!(w, "pub open spec fn full_result(db: Db, params: Params, out: Seq<OutRow>) -> bool {{").unwrap();
+        writeln!(w, "    exists|{}| #![trigger chosen(db, params{oa})] chosen(db, params{oa}) && full_result_with(db, params{oa}, out)", vars.join(", ")).unwrap();
+        writeln!(w, "}}\n").unwrap();
+    }
     if top.offset > 0 {
         writeln!(w, "/// OFFSET k: the rows after the first k.").unwrap();
         writeln!(w, "pub open spec fn skip_rows(rows: Seq<OutRow>, k: int) -> Seq<OutRow> {{").unwrap();
@@ -3130,7 +3278,9 @@ fn print(tr: &Tr, top: &Top, sql: &str, src_name: &str) -> String {
         writeln!(w, "}}\n").unwrap();
     }
     let avail = print_facts(w, top, approx, &defined);
-    print_defined(w, top, avail, &defined);
+    if op.is_empty() {
+        print_defined(w, top, avail, &defined);
+    }
     let tables: Vec<String> = tr.used.keys().map(|t| table_field(t)).collect();
     tr.perm.print(w, &tables, top, &defined);
     writeln!(w, "}} // verus!").unwrap();
@@ -3241,6 +3391,10 @@ fn print_facts(w: &mut String, top: &Top, approx: bool, defined: &[String]) -> F
     if approx {
         writeln!(w, "// No facts: a rounded float aggregate has many acceptable values (the bound").unwrap();
         writeln!(w, "// admits the correctly rounded result, but that is not proved here).\n").unwrap();
+        return Facts::None;
+    }
+    if !b.outer.is_empty() {
+        writeln!(w, "// No facts: the engine chooses its rounded float aggregates, so the answer is not unique.\n").unwrap();
         return Facts::None;
     }
     if b.shape == Shape::Scalar {
@@ -3679,6 +3833,7 @@ async fn run() -> Res<()> {
         notes: BTreeSet::new(),
         pfx: String::new(),
         perm: perm::Perm::default(),
+        ok_calls: vec![],
         guarded_vals: HashSet::new(),
     };
     let top = translate(&mut tr, &plan, &explicit_nulls(&sql)?)?;
@@ -3687,6 +3842,9 @@ async fn run() -> Res<()> {
     std::fs::write(&out_path, &text).map_err(|e| format!("{out_path}: {e}"))?;
     let opt = |k: &str| args.iter().position(|a| a == k).and_then(|i| args.get(i + 1)).cloned();
     if let Some(ob_path) = opt("--obligations") {
+        if !top.block.outer.is_empty() {
+            return Err("obligations: the engine's rounded float aggregates (chosen values) have no kernel obligations".into());
+        }
         let inputs = match opt("--inputs") {
             Some(p) => {
                 let t = std::fs::read_to_string(&p).map_err(|e| format!("{p}: {e}"))?;

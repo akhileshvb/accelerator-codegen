@@ -1,0 +1,1 @@
+SELECT a.store AS lo, b.store AS hi FROM (SELECT store, SUM(amount) AS total FROM sales GROUP BY store) a, (SELECT store, SUM(amount) AS total FROM sales GROUP BY store) b WHERE a.total < b.total ORDER BY lo, hi
