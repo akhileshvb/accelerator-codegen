@@ -10,3 +10,5 @@ n07 ok
 n08 ok-spec a NULL-able column needs AS <Type>
 n09 ok-spec not an exact row value
 n10 ok-spec KEYS a is NULL-able
+n11 ok
+n12 ok
