@@ -1,0 +1,1 @@
+SELECT id FROM t WHERE d >= DATE '2020-01-01' AND s LIKE 'a%' ORDER BY id

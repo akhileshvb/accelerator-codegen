@@ -1,0 +1,1 @@
+SELECT a + 1 AS a1, COUNT(*) AS n FROM t GROUP BY a + 1 ORDER BY a1
