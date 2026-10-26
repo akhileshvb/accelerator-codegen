@@ -1,15 +1,17 @@
 #!/usr/bin/env bash
-# Correctness tests of the TPC-H Verus kits (accel_tpch_qN_vgen) from the repo's own inputs:
+# Correctness tests of a benchmark's Verus kits (accel_<bench>_qN_vgen; default tpch) from the repo's own inputs:
 # per kit, verus_kit_runner differential + snapshots on a private copy of the test database,
-# with the kit's workload (accelerators/tpch/qN/tests/workload: setup.sql, params.sql,
-# txns/) and the declared schema's NOT NULL constraints (workloads/tpch/schema_constraints.sql).
+# with the kit's workload (accelerators/<bench>/qN/tests/workload: setup.sql, params.sql,
+# txns/) and the declared schema's NOT NULL constraints (workloads/<bench>/schema_constraints.sql).
 # validate (no accelerator) first checks the workload itself against the query
-# (workloads/tpch/qN.sql): setup runs, every tuple evaluates, every txn applies in sequence.
+# (workloads/<bench>/qN.sql): setup runs, every tuple evaluates, every txn applies in sequence.
 # Prints a summary table; exit 1 if any kit has a mismatch or a failed run.
 #
 #   scripts/run_verus_kit_tests.sh <build_dir> [query ...]      (default: all 22)
 #
 # Env:
+#   BENCH        tpch    (null_double: NULL and DOUBLE cells, TEST_DB from
+#                accelerators/null_double/q1/tests/make_test_db.sh)
 #   TEST_DB      pristine test database, never modified (default ../accelerator-codegen-duckdb/tpch_test.duckdb;
 #                scripts/create_tpch_test_db.py makes one)
 #   OUT          results dir (default <build_dir>/verus_kit_tests): qN_<mode>.{json,err,rc}, summary.txt
@@ -26,12 +28,13 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 [[ $# -ge 1 ]] || { sed -n '2,20p' "$0" >&2; exit 2; }
 BUILD="$(cd "$1" && pwd)"; shift
+BENCH="${BENCH:-tpch}"
 QUERIES="${*:-$(seq -s ' ' 1 22)}"
 RUNNER="${RUNNER:-${BUILD}/verus_kit_runner}"
 TEST_DB="${TEST_DB:-${ROOT}/../accelerator-codegen-duckdb/tpch_test.duckdb}"
 OUT="${OUT:-${BUILD}/verus_kit_tests}"
 MODES="${MODES:-validate differential snapshots}"
-SCHEMA="${ACCEL_VERUS_SCHEMA_SQL:-${ROOT}/workloads/tpch/schema_constraints.sql}"
+SCHEMA="${ACCEL_VERUS_SCHEMA_SQL:-${ROOT}/workloads/${BENCH}/schema_constraints.sql}"
 KIT_JOBS="${KIT_JOBS:-1}"
 TIMEOUT="${TIMEOUT:-900}"
 
@@ -41,12 +44,12 @@ TIMEOUT="${TIMEOUT:-900}"
 mkdir -p "${OUT}/dbs"
 
 run_one() {  # q mode
-  local q=$1 mode=$2 spec="${ROOT}/accelerators/tpch/q$1/tests/workload" db="${OUT}/dbs/q$1_$2.duckdb" args
+  local q=$1 mode=$2 spec="${ROOT}/accelerators/${BENCH}/q$1/tests/workload" db="${OUT}/dbs/q$1_$2.duckdb" args
   if [[ ! -d "${spec}/txns" ]]; then echo "missing" > "${OUT}/q${q}_${mode}.rc"; return; fi
   case ${mode} in
-    validate)     args=("${db}" "${spec}" "${ROOT}/workloads/tpch/q${q}.sql") ;;
-    differential) args=("${db}" "tpch_q${q}_vgen" "${spec}" "${DIFF_EVERY:-10}") ;;
-    snapshots)    args=("${db}" "tpch_q${q}_vgen" "${spec}" "${SNAP_WRITES:-200}" "${SNAP_READERS:-4}" "${SNAP_SEED:-1}") ;;
+    validate)     args=("${db}" "${spec}" "${ROOT}/workloads/${BENCH}/q${q}.sql") ;;
+    differential) args=("${db}" "${BENCH}_q${q}_vgen" "${spec}" "${DIFF_EVERY:-10}") ;;
+    snapshots)    args=("${db}" "${BENCH}_q${q}_vgen" "${spec}" "${SNAP_WRITES:-200}" "${SNAP_READERS:-4}" "${SNAP_SEED:-1}") ;;
     *) echo "unknown mode ${mode}" >&2; return ;;
   esac
   rm -f "${db}" "${db}.wal"; cp "${TEST_DB}" "${db}"
