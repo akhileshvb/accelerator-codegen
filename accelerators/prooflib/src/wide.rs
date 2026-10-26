@@ -4,6 +4,8 @@
 // does not allocate.  The view `@` is the integer; no operation can overflow or decline.
 use vstd::prelude::*;
 use std::sync::Arc;
+use verus_common::rel::*;
+use crate::float::*;
 
 verus! {
 
@@ -530,6 +532,28 @@ impl Big {
         self.neg && self.mag.len() > 0
     }
 
+    /// The nearest double (ties up) to the value, as bits, when the value is in the double range.
+    fn f64_bits(&self) -> (r: u64)
+        requires f64_in_range(self@),
+        ensures f64_rounded(r, self@),
+    {
+        proof { use_type_invariant(self); }
+        let n = self.mag.len();
+        let lo = if n > 2 { n - 2 } else { 0 };
+        let w: u128 = limb(&self.mag, lo) as u128 + (limb(&self.mag, lo + 1) as u128) * 0x1_0000_0000_0000_0000u128;
+        proof {
+            lemma_lm_bound(self.mag@, lo as nat);
+            lemma_lm_step(self.mag@, lo as nat);
+            lemma_lm_step(self.mag@, (lo + 1) as nat);
+            lemma_lm_ext(self.mag@, n as nat, (lo + 2) as nat);
+            if n > 2 { lemma_lm_top(self.mag@); }
+            let (x, y, pl) = (get(self.mag@, lo as nat), get(self.mag@, (lo + 1) as nat), pw(lo as nat));
+            assert((x + y * 0x1_0000_0000_0000_0000int) * pl == x * pl + y * (0x1_0000_0000_0000_0000int * pl)) by (nonlinear_arith);
+            assert(n <= 2 ==> lo == 0 && lm(self.mag@, 0) == 0);
+        }
+        round_window(self.neg, w, lo, Ghost(lm(self.mag@, lo as nat)))
+    }
+
     /// The value as an i128, when it fits.
     pub fn to_i128(&self) -> (r: Option<i128>)
         ensures
@@ -685,6 +709,22 @@ impl Wide {
             r matches Some(v) ==> v as int == self@,
             i128::MIN <= self@ <= i128::MAX ==> r is Some,
     { match self { Wide::Small(x) => Some(*x), Wide::Big(b) => (**b).to_i128() } }
+
+    /// The nearest double (ties up) to the value, as bits, when the value is in the double range
+    /// (the spec's float scale: the value is the double times 2^1074).
+    pub fn f64_bits(&self) -> (r: u64)
+        requires f64_in_range(self@),
+        ensures f64_rounded(r, self@),
+    {
+        match self {
+            Wide::Small(x) => {
+                proof { reveal_with_fuel(pw, 1); }
+                let mag = if *x < 0 { (-(*x + 1)) as u128 + 1 } else { *x as u128 };
+                round_window(*x < 0, mag, 0, Ghost(0))
+            }
+            Wide::Big(b) => b.f64_bits(),
+        }
+    }
 }
 
 }

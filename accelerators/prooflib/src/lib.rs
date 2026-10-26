@@ -10,6 +10,7 @@ use verus_common::bytes::*;
 use verus_common::sums::*;
 pub mod like;
 pub mod wide;
+pub mod float;
 pub use like::like_match_exec;
 
 verus! {
