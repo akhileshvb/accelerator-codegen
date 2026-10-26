@@ -288,7 +288,6 @@ def log_gate_batch_start(
     if not gate_names:
         return
     context = _gate_context_label(change_kind, iteration)
-    names = ", ".join(gate_names)
     print(
         f"[pipeline] ═══ gates ({context}, Q{query}): {len(gate_names)} to run ═══",
         file=sys.stderr,

@@ -396,10 +396,10 @@ def test_engine_layer_gate_script_exists():
         / "test_engine_layer.cpp.tpl"
     )
     assert tpl.is_file()
-    assert (REPO_ROOT / "pipeline" / "prompts" / "engine_backend" / "layers.md").is_file()
-    assert (REPO_ROOT / "pipeline" / "prompts" / "engine_backend" / "layer_contracts.md").is_file()
-    assert (REPO_ROOT / "pipeline" / "prompts" / "engine_backend" / "contract_tests.md").is_file()
-    assert (REPO_ROOT / "pipeline" / "prompts" / "engine_backend" / "adversarial_tests.md").is_file()
+    assert (REPO_ROOT / "pipeline" / "prompts" / "engine_backend" / "docs" / "layers.md").is_file()
+    assert (REPO_ROOT / "pipeline" / "prompts" / "engine_backend" / "docs" / "layer_contracts.md").is_file()
+    assert (REPO_ROOT / "pipeline" / "prompts" / "engine_backend" / "docs" / "contract_tests.md").is_file()
+    assert (REPO_ROOT / "pipeline" / "prompts" / "engine_backend" / "docs" / "adversarial_tests.md").is_file()
 
 
 def test_run_gate_sets_engine_context_and_out_env(monkeypatch):
@@ -656,7 +656,7 @@ def test_critique_harness_gaps_aimed_at_the_pipeline_are_dropped(tmp_path):
         return load_layer_critique(tmp_path, "hostctl")
 
     gate_gap = {"rule": "harness_gap", "paths": ["pipeline/gates/run_engine_hostctl.sh", "backends/x/host.sh"]}
-    real = {"rule": "host_contract", "paths": ["backends/x/host.sh", "pipeline/prompts/engine_backend/host_contract.md"]}
+    real = {"rule": "host_contract", "paths": ["backends/x/host.sh", "pipeline/prompts/engine_backend/docs/host_contract.md"]}
     only_gate = critique([gate_gap])
     assert only_gate["status"] == "pass" and only_gate["dropped_pipeline_harness_gaps"] == [gate_gap]
     mixed = critique([gate_gap, real])

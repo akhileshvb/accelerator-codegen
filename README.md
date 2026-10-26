@@ -67,7 +67,7 @@ cmake --build build
 
 Every backend, whatever the engine, is built, started and loaded through its own
 `backends/<engine>/host.sh` (`build`, `up`, `load`, ...; see
-`pipeline/prompts/engine_backend/host_contract.md`), which the engine_backend pipeline generates.
+`pipeline/prompts/engine_backend/docs/host_contract.md`), which the engine_backend pipeline generates.
 
 Verus kits (needs the Verus toolchain under `tools/verus`, or `VERUS_BIN`):
 
@@ -111,7 +111,7 @@ Run test and benchmark binaries from the repository root: cost-model paths
 
 The per-query test suite (`accelerators/<bench>/q<N>/tests/workload/`: fixed tuples, a parameter
 domain, write transactions, a write mix; written by the pipeline's `test_suite` stage and frozen after it)
-is one format for the C++ and the Verus pipelines (`pipeline/prompts/shared/test_suite.md`). The C++ gates
+is one format for the C++ and the Verus pipelines (`pipeline/prompts/shared/docs/test_suite.md`). The C++ gates
 (`aux_correctness`, `quick_check`) run it with a fresh seed each time, printed and kept in the gate result;
 `ACCEL_SUITE_SEED=<seed>` repeats a run.
 

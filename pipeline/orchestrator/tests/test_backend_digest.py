@@ -67,7 +67,7 @@ def test_diff_against_a_snapshot_shows_only_what_changed(tmp_path):
 
 
 def test_contract_digest_keeps_the_layers_section_and_the_requirements_naming_it():
-    contracts = (REPO_ROOT / "pipeline/prompts/engine_backend/layer_contracts.md").read_text()
+    contracts = (REPO_ROOT / "pipeline/prompts/engine_backend/docs/layer_contracts.md").read_text()
     capture = layer_contracts_digest(contracts, "capture", "layer_contracts.md")
     scan = layer_contracts_digest(contracts, "scan", "layer_contracts.md")
     assert "## `capture` (S1)" in capture and "## `scan` (S5, S8)" not in capture

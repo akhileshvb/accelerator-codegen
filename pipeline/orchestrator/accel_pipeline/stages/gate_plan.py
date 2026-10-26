@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from accel_pipeline.gates import GateFailure, GateResult, gate_failure_message, run_gate
+from accel_pipeline.gates import GateResult, run_gate
 
 
 GATES_ALLOW_SKIP = frozenset(
@@ -96,25 +96,3 @@ def run_post_stage_gates_collect(
             continue
         return results, result
     return results, None
-
-
-def run_post_stage_gates(
-    pipeline_config,
-    workload_name: str,
-    query: int,
-    gate_names: list[str],
-    *,
-    change_kind: str = "",
-    iteration: int = 0,
-) -> list[GateResult]:
-    results, failed = run_post_stage_gates_collect(
-        pipeline_config,
-        workload_name,
-        query,
-        gate_names,
-        change_kind=change_kind,
-        iteration=iteration,
-    )
-    if failed is not None:
-        raise GateFailure(gate_failure_message(failed))
-    return results

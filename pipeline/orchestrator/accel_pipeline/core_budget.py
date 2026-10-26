@@ -26,6 +26,8 @@ MEASURE_SLOTS_ENV = "ACCEL_MEASURE_SLOTS"
 WORKERS_ENV = "ACCEL_CONCURRENT_WORKERS"
 MEASURE_CORES_ENV = "ACCEL_MEASURE_CORES"
 LOCK_DIR_ENV = "ACCEL_HOST_LOCK_DIR"
+MEASURE_LEASE_ENV = "ACCEL_MEASURE_LEASE"
+MEASURE_WAIT_ENV = "ACCEL_MEASURE_WAIT_SEC"
 MAX_AUTO_MEASURE_CORES = 8
 
 _slot_handles: list[BinaryIO] = []  # held for the process lifetime: the slot frees when it exits
@@ -168,6 +170,9 @@ def activate(cfg: ConcurrencyConfig) -> CoreBudget:
         LOCK_DIR_ENV: str(host_lock_dir(cfg.host_lock_dir)),
     }
     os.environ.update(exported)
+    # The measurement lease's settings; an explicit environment value wins.
+    os.environ.setdefault(MEASURE_LEASE_ENV, "1" if cfg.measurement_lease else "0")
+    os.environ.setdefault(MEASURE_WAIT_ENV, str(cfg.measurement_wait_sec))
     for name in ("ACCEL_BUILD_JOBS", "ACCEL_CTEST_JOBS", "CMAKE_BUILD_PARALLEL_LEVEL"):
         os.environ.setdefault(name, str(budget.jobs))
     return budget

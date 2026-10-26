@@ -15,7 +15,7 @@ STAGE_MARK = re.compile(r"^=== stage: (\w+) ===", re.M)
 # a line that says something was broken or repaired (a clean run prints none of them)
 TROUBLE = re.compile(r"gate FAILED|^\[repair\]|stage \w+ raised|retrying stage|write_policy_violation|stopped:", re.M)
 SINGLE_RUN_STAGES = ("analysis", "test_suite", "implementation", "audit")
-REPAIR_STAGES = ("crash_debug", "optimization_fix")
+REPAIR_STAGES = ("crash_debug",)
 SKIPPABLE = {"skip"}  # a gate may skip itself when it does not apply (gate_plan.GATES_ALLOW_SKIP)
 
 

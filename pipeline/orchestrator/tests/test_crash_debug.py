@@ -11,7 +11,7 @@ from accel_pipeline.repair import StageStopped
 def _config(tmp_path, *, parallel, **repair) -> PipelineConfig:
     return PipelineConfig(
         repo_root=tmp_path, pipeline_root=tmp_path / "pipeline", build_dir=tmp_path / "build",
-        tpch_db_sf1=tmp_path, tpch_db_sf10=tmp_path, repair=RepairConfig(**repair),
+        tpch_db_sf1=tmp_path, repair=RepairConfig(**repair),
         quick_tier=QuickTierConfig(parallel_gates=parallel),
     )
 

@@ -197,7 +197,6 @@ def _param_predicate(conj, select, resolve, names) -> ParamPredicate | None:
 
 
 def _spread_pairs(shape, candidates, direct, schema):
-    linked = {frozenset((a, b)): (a, b) for a, b in shape.joins}
     tables_linked = {frozenset((a[0], b[0])) for a, b in shape.joins}
 
     def family(key):

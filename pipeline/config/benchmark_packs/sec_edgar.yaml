@@ -3,6 +3,18 @@ display_name: SEC-EDGAR
 artifact_namespace: sec_edgar
 dataset_key: sec_edgar_sf3
 db_env_var: ACCEL_SEC_EDGAR_DB
+
+# Benchmark facts the stage prompts state ({{benchmark_notes}}); {dataset_db}, {query} and {engine} are filled in.
+prompt_notes: |
+  - SEC-EDGAR queries use **embedded literals** (no bind parameters); table functions may be zero-arg.
+  - Correctness requires **full multi-row ordered result match**, not a single scalar.
+  - Benchmark/profile use **one scale factor** (SF3); size structures from bind-time `row_estimate`, not hardcoded row/distinct counts from the current profile.
+aux_prompt_notes: |
+  - SEC EDGAR aux state: `accelerators/sec_edgar/q{query}/{engine}/aux/module.hpp` (base API: `accelerators/sec_edgar/q{query}/{engine}/base/query.hpp`).
+  - Write workload suite is **`filing_append`** / **`value_append`**.
+  - Partition by filing semantics (`stmt`, `adsh`, `cik`+`fy`) — see `pipeline/config/benchmark_packs/sec_edgar_aux_state_notes.md`.
+  - The aux state is discovered from `aux/finalize.cpp`; no CMake registration.
+  - Scale: SF3 is both iteration and production scale here — still size from `row_estimate`, not profile snapshots.
 ctest_resource_lock: sec_edgar_db
 schema_reference_path: eval/bench/sec_edgar/schema_reference.md
 test_template_path: pipeline/templates/sec_edgar/test_template.cpp

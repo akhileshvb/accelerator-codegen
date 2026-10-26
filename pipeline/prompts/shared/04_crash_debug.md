@@ -1,6 +1,6 @@
 # Repair round
 
-A mandatory check failed after your last edit (build error, crash, correctness mismatch, measurement, deadline). The failure report is in the **task message**. Follow `pipeline/prompts/shared/repair_protocol.md`.
+A mandatory check failed after your last edit (build error, crash, correctness mismatch, measurement, deadline). The failure report is in the **task message**. Follow `pipeline/prompts/shared/docs/repair_protocol.md`.
 
 **This stage is not finished** until the mandatory gates pass. Fix the failure; the pipeline re-runs the gates automatically.
 

@@ -1,4 +1,4 @@
-// The canary suite (pipeline/canary, pipeline/prompts/engine_backend/canary_contract.md) bound to
+// The canary suite (pipeline/canary, pipeline/prompts/engine_backend/docs/canary_contract.md) bound to
 // DuckDB: sessions are connections of one database, canary accelerators register through the
 // backend's aux registry and catalog, counters are the runtime's statistics, and the build scan
 // forwards ScanPartitioned and its row view as they are.

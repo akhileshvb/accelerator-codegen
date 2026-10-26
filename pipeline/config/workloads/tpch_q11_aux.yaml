@@ -18,16 +18,3 @@ optimization:
   consecutive_fail_stop: 0
   no_improvement_stop: 8
 
-optimization_guidance: |
-  Q11 is "important parts": nation-scoped partsupp value per partkey, filtered by a HAVING
-  threshold (national total supply value * fraction).
-
-  Correctness priorities for aux state:
-  1. Maintain nation-scoped aggregates over partsupp (join supplier → nation on nation_name).
-  2. Keep the national denominator (SUM(ps_supplycost * ps_availqty) for the nation) consistent
-     with the HAVING predicate when partsupp/supplier/nation rows change.
-  3. On read, return only partkeys whose per-part value exceeds threshold * national_total.
-
-  Efficiency hints (after correctness):
-  - Precompute per-nation totals and per-(nation, partkey) sums to avoid rescanning partsupp.
-  - Invalidate or incrementally update on deltas to watched columns only.

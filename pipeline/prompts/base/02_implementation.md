@@ -7,7 +7,7 @@ Implement the accelerator for **{{display_name}}** **Q{{query_number}}** on host
 **Correct first, then fast at the machine level, at SF3000.**
 
 1. The differential against the reference SQL passes on the **{{engine_name}}** host before anything else.
-2. The kernel then uses the hardware: SIMD inner loops (AVX-512/AVX2 with a scalar fallback), cache-conscious columnar layouts, branch-free predicates, prefetch, no per-row allocation, fused passes. The profile and the analysis pick the loops. Read `pipeline/prompts/shared/low_level_execution.md` before writing them.
+2. The kernel then uses the hardware: SIMD inner loops (AVX-512/AVX2 with a scalar fallback), cache-conscious columnar layouts, branch-free predicates, prefetch, no per-row allocation, fused passes. The profile and the analysis pick the loops. Read `pipeline/prompts/shared/docs/low_level_execution.md` before writing them.
 3. Capacities come from bind-time estimates, never SF1 literals (`scale_factor_contract.md`).
 
 **Owns:** this query's files under `accelerators/.../q{{query_number}}/{{engine_name}}/`. **Never touches:** `backends/`, `substrate/`, `cmake/`, other queries, `accelerators/prims/`. **Judged by:** correctness, then baseline, profile and fairness gates (`constraints.md` below).
@@ -40,7 +40,7 @@ The kernel consumes **{{engine_name}}**'s native batches and rows. Registration 
 {{accelerator_engine_profile}}
 {{engine_host_discovery}}
 
-If the host's harnesses lack a surface this query needs, the **`host_bootstrap`** stage creates the shared SQL entrypoints, differential and gate harnesses once per engine. Per-query work only adds this query's files in its own directory. If bootstrap artifacts are missing, follow `pipeline/prompts/shared/query_host_bootstrap.md` or re-run `--stage host_bootstrap`. Never edit a backend's registration code or registries: register from the query's directory. The root `CMakeLists.txt` and `cmake/` are never edited; targets come from `accelerators/<bench>/build.cmake`.
+If the host's harnesses lack a surface this query needs, the **`host_bootstrap`** stage creates the shared SQL entrypoints, differential and gate harnesses once per engine. Per-query work only adds this query's files in its own directory. If bootstrap artifacts are missing, follow `pipeline/prompts/shared/docs/query_host_bootstrap.md` or re-run `--stage host_bootstrap`. Never edit a backend's registration code or registries: register from the query's directory. The root `CMakeLists.txt` and `cmake/` are never edited; targets come from `accelerators/<bench>/build.cmake`.
 
 ## Requirements
 
@@ -53,7 +53,7 @@ If the host's harnesses lack a surface this query needs, the **`host_bootstrap`*
 
 **Exit criterion:** call `run_correctness` (or `request_gate`) and do not finish until it passes. The orchestrator re-runs the gates afterward: correctness, baseline, profile.
 
-Reference docs (read when needed): `pipeline/prompts/shared/generated_layout.md`, `engine_interfaces.md`, `query_host_bootstrap.md`, `profiling_conventions.md`.
+Reference docs (read when needed): `pipeline/prompts/shared/docs/generated_layout.md`, `engine_interfaces.md`, `query_host_bootstrap.md`, `profiling_conventions.md`.
 
 {{benchmark_notes}}
 

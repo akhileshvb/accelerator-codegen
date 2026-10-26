@@ -1,6 +1,6 @@
 # Stage 4: Audit
 
-Audit **Q{{query_number}}** accelerator for benchmark fairness, **scale safety** (SF3000), production-path correctness and hardware-aware inner loops (`pipeline/prompts/shared/low_level_execution.md`).
+Audit **Q{{query_number}}** accelerator for benchmark fairness, **scale safety** (SF3000), production-path correctness and hardware-aware inner loops (`pipeline/prompts/shared/docs/low_level_execution.md`).
 
 {{hard_guidelines}}
 

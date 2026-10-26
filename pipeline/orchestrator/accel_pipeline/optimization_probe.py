@@ -5,7 +5,6 @@ from __future__ import annotations
 import os
 import subprocess
 from dataclasses import dataclass
-from pathlib import Path
 
 from accel_pipeline.config import PipelineConfig, resolve_workload_paths
 from accel_pipeline.optimization_smoke import _smoke_regex

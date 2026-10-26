@@ -9,27 +9,3 @@ parameters:
   - name: start_date
     type: DATE
 
-optimization_guidance: |
-  **PRIORITY — dual axes (Q5):** read is already strong (~9k× read-only / ~8µs hit on
-  the opt quick bench), but **10% write-mix workload_speedup is ~0.37×** (full-rebuild
-  cliff). Do **not** spend attempts on further ≤5% hit-path micro-opts while that cliff
-  remains. Next hypotheses must raise 10% `workload_speedup` via **cheap incremental
-  maintenance**, without regressing read-only.
-
-  Measured context:
-  - Fair SF1 sweep (impl): 0% query ~169×, 10% workload **0.37×**, 50% **0.07×**.
-  - Opt best_valid: read_only ~9k×, 10% write-mix still ~**0.37×**.
-
-  Maintenance realities for this query:
-  - Bench writes are **lineitem point updates** (`l_extendedprice += 0.01` via catalog probe).
-  - Prefer **ApplyDelta** / leaf+ancestor tree updates over `MarkRebuild` + `RebuildAll`.
-  - Align `updated_columns` / mutation interpretation with the probe (price/discount path
-    must actually take the delta path end-to-end — a mismatch silently falls back to rebuild).
-  - Keep reverse/lookup maps off the hot read path (prior A/B that copied multi-million
-    order maps into side state blew hit latency to ~120ms — discard that pattern).
-  - Dimension-key changes may still rebuild; point revenue edits must not.
-
-  Success signal for an attempt: dual-axis score
-  `read_only^0.75 * write_mix^0.25` improves vs best_valid — typically by raising 10%
-  `write_mix_workload_speedup` toward ≥1× (ideally much higher) while keeping
-  `read_only_query_speedup` near the current best.

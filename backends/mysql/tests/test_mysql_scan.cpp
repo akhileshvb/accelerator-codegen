@@ -1,5 +1,5 @@
 // GENERATED BACKEND — layer harness for scan (Native scan helper).
-// Spec: pipeline/prompts/engine_backend/layers.md
+// Spec: pipeline/prompts/engine_backend/docs/layers.md
 // Build: test_mysql_scan   CTest: engine_mysql_scan
 //
 // Rule: native_scan

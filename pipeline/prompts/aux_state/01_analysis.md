@@ -7,8 +7,8 @@ Design a stateful (aux-state) accelerator for **{{display_name}}** **Q{{query_nu
 **Plan state that makes reads fast and maintenance cheap, built from copy-on-write primitives, at SF3000.** Do not write code; write `{{full_analysis_path}}`.
 
 1. Pick the state that removes the base path's repeated work (never a cached final answer) and whose write cost follows touched data.
-2. Build it from the primitive library: reuse catalogued primitives (`primitives_used`), or specify a bespoke, generic COW primitive for this query template's access pattern (`primitives_proposed`). Guide: `pipeline/prompts/aux_state/shared/cow_primitives.md`.
-3. Name the low-level execution of the read, build and maintain loops: SIMD with a scalar fallback, cache-conscious layout, branch-free predicates, prefetch. Guide: `pipeline/prompts/shared/low_level_execution.md`.
+2. Build it from the primitive library: reuse catalogued primitives (`primitives_used`), or specify a bespoke, generic COW primitive for this query template's access pattern (`primitives_proposed`). Guide: `pipeline/prompts/aux_state/docs/cow_primitives.md`.
+3. Name the low-level execution of the read, build and maintain loops: SIMD with a scalar fallback, cache-conscious layout, branch-free predicates, prefetch. Guide: `pipeline/prompts/shared/docs/low_level_execution.md`.
 
 {{hard_guidelines}}
 

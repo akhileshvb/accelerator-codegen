@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from accel_pipeline.config import PipelineConfig
+from accel_pipeline.jsonio import append_jsonl, read_jsonl
 from accel_pipeline.kernel_snapshot import resolve_snapshot_paths
 from accel_pipeline.paths import query_artifacts_dir
 
@@ -23,7 +24,6 @@ def _checkpoint_dir(art: Path) -> Path:
 
 
 def _checkpoint_files(pipeline_config: PipelineConfig, workload: dict[str, Any], query: int) -> list[Path]:
-    repo = pipeline_config.repo_root
     return [p for p in resolve_snapshot_paths(pipeline_config, workload, query) if p.is_file()]
 
 
@@ -95,20 +95,16 @@ def clear_attempt_checkpoint(art: Path) -> None:
         active.unlink()
 
 
+ATTEMPT_LOG = "attempt_log.jsonl"
+
+
 def append_attempt_log(art: Path, entry: dict[str, Any]) -> None:
-    path = art / "attempt_log.jsonl"
-    entry = {**entry, "ts": datetime.now(timezone.utc).isoformat()}
-    with path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
-    legacy_path = art / "ab_trials.json"
-    trials: list[dict[str, Any]] = []
-    if legacy_path.is_file():
-        try:
-            trials = list(json.loads(legacy_path.read_text(encoding="utf-8")).get("trials") or [])
-        except json.JSONDecodeError:
-            trials = []
-    trials.append(entry)
-    legacy_path.write_text(json.dumps({"trials": trials}, indent=2), encoding="utf-8")
+    """One row per optimization attempt: the orchestrator's verdict on the worker's candidate."""
+    append_jsonl(art / ATTEMPT_LOG, {**entry, "ts": datetime.now(timezone.utc).isoformat()})
+
+
+def load_attempt_log(art: Path) -> list[dict[str, Any]]:
+    return read_jsonl(art / ATTEMPT_LOG)
 
 
 def load_best_valid_baseline(art: Path) -> dict[str, Any]:

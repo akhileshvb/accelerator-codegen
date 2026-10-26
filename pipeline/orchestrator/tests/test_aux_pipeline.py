@@ -463,7 +463,7 @@ class TestPromptRendering:
         assert not re.search(r"\{\{\w+\}\}", impl), "unresolved placeholder"
         assert "## Design contract" in impl and "```json" in impl
         opt = render_prompt(
-            pipeline_config, "03_optimization_unified.md", workload, 14, "optimization_unified", optimization_iter=1
+            pipeline_config, "03_optimization_worker.md", workload, 14, "optimization_worker", optimization_iter=1
         )
         assert "hard guidelines" in opt.lower() or "native base" in opt.lower()
         assert "{{analysis_json}}" not in opt
@@ -480,7 +480,7 @@ class TestPromptRendering:
             ("analysis", "01_analysis.md"),
             ("test_suite", "01b_test_suite.md"),
             ("implementation", "02_implementation.md"),
-            ("optimization_unified", "03_optimization_unified.md"),
+            ("optimization_worker", "03_optimization_worker.md"),
             ("audit", "04_audit.md"),
         ]:
             result = run_agent_stage(

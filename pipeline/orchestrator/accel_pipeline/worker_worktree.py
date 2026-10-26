@@ -13,7 +13,6 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any
 
 from accel_pipeline.prims_library import is_prims_path, refresh_prims
 from accel_pipeline.write_ownership import owned_path_globs, query_id_from_rel
@@ -281,8 +280,7 @@ def isolation_mode_from_env() -> str:
 
 
 def using_worktree_isolation() -> bool:
-    mode = isolation_mode_from_env()
-    if mode in {"worktree", "worktrees", "git_worktree"}:
+    if isolation_mode_from_env() == "worktree":
         return True
     primary = os.environ.get("ACCEL_PIPELINE_PRIMARY_REPO")
     repo = os.environ.get("ACCEL_PIPELINE_REPO_ROOT")

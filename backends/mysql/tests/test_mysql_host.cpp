@@ -1,5 +1,5 @@
 // GENERATED BACKEND — layer harness for host (Host packaging).
-// Spec: pipeline/prompts/engine_backend/layers.md
+// Spec: pipeline/prompts/engine_backend/docs/layers.md
 // Build: test_mysql_host   CTest: engine_mysql_host
 //
 // Rule: host_glue, fail_closed

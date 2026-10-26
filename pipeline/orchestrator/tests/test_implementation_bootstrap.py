@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from accel_pipeline.config import apply_workload_overrides, load_pipeline_config, load_workload
-from accel_pipeline.context import build_prompt_context
 from accel_pipeline.implementation_bootstrap import build_implementation_bootstrap
 from accel_pipeline.paths import find_repo_root
 

@@ -9,10 +9,8 @@ import pytest
 
 PROMPTS = Path(__file__).resolve().parents[2] / "prompts"
 OPTIMIZATION_PROMPTS = (
-    "03_optimization_worker.md",
-    "03_optimization_unified.md",
+    "base/03_optimization_worker.md",
     "aux_state/03_optimization_worker.md",
-    "aux_state/03_optimization_unified.md",
 )
 
 
@@ -26,7 +24,7 @@ def test_no_prompt_sends_the_agent_to_read_the_measurement_trust_file():
 
 
 def test_the_bench_contract_requires_the_measurement_columns():
-    contract = (PROMPTS / "aux_state/shared/bench_sweep_contract.md").read_text(encoding="utf-8")
+    contract = (PROMPTS / "aux_state/docs/bench_sweep_contract.md").read_text(encoding="utf-8")
     header = re.search(r"The columns, by name:\n\n(.*?)\n\n", contract, re.DOTALL).group(1)
     for column in ("accel_hit_rate", "num_queries", "accel_fallback_reads", "state_builds"):
         assert f"`{column}`" in header
@@ -34,12 +32,10 @@ def test_the_bench_contract_requires_the_measurement_columns():
 
 
 GOAL_PROMPTS = {
-    "02_implementation.md": "low_level_execution.md",
-    "03_optimization_worker.md": "low_level_execution.md",
-    "03_optimization_unified.md": "low_level_execution.md",
+    "base/02_implementation.md": "low_level_execution.md",
+    "base/03_optimization_worker.md": "low_level_execution.md",
     "aux_state/02_implementation.md": "cow_primitives.md",
     "aux_state/03_optimization_worker.md": "cow_primitives.md",
-    "aux_state/03_optimization_unified.md": "cow_primitives.md",
 }
 
 

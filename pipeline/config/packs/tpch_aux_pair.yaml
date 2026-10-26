@@ -1,5 +1,4 @@
 # Two-at-a-time aux optimization — lower concurrency for snappier feedback.
-# Same worktree isolation as tpch_aux_remaining.
 
 pack_id: tpch_aux_pair
 display_name: TPC-H aux pair optimization (Q4 + Q7)
@@ -14,10 +13,3 @@ workload_template: "tpch_q{q}_aux"
 queries:
   - { query: 4, workload: tpch_q4_aux }
   - { query: 7, workload: tpch_q7_aux }
-
-isolation:
-  mode: worktree
-  build_dir_template: "build-release-{worker_id}"
-  codex_home_template: "pipeline/.codex/workers/{worker_id}"
-  shared_file_lease: true
-  stage_barriers: false

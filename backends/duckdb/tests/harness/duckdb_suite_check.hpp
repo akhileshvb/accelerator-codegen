@@ -1,6 +1,6 @@
 // GENERATED BACKEND
 // The frozen test suite of a query (eval/harness/suite.hpp), run against the DuckDB accelerated path.
-// Configured by the host contract's ACCEL_SUITE_* environment (pipeline/prompts/engine_backend/host_contract.md,
+// Configured by the host contract's ACCEL_SUITE_* environment (pipeline/prompts/engine_backend/docs/host_contract.md,
 // "Test suite"); every run states its seed, and a failure carries what reproduces it.
 #pragma once
 

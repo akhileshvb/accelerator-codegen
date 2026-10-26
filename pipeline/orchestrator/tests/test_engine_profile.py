@@ -203,7 +203,7 @@ def test_hostctl_prompt_is_the_host_script_prompt(engine):
     hostctl = layers["hostctl"]
     assert hostctl["prompt"] == "impl_hostctl.md" and "prompt" not in layers["capture"]
     text = _render(w, hostctl["prompt"], "impl_hostctl", hostctl)
-    contract = (PIPELINE_ROOT / "prompts" / "engine_backend" / "host_contract.md").read_text()
+    contract = (PIPELINE_ROOT / "prompts" / "engine_backend" / "docs" / "host_contract.md").read_text()
     assert contract.strip() in text
     assert "{{" not in text
     for section in ("identity", "packaging", "host_runtime", "build", "process_model", "scan", "oracle"):
@@ -221,7 +221,7 @@ def test_hostctl_sees_the_load_hazards_and_no_run_script_names():
 
 
 def test_layer_rules_are_checklist_ids():
-    checklist = (PIPELINE_ROOT / "prompts" / "engine_backend" / "acceptance_checklist.md").read_text()
+    checklist = (PIPELINE_ROOT / "prompts" / "engine_backend" / "docs" / "acceptance_checklist.md").read_text()
     ids = set(re.findall(r"^### `(\w+)`", checklist, re.M))
     for layer in implementation_layers(load_workload("engine_postgres", REPO_ROOT)):
         assert set(layer.get("rules") or []) <= ids, layer["id"]

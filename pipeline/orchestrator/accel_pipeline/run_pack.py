@@ -19,7 +19,6 @@ from accel_pipeline.engine_host import instance_tag
 from accel_pipeline.env_loader import load_repo_dotenv
 from accel_pipeline.paths import find_repo_root, pipeline_root
 from accel_pipeline.worker_isolation import (
-    apply_worker_isolation,
     default_build_dir_for_worker,
     prepare_codex_home,
     worker_id_for_query,
@@ -107,7 +106,6 @@ def run_pack_query(
     dry_run: bool,
     skip_gates: bool,
     extra_args: list[str] | None = None,
-    isolation_mode: str = "worktree",
     pack_queries: list[int] | None = None,
     concurrent_workers: int = 1,
 ) -> dict[str, Any]:
@@ -119,14 +117,7 @@ def run_pack_query(
     build_dir = default_build_dir_for_worker(primary, worker_id)
     codex_home = prepare_codex_home(repo_root=primary, worker_id=worker_id)
 
-    worker_repo = primary
-    if isolation_mode in {"worktree", "worktrees", "git_worktree"}:
-        worker_repo = ensure_worker_worktree(
-            primary,
-            worker_id,
-            reset=True,
-            pack_queries=pack_queries,
-        )
+    worker_repo = ensure_worker_worktree(primary, worker_id, reset=True, pack_queries=pack_queries)
 
     log_path = _worker_log_path(primary, worker_id)
 
@@ -138,7 +129,7 @@ def run_pack_query(
     env["ACCEL_PIPELINE_WORKLOAD"] = entry.workload
     env["ACCEL_PIPELINE_REPO_ROOT"] = str(worker_repo)
     env["ACCEL_PIPELINE_PRIMARY_REPO"] = str(primary)
-    env["ACCEL_PIPELINE_ISOLATION_MODE"] = isolation_mode
+    env["ACCEL_PIPELINE_ISOLATION_MODE"] = "worktree"
     env["CODEX_HOME"] = str(codex_home)
     # One engine instance per worker (container names and ports derive from it).
     tag = instance_tag(worker_id, build_dir)
@@ -180,8 +171,7 @@ def run_pack_query(
     print(
         f"[pack] start worker={worker_id} query={entry.query} workload={entry.workload} "
         f"engine={entry.engine or '-'} "
-        f"build_dir={build_dir.name} repo={worker_repo.name if worker_repo != primary else 'primary'} "
-        f"isolation={isolation_mode} stage={entry.stage}",
+        f"build_dir={build_dir.name} repo={worker_repo.name} stage={entry.stage}",
         file=sys.stderr,
         flush=True,
     )
@@ -189,8 +179,7 @@ def run_pack_query(
         logf.write(f"# cmd: {' '.join(cmd)}\n")
         logf.write(
             f"# build_dir={build_dir}\n# codex_home={codex_home}\n"
-            f"# repo_root={worker_repo}\n# primary={primary}\n"
-            f"# isolation={isolation_mode}\n\n"
+            f"# repo_root={worker_repo}\n# primary={primary}\n\n"
         )
         logf.flush()
         proc = subprocess.run(
@@ -213,7 +202,6 @@ def run_pack_query(
         "build_dir": str(build_dir),
         "codex_home": str(codex_home),
         "repo_root": str(worker_repo),
-        "isolation_mode": isolation_mode,
         "log": str(log_path),
         "ok": proc.returncode == 0,
     }
@@ -255,9 +243,6 @@ def run_pack(
         raise ValueError("pack has no queries")
     max_workers = int(concurrency or pack.get("concurrency") or 2)
     max_workers = max(1, min(max_workers, len(queries)))
-
-    # Ensure isolation fields are sensible even for dry summary.
-    _ = apply_worker_isolation  # imported for API stability / tests
 
     from accel_pipeline.repo_context_pack import ensure_repo_context_pack
 
@@ -302,18 +287,9 @@ def run_pack(
             raise RuntimeError(f"host_bootstrap failed before pack fan-out: {failed}")
 
     results: list[dict[str, Any]] = []
-    isolation = dict(pack.get("isolation") or {})
-    isolation_mode = str(
-        isolation.get("mode")
-        or pack.get("isolation_mode")
-        or "worktree"
-    )
-    # Legacy alias: shared_tree_separate_builds → upgrade to worktree isolation.
-    if isolation_mode in {"shared_tree_separate_builds", "shared_tree"}:
-        isolation_mode = "worktree"
     pack_query_ids = sorted({e.query for e in queries})
     print(
-        f"[pack] isolation_mode={isolation_mode} workers={len(queries)} "
+        f"[pack] workers={len(queries)} (one git worktree each) "
         f"queries={pack_query_ids}",
         flush=True,
     )
@@ -330,7 +306,6 @@ def run_pack(
                 dry_run=dry_run,
                 skip_gates=skip_gates,
                 extra_args=extra_args,
-                isolation_mode=isolation_mode,
                 pack_queries=pack_query_ids,
                 concurrent_workers=max_workers,
             )
@@ -349,9 +324,6 @@ def run_pack(
         "pack_id": pack.get("pack_id") or pack.get("name") or "pack",
         "pack_path": pack.get("_pack_path"),
         "concurrency": max_workers,
-        "isolation": isolation_mode,
-        "shared_file_lease": True,
-        "stage_barriers": False,
         "results": results,
         "ok_count": sum(1 for r in results if r["ok"]),
         "fail_count": sum(1 for r in results if not r["ok"]),

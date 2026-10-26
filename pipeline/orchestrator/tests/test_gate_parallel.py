@@ -5,7 +5,6 @@ import time
 from pathlib import Path
 from types import SimpleNamespace
 
-import pytest
 
 from accel_pipeline import gate_parallel
 from accel_pipeline.engine_host import instance_tag

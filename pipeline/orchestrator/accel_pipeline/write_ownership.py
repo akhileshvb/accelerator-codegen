@@ -34,21 +34,12 @@ from typing import Any
 
 from accel_pipeline import layout
 from accel_pipeline.frozen_paths import FROZEN
+from accel_pipeline.models import OPTIMIZATION_STAGES
 from accel_pipeline.prims_library import PROVENANCE_REL, primary_root
 from accel_pipeline.prims_library import DENY_MESSAGE as _PRIMS_DENY
 from accel_pipeline.prims_library import is_staging_path
 from accel_pipeline.shared_file_lease import is_shared_path, shared_path_globs
 
-_OPTIMIZATION_STAGES = frozenset(
-    {
-        "optimization",
-        "optimization_worker",
-        "optimization_unified",
-        "optimization_unified_hypothesis",
-        "optimization_unified_patch",
-        "optimization_fix",
-    }
-)
 
 _FOREIGN_QUERY_RE = re.compile(r"(?:^|/)accelerators/[A-Za-z0-9_]+/q(\d+)(?:/|$)")
 
@@ -61,10 +52,6 @@ PROOFLIB_DENY = (
     "accelerators/prooflib/** changes only through the prooflib_publish tool "
     "(edit the workspace copy, then publish)"
 )
-
-
-def is_optimization_stage(stage: str | None) -> bool:
-    return (stage or "") in _OPTIMIZATION_STAGES
 
 
 def owned_path_globs(query: int, *, benchmark: str = "tpch", engine: str = "") -> list[str]:
@@ -233,7 +220,7 @@ def write_allowed(
 
     globs = shared_path_globs(pipeline_config)
     if is_shared_path(repo_root, path, globs=globs):
-        if is_optimization_stage(stage):
+        if stage in OPTIMIZATION_STAGES:
             return (
                 False,
                 f"shared registration write denied during {stage}: {rel} "
@@ -247,7 +234,7 @@ def write_allowed(
     # Fall back to configured write_paths (layer-protected paths were decided above).
     for pat in write_paths or []:
         if fnmatch.fnmatch(rel, pat):
-            if is_optimization_stage(stage) and is_shared_path(repo_root, path, globs=globs):
+            if stage in OPTIMIZATION_STAGES and is_shared_path(repo_root, path, globs=globs):
                 return False, f"shared write denied during {stage}: {rel}"
             return True, "write_paths"
 

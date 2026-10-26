@@ -21,9 +21,3 @@ queries:
 
 # Shared-file lease globs are defined in pipeline/config/default.yaml (shared_paths)
 # and enforced automatically on write_file/apply_patch/cmake.
-isolation:
-  mode: shared_tree_separate_builds
-  build_dir_template: "build-release-{worker_id}"
-  codex_home_template: "pipeline/.codex/workers/{worker_id}"
-  shared_file_lease: true
-  stage_barriers: false

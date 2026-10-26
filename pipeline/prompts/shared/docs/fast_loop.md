@@ -13,4 +13,4 @@ You run unattended and the gates judge you. Move like a performance engineer, no
 8. **Wall-budget notices on tool results are real.** When one says wrap up, leave the tree building and finish the step.
 9. **Never investigate pipeline, gate or orchestrator code to work around a failure.** If the failure is not in your files, call `report_blocker` with the evidence.
 
-Details of every tool: `pipeline/prompts/shared/codex_tooling.md`.
+Details of every tool: `pipeline/prompts/shared/docs/codex_tooling.md`.

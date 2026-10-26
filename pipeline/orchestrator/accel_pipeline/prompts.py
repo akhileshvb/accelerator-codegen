@@ -9,12 +9,10 @@ from accel_pipeline.paths import query_artifacts_dir
 
 
 def resolve_prompt_path(pipeline_config: PipelineConfig, workload: dict, prompt_name: str) -> Path:
-    subdir = workload.get("prompt_subdir")
-    if subdir:
-        path = pipeline_config.pipeline_root / "prompts" / subdir / prompt_name
-        if path.is_file():
-            return path
-    return pipeline_config.pipeline_root / "prompts" / prompt_name
+    """The pipeline's own prompt (prompts/<prompt_subdir>/), else the one its pipelines share (prompts/shared/)."""
+    prompts = pipeline_config.pipeline_root / "prompts"
+    own = prompts / str(workload.get("prompt_subdir") or "") / prompt_name
+    return own if own.is_file() else prompts / "shared" / prompt_name
 
 
 def render_prompt(
@@ -53,7 +51,9 @@ def render_prompt(
 def with_codex_tooling(pipeline_config: PipelineConfig, prompt: str, *, engine_backend: bool = False) -> str:
     """Append the tool guide (and, for engine-backend stages, their pass bars)."""
     prompts = pipeline_config.pipeline_root / "prompts"
-    guides = [prompts / "shared" / "codex_tooling.md"] + ([prompts / "engine_backend" / "codex_tooling.md"] if engine_backend else [])
+    guides = [prompts / "shared" / "docs" / "codex_tooling.md"]
+    if engine_backend:
+        guides.append(prompts / "engine_backend" / "docs" / "codex_tooling.md")
     return "\n\n".join([prompt.rstrip()] + [g.read_text(encoding="utf-8") for g in guides])
 
 

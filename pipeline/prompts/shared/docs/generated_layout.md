@@ -53,7 +53,7 @@ accelerators/<bench>/q{N}/
       register.cpp                 # the query's registrars, where the engine has per-query registration files
   tests/              # test_{bench}_q{N}.cpp, q{N}_manifest.hpp (the aux module test is shared: unit_test_contract.md)
   bench/              # benchmark_q{N}.cpp, benchmark_q{N}_aux.cpp, calibrate_q{N}_aux_cost_model.cpp
-  config/             # q{N}_aux_cost_model[_<engine>][_sf<N>].json (sec_edgar: sec_edgar_q{N}_aux_cost_model.json; see sec_edgar/aux_state_notes.md)
+  config/             # q{N}_aux_cost_model[_<engine>][_sf<N>].json (sec_edgar: sec_edgar_q{N}_aux_cost_model.json; see pipeline/config/benchmark_packs/sec_edgar_aux_state_notes.md)
     verus/            # Verus variants (ACCEL_AUX_COST_MODEL_DIR=verus selects them)
   verus_kit/<crate>/  # Verus accelerator: glue, C header, kernel crate
 ```

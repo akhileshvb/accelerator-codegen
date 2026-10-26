@@ -11,7 +11,3 @@ parameters:
   - name: nation_name
     type: VARCHAR
 
-optimization_guidance: |
-  Q20 lists in-nation suppliers with excess availqty vs yearly shipped qty for
-  parts matching a name pattern. Materialize part-name filter sets and
-  (part,supp) shipped aggregates; keep partsupp availability checks local.

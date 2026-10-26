@@ -79,7 +79,6 @@ def _clear_active_trial(ctx: AbToolContext) -> None:
 
 
 def _checkpoint_files(ctx: AbToolContext) -> list[Path]:
-    repo = ctx.pipeline_config.repo_root
     return [p for p in resolve_snapshot_paths(ctx.pipeline_config, ctx.workload, ctx.query) if p.is_file()]
 
 

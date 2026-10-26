@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Engine hostctl gate (layer `hostctl`): backends/<engine>/host.sh speaks the host
-# contract (pipeline/prompts/engine_backend/host_contract.md). `info` names the engine and
+# contract (pipeline/prompts/engine_backend/docs/host_contract.md). `info` names the engine and
 # its verbs; up, load, sql and down work on a fresh instance; a second load is a no-op.
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"

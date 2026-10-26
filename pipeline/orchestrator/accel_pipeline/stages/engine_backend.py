@@ -103,7 +103,7 @@ def _user_message(
         f"Engine backend stage={stage} engine={engine} mode={mode}. "
         "Implement this engine's native slot implementations (S1-S8 of the frozen substrate "
         "flow) from templates and the engine profile; read no other engine's tree. "
-        "Follow pipeline/prompts/engine_backend/layers.md."
+        "Follow pipeline/prompts/engine_backend/docs/layers.md."
     )
     if layer:
         gate = layer.get("gate")
@@ -130,7 +130,7 @@ def _layer_extra_context(workload: dict, layer: dict, repo_root: Path) -> dict[s
             break
         prior.append(f"- `{item.get('id')}` ({item.get('title')}): `{item.get('harness')}`")
     host = dict(workload.get("host_runtime") or {})
-    contracts = "pipeline/prompts/engine_backend/layer_contracts.md"
+    contracts = "pipeline/prompts/engine_backend/docs/layer_contracts.md"
     return {
         "layer_contracts": layer_contracts_digest(
             (Path(repo_root) / contracts).read_text(encoding="utf-8"), str(layer.get("id") or ""), contracts

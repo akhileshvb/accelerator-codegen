@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # DuckDB host (embedded): the database is one file under ACCEL_ENGINE_STATE_DIR.
-# Verbs: backends/{engine}/host contract (pipeline/prompts/engine_backend/host_contract.md).
+# Verbs: backends/{engine}/host contract (pipeline/prompts/engine_backend/docs/host_contract.md).
 # `run` replaces the literal argument {db} with the database path; a target that is not a file
 # in the build directory runs as a PATH command (e.g. ctest). Both see the `env` file.
 set -euo pipefail

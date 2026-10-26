@@ -2,7 +2,7 @@
 
 Every engine has the same set of **workload harnesses**, made once by the `host_bootstrap` stage (pack: before the parallel workers; single query: before analysis), after the engine's backend exists. A query run never builds them: it registers its own files under `accelerators/{bench}/q{N}/{{engine_name}}/` and is validated by them.
 
-`engine_name` is **required** (no silent default engine). Names come from the workload `engine_host` block. Stage prompt: `pipeline/prompts/host_bootstrap.md`.
+`engine_name` is **required** (no silent default engine). Names come from the workload `engine_host` block. Stage prompt: `pipeline/prompts/shared/host_bootstrap.md`.
 
 ## The set (identical naming for every engine)
 
@@ -15,7 +15,7 @@ Every engine has the same set of **workload harnesses**, made once by the `host_
 | calibrate | `calibrate_{{engine_name}}_<bench>_aux_cost_model` | `backends/{{engine_name}}/bench/` |
 | module test | `test_<bench>_q<N>_aux`, ctest `<bench>_q<N>_aux_smoke_test`: one per query that has an aux module | one shared source in `backends/{{engine_name}}/tests/harness/`, built per query with the query number as a compile definition |
 
-Targets are declared in `backends/{{engine_name}}/tests/harness.cmake`. The module test is declared by a glob over `accelerators/*/q*/{{engine_name}}/aux/finalize.cpp` (the discovery `cmake/AuxState.cmake` uses), so a new query gets its test with no edit; it runs the checks of `pipeline/prompts/aux_state/shared/unit_test_contract.md` on the small test database (the `<bench>_test_db` fixture of the root CMake), through the backend api registry. Each takes the query number as an argument and finds the SQL, parameters and the accelerator itself (`workloads/`, the backend api registry): the code names no query. CLI, as the gates call it through `host.sh run`: `<target> <query>` (differential, multi-connection, cross-accel), `<bench> --query <N> <write_pct>` (one write-frequency point per run; it prints the CSV of `pipeline/prompts/aux_state/shared/bench_sweep_contract.md`), `<calibrate> --query <N> <cost_model.json>`; every binary answers `--help`.
+Targets are declared in `backends/{{engine_name}}/tests/harness.cmake`. The module test is declared by a glob over `accelerators/*/q*/{{engine_name}}/aux/finalize.cpp` (the discovery `cmake/AuxState.cmake` uses), so a new query gets its test with no edit; it runs the checks of `pipeline/prompts/aux_state/docs/unit_test_contract.md` on the small test database (the `<bench>_test_db` fixture of the root CMake), through the backend api registry. Each takes the query number as an argument and finds the SQL, parameters and the accelerator itself (`workloads/`, the backend api registry): the code names no query. CLI, as the gates call it through `host.sh run`: `<target> <query>` (differential, multi-connection, cross-accel), `<bench> --query <N> <write_pct>` (one write-frequency point per run; it prints the CSV of `pipeline/prompts/aux_state/docs/bench_sweep_contract.md`), `<calibrate> --query <N> <cost_model.json>`; every binary answers `--help`.
 
 ## Ownership
 

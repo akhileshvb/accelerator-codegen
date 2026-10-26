@@ -451,7 +451,6 @@ def test_check_query_rejects_literal_like(tmp_path):
 
 def test_paired_bench_shares_one_draw_and_new_decisions_differ(tmp_path, monkeypatch):
     from accel_pipeline.verus import stages
-    from accel_pipeline.verus import params as qp
 
     ctx = _pctx(tmp_path)
     seen = []

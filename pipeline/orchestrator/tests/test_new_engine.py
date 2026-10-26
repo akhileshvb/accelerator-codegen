@@ -6,7 +6,6 @@ prompts and templates with the fixture engine added and a tpch aux workload open
 
 from __future__ import annotations
 
-import json
 import shutil
 from pathlib import Path
 

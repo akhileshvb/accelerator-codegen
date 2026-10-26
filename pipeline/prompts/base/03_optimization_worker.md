@@ -6,7 +6,7 @@
 
 **Push the kernel to machine speed: maximize `speedup_median` over the engine's own path, correctly, at SF3000.** There is no fixed ceiling.
 
-- The profile names the hot phase. Fix it with hardware-aware low-level execution: SIMD inner loops (AVX-512/AVX2 with a scalar fallback), cache-conscious columnar layouts, branch-free predicates, prefetch, no per-row allocation, fused passes. Guide: `pipeline/prompts/shared/low_level_execution.md`; loop and anti-patterns: `pipeline/prompts/shared/base_kernel_optimization.md`.
+- The profile names the hot phase. Fix it with hardware-aware low-level execution: SIMD inner loops (AVX-512/AVX2 with a scalar fallback), cache-conscious columnar layouts, branch-free predicates, prefetch, no per-row allocation, fused passes. Guide: `pipeline/prompts/shared/docs/low_level_execution.md`; loop and anti-patterns: `pipeline/prompts/base/docs/base_kernel_optimization.md`.
 - Prefer a coordinated structural bundle (scan order, interning, fusion, vector paths) over micro-tweaks.
 - A bundle must stay correct and still win at SF3000 (`scale_factor_contract.md`).
 

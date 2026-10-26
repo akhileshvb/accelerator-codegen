@@ -10,7 +10,6 @@ import hashlib
 import json
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
 
 
 PACK_REL = Path("pipeline/artifacts/shared/repo_context_pack.md")

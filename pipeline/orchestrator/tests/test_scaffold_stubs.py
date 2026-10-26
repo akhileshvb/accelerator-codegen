@@ -2,9 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
 
-from accel_pipeline.config import load_pipeline_config, load_workload
+from accel_pipeline.config import load_workload
 from accel_pipeline.workload_facts import with_facts
 from accel_pipeline.scaffold_stubs import _build_stub_values, _type_prefix, materialize_workload_stubs
 
@@ -16,7 +15,6 @@ def test_type_prefix_from_create_fn():
 
 def test_build_stub_values_sec_edgar():
     repo = Path(__file__).resolve().parents[3]
-    pipeline_config = load_pipeline_config(repo_root=repo)
     workload = load_workload("sec_edgar_q1", repo)
     paths = {
         "function_name": "accel_sec_edgar_q1",
@@ -79,7 +77,6 @@ def test_materialize_workload_stubs_writes_missing_files(tmp_path):
         pipeline_root=pipe,
         build_dir=repo / "build-release",
         tpch_db_sf1=repo / "tpch_sf1.duckdb",
-        tpch_db_sf10=repo / "tpch_sf10.duckdb",
     )
 
     result = materialize_workload_stubs(pipeline_config, workload, 1)

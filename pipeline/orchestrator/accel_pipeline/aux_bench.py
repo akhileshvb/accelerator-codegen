@@ -26,21 +26,17 @@ def optimization_state_path(repo_root: Path, query: int, workload: dict[str, Any
 
 
 def _normalize_sweep_row_keys(row: dict[str, str]) -> dict[str, str]:
-    """Accept legacy benchmark CSV headers (e.g. write_freq_pct)."""
+    """The sweep CSV's short column names under their canonical names."""
     normalized = dict(row)
     aliases = {
-        "write_freq_pct": "write_frequency_pct",
         "policy": "write_policy",
         "queries": "num_queries",
         "writes": "writes_executed",
         "query_speedup": "query_only_speedup",
-        "cold_start_speedup": "cold_start_workload_speedup",
-        "blended_speedup": "blended_query_speedup",
-        "cold_start_workload_us": "cold_start_accel_workload_us",
     }
-    for legacy, canonical in aliases.items():
-        if canonical not in normalized and legacy in normalized:
-            normalized[canonical] = normalized[legacy]
+    for short, canonical in aliases.items():
+        if canonical not in normalized and short in normalized:
+            normalized[canonical] = normalized[short]
     return normalized
 
 

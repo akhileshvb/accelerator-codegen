@@ -1,7 +1,7 @@
 """The run's backend API index and engine profile, rendered into accelerator prompts.
 
 The engine_backend run writes ``backends/<engine>/api/README.md``; its first table
-under ``## Contract roles`` (format: engine_backend/host_contract.md) maps each role
+under ``## Contract roles`` (format: engine_backend/docs/host_contract.md) maps each role
 to the headers and symbols that provide it. Accelerator prompts name roles only.
 """
 
@@ -76,7 +76,8 @@ def render_backend_api(repo_root: Path, engine: str) -> str:
             lines.append(f"- **{r.role}:** n/a")
             continue
         symbols = f"; symbols {', '.join(f'`{s}`' for s in r.symbols)}" if r.symbols else ""
-        lines.append(f"- **{r.role}:** {', '.join(f'`{api}/{h.removeprefix('api/')}`' for h in r.headers)}{symbols}")
+        headers = ", ".join(f"`{api}/{h.removeprefix('api/')}`" for h in r.headers)
+        lines.append(f"- **{r.role}:** {headers}{symbols}")
     return "\n".join(lines) + "\n"
 
 

@@ -1,5 +1,5 @@
 // GENERATED BACKEND — the {{engine_name}} host: the runtime skeleton's EngineSlots for this engine.
-// Spec: pipeline/prompts/shared/engine_interfaces.md ("Backend contract"), layers.md.
+// Spec: pipeline/prompts/shared/docs/engine_interfaces.md ("Backend contract"), layers.md.
 //
 // One host per database (per shard worker on a shipped placement). It owns the
 // runtime::RuntimeHost and implements the slots S2-S6 + S8 below; S1 capture

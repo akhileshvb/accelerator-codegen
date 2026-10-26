@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # MySQL host: one Docker container per instance, source/build mounted in, the audit
-# plugin built in the container. Verbs: pipeline/prompts/engine_backend/host_contract.md.
+# plugin built in the container. Verbs: pipeline/prompts/engine_backend/docs/host_contract.md.
 # ACCEL_MYSQL_PLUGIN_VARIANT=test builds the plugin with the gate-test UDFs (default prod).
 set -euo pipefail
 

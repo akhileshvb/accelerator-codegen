@@ -10,7 +10,6 @@ import pytest
 
 from accel_pipeline.config import ModelConfig, load_model_config
 from accel_pipeline.models import resolve_preset, resolve_stage_provider
-from accel_pipeline.optimization_worker import worker_enabled
 from accel_pipeline.config import PipelineConfig
 
 
@@ -26,7 +25,6 @@ def test_resolve_stage_provider_codex_overrides():
     assert resolve_stage_provider("impl_host", cfg) == "codex_exec"
     assert resolve_stage_provider("validation", cfg) == "codex_exec"
     assert resolve_stage_provider("optimization_worker", cfg) == "codex_exec"
-    assert resolve_stage_provider("optimization_unified_hypothesis", cfg) == "codex_exec"
     assert resolve_stage_provider("crash_debug", cfg) == "codex_exec"
     assert resolve_preset("impl_capture", cfg) == "openai/gpt-6-luna-pro"
     assert resolve_preset("implementation", cfg) == "openai/gpt-6-luna-pro"
@@ -50,14 +48,8 @@ def _pipeline_config(**overrides) -> PipelineConfig:
         pipeline_root=REPO_ROOT / "pipeline",
         build_dir=REPO_ROOT / "build-release",
         tpch_db_sf1=REPO_ROOT.parent / "accelerator-codegen-duckdb" / "tpch_sf1.duckdb",
-        tpch_db_sf10=REPO_ROOT.parent / "accelerator-codegen-duckdb" / "tpch_sf10.duckdb",
         **overrides,
     )
-
-
-def test_worker_enabled_follows_persistent_worker_flag():
-    assert worker_enabled(_pipeline_config(optimization_persistent_worker=True)) is True
-    assert worker_enabled(_pipeline_config(optimization_persistent_worker=False)) is False
 
 
 def test_mcp_server_uses_modern_sdk():
@@ -359,7 +351,7 @@ def _fake_backend(tmp_path, monkeypatch, *, mode="ok", idle=0, hard=60, art=True
     monkeypatch.setenv("FAKE_CODEX_DIR", str(tmp_path))
     config = PipelineConfig(
         repo_root=tmp_path, pipeline_root=tmp_path / "pipeline", build_dir=tmp_path / "build",
-        tpch_db_sf1=tmp_path, tpch_db_sf10=tmp_path, codex_home=tmp_path / "home", sandbox="none",
+        tpch_db_sf1=tmp_path, codex_home=tmp_path / "home", sandbox="none",
         write_policy="off", session=SessionConfig(idle_timeout_sec=idle, hard_deadline_sec=hard),
     )
     models = ModelConfig(api_key_env="K", presets={}, stages={}, codex_bin=str(FAKE_CODEX))

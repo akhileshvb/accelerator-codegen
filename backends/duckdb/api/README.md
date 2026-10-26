@@ -1,7 +1,7 @@
 # DuckDB API manifest
 
 The embedded engine: the backend is compiled into `libaccelerator_codegen`; accelerators
-register table functions on a connection. Roles and semantics: `pipeline/prompts/engine_backend/api_contract.md`.
+register table functions on a connection. Roles and semantics: `pipeline/prompts/engine_backend/docs/api_contract.md`.
 
 ## Contract roles
 

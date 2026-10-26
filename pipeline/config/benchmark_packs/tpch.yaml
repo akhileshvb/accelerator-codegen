@@ -5,6 +5,13 @@ dataset_key: tpch_sf1
 scale_dataset_key: tpch_sf10
 db_env_var: ACCEL_TPCH_DB
 
+# Benchmark facts the stage prompts state ({{benchmark_notes}}); {dataset_db}, {query} and {engine} are filled in.
+prompt_notes: |
+  - **Iteration scale (SF1)**: correctness, baseline, profile, and A/B benchmarks run on `{dataset_db}` for fast feedback.
+  - **Scale check (SF10)**: `sf10` gate runs on `scale_db` when configured — catches sizing and state blowups at ~10× rows.
+  - **Production target (SF20+)**: final benchmarking uses much larger scale factors. Designs must scale: bind-time `row_estimate` sizing, no SF1-hardcoded capacities, bounded aux/read paths. See `pipeline/prompts/shared/docs/scale_factor_contract.md`.
+  - Do not optimize for SF1 micro-wins that add full-domain scans or cardinality constants from the iteration dataset.
+
 write_paths:
   - accelerators/tpch/**
   - eval/tests/test_support/**

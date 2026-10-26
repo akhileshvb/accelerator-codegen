@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from typing import Any
-
 from accel_pipeline.backends.base import AgentBackend, StageRunRequest, StageRunResult
 from accel_pipeline.config import ModelConfig, PipelineConfig, load_run_workload
 from accel_pipeline.paths import query_artifacts_dir
@@ -14,11 +12,7 @@ _ARTIFACT_STAGES = frozenset(
         "analysis_critic",
         "test_suite",
         "implementation",
-        "optimization_unified",
-        "optimization_unified_hypothesis",
-        "optimization_unified_patch",
         "optimization_worker",
-        "optimization_fix",
         "crash_debug",
         "audit",
     }

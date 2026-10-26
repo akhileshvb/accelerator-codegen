@@ -54,7 +54,6 @@ def test_kernel_snapshot_roundtrip(tmp_path: Path):
         pipeline_root=repo / "pipeline",
         build_dir=repo / "build-release",
         tpch_db_sf1=repo / "tpch.duckdb",
-        tpch_db_sf10=repo / "tpch10.duckdb",
         gates_dir=repo / "pipeline" / "gates",
     )
 

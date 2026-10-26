@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # PostgreSQL host: one Docker container per instance, source/build mounted in, the
-# extension built in the container. Verbs: pipeline/prompts/engine_backend/host_contract.md.
+# extension built in the container. Verbs: pipeline/prompts/engine_backend/docs/host_contract.md.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

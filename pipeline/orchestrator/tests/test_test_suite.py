@@ -284,7 +284,7 @@ class World:
 
         self.stage, self.tmp, self.messages, self.roles = stage, tmp_path, [], []
         self.config = PipelineConfig(repo_root=tmp_path, pipeline_root=tmp_path / "pipeline", build_dir=tmp_path / "build",
-                                     tpch_db_sf1=tmp_path, tpch_db_sf10=tmp_path, sandbox="none", write_policy="off",
+                                     tpch_db_sf1=tmp_path, sandbox="none", write_policy="off",
                                      repair=RepairConfig())
         self.workload = {"benchmark_name": "toybench", "workload_kind": "aux_state"}
         for module in (stage, repair_mod):
@@ -469,12 +469,12 @@ def test_the_optimization_bench_samples_the_suites_distribution_up_to_its_cap(tm
 
 # ---- prompts
 
-@pytest.mark.parametrize("prompt", ("aux_state/01b_test_suite.md", "01b_test_suite.md"))
+@pytest.mark.parametrize("prompt", ("aux_state/01b_test_suite.md", "base/01b_test_suite.md"))
 def test_the_tester_prompt_states_goal_ownership_and_the_mechanical_exit(prompt):
     text = (PROMPTS / prompt).read_text(encoding="utf-8")
     assert "## Goal" in text and "**Owns:**" in text and "**Never touches:**" in text and "**Judged by:**" in text
     assert "test_suite_validate" in text and "domain.yaml" in text and "fresh random tuples" in text
-    assert "{{hard_guidelines}}" in text and "{{change_request}}" in text and "shared/test_suite.md" in text
+    assert "{{hard_guidelines}}" in text and "{{change_request}}" in text and "shared/docs/test_suite.md" in text
 
 
 def test_the_stateful_tester_prompt_covers_writes_and_the_write_mix():
@@ -483,15 +483,14 @@ def test_the_stateful_tester_prompt_covers_writes_and_the_write_mix():
         assert needle in text
 
 
-@pytest.mark.parametrize("prompt", ("02_implementation.md", "aux_state/02_implementation.md", "03_optimization_worker.md",
-                                    "03_optimization_unified.md", "aux_state/03_optimization_worker.md",
-                                    "aux_state/03_optimization_unified.md"))
+@pytest.mark.parametrize("prompt", ("base/02_implementation.md", "aux_state/02_implementation.md", "base/03_optimization_worker.md",
+                                    "aux_state/03_optimization_worker.md"))
 def test_the_implementing_stages_treat_the_suite_as_frozen(prompt):
     text = (PROMPTS / prompt).read_text(encoding="utf-8").lower()
     assert "frozen" in text and "test_suite_change_request.md" in text and "never edit it" in text
 
 
-@pytest.mark.parametrize("prompt", ("04_audit.md", "aux_state/04_audit.md"))
+@pytest.mark.parametrize("prompt", ("base/04_audit.md", "aux_state/04_audit.md"))
 def test_the_audit_checks_the_suite_covers_the_query(prompt):
     text = (PROMPTS / prompt).read_text(encoding="utf-8")
     assert "frozen suite" in text and "every parameter" in text
@@ -502,10 +501,10 @@ def test_no_prompt_still_names_the_retired_stage():
 
 
 def test_the_format_docs_worked_example_passes_the_static_checks(tmp_path):
-    """The example suite in pipeline/prompts/shared/test_suite.md is what a tester copies: it must be valid."""
+    """The example suite in pipeline/prompts/shared/docs/test_suite.md is what a tester copies: it must be valid."""
     import re
 
-    doc = (Path(__file__).resolve().parents[2] / "prompts" / "shared" / "test_suite.md").read_text(encoding="utf-8")
+    doc = (Path(__file__).resolve().parents[2] / "prompts" / "shared" / "docs" / "test_suite.md").read_text(encoding="utf-8")
     example = doc.split("## Worked example")[1].split("## How to validate")[0]
     blocks = re.findall(r"```(\w+)\n(.*?)```", example, re.S)
     sql = [b for lang, b in blocks if lang == "sql"]

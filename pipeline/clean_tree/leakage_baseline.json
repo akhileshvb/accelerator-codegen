@@ -6,8 +6,7 @@
   "engine": 10
  },
  "README.md": {
-  "engine": 4,
-  "path": 1
+  "engine": 4
  },
  "cmake/Backend.cmake": {
   "engine": 3
@@ -166,7 +165,10 @@
  },
  "pipeline/config/benchmark_packs/sec_edgar.yaml": {
   "engine": 7,
-  "path": 8
+  "path": 10
+ },
+ "pipeline/config/benchmark_packs/sec_edgar_aux_state_notes.md": {
+  "path": 1
  },
  "pipeline/config/benchmark_packs/tpch.yaml": {
   "path": 1
@@ -190,7 +192,7 @@
   "engine": 4
  },
  "pipeline/config/packs/tpch_pg_aux_all22.yaml": {
-  "engine": 6,
+  "engine": 4,
   "path": 1
  },
  "pipeline/config/packs/tpch_regen_all22.yaml": {
@@ -413,12 +415,6 @@
  "pipeline/orchestrator/accel_pipeline/base_bench.py": {
   "engine": 7
  },
- "pipeline/orchestrator/accel_pipeline/context.py": {
-  "path": 2
- },
- "pipeline/orchestrator/accel_pipeline/data_shape.py": {
-  "engine": 4
- },
  "pipeline/orchestrator/accel_pipeline/implementation_bootstrap.py": {
   "path": 2,
   "symbol": 1
@@ -482,7 +478,7 @@
   "engine": 2
  },
  "pipeline/orchestrator/accel_pipeline/workload_facts.py": {
-  "engine": 8
+  "engine": 7
  },
  "pipeline/orchestrator/pyproject.toml": {
   "engine": 1
@@ -516,7 +512,7 @@
   "engine_branch": 1
  },
  "pipeline/orchestrator/tests/test_aux_bench.py": {
-  "engine": 7
+  "engine": 6
  },
  "pipeline/orchestrator/tests/test_aux_pipeline.py": {
   "engine": 10,
@@ -534,13 +530,13 @@
   "symbol": 1
  },
  "pipeline/orchestrator/tests/test_codex_backend.py": {
-  "engine": 17,
+  "engine": 16,
   "target": 1
  },
  "pipeline/orchestrator/tests/test_engine_backend.py": {
-  "engine": 93,
+  "engine": 75,
   "path": 16,
-  "target": 2
+  "target": 1
  },
  "pipeline/orchestrator/tests/test_engine_profile.py": {
   "engine": 19
@@ -565,7 +561,7 @@
   "engine": 1
  },
  "pipeline/orchestrator/tests/test_kernel_snapshot.py": {
-  "engine": 11,
+  "engine": 10,
   "path": 13
  },
  "pipeline/orchestrator/tests/test_layer_checks.py": {
@@ -581,16 +577,12 @@
   "engine": 2,
   "path": 2
  },
- "pipeline/orchestrator/tests/test_optimization_bootstrap.py": {
-  "engine": 5,
-  "path": 2
- },
  "pipeline/orchestrator/tests/test_optimization_edit_paths.py": {
-  "engine": 4,
+  "engine": 3,
   "path": 4
  },
  "pipeline/orchestrator/tests/test_optimization_runtime.py": {
-  "engine": 2,
+  "engine": 1,
   "path": 1
  },
  "pipeline/orchestrator/tests/test_pipeline_log.py": {
@@ -601,19 +593,19 @@
   "path": 6
  },
  "pipeline/orchestrator/tests/test_scaffold_stubs.py": {
-  "engine": 5,
+  "engine": 4,
   "path": 2,
   "symbol": 4
  },
  "pipeline/orchestrator/tests/test_shared_tree_pack.py": {
-  "engine": 31,
+  "engine": 26,
   "path": 14
  },
  "pipeline/orchestrator/tests/test_shell_tools.py": {
-  "engine": 6
+  "engine": 3
  },
  "pipeline/orchestrator/tests/test_stage_max_turns.py": {
-  "engine": 3
+  "engine": 1
  },
  "pipeline/orchestrator/tests/test_structural_reanalysis.py": {
   "engine": 9
@@ -623,7 +615,7 @@
   "engine_branch": 1
  },
  "pipeline/orchestrator/tests/test_tsan_gate.py": {
-  "engine": 2
+  "engine": 1
  },
  "pipeline/orchestrator/tests/test_verus_pipeline.py": {
   "engine": 2
@@ -635,53 +627,25 @@
   "engine": 6,
   "symbol": 2
  },
- "pipeline/prompts/aux_state/03_optimization_unified.md": {
-  "path": 2
- },
- "pipeline/prompts/aux_state/shared/agent_boundary.md": {
-  "symbol": 1
- },
- "pipeline/prompts/aux_state/shared/aux_state_taxonomy.md": {
+ "pipeline/prompts/aux_state/docs/aux_state_taxonomy.md": {
   "symbol": 4
  },
- "pipeline/prompts/aux_state/shared/bench_sweep_contract.md": {
+ "pipeline/prompts/aux_state/docs/bench_sweep_contract.md": {
   "engine": 1
  },
- "pipeline/prompts/aux_state/shared/concurrency_contract.md": {
-  "path": 1
- },
- "pipeline/prompts/aux_state/shared/maintenance_framework.md": {
-  "path": 3
- },
- "pipeline/prompts/aux_state/shared/read_path_scaffold.md": {
-  "symbol": 2
- },
- "pipeline/prompts/aux_state/shared/unit_test_contract.md": {
+ "pipeline/prompts/aux_state/docs/unit_test_contract.md": {
   "symbol": 2
  },
  "pipeline/prompts/engine_backend/04_architecture_audit.md": {
   "symbol": 1
  },
- "pipeline/prompts/engine_backend/layer_contracts.md": {
+ "pipeline/prompts/engine_backend/docs/layer_contracts.md": {
   "engine": 2
  },
- "pipeline/prompts/engine_backend/native_scan_contract.md": {
+ "pipeline/prompts/engine_backend/docs/native_scan_contract.md": {
   "symbol": 1
  },
- "pipeline/prompts/sec_edgar/aux_state_notes.md": {
-  "path": 1
- },
- "pipeline/prompts/shared/codex_tooling.md": {
-  "path": 1
- },
- "pipeline/prompts/shared/generated_layout.md": {
-  "path": 2
- },
- "pipeline/prompts/shared/scale_factor_contract.md": {
-  "symbol": 3
- },
- "pipeline/prompts/shared/substrate_primitives.md": {
-  "path": 1,
+ "pipeline/prompts/shared/docs/scale_factor_contract.md": {
   "symbol": 3
  },
  "pipeline/templates/engine_backend/scan.cpp.tpl": {

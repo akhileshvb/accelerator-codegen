@@ -12,11 +12,12 @@ from accel_pipeline.base_bench import (
     load_base_optimization_state,
 )
 from accel_pipeline.config import PipelineConfig, resolve_optimization_edit_paths, resolve_workload_paths
-from accel_pipeline.jsonio import read_json
+from accel_pipeline.jsonio import append_jsonl, read_json, read_jsonl
 from accel_pipeline.kernel_hot_path_review import (
     analyze_kernel_source,
     format_kernel_review_for_prompt,
 )
+from accel_pipeline.optimization_checkpoint import load_attempt_log
 from accel_pipeline.optimization_saturation import early_stop_config
 from accel_pipeline.optimization_evidence import extract_bottleneck_evidence
 from accel_pipeline.negative_memory import (
@@ -28,10 +29,10 @@ from accel_pipeline.paths import load_query_analysis, query_artifacts_dir
 
 RUNTIME_MD = "optimization_runtime.md"
 RUNTIME_JSON = "optimization_runtime.json"
-AB_TRIALS_JSON = "ab_trials.json"
+AB_TRIALS_LOG = "ab_trials.jsonl"
 EPISODE_LOG = "episode_log.jsonl"
 PLAYBOOK_TECHNIQUES_JSON = "playbook_techniques.json"
-OPTIMIZATION_WORKFLOW_COMPACT_REL = "pipeline/prompts/shared/optimization_workflow_compact.md"
+OPTIMIZATION_WORKFLOW_COMPACT_REL = "pipeline/prompts/shared/docs/optimization_workflow_compact.md"
 
 
 def save_runtime_json(art: Path, state: dict[str, Any]) -> None:
@@ -39,31 +40,8 @@ def save_runtime_json(art: Path, state: dict[str, Any]) -> None:
 
 
 def load_ab_trials(art: Path) -> list[dict[str, Any]]:
-    path = art / "attempt_log.jsonl"
-    if path.is_file():
-        rows: list[dict[str, Any]] = []
-        for line in path.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                rows.append(json.loads(line))
-            except json.JSONDecodeError:
-                continue
-        if rows:
-            return rows
-    legacy = art / AB_TRIALS_JSON
-    if not legacy.is_file():
-        return []
-    data = json.loads(legacy.read_text(encoding="utf-8"))
-    return list(data.get("trials") or [])
-
-
-def save_ab_trials(art: Path, trials: list[dict[str, Any]]) -> None:
-    (art / AB_TRIALS_JSON).write_text(
-        json.dumps({"trials": trials}, indent=2),
-        encoding="utf-8",
-    )
+    """The worker's own A/B trials inside its attempts (begin_ab_trial / end_ab_trial)."""
+    return read_jsonl(art / AB_TRIALS_LOG)
 
 
 def load_episode_log(art: Path, *, limit: int = 8) -> list[dict[str, Any]]:
@@ -242,7 +220,7 @@ def build_runtime_state(
             )
         dual_score = float(scoreboard.get("best_valid_score") or 0.0)
         focus = [
-            f"Accept score = read^0.75 * write_mix^0.25"
+            "Accept score = read^0.75 * write_mix^0.25"
             + (f" (best_valid={dual_score:.3f})" if dual_score > 0 else "")
             + f"; read_only best={best_read:.3f}x; "
             f"{write_mix_pct or 10}% write-mix"
@@ -333,6 +311,7 @@ def build_runtime_state(
             "lacking": lacking[:5],
             "findings": [],
             "recent_iterations": (aux_opt.get("history") or [])[-2:],
+            "attempts": load_attempt_log(art)[-5:],
             "ab_trials": load_ab_trials(art)[-5:],
             "episode_summaries": load_episode_log(art, limit=5),
             "playbook_techniques": load_playbook_techniques(art, limit=8),
@@ -394,6 +373,7 @@ def build_runtime_state(
         "lacking": (diagnosis.get("lacking") or [])[:4],
         "findings": (diagnosis.get("findings") or [])[:5],
         "recent_iterations": (opt_state.get("iterations") or [])[-2:],
+        "attempts": load_attempt_log(art)[-5:],
         "ab_trials": load_ab_trials(art)[-5:],
         "episode_summaries": load_episode_log(art, limit=5),
         "playbook_techniques": load_playbook_techniques(art, limit=8),
@@ -557,19 +537,31 @@ def format_runtime_markdown(state: dict[str, Any]) -> str:
             lines.append(f"- {item}")
     lines.append("")
     lines.append("## Attempt history (this optimization iter)")
-    trials = state.get("ab_trials") or []
-    if trials:
-        lines.append("| attempt | hypothesis | improvement | kept |")
-        lines.append("|---------|------------|-------------|------|")
-        for row in trials:
+    attempts = state.get("attempts") or []
+    if attempts:
+        lines.append("| attempt | hypothesis | verdict | improvement |")
+        lines.append("|---------|------------|---------|-------------|")
+        for row in attempts:
             lines.append(
-                f"| {row.get('attempt', row.get('trial_id', ''))} "
+                f"| {row.get('attempt', '')} "
                 f"| {_compress_text(str(row.get('hypothesis', '')), max_chars=48)} "
-                f"| {row.get('improvement_pct', 'n/a')} "
-                f"| {row.get('kept', row.get('accepted', False))} |"
+                f"| {row.get('verdict', '')} "
+                f"| {row.get('improvement_pct', 'n/a')} |"
             )
     else:
         lines.append("- No attempts yet.")
+    trials = state.get("ab_trials") or []
+    if trials:
+        lines.append("")
+        lines.append("## Your A/B trials")
+        lines.append("| trial | hypothesis | kept |")
+        lines.append("|-------|------------|------|")
+        for row in trials:
+            lines.append(
+                f"| {row.get('trial_id', '')} "
+                f"| {_compress_text(str(row.get('hypothesis', '')), max_chars=48)} "
+                f"| {row.get('kept', False)} |"
+            )
     if state.get("lacking"):
         lines.append("")
         lines.append("## Gaps vs goal")
@@ -686,14 +678,10 @@ def record_ab_trial(
     metrics: dict[str, Any],
     kept: bool,
 ) -> None:
-    trials = load_ab_trials(art)
-    trials.append(
-        {
-            "trial_id": trial_id,
-            "hypothesis": hypothesis,
-            "metrics": metrics,
-            "kept": kept,
-            "ts": datetime.now(timezone.utc).isoformat(),
-        }
-    )
-    save_ab_trials(art, trials)
+    append_jsonl(art / AB_TRIALS_LOG, {
+        "trial_id": trial_id,
+        "hypothesis": hypothesis,
+        "metrics": metrics,
+        "kept": kept,
+        "ts": datetime.now(timezone.utc).isoformat(),
+    })

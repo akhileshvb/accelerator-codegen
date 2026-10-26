@@ -16,7 +16,6 @@ def test_normalize_ctest_cmd_adds_test_dir(tmp_path: Path) -> None:
         pipeline_root=repo / "pipeline",
         build_dir=repo / "build-release",
         tpch_db_sf1=repo / "tpch_sf1.duckdb",
-        tpch_db_sf10=repo / "tpch_sf10.duckdb",
         allowed_commands=[],
     )
     assert _normalize_ctest_cmd(
@@ -33,7 +32,6 @@ def test_builtin_diagnostic_commands_allowed_without_yaml_patterns(tmp_path: Pat
         pipeline_root=tmp_path / "pipeline",
         build_dir=tmp_path / "build-release",
         tpch_db_sf1=tmp_path / "tpch_sf1.duckdb",
-        tpch_db_sf10=tmp_path / "tpch_sf10.duckdb",
         allowed_commands=[],
     )
     run_command = make_shell_tools(ToolContext(pipeline_config, 1))
@@ -62,7 +60,6 @@ def test_run_command_kills_process_group_on_timeout(tmp_path: Path) -> None:
         pipeline_root=repo / "pipeline",
         build_dir=repo / "build-release",
         tpch_db_sf1=repo / "tpch_sf1.duckdb",
-        tpch_db_sf10=repo / "tpch_sf10.duckdb",
         allowed_commands=[r"^./sleep\.sh$"],
     )
     run_command = make_shell_tools(ToolContext(pipeline_config, 1))

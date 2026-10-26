@@ -59,8 +59,8 @@ def build_implementation_bootstrap(
         f"accelerators/{benchmark}/q14/layout.hpp",
         f"accelerators/{benchmark}/q14/{engine}/register.cpp",
         "eval/tests/test_support/cross_accel_helpers.cpp",
-        "pipeline/prompts/aux_state/shared/read_path_scaffold.md",
-        "pipeline/prompts/aux_state/shared/unit_test_contract.md",
+        "pipeline/prompts/aux_state/docs/read_path_scaffold.md",
+        "pipeline/prompts/aux_state/docs/unit_test_contract.md",
     ]
     for rel in templates:
         if _existing(repo, rel):

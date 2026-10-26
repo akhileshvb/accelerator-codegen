@@ -1,5 +1,5 @@
 // GENERATED BACKEND — layer harness for visibility (Visibility).
-// Spec: pipeline/prompts/engine_backend/layers.md
+// Spec: pipeline/prompts/engine_backend/docs/layers.md
 // Build: test_mysql_visibility   CTest: engine_mysql_visibility
 //
 // Rule: visibility

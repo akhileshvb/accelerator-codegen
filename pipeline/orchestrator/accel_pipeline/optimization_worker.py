@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 import sys
 import time
@@ -65,15 +66,11 @@ def _parse_hypothesis_json(text: str) -> dict[str, Any] | None:
     fence = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
     if fence:
         try:
-            import json
-
             return json.loads(fence.group(1))
         except json.JSONDecodeError:
             pass
     for match in re.finditer(r"\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}", text, re.DOTALL):
         try:
-            import json
-
             payload = json.loads(match.group(0))
             if isinstance(payload, dict) and payload.get("bottleneck"):
                 return payload
@@ -88,8 +85,6 @@ def _parse_cannot_test(text: str) -> str | None:
     fence = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
     if fence:
         try:
-            import json
-
             payload = json.loads(fence.group(1))
             if payload.get("status") == "cannot_test":
                 return str(payload.get("reason", "cannot test hypothesis"))
@@ -420,7 +415,3 @@ class OptimizationWorker:
             input_tokens=self.metrics.input_tokens,
             cache_read_tokens=self.metrics.cache_read_tokens,
         )
-
-
-def worker_enabled(pipeline_config: PipelineConfig) -> bool:
-    return bool(getattr(pipeline_config, "optimization_persistent_worker", True))

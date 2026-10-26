@@ -25,12 +25,11 @@ from pathlib import Path
 from typing import Callable, Iterator
 
 from accel_pipeline.core_budget import (
-    MEASURE_SET_ENV, MEASURE_SLOTS_ENV, core_groups, format_cpus, host_lock_dir, parse_cpus, partition,
+    MEASURE_LEASE_ENV, MEASURE_SET_ENV, MEASURE_SLOTS_ENV, MEASURE_WAIT_ENV, core_groups, format_cpus, host_lock_dir,
+    parse_cpus, partition,
 )
 from accel_pipeline.host_lock import FairLock, LockTimeout
 
-WAIT_ENV = "ACCEL_MEASURE_WAIT_SEC"
-ENABLED_ENV = "ACCEL_MEASURE_LEASE"
 HEARTBEAT_ENV = "ACCEL_HEARTBEAT_FILE"
 DEFAULT_WAIT_SEC = 3600.0
 BUSY_EXIT = 75
@@ -133,8 +132,8 @@ def _acquire(holder: str, reason: str, wait_sec: float, beat: Callable[[], None]
 def _settings() -> tuple[bool, float, frozenset[int], int]:
     """(enabled, wait bound, measurement CPUs, slots), as core_budget.activate exported them."""
     return (
-        os.environ.get(ENABLED_ENV, "1") != "0",
-        float(os.environ.get(WAIT_ENV) or DEFAULT_WAIT_SEC),
+        os.environ.get(MEASURE_LEASE_ENV, "1") != "0",
+        float(os.environ.get(MEASURE_WAIT_ENV) or DEFAULT_WAIT_SEC),
         parse_cpus(os.environ.get(MEASURE_SET_ENV, "")),
         int(os.environ.get(MEASURE_SLOTS_ENV) or 1),
     )

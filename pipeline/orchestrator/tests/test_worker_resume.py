@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 from accel_pipeline.config import PipelineConfig, load_pipeline_config
@@ -63,7 +62,6 @@ def test_worker_one_runner_per_candidate_cycle(monkeypatch):
             pipeline_root=Path("/tmp/pipeline"),
             build_dir=Path("/tmp/build"),
             tpch_db_sf1=Path("/tmp/sf1"),
-            tpch_db_sf10=Path("/tmp/sf10"),
             optimization_turn_delta_max_chars=4000,
             optimization_checkpoint_file="optimization_worker_checkpoint.json",
         ),

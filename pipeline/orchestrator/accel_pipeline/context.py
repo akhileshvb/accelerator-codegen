@@ -30,12 +30,11 @@ from accel_pipeline.engine_host import format_host_block
 from accel_pipeline.engine_profile import render_engine_profile
 from accel_pipeline.implementation_bootstrap import build_implementation_bootstrap
 from accel_pipeline.layout import suite_dir
-from accel_pipeline.models import is_critique_stage, is_implementation_stage
+from accel_pipeline.models import OPTIMIZATION_STAGES, is_critique_stage, is_implementation_stage
 from accel_pipeline.optimization_runtime import runtime_path_for_prompt
 from accel_pipeline.workload_facts import with_facts
 from accel_pipeline.paths import (
     load_query_analysis,
-    pipeline_root,
     query_artifacts_dir,
 )
 
@@ -65,12 +64,7 @@ def build_retrieval_brief(
     art = query_artifacts_dir(repo, query, workload=workload)
     analysis_path, analysis = load_query_analysis(repo, query, workload=workload)
 
-    if workload.get("workload_kind") == "aux_state" and stage in (
-        "optimization",
-        "optimization_unified",
-        "optimization_worker",
-        "optimization_fix",
-    ):
+    if workload.get("workload_kind") == "aux_state" and stage in OPTIMIZATION_STAGES:
         return build_optimization_retrieval_brief(
             query=query,
             analysis=analysis,
@@ -186,11 +180,8 @@ def build_prompt_context(
 
     import yaml
 
-    constraints_path = (
-        pipe / "prompts" / "aux_state" / "shared" / "constraints.md"
-        if is_aux
-        else pipe / "prompts" / "shared" / "constraints.md"
-    )
+    docs = pipe / "prompts" / "shared" / "docs"
+    constraints_path = pipe / "prompts" / str(workload.get("prompt_subdir") or "") / "docs" / "constraints.md"
 
     art = query_artifacts_dir(repo, query, workload=workload)
     analysis_path, analysis = load_query_analysis(repo, query, workload=workload)
@@ -262,24 +253,16 @@ def build_prompt_context(
         workload.get("engine_host")
         or (engine_host_conventions(engine_name, repo_root=repo) if engine_name else {})
     )
-    opt_stages = (
-        "optimization",
-        "optimization_unified",
-        "optimization_worker",
-        "optimization_fix",
-        "optimization_unified_hypothesis",
-        "optimization_unified_patch",
-    )
     prompt_kernel_path = paths["kernel_path"]
     prompt_header_path = paths["header_path"]
     prompt_package_path = paths["package_path"]
     optimization_edit_paths = ""
-    if is_aux and stage in opt_stages:
+    if is_aux and stage in OPTIMIZATION_STAGES:
         prompt_kernel_path = edit_paths["primary_cpp"]
         prompt_header_path = edit_paths["header"]
         prompt_package_path = edit_paths["secondary_cpp"]
         optimization_edit_paths = "\n".join(f"- `{p}`" for p in edit_paths["all_paths"])
-    elif stage in opt_stages:
+    elif stage in OPTIMIZATION_STAGES:
         optimization_edit_paths = "\n".join(
             f"- `{p}`"
             for p in (prompt_header_path, prompt_kernel_path, prompt_package_path)
@@ -302,40 +285,14 @@ def build_prompt_context(
     else:
         schema_reference_section = ""
 
-    if benchmark == "sec_edgar":
-        benchmark_notes = (
-            "- SEC-EDGAR queries use **embedded literals** (no bind parameters); table functions may be zero-arg.\n"
-            "- Correctness requires **full multi-row ordered result match**, not a single scalar.\n"
-            "- Benchmark/profile use **one scale factor** (SF3); size structures from bind-time `row_estimate`, "
-            "not hardcoded row/distinct counts from the current profile."
-        )
-        if is_aux:
-            benchmark_notes += (
-                f"\n- SEC EDGAR aux state: `accelerators/sec_edgar/q{query}/{engine_name}/aux/module.hpp` "
-                f"(base API: `accelerators/sec_edgar/q{query}/{engine_name}/base/query.hpp`).\n"
-                "- Write workload suite is **`filing_append`** / **`value_append`**.\n"
-                "- Partition by filing semantics (`stmt`, `adsh`, `cik`+`fy`) — see `pipeline/prompts/sec_edgar/aux_state_notes.md`.\n"
-                "- The aux state is discovered from `aux/finalize.cpp`; no CMake registration.\n"
-                "- Scale: SF3 is both iteration and production scale here — still size from `row_estimate`, not profile snapshots."
-            )
-        optimization_gate_suffix = " → profile"
-        audit_gate_suffix = ""
-    else:
-        benchmark_notes = (
-            "- **Iteration scale (SF1)**: correctness, baseline, profile, and A/B benchmarks run on "
-            f"`{paths['dataset_db']}` for fast feedback.\n"
-            "- **Scale check (SF10)**: `sf10` gate runs on `scale_db` when configured — catches sizing "
-            "and state blowups at ~10× rows.\n"
-            "- **Production target (SF20+)**: final benchmarking uses much larger scale factors. "
-            "Designs must scale: bind-time `row_estimate` sizing, no SF1-hardcoded capacities, "
-            "bounded aux/read paths. See `pipeline/prompts/shared/scale_factor_contract.md`.\n"
-            "- Do not optimize for SF1 micro-wins that add full-domain scans or cardinality constants "
-            "from the iteration dataset."
-        )
-        optimization_gate_suffix = " → sf10 (scale check) → profile"
-        audit_gate_suffix = " and `sf10`"
+    # The benchmark's own facts, from its pack (config/benchmark_packs/<benchmark>.yaml).
+    note_fields = {"query": query, "engine": engine_name, "dataset_db": paths["dataset_db"]}
+    benchmark_notes = str(workload.get("prompt_notes") or "").format(**note_fields).rstrip()
+    if is_aux and workload.get("aux_prompt_notes"):
+        benchmark_notes += "\n" + str(workload["aux_prompt_notes"]).format(**note_fields).rstrip()
+    audit_gate_suffix = " and `sf10`" if "sf10" in (workload.get("post_audit_gates") or []) else ""
 
-    if is_aux and stage in opt_stages:
+    if is_aux and stage in OPTIMIZATION_STAGES:
         benchmark_notes += (
             "\n- **Dual-axis accept/reject score** (orchestrator-owned):\n"
             "  `optimization_score = read_only_query_speedup^0.75 * write_mix_workload_speedup^0.25` "
@@ -358,18 +315,7 @@ def build_prompt_context(
             "size from bind-time `row_estimate` — never SF1-hardcoded capacities."
         )
 
-    lean_stage = stage in (
-        "optimization",
-        "optimization_unified",
-        "optimization_worker",
-        "optimization_fix",
-        "optimization_unified_hypothesis",
-        "optimization_unified_patch",
-        "crash_debug",
-        "implementation",
-        "test_suite",
-        "audit",
-    )
+    lean_stage = stage in OPTIMIZATION_STAGES or stage in ("crash_debug", "implementation", "test_suite", "audit")
     profile_summary_path = art / "profile_summary.json"
     profile_data: dict[str, Any] = {}
     if profile_summary_path.is_file():
@@ -397,9 +343,9 @@ def build_prompt_context(
 
     constraints_text = _read_text(constraints_path)
     if lean_stage:
-        profiling_text = "See `pipeline/prompts/shared/profiling_conventions.md` (read it if needed)."
+        profiling_text = "See `pipeline/prompts/shared/docs/profiling_conventions.md` (read it if needed)."
     else:
-        profiling_text = _read_text(pipe / "prompts" / "shared" / "profiling_conventions.md")
+        profiling_text = _read_text(docs / "profiling_conventions.md")
 
     if is_aux:
         analysis_json = stage_analysis_json(analysis, stage)
@@ -411,42 +357,25 @@ def build_prompt_context(
         analysis_json = _read_text(analysis_path, "{}") if stage == "analysis" else "{}"
 
     retrieval_brief = ""
-    if stage in (
-        "analysis",
-        "optimization",
-        "optimization_unified",
-        "optimization_worker",
-    ):
+    if stage == "analysis" or stage in OPTIMIZATION_STAGES:
         retrieval_brief = build_retrieval_brief(
             pipeline_config, workload, query, stage=stage, optimization_iter=optimization_iter
         )
 
-    hard_guidelines_path = pipe / "prompts" / "shared" / "hard_guidelines.md"
+    hard_guidelines_path = docs / "hard_guidelines.md"
     hard_guidelines = (
         _read_text(hard_guidelines_path)
         if is_implementation_stage(stage)
         or is_critique_stage(stage)
-        or stage
-        in (
-            "analysis",
-            "optimization",
-            "optimization_unified",
-            "optimization_unified_hypothesis",
-            "optimization_unified_patch",
-            "optimization_worker",
-            "optimization_fix",
-            "audit",
-            "architecture_audit",
-            "validation",
-            "test_suite",
-        )
+        or stage in OPTIMIZATION_STAGES
+        or stage in ("analysis", "audit", "architecture_audit", "validation", "test_suite")
         else ""
     )
 
     # The fast-loop working rules are inline in every stage that edits code.
     fast_loop = ""
     if is_implementation_stage(stage) or stage.startswith("optimization"):
-        fast_loop = _read_text(pipe / "prompts" / "shared" / "fast_loop.md")
+        fast_loop = _read_text(docs / "fast_loop.md")
 
     optimization_runtime_path = ""
     if stage == "optimization":
@@ -481,7 +410,6 @@ def build_prompt_context(
         "benchmark_notes": benchmark_notes,
         "fused_scan_path": paths["fused_scan_path"],
         "fused_header_path": paths["fused_header_path"],
-        "optimization_gate_suffix": optimization_gate_suffix,
         "audit_gate_suffix": audit_gate_suffix,
         "test_template_path": str(workload.get("test_template_path", "")),
         "benchmark_template_path": str(workload.get("benchmark_template_path", "")),
@@ -499,13 +427,13 @@ def build_prompt_context(
         "cost_model_config": paths.get("cost_model_config", ""),
         "shared_docs_reference": shared_docs,
         "agent_boundary": (
-            "See `pipeline/prompts/aux_state/shared/agent_boundary.md` (read it if needed)."
+            "See `pipeline/prompts/aux_state/docs/agent_boundary.md` (read it if needed)."
             if is_aux
             else ""
         ),
         "constraints": constraints_text,
         "profiling_conventions": (
-            "See `pipeline/prompts/shared/profiling_conventions.md` (read it if needed)."
+            "See `pipeline/prompts/shared/docs/profiling_conventions.md` (read it if needed)."
             if is_aux or lean_stage
             else profiling_text
         ),
@@ -547,12 +475,12 @@ def build_prompt_context(
             "Maximize dual-axis score read_only^0.75 * write_mix^0.25: strong hit latency at 0% writes "
             "AND healthy 10% write-mix workload via cheap incremental maintenance (ApplyDelta / local "
             "rebuilds). When read is strong and 10% ≪ 1×, prioritize maintenance — it moves the accept gate."
-            if is_aux and stage in opt_stages
+            if is_aux and stage in OPTIMIZATION_STAGES
             else "Beat the baseline engine path (`speedup_median` > 1.0) and keep improving "
             "`best_speedup_median` — there is no fixed speedup ceiling; stop only when gates stall progress."
         ),
         "hard_guidelines": hard_guidelines,
-        "measurement_trust": _read_text(pipe / "prompts" / "shared" / "measurement_trust.md"),
+        "measurement_trust": _read_text(docs / "measurement_trust.md"),
         "fast_loop": fast_loop,
         "audit_result_json": _read_text(art / "audit_result.json", "{}"),
         "retrieval_brief": retrieval_brief,
@@ -603,7 +531,7 @@ def build_prompt_context(
         ),
 
         "optional_examples_section": (
-            _read_text(pipe / "prompts" / "engine_backend" / "optional_examples.md")
+            _read_text(pipe / "prompts" / "engine_backend" / "docs" / "optional_examples.md")
             + (
                 "\n\nWorkload `placement_candidates` (S6):\n"
                 + "\n".join(f"- `{m}`" for m in (workload.get("placement_candidates") or []))
@@ -644,17 +572,17 @@ def build_prompt_context(
             else ""
         ),
         "engine_layers_spec": (
-            _read_text(pipe / "prompts" / "engine_backend" / "layers.md")
+            _read_text(pipe / "prompts" / "engine_backend" / "docs" / "layers.md")
             if is_engine
             else ""
         ),
         "layer_contracts": (
-            _read_text(pipe / "prompts" / "engine_backend" / "layer_contracts.md")
+            _read_text(pipe / "prompts" / "engine_backend" / "docs" / "layer_contracts.md")
             if is_engine
             else ""
         ),
         "host_contract": (
-            _read_text(pipe / "prompts" / "engine_backend" / "host_contract.md")
+            _read_text(pipe / "prompts" / "engine_backend" / "docs" / "host_contract.md")
             if is_engine
             else ""
         ),

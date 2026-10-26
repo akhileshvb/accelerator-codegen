@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from accel_pipeline.jsonio import read_json
-from accel_pipeline.optimization_checkpoint import load_experimental_branch
+from accel_pipeline.optimization_checkpoint import load_attempt_log, load_experimental_branch
 from accel_pipeline.optimization_pending import PendingFeedback
 
 
@@ -37,20 +37,8 @@ def save_worker_checkpoint(art_dir: Path, payload: dict[str, Any], filename: str
 
 
 def _recent_hypotheses_from_attempt_log(art: Path, limit: int = 8) -> list[dict[str, Any]]:
-    path = art / "attempt_log.jsonl"
-    if not path.is_file():
-        return []
-    rows: list[dict[str, Any]] = []
-    for line in path.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            rows.append(json.loads(line))
-        except json.JSONDecodeError:
-            continue
     out: list[dict[str, Any]] = []
-    for row in rows[-limit:]:
+    for row in load_attempt_log(art)[-limit:]:
         hypo = row.get("hypothesis_json") or {}
         out.append(
             {

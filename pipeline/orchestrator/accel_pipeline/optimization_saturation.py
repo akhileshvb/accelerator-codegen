@@ -195,15 +195,3 @@ def judge_saturation_claim(
         f"low-level attempts; {reason}",
         cfg,
     )
-
-
-def evaluate_saturation_claim(
-    pipeline_config: Any,
-    workload: dict[str, Any],
-    art: Any,
-    payload: dict[str, Any] | None,
-) -> tuple[bool, str, dict[str, Any]]:
-    """Whether the claim ends the stage: (honored, detail, config). A re-analysis request ends it too."""
-    _ = workload
-    verdict, detail, cfg = judge_saturation_claim(pipeline_config, Path(art), payload)
-    return verdict is not Verdict.REJECT, detail, cfg

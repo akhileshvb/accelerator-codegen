@@ -13,14 +13,3 @@ optimization:
   consecutive_fail_stop: 0
   no_improvement_stop: 8
 
-optimization_guidance: |
-  Structural read-path priority (from analysis.json viable alternates):
-  1. **compact_join_orderkey_full** — store order metadata (custkey, orderdate, totalprice) colocated
-     with quantity sums; eliminate `ScanOrders` on aux hit. Try this first (smaller scope than full
-     narrow_qualifying). Customer scan may remain for this hypothesis.
-  2. **narrow_qualifying_only** — maintain a qualifying-order index/vector for orders above threshold;
-     read path iterates O(|qualifying|) only. Requires threshold-stable maintenance on lineitem deltas.
-
-  Previous attempts failed on turn limits or build errors — use `write_file` for coordinated multi-region
-  edits after one full read per file. End with `HYPOTHESIS_PATCH_COMPLETE` as soon as the hypothesis
-  is fully implemented; do not keep patching after the edit is complete.

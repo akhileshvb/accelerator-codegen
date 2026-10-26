@@ -11,6 +11,3 @@ parameters:
   - name: part_type
     type: VARCHAR
 
-optimization_guidance: |
-  Q8 computes yearly market share for a target nation within a region and part type.
-  Pre-filter region customers / part type; maintain per-year (target volume, total volume).

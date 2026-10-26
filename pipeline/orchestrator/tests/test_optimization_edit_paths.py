@@ -6,7 +6,6 @@ from accel_pipeline.config import (
     PipelineConfig,
     load_workload,
     resolve_optimization_edit_paths,
-    resolve_workload_paths,
 )
 from accel_pipeline.paths import find_repo_root
 
@@ -19,7 +18,6 @@ def test_aux_optimization_edit_paths_point_at_aux_module():
         pipeline_root=repo / "pipeline",
         build_dir=repo / "build-release",
         tpch_db_sf1=repo.parent / "accelerator-codegen-duckdb" / "tpch_sf1.duckdb",
-        tpch_db_sf10=repo.parent / "accelerator-codegen-duckdb" / "tpch_sf10.duckdb",
     )
     edit = resolve_optimization_edit_paths(pc, workload, 18)
     assert edit["is_aux"] is True

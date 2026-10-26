@@ -19,7 +19,3 @@ parameters:
   - name: country_code7
     type: VARCHAR
 
-optimization_guidance: |
-  Q22 aggregates customers in selected phone country codes with above-average
-  positive acctbal and no orders. Maintain country-code filtered customer sets,
-  average threshold, and order-existence flags; Prefer ApplyDelta on customer/orders.

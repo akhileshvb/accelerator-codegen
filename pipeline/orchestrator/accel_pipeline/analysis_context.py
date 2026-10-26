@@ -9,68 +9,62 @@ from typing import Any
 
 from accel_pipeline.textutil import squeeze_truncate
 
+# The docs each aux stage may read, under pipeline/prompts/.
 _STAGE_SHARED_DOCS: dict[str, list[tuple[str, str]]] = {
     "analysis": [
-        ("Low-level execution", "../../shared/low_level_execution.md"),
-        ("COW primitives", "cow_primitives.md"),
-        ("Scale factors", "../../shared/scale_factor_contract.md"),
-        ("Substrate primitives", "../../shared/substrate_primitives.md"),
-        ("Fitness rubric", "aux_state_fitness.md"),
-        ("Taxonomy index", "taxonomy_index.md"),
-        ("Full taxonomy", "aux_state_taxonomy.md"),
-        ("Design families", "aux_state_design.md"),
-        ("Mutation coverage", "mutation_coverage.md"),
+        ("Low-level execution", "shared/docs/low_level_execution.md"),
+        ("COW primitives", "aux_state/docs/cow_primitives.md"),
+        ("Scale factors", "shared/docs/scale_factor_contract.md"),
+        ("Substrate primitives", "shared/docs/substrate_primitives.md"),
+        ("Fitness rubric", "aux_state/docs/aux_state_fitness.md"),
+        ("Taxonomy index", "aux_state/docs/taxonomy_index.md"),
+        ("Full taxonomy", "aux_state/docs/aux_state_taxonomy.md"),
+        ("Design families", "aux_state/docs/aux_state_design.md"),
+        ("Mutation coverage", "aux_state/docs/mutation_coverage.md"),
     ],
     "test_suite": [
-        ("Test suite format", "../../shared/test_suite.md"),
-        ("Scale factors", "../../shared/scale_factor_contract.md"),
-        ("Mutation coverage", "mutation_coverage.md"),
-        ("Bench sweep contract", "bench_sweep_contract.md"),
+        ("Test suite format", "shared/docs/test_suite.md"),
+        ("Scale factors", "shared/docs/scale_factor_contract.md"),
+        ("Mutation coverage", "aux_state/docs/mutation_coverage.md"),
+        ("Bench sweep contract", "aux_state/docs/bench_sweep_contract.md"),
     ],
     "implementation": [
-        ("Low-level execution", "../../shared/low_level_execution.md"),
-        ("COW primitives", "cow_primitives.md"),
-        ("Scale factors", "../../shared/scale_factor_contract.md"),
-        ("Generated layout", "../../shared/generated_layout.md"),
-        ("Engine interfaces", "../../shared/engine_interfaces.md"),
-        ("Substrate primitives", "../../shared/substrate_primitives.md"),
-        ("Unit-test contract", "unit_test_contract.md"),
-        ("Read-path scaffold", "read_path_scaffold.md"),
-        ("Bench sweep contract", "bench_sweep_contract.md"),
-        ("Concurrency contract", "concurrency_contract.md"),
-        ("Registration", "registration_checklist.md"),
-        ("Agent boundary", "agent_boundary.md"),
+        ("Low-level execution", "shared/docs/low_level_execution.md"),
+        ("COW primitives", "aux_state/docs/cow_primitives.md"),
+        ("Scale factors", "shared/docs/scale_factor_contract.md"),
+        ("Generated layout", "shared/docs/generated_layout.md"),
+        ("Engine interfaces", "shared/docs/engine_interfaces.md"),
+        ("Substrate primitives", "shared/docs/substrate_primitives.md"),
+        ("Unit-test contract", "aux_state/docs/unit_test_contract.md"),
+        ("Read-path scaffold", "aux_state/docs/read_path_scaffold.md"),
+        ("Bench sweep contract", "aux_state/docs/bench_sweep_contract.md"),
+        ("Concurrency contract", "aux_state/docs/concurrency_contract.md"),
+        ("Registration", "aux_state/docs/registration_checklist.md"),
+        ("Agent boundary", "aux_state/docs/agent_boundary.md"),
     ],
     "optimization": [
-        ("Scale factors", "../../shared/scale_factor_contract.md"),
-        ("Substrate primitives", "../../shared/substrate_primitives.md"),
-        ("Generated layout", "../../shared/generated_layout.md"),
-        ("Bench sweep contract", "bench_sweep_contract.md"),
-        ("Maintenance framework", "maintenance_framework.md"),
-        ("Taxonomy index", "taxonomy_index.md"),
+        ("Scale factors", "shared/docs/scale_factor_contract.md"),
+        ("Substrate primitives", "shared/docs/substrate_primitives.md"),
+        ("Generated layout", "shared/docs/generated_layout.md"),
+        ("Bench sweep contract", "aux_state/docs/bench_sweep_contract.md"),
+        ("Maintenance framework", "aux_state/docs/maintenance_framework.md"),
+        ("Taxonomy index", "aux_state/docs/taxonomy_index.md"),
     ],
     "audit": [
-        ("Low-level execution", "../../shared/low_level_execution.md"),
-        ("COW primitives", "cow_primitives.md"),
-        ("Scale factors", "../../shared/scale_factor_contract.md"),
-        ("Engine interfaces", "../../shared/engine_interfaces.md"),
-        ("Mutation coverage", "mutation_coverage.md"),
-        ("Concurrency contract", "concurrency_contract.md"),
+        ("Low-level execution", "shared/docs/low_level_execution.md"),
+        ("COW primitives", "aux_state/docs/cow_primitives.md"),
+        ("Scale factors", "shared/docs/scale_factor_contract.md"),
+        ("Engine interfaces", "shared/docs/engine_interfaces.md"),
+        ("Mutation coverage", "aux_state/docs/mutation_coverage.md"),
+        ("Concurrency contract", "aux_state/docs/concurrency_contract.md"),
     ],
 }
 
 
 def build_shared_docs_reference(pipeline_root_rel: str = "pipeline", stage: str = "") -> str:
-    base = f"{pipeline_root_rel}/prompts/aux_state/shared"
-    shared_base = f"{pipeline_root_rel}/prompts/shared"
     docs = _STAGE_SHARED_DOCS.get(stage, _STAGE_SHARED_DOCS["analysis"])
     lines = ["Read only when needed:", ""]
-    for label, path in docs:
-        if path.startswith("../../shared/"):
-            rel = f"{shared_base}/{path.removeprefix('../../shared/')}"
-        else:
-            rel = f"{base}/{path}"
-        lines.append(f"- **{label}**: `{rel}`")
+    lines += [f"- **{label}**: `{pipeline_root_rel}/prompts/{path}`" for label, path in docs]
     if stage == "analysis":
         lines.append(f"- **Analysis schema**: `{pipeline_root_rel}/schemas/aux_state_analysis.schema.json`")
     return "\n".join(lines)

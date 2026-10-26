@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 
-import pytest
 
 from accel_pipeline.pipeline_log import (
     events_path,

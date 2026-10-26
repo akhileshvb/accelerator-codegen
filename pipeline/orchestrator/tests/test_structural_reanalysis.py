@@ -13,7 +13,6 @@ from accel_pipeline.structural_reanalysis import (
     load_pending_request,
     max_structural_reanalysis_count,
     process_after_stage,
-    request_path,
     validate_request,
     write_request,
 )

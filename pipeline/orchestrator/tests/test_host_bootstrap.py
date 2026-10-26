@@ -14,7 +14,7 @@ from accel_pipeline.config import (
     load_pipeline_config,
     load_workload,
 )
-from accel_pipeline.gates import GateFailure, GateResult
+from accel_pipeline.gates import GateResult
 from accel_pipeline.host_bootstrap import (
     engines_needing_bootstrap_from_workloads,
     format_host_bootstrap_gate_feedback,

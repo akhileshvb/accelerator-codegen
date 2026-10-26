@@ -340,7 +340,6 @@ def ensure_attempt_write_frequencies(
     return freqs
 
 
-# Back-compat alias used by older call sites / tests.
 def optimization_iter_from_env(default: int | None = None) -> int | None:
     raw = os.environ.get("ACCEL_PIPELINE_OPT_ITER")
     if raw is None or not str(raw).strip():

@@ -12,10 +12,3 @@ models_config: pipeline/config/models.yaml
 workload_template: ["tpch_q{q}_aux", "tpch_q{q}"]   # per query and engine: aux, then base (they share an artifact dir)
 
 queries: [1, 6]
-
-isolation:
-  mode: shared_tree_separate_builds
-  build_dir_template: "build-release-{worker_id}"
-  codex_home_template: "pipeline/.codex/workers/{worker_id}"
-  shared_file_lease: true
-  stage_barriers: false

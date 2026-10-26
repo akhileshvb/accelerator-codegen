@@ -395,7 +395,6 @@ def main(argv: list[str] | None = None) -> int:
     # Allow initialize / tools/list even if query env is not ready yet.
     # Tool handlers re-resolve context from env on each call so a late-written
     # sidecar env file (or inherited ACCEL_* vars) still works.
-    query = _resolve_query(args)
     if os.environ.get("ACCEL_PIPELINE_QUERY") is None and args.query == 0:
         print(
             "accel_pipeline MCP: ACCEL_PIPELINE_QUERY unset at startup; "

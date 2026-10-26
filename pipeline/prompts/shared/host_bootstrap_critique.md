@@ -27,8 +27,8 @@ write the two files (heredoc `cat > …`) and **stop**.
 
 ## Read (in order)
 
-1. `pipeline/prompts/shared/query_host_bootstrap.md`
-2. `pipeline/prompts/host_bootstrap.md` (what each harness must do, its CLI)
+1. `pipeline/prompts/shared/docs/query_host_bootstrap.md`
+2. `pipeline/prompts/shared/host_bootstrap.md` (what each harness must do, its CLI)
 3. `backends/{{engine_name}}/api/README.md` and the registration role's headers
 4. Every harness source and `harness.cmake`
 5. Gate JSON if present

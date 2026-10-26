@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import threading
-import time
 from pathlib import Path
 
 import pytest
@@ -71,7 +69,6 @@ def test_worker_isolation_rewrites_build_dir(tmp_path: Path, monkeypatch):
         pipeline_root=tmp_path / "pipeline",
         build_dir=tmp_path / "build-release",
         tpch_db_sf1=tmp_path / "a.duckdb",
-        tpch_db_sf10=tmp_path / "b.duckdb",
         allowed_commands=[r"^cmake --build build-release( .*)?$"],
     )
     isolated = apply_worker_isolation(
@@ -135,7 +132,6 @@ def test_load_pack_file():
     pack = load_pack("tpch_aux_parallel", root)
     assert pack.get("pack_id") == "tpch_aux_parallel"
     assert parse_pack_queries(pack)
-    assert pack.get("isolation", {}).get("stage_barriers") is False
 
 
 def test_worker_id_for_query():
@@ -149,7 +145,6 @@ def test_rewrite_command_and_prompt_build_dir(tmp_path: Path):
         pipeline_root=tmp_path / "pipeline",
         build_dir=tmp_path / "build-release-tpch_q2_aux",
         tpch_db_sf1=tmp_path / "a.duckdb",
-        tpch_db_sf10=tmp_path / "b.duckdb",
         worker_id="tpch_q2_aux",
     )
     cmd = rewrite_command_build_dir(
@@ -188,7 +183,6 @@ def test_ensure_worker_build_dir_creates(tmp_path: Path, monkeypatch):
         pipeline_root=tmp_path / "pipeline",
         build_dir=tmp_path / "build-release-tpch_q7_aux",
         tpch_db_sf1=tmp_path / "a.duckdb",
-        tpch_db_sf10=tmp_path / "b.duckdb",
         worker_id="tpch_q7_aux",
     )
 
@@ -230,7 +224,6 @@ def test_ensure_worker_build_dir_retargets_source(tmp_path: Path, monkeypatch):
         pipeline_root=new_src / "pipeline",
         build_dir=bdir,
         tpch_db_sf1=tmp_path / "a.duckdb",
-        tpch_db_sf10=tmp_path / "b.duckdb",
         worker_id="tpch_q4_aux",
     )
     seen: list[list[str]] = []
@@ -323,7 +316,6 @@ def test_rewrite_and_reject_shared_build_dir(tmp_path: Path):
         pipeline_root=tmp_path / "pipeline",
         build_dir=tmp_path / "build-release-tpch_q4_aux",
         tpch_db_sf1=tmp_path / "a.duckdb",
-        tpch_db_sf10=tmp_path / "b.duckdb",
         datasets={},
         gates_dir=tmp_path / "gates",
         worker_id="tpch_q4_aux",

@@ -4,7 +4,7 @@ Analyze **{{display_name}}** query **Q{{query_number}}** for host **`{{engine_na
 
 ## Goal
 
-Plan a **stateless kernel that runs at machine speed on this hardware, at SF3000**: SIMD inner loops (AVX-512/AVX2 with a scalar fallback), cache-conscious columnar layouts, branch-free predicates, prefetch, no per-row allocation, fused passes. The plan names the loops and the layout that make each phase fast; the profile-guided loop refines it later. Read `pipeline/prompts/shared/low_level_execution.md`. Correctness comes first.
+Plan a **stateless kernel that runs at machine speed on this hardware, at SF3000**: SIMD inner loops (AVX-512/AVX2 with a scalar fallback), cache-conscious columnar layouts, branch-free predicates, prefetch, no per-row allocation, fused passes. The plan names the loops and the layout that make each phase fast; the profile-guided loop refines it later. Read `pipeline/prompts/shared/docs/low_level_execution.md`. Correctness comes first.
 
 This stage owns the plan only (`{{analysis_artifact_path}}`); do not implement code. `engine_name` is **required**: plan an engine-specific consume path under `accelerators/{benchmark}/q{{query_number}}/{{engine_name}}/`, with no portable chunk IR and no default host.
 
@@ -32,7 +32,7 @@ This stage owns the plan only (`{{analysis_artifact_path}}`); do not implement c
 
 {{output_schema_yaml}}
 
-Layout contract: `pipeline/prompts/shared/generated_layout.md`. Scale contract: `pipeline/prompts/shared/scale_factor_contract.md` (plan capacities from bind-time estimates).
+Layout contract: `pipeline/prompts/shared/docs/generated_layout.md`. Scale contract: `pipeline/prompts/shared/docs/scale_factor_contract.md` (plan capacities from bind-time estimates).
 
 ## Task
 

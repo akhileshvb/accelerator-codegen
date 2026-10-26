@@ -54,23 +54,7 @@ optimization:
   quick_benchmark_samples: 1
   context_max_chars: 80000
   context_max_lines: 1200
-  bootstrap_max_chars: 300000
-  bootstrap_max_lines_per_file: 0
-  skip_per_attempt_correctness: true
-  accept_on_screen: true
-  skip_confirmation: true
   smoke_runs: 2
-  max_turns:
-    analysis: 0  # 0 = unlimited
-    patch: 0
-    unified: 0
-  # 0 = keep fixing within the same attempt until build/smoke pass (safety_cap limits rounds)
-  build_fix_max_rounds: 0
-  correctness_fix_max_rounds: 0
-  build_fix_safety_cap: 12
-  correctness_fix_safety_cap: 12
-  fix_log_chars: 6000
-  persistent_worker: true
   worker_max_turns_per_candidate: 0
   worker_safety_cap_turns: 80
   hot_path_digest_max_chars: 25000
@@ -81,9 +65,6 @@ optimization:
     enabled: true
     saturation_min_read_speedup: 20
     saturation_required_attempts: 3
-  # deprecated aliases
-  episodes_per_iteration: 4
-  max_turns_per_episode: 8
 
 stage_max_turns:
   analysis: 8

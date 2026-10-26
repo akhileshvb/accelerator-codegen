@@ -1,6 +1,6 @@
 """The engine host: every engine is driven through ``backends/<engine>/host.sh``.
 
-The verb interface is ``prompts/engine_backend/host_contract.md``. Nothing here
+The verb interface is ``prompts/engine_backend/docs/host_contract.md``. Nothing here
 names an engine; its facts come from the profile's ``host_runtime``.
 """
 

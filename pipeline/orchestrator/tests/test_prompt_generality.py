@@ -15,7 +15,7 @@ ALLOWED: set[tuple[str, str]] = set()
 
 
 def scoped_files() -> list[Path]:
-    return sorted([*(PROMPTS / "aux_state").rglob("*.md"), *(PROMPTS / "shared").glob("*.md")])
+    return sorted([*(PROMPTS / "aux_state").rglob("*.md"), *(PROMPTS / "shared" / "docs").glob("*.md")])
 
 
 def test_prompts_and_shared_docs_name_no_benchmark_specifics():

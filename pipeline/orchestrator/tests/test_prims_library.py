@@ -417,7 +417,7 @@ def test_sync_owned_never_copies_prims(primary, tmp_path):
 
 
 @pytest.mark.parametrize("rel", [f"{P}/new.hpp", f"{P}/README.md", f"{P}/existing.hpp", pl.TESTS_REL])
-@pytest.mark.parametrize("stage_name", ["implementation", "optimization_worker", "optimization_unified_patch", ""])
+@pytest.mark.parametrize("stage_name", ["implementation", "optimization_worker", ""])
 def test_write_policy_denies_direct_prims_writes(primary, rel, stage_name):
     ok, reason = write_allowed(primary, primary / rel, query=5, stage=stage_name,
                                write_paths=[f"{P}/**", "accelerators/**", "**"])

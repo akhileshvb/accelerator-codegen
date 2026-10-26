@@ -17,7 +17,3 @@ parameters:
   - name: quantity3
     type: BIGINT
 
-optimization_guidance: |
-  Q19 is a scalar discounted revenue over three brand/container/qty/size OR branches
-  with shipmode/shipinstruct filters. Index parts by brand/container/size bands and
-  maintain matching lineitem revenue; Prefer ApplyDelta on part/lineitem edits.

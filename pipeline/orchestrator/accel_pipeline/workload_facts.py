@@ -25,9 +25,6 @@ from accel_pipeline.paths import query_artifacts_dir
 
 FACTS_FILE = "workload_facts.json"
 SCRATCH_DIALECT = "duckdb"  # the scratch SQL engine's sqlglot dialect
-SCRATCH_ERRORS = (duckdb.Error,)  # what a failed or interrupted scratch statement raises
-
-
 def _schema_columns(con: duckdb.DuckDBPyConnection) -> dict[str, dict[str, str]]:
     rows = con.execute(
         "SELECT table_name, column_name FROM information_schema.columns ORDER BY table_name, ordinal_position"

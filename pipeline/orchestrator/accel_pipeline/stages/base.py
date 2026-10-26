@@ -39,15 +39,6 @@ def resolve_stage_max_turns(stage_max_turns: dict[str, int], stage: str, default
     return raw
 
 
-def resolve_optimization_max_turns(pipeline_config: Any, phase: str) -> int:
-    """Resolve optimization sub-stage turns; 0 or unset means unlimited."""
-    key = f"optimization_max_turns_{phase}"
-    raw = int(getattr(pipeline_config, key, 0) or 0)
-    if raw <= 0:
-        return _UNLIMITED_STAGE_TURNS
-    return raw
-
-
 def run_agent_stage(
     *,
     stage: str,

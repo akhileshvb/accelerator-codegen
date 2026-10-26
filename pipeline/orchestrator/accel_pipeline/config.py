@@ -207,7 +207,6 @@ class PipelineConfig:
     pipeline_root: Path
     build_dir: Path
     tpch_db_sf1: Path
-    tpch_db_sf10: Path
     datasets: dict[str, Path] = field(default_factory=dict)
     # Benchmarks whose bench/calibrate harness is one query-parameterised target per engine.
     shared_bench_harness: tuple[str, ...] = ()
@@ -215,30 +214,14 @@ class PipelineConfig:
     optimization_no_improvement_stop: int = 2
     # Wall-clock budget of the whole optimization stage (seconds; 0: none).
     optimization_stage_budget_sec: float = 7200.0
-    optimization_episodes_per_iteration: int = 4
     optimization_max_attempts_per_iteration: int = 4
-    optimization_max_turns_per_episode: int = 8
     optimization_improvement_threshold_pct: float = 3.0
     optimization_reject_threshold_pct: float = 2.0
     optimization_consecutive_fail_stop: int = 0
     optimization_quick_benchmark_samples: int = 3
     optimization_context_max_chars: int = 80_000
     optimization_context_max_lines: int = 1200
-    optimization_bootstrap_max_chars: int = 300_000
-    optimization_bootstrap_max_lines_per_file: int = 0
-    optimization_skip_per_attempt_correctness: bool = True
-    optimization_accept_on_screen: bool = True
-    optimization_skip_confirmation: bool = True
     optimization_smoke_runs: int = 2
-    optimization_max_turns_analysis: int = 0
-    optimization_max_turns_patch: int = 0
-    optimization_max_turns_unified: int = 0
-    optimization_build_fix_max_rounds: int = 0
-    optimization_correctness_fix_max_rounds: int = 0
-    optimization_build_fix_safety_cap: int = 12
-    optimization_correctness_fix_safety_cap: int = 12
-    optimization_fix_log_chars: int = 6000
-    optimization_persistent_worker: bool = True
     optimization_worker_max_turns_per_candidate: int = 0
     optimization_worker_safety_cap_turns: int = 80
     optimization_hot_path_digest_max_chars: int = 25_000
@@ -344,7 +327,6 @@ def resolve_workload_paths(
     workload: dict[str, Any],
     query: int,
 ) -> dict[str, str]:
-    repo = pipeline_config.repo_root
     benchmark = str(workload.get("benchmark_name", "tpch"))
     q = int(workload.get("query_number", query))
     engine = sanitize_engine_name(str(workload.get("engine_name") or ""))
@@ -383,7 +365,7 @@ def resolve_workload_paths(
         "ctest_smoke_name": naming.smoke_ctest_name(benchmark, q),
         "ctest_smoke_regex": f"^{naming.smoke_ctest_name(benchmark, q)}$",
         "dataset_db": _dataset_path(workload.get("dataset_db", pipeline_config.tpch_db_sf1)),
-        "scale_db": _dataset_path(workload.get("scale_db", pipeline_config.tpch_db_sf10)),
+        "scale_db": _dataset_path(workload.get("scale_db", pipeline_config.datasets.get("tpch_sf10", Path()))),
         "db_env_var": str(workload.get("db_env_var", "ACCEL_TPCH_DB")),
         "header_path": f"{qdir}/{eng_seg}base/query.hpp",
         "kernel_path": f"{generated_base}/kernel.cpp",
@@ -557,8 +539,6 @@ def load_pipeline_config(
 
     build_rel = data.get("build_dir", "build-release")
     gates_rel = data.get("gates_dir", "pipeline/gates")
-    opt = data.get("optimization", {})
-    max_turns = dict(opt.get("max_turns") or {})
 
     datasets = {
         key: Path(os.environ[env_var])
@@ -575,49 +555,8 @@ def load_pipeline_config(
         pipeline_root=pipe,
         build_dir=root / build_rel,
         tpch_db_sf1=datasets.get("tpch_sf1", Path()),
-        tpch_db_sf10=datasets.get("tpch_sf10", Path()),
         datasets=datasets,
         shared_bench_harness=tuple(str(b) for b in data.get("shared_bench_harness") or ()),
-        optimization_max_iterations=int(opt.get("max_iterations", 3)),
-        optimization_no_improvement_stop=int(opt.get("no_improvement_stop", 2)),
-        optimization_stage_budget_sec=float(opt.get("stage_budget_sec", 7200)),
-        optimization_episodes_per_iteration=int(
-            opt.get("max_attempts_per_iteration", opt.get("episodes_per_iteration", 4))
-        ),
-        optimization_max_attempts_per_iteration=int(
-            opt.get("max_attempts_per_iteration", opt.get("episodes_per_iteration", 4))
-        ),
-        optimization_max_turns_per_episode=int(opt.get("max_turns_per_episode", 8)),
-        optimization_improvement_threshold_pct=float(opt.get("improvement_threshold_pct", 3.0)),
-        optimization_reject_threshold_pct=float(opt.get("reject_threshold_pct", 2.0)),
-        optimization_consecutive_fail_stop=int(opt.get("consecutive_fail_stop", 0)),
-        optimization_quick_benchmark_samples=int(opt.get("quick_benchmark_samples", 3)),
-        optimization_context_max_chars=int(opt.get("context_max_chars", 80_000)),
-        optimization_context_max_lines=int(opt.get("context_max_lines", 1200)),
-        optimization_bootstrap_max_chars=int(opt.get("bootstrap_max_chars", 300_000)),
-        optimization_bootstrap_max_lines_per_file=int(opt.get("bootstrap_max_lines_per_file", 0)),
-        optimization_skip_per_attempt_correctness=bool(
-            opt.get("skip_per_attempt_correctness", True)
-        ),
-        optimization_accept_on_screen=bool(opt.get("accept_on_screen", True)),
-        optimization_skip_confirmation=bool(opt.get("skip_confirmation", True)),
-        optimization_smoke_runs=int(opt.get("smoke_runs", 2)),
-        optimization_max_turns_analysis=int(max_turns.get("analysis", 0)),
-        optimization_max_turns_patch=int(max_turns.get("patch", 0)),
-        optimization_max_turns_unified=int(max_turns.get("unified", 0)),
-        optimization_build_fix_max_rounds=int(opt.get("build_fix_max_rounds", 0)),
-        optimization_correctness_fix_max_rounds=int(opt.get("correctness_fix_max_rounds", 0)),
-        optimization_build_fix_safety_cap=int(opt.get("build_fix_safety_cap", 12)),
-        optimization_correctness_fix_safety_cap=int(opt.get("correctness_fix_safety_cap", 12)),
-        optimization_fix_log_chars=int(opt.get("fix_log_chars", 6000)),
-        optimization_persistent_worker=bool(opt.get("persistent_worker", True)),
-        optimization_worker_max_turns_per_candidate=int(opt.get("worker_max_turns_per_candidate", 0)),
-        optimization_worker_safety_cap_turns=int(opt.get("worker_safety_cap_turns", 80)),
-        optimization_hot_path_digest_max_chars=int(opt.get("hot_path_digest_max_chars", 25_000)),
-        optimization_turn_delta_max_chars=int(opt.get("turn_delta_max_chars", 4_000)),
-        optimization_checkpoint_file=str(opt.get("checkpoint_file", "optimization_worker_checkpoint.json")),
-        optimization_early_stop=dict(opt.get("early_stop") or {}),
-        optimization_structural=dict(opt.get("structural") or {}),
         repair=_repair_config(data.get("repair") or {}),
         advisor=_advisor_config(data.get("advisor") or {}),
         session=_session_config(data.get("session") or {}),
@@ -637,6 +576,7 @@ def load_pipeline_config(
         concurrency=ConcurrencyConfig.from_dict(data.get("concurrency")),
         test_suite=SuiteConfig.from_dict(data.get("test_suite")),
     )
+    cfg = _apply_optimization_block(cfg, data.get("optimization") or {})
 
     env_build = os.environ.get("ACCEL_PIPELINE_BUILD_DIR")
     if env_build:
@@ -772,7 +712,7 @@ def engine_host_conventions(
         "query_host_ready_hint": (
             f"The {engine} workload harnesses ({', '.join(targets.values())}) are generated by the "
             f"host_bootstrap stage under backends/{engine}/tests/harness/ and backends/{engine}/bench/; "
-            f"a query only registers from `{register}`. See pipeline/prompts/shared/query_host_bootstrap.md."
+            f"a query only registers from `{register}`. See pipeline/prompts/shared/docs/query_host_bootstrap.md."
         ),
     }
 
@@ -908,9 +848,9 @@ def _normalize_engine_backend_workload(data: dict[str, Any], repo_root: Path) ->
         if not isinstance(raw, dict):
             continue
         layer = dict(raw)
-        for field in ("harness", "cmake_target", "title", "gate", "id"):
-            if field in layer:
-                layer[field] = _expand_engine_placeholders(str(layer[field]), engine)
+        for key in ("harness", "cmake_target", "title", "gate", "id"):
+            if key in layer:
+                layer[key] = _expand_engine_placeholders(str(layer[key]), engine)
         layers.append(layer)
     data["implementation_layers"] = layers
 
@@ -1027,166 +967,39 @@ def _merge_aux_defaults(workload: dict[str, Any], repo_root: Path) -> None:
         workload["aux_bench_sweep_quick"] = dict(aux_defaults["aux_bench_sweep_quick"])
 
 
+# The `optimization:` block of default.yaml and of a workload: its keys and the PipelineConfig fields they set.
+_OPTIMIZATION_KEYS = {
+    "max_iterations": "optimization_max_iterations",
+    "no_improvement_stop": "optimization_no_improvement_stop",
+    "stage_budget_sec": "optimization_stage_budget_sec",
+    "max_attempts_per_iteration": "optimization_max_attempts_per_iteration",
+    "improvement_threshold_pct": "optimization_improvement_threshold_pct",
+    "reject_threshold_pct": "optimization_reject_threshold_pct",
+    "consecutive_fail_stop": "optimization_consecutive_fail_stop",
+    "quick_benchmark_samples": "optimization_quick_benchmark_samples",
+    "context_max_chars": "optimization_context_max_chars",
+    "context_max_lines": "optimization_context_max_lines",
+    "smoke_runs": "optimization_smoke_runs",
+    "worker_max_turns_per_candidate": "optimization_worker_max_turns_per_candidate",
+    "worker_safety_cap_turns": "optimization_worker_safety_cap_turns",
+    "hot_path_digest_max_chars": "optimization_hot_path_digest_max_chars",
+    "turn_delta_max_chars": "optimization_turn_delta_max_chars",
+    "checkpoint_file": "optimization_checkpoint_file",
+    "early_stop": "optimization_early_stop",
+    "structural": "optimization_structural",
+}
+
+
 def _apply_optimization_block(pipeline_config: PipelineConfig, opt: dict[str, Any]) -> PipelineConfig:
-    """Merge workload-level optimization: {...} overrides into PipelineConfig."""
-    if not opt:
-        return pipeline_config
-    max_turns = dict(opt.get("max_turns") or {})
-    return PipelineConfig(
-        repo_root=pipeline_config.repo_root,
-        pipeline_root=pipeline_config.pipeline_root,
-        build_dir=pipeline_config.build_dir,
-        tpch_db_sf1=pipeline_config.tpch_db_sf1,
-        tpch_db_sf10=pipeline_config.tpch_db_sf10,
-        datasets=dict(pipeline_config.datasets),
-        shared_bench_harness=pipeline_config.shared_bench_harness,
-        optimization_max_iterations=int(
-            opt.get("max_iterations", pipeline_config.optimization_max_iterations)
-        ),
-        optimization_no_improvement_stop=int(
-            opt.get("no_improvement_stop", pipeline_config.optimization_no_improvement_stop)
-        ),
-        optimization_stage_budget_sec=float(
-            opt.get("stage_budget_sec", pipeline_config.optimization_stage_budget_sec)
-        ),
-        optimization_episodes_per_iteration=int(
-            opt.get(
-                "max_attempts_per_iteration",
-                opt.get("episodes_per_iteration", pipeline_config.optimization_episodes_per_iteration),
-            )
-        ),
-        optimization_max_attempts_per_iteration=int(
-            opt.get(
-                "max_attempts_per_iteration",
-                opt.get("episodes_per_iteration", pipeline_config.optimization_max_attempts_per_iteration),
-            )
-        ),
-        optimization_max_turns_per_episode=int(
-            opt.get("max_turns_per_episode", pipeline_config.optimization_max_turns_per_episode)
-        ),
-        optimization_improvement_threshold_pct=float(
-            opt.get("improvement_threshold_pct", pipeline_config.optimization_improvement_threshold_pct)
-        ),
-        optimization_reject_threshold_pct=float(
-            opt.get("reject_threshold_pct", pipeline_config.optimization_reject_threshold_pct)
-        ),
-        optimization_consecutive_fail_stop=int(
-            opt.get("consecutive_fail_stop", pipeline_config.optimization_consecutive_fail_stop)
-        ),
-        optimization_quick_benchmark_samples=int(
-            opt.get("quick_benchmark_samples", pipeline_config.optimization_quick_benchmark_samples)
-        ),
-        optimization_context_max_chars=int(
-            opt.get("context_max_chars", pipeline_config.optimization_context_max_chars)
-        ),
-        optimization_context_max_lines=int(
-            opt.get("context_max_lines", pipeline_config.optimization_context_max_lines)
-        ),
-        optimization_bootstrap_max_chars=int(
-            opt.get("bootstrap_max_chars", pipeline_config.optimization_bootstrap_max_chars)
-        ),
-        optimization_bootstrap_max_lines_per_file=int(
-            opt.get(
-                "bootstrap_max_lines_per_file",
-                pipeline_config.optimization_bootstrap_max_lines_per_file,
-            )
-        ),
-        optimization_skip_per_attempt_correctness=bool(
-            opt.get(
-                "skip_per_attempt_correctness",
-                pipeline_config.optimization_skip_per_attempt_correctness,
-            )
-        ),
-        optimization_accept_on_screen=bool(
-            opt.get("accept_on_screen", pipeline_config.optimization_accept_on_screen)
-        ),
-        optimization_skip_confirmation=bool(
-            opt.get("skip_confirmation", pipeline_config.optimization_skip_confirmation)
-        ),
-        optimization_smoke_runs=int(
-            opt.get("smoke_runs", pipeline_config.optimization_smoke_runs)
-        ),
-        optimization_max_turns_analysis=int(
-            max_turns.get("analysis", pipeline_config.optimization_max_turns_analysis)
-        ),
-        optimization_max_turns_patch=int(
-            max_turns.get("patch", pipeline_config.optimization_max_turns_patch)
-        ),
-        optimization_max_turns_unified=int(
-            max_turns.get("unified", pipeline_config.optimization_max_turns_unified)
-        ),
-        optimization_build_fix_max_rounds=int(
-            opt.get("build_fix_max_rounds", pipeline_config.optimization_build_fix_max_rounds)
-        ),
-        optimization_correctness_fix_max_rounds=int(
-            opt.get(
-                "correctness_fix_max_rounds",
-                pipeline_config.optimization_correctness_fix_max_rounds,
-            )
-        ),
-        optimization_build_fix_safety_cap=int(
-            opt.get("build_fix_safety_cap", pipeline_config.optimization_build_fix_safety_cap)
-        ),
-        optimization_correctness_fix_safety_cap=int(
-            opt.get(
-                "correctness_fix_safety_cap",
-                pipeline_config.optimization_correctness_fix_safety_cap,
-            )
-        ),
-        optimization_fix_log_chars=int(
-            opt.get("fix_log_chars", pipeline_config.optimization_fix_log_chars)
-        ),
-        optimization_persistent_worker=bool(
-            opt.get("persistent_worker", pipeline_config.optimization_persistent_worker)
-        ),
-        optimization_worker_max_turns_per_candidate=int(
-            opt.get("worker_max_turns_per_candidate", pipeline_config.optimization_worker_max_turns_per_candidate)
-        ),
-        optimization_worker_safety_cap_turns=int(
-            opt.get("worker_safety_cap_turns", pipeline_config.optimization_worker_safety_cap_turns)
-        ),
-        optimization_hot_path_digest_max_chars=int(
-            opt.get("hot_path_digest_max_chars", pipeline_config.optimization_hot_path_digest_max_chars)
-        ),
-        optimization_turn_delta_max_chars=int(
-            opt.get("turn_delta_max_chars", pipeline_config.optimization_turn_delta_max_chars)
-        ),
-        optimization_checkpoint_file=str(
-            opt.get("checkpoint_file", pipeline_config.optimization_checkpoint_file)
-        ),
-        optimization_early_stop=(
-            dict(opt["early_stop"])
-            if isinstance(opt.get("early_stop"), dict)
-            else dict(pipeline_config.optimization_early_stop)
-        ),
-        optimization_structural=(
-            dict(opt["structural"])
-            if isinstance(opt.get("structural"), dict)
-            else dict(pipeline_config.optimization_structural)
-        ),
-        repair=pipeline_config.repair,
-        advisor=pipeline_config.advisor,
-        session=pipeline_config.session,
-        data_tools=pipeline_config.data_tools,
-        measurement=pipeline_config.measurement,
-        stage_max_turns=dict(pipeline_config.stage_max_turns),
-        write_paths=list(pipeline_config.write_paths),
-        allowed_commands=list(pipeline_config.allowed_commands),
-        gates_dir=pipeline_config.gates_dir,
-        worker_id=pipeline_config.worker_id,
-        codex_home=pipeline_config.codex_home,
-        shared_paths=list(pipeline_config.shared_paths or []),
-        workload_kind=pipeline_config.workload_kind,
-        engine_name=pipeline_config.engine_name,
-        benchmark_name=pipeline_config.benchmark_name,
-        sandbox=pipeline_config.sandbox,
-        sandbox_extra_ro=list(pipeline_config.sandbox_extra_ro),
-        sandbox_extra_rw=list(pipeline_config.sandbox_extra_rw),
-        write_policy=pipeline_config.write_policy,
-        quick_tier=pipeline_config.quick_tier,
-        concurrency=pipeline_config.concurrency,
-        test_suite=pipeline_config.test_suite,
-    )
+    """Override the optimization settings the block names, each coerced to its field's type."""
+    unknown = sorted(set(opt) - set(_OPTIMIZATION_KEYS))
+    if unknown:
+        raise ValueError(f"unknown optimization settings: {', '.join(unknown)}")
+    changes = {}
+    for key, value in opt.items():
+        name = _OPTIMIZATION_KEYS[key]
+        changes[name] = type(getattr(pipeline_config, name))(value)
+    return replace(pipeline_config, **changes)
 
 
 def apply_workload_overrides(pipeline_config: PipelineConfig, workload: dict[str, Any]) -> PipelineConfig:
@@ -1200,123 +1013,38 @@ def apply_workload_overrides(pipeline_config: PipelineConfig, workload: dict[str
 
 
 def _apply_workload_overrides(pipeline_config: PipelineConfig, workload: dict[str, Any]) -> PipelineConfig:
-    extra_write_paths = list(workload.get("write_paths", []))
-    extra_allowed = list(workload.get("allowed_commands", []))
-    stage_max_turns = dict(pipeline_config.stage_max_turns)
-    optimization_max_turns_per_episode = pipeline_config.optimization_max_turns_per_episode
     engine = sanitize_engine_name(str(workload.get("engine_name") or ""))
     if workload.get("workload_kind") != "engine_backend" and not engine:
-        raise ValueError(
-            "accelerator workload requires explicit engine_name "
-            "(no default engine)"
-        )
+        raise ValueError("accelerator workload requires explicit engine_name (no default engine)")
+    write_paths = list(workload.get("write_paths", []))
+    allowed_commands = list(workload.get("allowed_commands", []))
+    stage_max_turns = dict(pipeline_config.stage_max_turns)
 
     if workload.get("workload_kind") == "aux_state":
         aux_defaults = load_aux_state_defaults(pipeline_config.repo_root)
-        extra_write_paths = list(aux_defaults.get("write_paths", [])) + extra_write_paths
-        extra_allowed = list(aux_defaults.get("allowed_commands", [])) + extra_allowed
-        aux_stage_turns = aux_defaults.get("stage_max_turns")
-        if isinstance(aux_stage_turns, dict):
-            stage_max_turns.update(aux_stage_turns)
-        if "optimization_max_turns_per_episode" in aux_defaults:
-            optimization_max_turns_per_episode = int(aux_defaults["optimization_max_turns_per_episode"])
+        write_paths = list(aux_defaults.get("write_paths", [])) + write_paths
+        allowed_commands = list(aux_defaults.get("allowed_commands", [])) + allowed_commands
+        stage_max_turns.update(aux_defaults.get("stage_max_turns") or {})
 
     # The engine's differential harness, built and run by the accelerator run (its source is the
     # backend's, made by host_bootstrap).
     host = workload.get("engine_host") or {}
     if workload.get("workload_kind") != "engine_backend" and host.get("differential_binary"):
         binary = re.escape(host["differential_binary"])
-        extra_allowed = list(extra_allowed) + [
+        allowed_commands += [
             rf"^(\\.\\/)?build-release\\/{binary}( .*)?$",
             rf"^cmake --build build-release --target {binary}( .*)?$",
             rf"^ACCEL_[A-Z_]+=\\S+( ACCEL_[A-Z_]+=\\S+)* (\\.\\/)?build-release\\/{binary}( .*)?$",
         ]
 
-    workload_stage_turns = workload.get("stage_max_turns")
-    if isinstance(workload_stage_turns, dict):
-        stage_max_turns.update(workload_stage_turns)
-    if "optimization_max_turns_per_episode" in workload:
-        optimization_max_turns_per_episode = int(workload["optimization_max_turns_per_episode"])
-
-    opt_block = workload.get("optimization")
-    has_opt = isinstance(opt_block, dict) and bool(opt_block)
-    unchanged = (
-        not extra_write_paths
-        and not extra_allowed
-        and stage_max_turns == pipeline_config.stage_max_turns
-        and optimization_max_turns_per_episode == pipeline_config.optimization_max_turns_per_episode
-        and not has_opt
-    )
-    if unchanged:
-        return pipeline_config
-
-    merged = PipelineConfig(
-        repo_root=pipeline_config.repo_root,
-        pipeline_root=pipeline_config.pipeline_root,
-        build_dir=pipeline_config.build_dir,
-        tpch_db_sf1=pipeline_config.tpch_db_sf1,
-        tpch_db_sf10=pipeline_config.tpch_db_sf10,
-        datasets=dict(pipeline_config.datasets),
-        shared_bench_harness=pipeline_config.shared_bench_harness,
-        optimization_max_iterations=pipeline_config.optimization_max_iterations,
-        optimization_no_improvement_stop=pipeline_config.optimization_no_improvement_stop,
-        optimization_stage_budget_sec=pipeline_config.optimization_stage_budget_sec,
-        optimization_episodes_per_iteration=pipeline_config.optimization_episodes_per_iteration,
-        optimization_max_attempts_per_iteration=pipeline_config.optimization_max_attempts_per_iteration,
-        optimization_max_turns_per_episode=optimization_max_turns_per_episode,
-        optimization_improvement_threshold_pct=pipeline_config.optimization_improvement_threshold_pct,
-        optimization_reject_threshold_pct=pipeline_config.optimization_reject_threshold_pct,
-        optimization_consecutive_fail_stop=pipeline_config.optimization_consecutive_fail_stop,
-        optimization_quick_benchmark_samples=pipeline_config.optimization_quick_benchmark_samples,
-        optimization_context_max_chars=pipeline_config.optimization_context_max_chars,
-        optimization_context_max_lines=pipeline_config.optimization_context_max_lines,
-        optimization_bootstrap_max_chars=pipeline_config.optimization_bootstrap_max_chars,
-        optimization_bootstrap_max_lines_per_file=pipeline_config.optimization_bootstrap_max_lines_per_file,
-        optimization_skip_per_attempt_correctness=pipeline_config.optimization_skip_per_attempt_correctness,
-        optimization_accept_on_screen=pipeline_config.optimization_accept_on_screen,
-        optimization_skip_confirmation=pipeline_config.optimization_skip_confirmation,
-        optimization_smoke_runs=pipeline_config.optimization_smoke_runs,
-        optimization_max_turns_analysis=pipeline_config.optimization_max_turns_analysis,
-        optimization_max_turns_patch=pipeline_config.optimization_max_turns_patch,
-        optimization_max_turns_unified=pipeline_config.optimization_max_turns_unified,
-        optimization_build_fix_max_rounds=pipeline_config.optimization_build_fix_max_rounds,
-        optimization_correctness_fix_max_rounds=pipeline_config.optimization_correctness_fix_max_rounds,
-        optimization_build_fix_safety_cap=pipeline_config.optimization_build_fix_safety_cap,
-        optimization_correctness_fix_safety_cap=pipeline_config.optimization_correctness_fix_safety_cap,
-        optimization_fix_log_chars=pipeline_config.optimization_fix_log_chars,
-        optimization_persistent_worker=pipeline_config.optimization_persistent_worker,
-        optimization_worker_max_turns_per_candidate=pipeline_config.optimization_worker_max_turns_per_candidate,
-        optimization_worker_safety_cap_turns=pipeline_config.optimization_worker_safety_cap_turns,
-        optimization_hot_path_digest_max_chars=pipeline_config.optimization_hot_path_digest_max_chars,
-        optimization_turn_delta_max_chars=pipeline_config.optimization_turn_delta_max_chars,
-        optimization_checkpoint_file=pipeline_config.optimization_checkpoint_file,
-        optimization_early_stop=dict(pipeline_config.optimization_early_stop),
-        repair=pipeline_config.repair,
-        advisor=pipeline_config.advisor,
-        session=pipeline_config.session,
-        data_tools=pipeline_config.data_tools,
-        measurement=pipeline_config.measurement,
+    stage_max_turns.update(workload.get("stage_max_turns") or {})
+    merged = replace(
+        pipeline_config,
         stage_max_turns=stage_max_turns,
-        write_paths=list(pipeline_config.write_paths) + extra_write_paths,
-        allowed_commands=list(pipeline_config.allowed_commands) + extra_allowed,
-        gates_dir=pipeline_config.gates_dir,
-        worker_id=pipeline_config.worker_id,
-        codex_home=pipeline_config.codex_home,
-        shared_paths=list(pipeline_config.shared_paths or []),
-        workload_kind=pipeline_config.workload_kind,
-        engine_name=pipeline_config.engine_name,
-        benchmark_name=pipeline_config.benchmark_name,
-        sandbox=pipeline_config.sandbox,
-        sandbox_extra_ro=list(pipeline_config.sandbox_extra_ro),
-        sandbox_extra_rw=list(pipeline_config.sandbox_extra_rw),
-        write_policy=pipeline_config.write_policy,
-        quick_tier=pipeline_config.quick_tier,
-        concurrency=pipeline_config.concurrency,
-        test_suite=pipeline_config.test_suite,
+        write_paths=list(pipeline_config.write_paths) + write_paths,
+        allowed_commands=list(pipeline_config.allowed_commands) + allowed_commands,
     )
-    if has_opt:
-        return _apply_optimization_block(merged, opt_block)
-    return merged
+    return _apply_optimization_block(merged, workload.get("optimization") or {})
 
 
 def _read_workload_yaml(name: str, repo_root: Path | None) -> tuple[dict[str, Any], Path]:
@@ -1360,6 +1088,7 @@ def load_workload(name: str, repo_root: Path | None = None, *, engine: str = "")
 
     if data.get("workload_kind") == "aux_state":
         _merge_aux_defaults(data, root)
+    data.setdefault("prompt_subdir", "base")  # the stateless-kernel pipeline (prompts/base/)
     _expand_fairness_search_paths(data, engine)
     _derive_query_names(data, engine, root)
     return _normalize_accelerator_engine(data, engine, root)

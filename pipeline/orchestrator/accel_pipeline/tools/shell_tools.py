@@ -5,7 +5,6 @@ import re
 import signal
 import subprocess
 from dataclasses import dataclass
-from pathlib import Path
 
 from accel_pipeline.config import PipelineConfig
 from accel_pipeline.tools.tool_args import none_default as _none_default

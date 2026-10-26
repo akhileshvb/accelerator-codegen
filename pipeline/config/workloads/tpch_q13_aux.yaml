@@ -7,7 +7,3 @@ parameters:
   - name: comment_pattern
     type: VARCHAR
 
-optimization_guidance: |
-  Q13 is a customer→order-count histogram after filtering o_comment NOT LIKE pattern.
-  Maintain per-customer order counts (or histogram buckets) under comment-pattern
-  filters; avoid full LEFT JOIN + regroup on every read.

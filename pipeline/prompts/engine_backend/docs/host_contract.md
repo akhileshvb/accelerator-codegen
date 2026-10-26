@@ -19,7 +19,7 @@ container, plugin or data layout.
 
 ## Test suite
 
-A query's frozen test suite reaches the engine's differential harness through the environment of `run` (format: `pipeline/prompts/shared/test_suite.md`). When `ACCEL_SUITE_DIR` is set the harness, after its own phases, runs the suite on a writable copy of the database:
+A query's frozen test suite reaches the engine's differential harness through the environment of `run` (format: `pipeline/prompts/shared/docs/test_suite.md`). When `ACCEL_SUITE_DIR` is set the harness, after its own phases, runs the suite on a writable copy of the database:
 
 | variable | meaning |
 |---|---|

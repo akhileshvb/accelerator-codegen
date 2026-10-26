@@ -9,7 +9,3 @@ parameters:
   - name: nation2
     type: VARCHAR
 
-optimization_guidance: |
-  Q7 is volume shipping between two nations over a fixed shipdate window,
-  grouped by (supp_nation, cust_nation, year). Materialize nation-pair volume
-  aggregates; avoid re-joining full lineitem/orders on every read.

@@ -1,7 +1,7 @@
 # PostgreSQL API manifest
 
 A server extension (`accelerator_codegen_pg`) with shard-worker processes. Roles and
-semantics: `pipeline/prompts/engine_backend/api_contract.md`.
+semantics: `pipeline/prompts/engine_backend/docs/api_contract.md`.
 
 ## Contract roles
 

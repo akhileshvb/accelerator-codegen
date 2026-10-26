@@ -125,11 +125,3 @@ def classify(rel: str) -> Layer:
         bench = parts[1] if len(parts) > 1 and parts[1] not in _NON_BENCH_ACCEL_DIRS else ""
         return Layer("accel_shared", bench=bench)
     return Layer("other")
-
-
-def query_of(rel: str) -> tuple[str, int] | None:
-    """(bench, N) when rel lies inside accelerators/<bench>/q<N>/."""
-    m = _QUERY_DIR_RE.match(_norm(rel))
-    if not m:
-        return None
-    return m.group(1), int(m.group(2))

@@ -32,7 +32,7 @@ def _quant(q: Any) -> list[Any]:
 
 
 def render_shape_tables(facts: dict[str, Any], source: str) -> list[str]:
-    from accel_pipeline.data_shape_stats import SAMPLE_ROWS, type_family
+    from accel_pipeline.data_shape_stats import SAMPLE_ROWS
 
     rows, stats, schema = facts["rows"], facts["stats"], facts["schema"]
     roles = facts["shape"].roles

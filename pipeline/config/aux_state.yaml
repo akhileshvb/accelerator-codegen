@@ -87,9 +87,6 @@ optimization:
   improvement_threshold_pct: 2.0
   reject_threshold_pct: 1.0
   smoke_runs: 2
-  skip_confirmation: true
-  skip_per_attempt_correctness: true
-  two_phase_hypothesis_patch: true
   # OPTIMIZATION_SATURATED is honored only once the read speedup over the stateless base kernel
   # reaches the floor, or the last `saturation_required_attempts` trials were profile-guided and
   # distinct, with one structural and one low-level change among them.
@@ -159,8 +156,6 @@ stage_max_turns:
 host_bootstrap_gate_max_rounds: 3
 # Cheap critic after a green bootstrap gate; 0 disables.
 host_bootstrap_critique_max_rounds: 2
-
-optimization_max_turns_per_episode: 0
 
 # Independent critic rounds on the analysis (each may send it back for one revision; the next round
 # re-checks that revision); 0 disables.

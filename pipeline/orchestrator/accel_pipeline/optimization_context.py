@@ -14,6 +14,7 @@ from accel_pipeline.analysis_context import (
 from accel_pipeline.base_bench import compact_summary_for_prompt
 from accel_pipeline.config import PipelineConfig, resolve_optimization_edit_paths, resolve_workload_paths
 from accel_pipeline.kernel_hot_path_review import analyze_kernel_source
+from accel_pipeline.optimization_checkpoint import load_attempt_log
 from accel_pipeline.paths import load_query_analysis, query_artifacts_dir
 from accel_pipeline.optimization_signals import (
     diagnostic_deltas,
@@ -99,29 +100,6 @@ def _hot_path_excerpt(kernel_path: Path, kernel_review: dict[str, Any], max_line
     return "\n".join(selected)
 
 
-def _load_attempt_history(art: Path, limit: int = 5) -> list[dict[str, Any]]:
-    path = art / "attempt_log.jsonl"
-    if not path.is_file():
-        legacy = art / "ab_trials.json"
-        if legacy.is_file():
-            try:
-                data = json.loads(legacy.read_text(encoding="utf-8"))
-                return list(data.get("trials") or [])[-limit:]
-            except json.JSONDecodeError:
-                return []
-        return []
-    rows: list[dict[str, Any]] = []
-    for line in path.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            rows.append(json.loads(line))
-        except json.JSONDecodeError:
-            continue
-    return rows[-limit:]
-
-
 def build_context_packet(
     pipeline_config: PipelineConfig,
     workload: dict[str, Any],
@@ -177,7 +155,7 @@ def build_context_packet(
             f"// {fused_path}\n{_extract_signatures(fused_full, _SECTION_LINE_CAPS['signatures'])}"
         )
 
-    history = attempt_history if attempt_history is not None else _load_attempt_history(art)
+    history = attempt_history if attempt_history is not None else load_attempt_log(art)[-5:]
     failed = [h for h in history if not h.get("accepted") and not h.get("kept")][-_SECTION_LINE_CAPS["failed_hypotheses"] :]
 
     store_diag = extract_store_diagnostics(baseline_metrics)
@@ -302,58 +280,6 @@ def format_context_markdown(
     return _truncate_chars(_truncate_lines(rendered, max_lines), max_chars)
 
 
-def save_context_packet(
-    pipeline_config: PipelineConfig,
-    workload: dict[str, Any],
-    query: int,
-    packet: dict[str, Any],
-) -> Path:
-    art = query_artifacts_dir(pipeline_config.repo_root, query, workload=workload)
-    max_lines = int(getattr(pipeline_config, "optimization_context_max_lines", CONTEXT_MAX_LINES))
-    max_chars = int(getattr(pipeline_config, "optimization_context_max_chars", CONTEXT_MAX_CHARS))
-    md = format_context_markdown(packet, max_lines=max_lines, max_chars=max_chars)
-    (art / "optimization_context.md").write_text(md, encoding="utf-8")
-    (art / "optimization_context.json").write_text(json.dumps(packet, indent=2), encoding="utf-8")
-    return art / "optimization_context.md"
-
-
-def build_optimization_user_message(
-    *,
-    optimization_iter: int,
-    attempt: int,
-    context_markdown: str,
-    bootstrap_markdown: str,
-    workload_guidance: str = "",
-    experimental_summary: str = "",
-    hypothesis_phase: bool = False,
-) -> str:
-    """Single concise user message for optimization attempts."""
-    guidance_block = f"\n\n## Workload guidance\n{workload_guidance}\n" if workload_guidance else ""
-    experimental_block = (
-        f"\n\n## Experimental branch diagnostic summary\n{experimental_summary}\n"
-        if experimental_summary
-        else ""
-    )
-    phase_note = (
-        "Phase 1 (hypothesis only): output structured hypothesis JSON citing measured diagnostics. "
-        "No file edits in this phase.\n"
-        if hypothesis_phase
-        else (
-            "Hypothesis is locked — patch phase only. Edit the editable sources; "
-            "no repository exploration.\n"
-        )
-    )
-    return (
-        f"Optimization iter {optimization_iter}, attempt {attempt}.\n"
-        f"{phase_note}"
-        "Sources are bootstrapped below — do not try to read files during patch phase.\n"
-        f"{guidance_block}"
-        f"{experimental_block}\n"
-        f"{context_markdown}\n\n"
-        f"{bootstrap_markdown}"
-    )
-
-
 def build_hot_path_digest(
     pipeline_config: PipelineConfig,
     workload: dict[str, Any],
@@ -362,7 +288,6 @@ def build_hot_path_digest(
     max_chars: int | None = None,
 ) -> str:
     """Compact hot-path + signatures for worker seed (not full bootstrap)."""
-    art = query_artifacts_dir(pipeline_config.repo_root, query, workload=workload)
     _, analysis = load_query_analysis(pipeline_config.repo_root, query, workload=workload)
     edit_paths = resolve_optimization_edit_paths(pipeline_config, workload, query)
     kernel_path = pipeline_config.repo_root / edit_paths["primary_cpp"]

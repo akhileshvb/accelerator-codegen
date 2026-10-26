@@ -43,10 +43,9 @@ SUBSTRATE_SAMPLES = sorted(
 ]
 
 EXTRA_STAGES = (
-    "", "implementation", "analysis", "optimization", "optimization_worker", "optimization_unified",
-    "optimization_unified_patch", "optimization_fix", "crash_debug", "host_bootstrap", "audit",
-    "adversarial_tests", "engine_backend", "impl_capture", "impl_runtime", "impl_scan", "verus_kernel",
-    "optimization_unified_hypothesis", "architecture_audit", "layer_critique", "validation",
+    "", "implementation", "analysis", "optimization", "optimization_worker", "crash_debug", "host_bootstrap",
+    "audit", "adversarial_tests", "engine_backend", "impl_capture", "impl_runtime", "impl_scan", "verus_kernel",
+    "architecture_audit", "layer_critique", "validation",
 )
 STAGES = sorted(EXTRA_STAGES)
 
@@ -112,7 +111,7 @@ def test_no_configured_write_glob_names_substrate():
 def _tmp_pipeline_config(tmp_path: Path, **kw) -> PipelineConfig:
     return PipelineConfig(
         repo_root=tmp_path, pipeline_root=tmp_path / "pipeline", build_dir=tmp_path / "build",
-        tpch_db_sf1=tmp_path / "a.duckdb", tpch_db_sf10=tmp_path / "b.duckdb", **kw,
+        tpch_db_sf1=tmp_path / "a.duckdb", **kw,
     )
 
 

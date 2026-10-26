@@ -11,18 +11,3 @@ parameters:
   - name: region_name
     type: VARCHAR
 
-optimization_guidance: |
-  Q2 is **minimum-cost supplier selection** (top-100 by acctbal), not a pure aggregate:
-  - Filter parts by `p_size` + `p_type LIKE pattern`, suppliers by region.
-  - Per qualifying part: keep the supplier(s) with **MIN(ps_supplycost)** in-region.
-  - Output: supplier/part attrs ordered by `s_acctbal DESC, n_name, s_name, p_partkey` LIMIT 100.
-
-  Structural priorities:
-  1. Pre-filter / index parts by (size, type) and suppliers by region at build time.
-  2. Materialize per-part min supplycost (or candidate supplier set) — avoid repeating the
-     correlated MIN subquery on every read.
-  3. Keep maintenance local: partsupp cost edits and supplier/region/part filter changes
-     should Prefer ApplyDelta / partition rebuild over full RebuildAll.
-
-  Absolute speedups are query-dependent — be aggressive on both read-only and 10% write-mix;
-  call OPTIMIZATION_SATURATED only when stuck.

@@ -1,4 +1,4 @@
-// The hit contract (pipeline/prompts/engine_backend/host_contract.md) on DuckDB: one accelerator
+// The hit contract (pipeline/prompts/engine_backend/docs/host_contract.md) on DuckDB: one accelerator
 // of the workload on a database, its state not built. The first read through the SQL entry builds
 // it; the second is a hit, with fallback SQL trapped (ACCEL_FALLBACK_TRAP=1, required).
 //

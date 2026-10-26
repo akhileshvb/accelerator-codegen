@@ -7,15 +7,3 @@ parameters:
   - name: nation_name
     type: VARCHAR
 
-optimization_guidance: |
-  Q21 is **existence-heavy** (correlated EXISTS / NOT EXISTS over lineitem self-joins).
-  Prefer taxonomy patterns #18 (membership/existence counts) and #19 (semijoin filters).
-
-  Structural read-path priorities:
-  1. Precompute per-(orderkey, suppkey) late-shipment and competitor-existence facts at build time
-     so the read path avoids repeated lineitem self-joins.
-  2. Nation-filtered supplier index — iterate qualifying suppliers only, not full supplier scan + filter.
-  3. Dense per-order competitor counts / flags for NOT EXISTS (no other late competitor).
-
-  Full redesign is allowed (module.hpp + module.cpp + finalize.cpp + tests). Read each file once,
-  then use `write_file` for coordinated edits. End with `HYPOTHESIS_PATCH_COMPLETE` when done.

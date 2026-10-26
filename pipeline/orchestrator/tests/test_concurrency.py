@@ -27,7 +27,7 @@ needs_two_cpus = pytest.mark.skipif(len(CPUS) < 2, reason="needs two CPUs")
 @pytest.fixture
 def host_dir(tmp_path, monkeypatch):
     monkeypatch.setenv(core_budget.LOCK_DIR_ENV, str(tmp_path / "host"))
-    monkeypatch.delenv(measurement_lease.ENABLED_ENV, raising=False)
+    monkeypatch.delenv(measurement_lease.MEASURE_LEASE_ENV, raising=False)
     return tmp_path / "host"
 
 
@@ -96,7 +96,7 @@ def test_workers_claim_distinct_slots_host_wide(host_dir, monkeypatch):
 
 
 def test_a_dead_workers_slot_is_free_again(host_dir):
-    code = f"""
+    code = """
         import sys
         from accel_pipeline import core_budget
         from accel_pipeline.config import ConcurrencyConfig
@@ -268,7 +268,7 @@ def test_a_crashed_measurement_holder_frees_the_lease(host_dir):
 
 
 def test_measurement_waits_are_bounded_and_beat(host_dir, monkeypatch):
-    monkeypatch.setenv(measurement_lease.WAIT_ENV, "1.5")
+    monkeypatch.setenv(measurement_lease.MEASURE_WAIT_ENV, "1.5")
     monkeypatch.setattr("accel_pipeline.host_lock.BEAT_SEC", 0.2)
     holder = spawn(window_script(5), "slow")
     holder.stdout.readline()
@@ -304,8 +304,8 @@ def test_slots_let_benchmarks_measure_at_once_on_disjoint_cpus(host_dir, monkeyp
 
 
 def test_a_disabled_lease_never_queues(host_dir, monkeypatch):
-    monkeypatch.setenv(measurement_lease.ENABLED_ENV, "0")
-    holder = spawn(window_script(3), "x", env={measurement_lease.ENABLED_ENV: "0"})
+    monkeypatch.setenv(measurement_lease.MEASURE_LEASE_ENV, "0")
+    holder = spawn(window_script(3), "x", env={measurement_lease.MEASURE_LEASE_ENV: "0"})
     holder.stdout.readline()
     with measurement_lease.measurement_window("y", "t") as window:
         assert not window.leased and window.waited_sec == 0
@@ -332,7 +332,7 @@ def test_the_wrapper_pins_the_command_and_holds_the_lease_until_it_exits(host_di
 def test_the_wrapper_reports_its_queueing_and_a_timeout(host_dir):
     holder = spawn(window_script(4), "first")
     holder.stdout.readline()
-    env = {**os.environ, "PYTHONPATH": PACKAGE_ROOT, measurement_lease.WAIT_ENV: "1"}
+    env = {**os.environ, "PYTHONPATH": PACKAGE_ROOT, measurement_lease.MEASURE_WAIT_ENV: "1"}
     run = subprocess.run(
         [sys.executable, "-m", "accel_pipeline.measurement_lease", "--holder", "h2", "--", "true"],
         env=env, text=True, capture_output=True,
@@ -341,7 +341,7 @@ def test_the_wrapper_reports_its_queueing_and_a_timeout(host_dir):
     assert measurement_lease.BUSY.search(run.stderr)
     holder.kill()
     holder.wait()
-    env[measurement_lease.WAIT_ENV] = "10"
+    env[measurement_lease.MEASURE_WAIT_ENV] = "10"
     done = subprocess.run(
         [sys.executable, "-m", "accel_pipeline.measurement_lease", "--holder", "h2", "--", "true"],
         env=env, text=True, capture_output=True,
