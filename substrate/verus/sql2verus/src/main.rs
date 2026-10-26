@@ -22,8 +22,10 @@
 //                  LEFT JOIN ... ON (the right side a single table)
 //   expressions    comparisons, AND / OR / NOT, + - * /, unary -, CASE WHEN
 //                  ... ELSE, [NOT] IN (list), [NOT] BETWEEN, [NOT] LIKE,
-//                  EXTRACT(YEAR | MONTH | DAY FROM d), SUBSTRING(s FROM i
-//                  FOR n), CAST, DATE / TIMESTAMP literals +- intervals,
+//                  EXTRACT(YEAR | MONTH | DAY FROM d | ts), EXTRACT(HOUR |
+//                  MINUTE | SECOND FROM ts), DATE_TRUNC(unit, d | ts),
+//                  LENGTH / STRLEN(s), SUBSTRING(s FROM i FOR n), CAST,
+//                  DATE / TIMESTAMP literals +- intervals,
 //                  $n parameters, [NOT] EXISTS, [NOT] IN (subquery), scalar
 //                  subqueries (possibly correlated, at any depth)
 //   aggregates     COUNT(*), COUNT(col), COUNT(DISTINCT e), SUM, AVG, MIN, MAX
@@ -79,12 +81,20 @@
 //     significant; Postgres (bpchar) / MySQL (PAD SPACE) compare CHAR without
 //     trailing spaces (literals are trimmed here; columns and parameters by
 //     host contract).  LIKE and
-//     SUBSTRING count bytes (= characters for ASCII text).
+//     SUBSTRING count bytes (= characters for ASCII text); STRLEN is bytes.
+//   * DATE_TRUNC(second | minute | hour | day | week | month | year, x) is a
+//     TIMESTAMP (week starts Monday); a DATE argument is DuckDB only (Postgres
+//     gives a timestamptz).  EXTRACT(SECOND) is whole seconds (not on
+//     Postgres, whose value has a fraction).
 //   * ORDER BY: rows are sorted, ties in any order; LIMIT n takes the first n
 //     rows of some such ordering.  NULLs go where NULLS FIRST / LAST says,
 //     else where the target engine puts them: last in DuckDB; in Postgres
 //     last under ASC, first under DESC (NULL is the largest value); in MySQL
-//     first under ASC, last under DESC (the smallest).
+//     first under ASC, last under DESC (the smallest).  A key outside the
+//     SELECT list is a sort-only field of the output row; the host drops it.
+//   * A table of which the query reads no column (COUNT(*)) is read through
+//     one column.
+//   * A CTE or derived table is its query's rows wherever it is referenced.
 //
 // After the definitions the file carries facts about them, which Verus
 // checks (so they add nothing to what is trusted): an answer exists, and it
@@ -99,7 +109,7 @@ use datafusion::common::tree_node::{Transformed, TreeNode};
 use datafusion::common::{Column, DFSchemaRef, ScalarValue};
 use datafusion::logical_expr::{
     expr::{AggregateFunction, Alias, Between, Case, Exists, InList, InSubquery, Like, Placeholder, ScalarFunction},
-    BinaryExpr, Cast, Distinct, Expr, FetchType, JoinType, LogicalPlan, Operator, SkipType, Subquery, Union,
+    BinaryExpr, Cast, Distinct, Expr, FetchType, JoinType, LogicalPlan, Operator, Projection, SkipType, Subquery, SubqueryAlias, Union,
 };
 use datafusion::prelude::*;
 use datafusion::sql::sqlparser::{ast, dialect::GenericDialect, parser::Parser};
@@ -499,6 +509,25 @@ fn split_and(e: &Expr) -> Vec<Expr> {
     }
 }
 
+fn not_a_select(p: &LogicalPlan) -> String {
+    match p {
+        LogicalPlan::Join(j) if matches!(j.join_type, JoinType::LeftSemi | JoinType::LeftAnti) => {
+            format!("INTERSECT / EXCEPT (set operations other than UNION are not supported; {})", p.display())
+        }
+        _ => format!("a query block without a SELECT list ({})", p.display()),
+    }
+}
+
+/// What an aliased FROM item names, and that relation's own name: under the alias, further
+/// aliases (a CTE named in FROM) only rename, so every reference to a CTE is the one relation.
+fn aliased(sa: &SubqueryAlias) -> (&str, &LogicalPlan) {
+    let (mut name, mut p) = (sa.alias.table(), sa.input.as_ref());
+    while let LogicalPlan::SubqueryAlias(inner) = p {
+        (name, p) = (inner.alias.table(), inner.input.as_ref());
+    }
+    (name, p)
+}
+
 fn strip_alias(e: &Expr) -> &Expr {
     match e {
         Expr::Alias(Alias { expr, .. }) => strip_alias(expr),
@@ -529,6 +558,7 @@ struct Schema {
     char_cols: HashSet<(String, String)>,
     /// how the target engine compares CHAR(n): "bytes" or "padded" (and why)
     char_semantics: (&'static str, &'static str),
+    engine: String,
     col_ty: HashMap<(String, String), (Option<Ty>, bool)>,
     /// the inclusive value range of a numeric or date column's SQL type
     col_range: HashMap<(String, String), (i128, i128)>,
@@ -561,7 +591,7 @@ fn norm_ident(id: &ast::Ident) -> String {
     if id.quote_style.is_some() { id.value.clone() } else { id.value.to_lowercase() }
 }
 
-async fn load_schema(ctx: &SessionContext, ddl: &str, char_semantics: (&'static str, &'static str)) -> Res<Schema> {
+async fn load_schema(ctx: &SessionContext, ddl: &str, char_semantics: (&'static str, &'static str), engine: String) -> Res<Schema> {
     let padded = char_semantics.0 == "padded";
     let stmts = Parser::parse_sql(&GenericDialect {}, ddl).map_err(|e| format!("schema: {e}"))?;
     let mut ddl_cols = HashMap::new();
@@ -609,6 +639,12 @@ async fn load_schema(ctx: &SessionContext, ddl: &str, char_semantics: (&'static 
                 ct2.constraints.clear();
                 for c in ct2.columns.iter_mut() {
                     let is_pk = pk.contains(&norm_ident(&c.name)) || c.options.iter().any(|o| matches!(o.option, ast::ColumnOption::PrimaryKey(_)));
+                    // DataFusion lacks the SQL-standard spellings of VARCHAR(n) and CHAR(n)
+                    match &c.data_type {
+                        ast::DataType::CharacterVarying(l) => c.data_type = ast::DataType::Varchar(l.clone()),
+                        ast::DataType::Character(l) => c.data_type = ast::DataType::Char(l.clone()),
+                        _ => {}
+                    }
                     c.options.retain(|o| matches!(o.option, ast::ColumnOption::NotNull | ast::ColumnOption::Null));
                     if is_pk && !c.options.iter().any(|o| matches!(o.option, ast::ColumnOption::NotNull)) {
                         c.options.push(ast::ColumnOptionDef { name: None, option: ast::ColumnOption::NotNull });
@@ -632,7 +668,7 @@ async fn load_schema(ctx: &SessionContext, ddl: &str, char_semantics: (&'static 
             other => bail!("schema: statement not supported: {}", other.to_string().lines().next().unwrap_or("")),
         }
     }
-    Ok(Schema { ddl_cols, char_cols, char_semantics, col_ty, col_range })
+    Ok(Schema { ddl_cols, char_cols, char_semantics, engine, col_ty, col_range })
 }
 
 /// Verus names for a table: its Db field and its row struct.
@@ -821,7 +857,6 @@ struct Tr<'a> {
     pfx: String, // prefix of subquery helper names (obligations)
     perm: perm::Perm,
     ok_calls: Vec<String>, // the `name_ok(..)` of every chosen float
-    nulls_first_default: [bool; 2], // NULLs first under [ASC, DESC] when ORDER BY does not say
     guarded_vals: HashSet<String>, // blocks (prefixes) whose aggregates skip NULL values
 }
 
@@ -874,24 +909,21 @@ impl<'a> Tr<'a> {
                 let t = ts.table_name.table().to_string();
                 if let Some(vp) = ts.source.get_logical_plan() {
                     let vp = vp.into_owned();
-                    out.push(self.rel_binder(&t, &vp)?);
+                    out.push(self.rel_binder(&t, &t, &vp)?);
                 } else {
                     out.push(self.base_binder(&t, &t)?);
                 }
             }
-            LogicalPlan::SubqueryAlias(sa) => match sa.input.as_ref() {
-                LogicalPlan::TableScan(ts) if ts.source.get_logical_plan().is_some() => {
+            LogicalPlan::SubqueryAlias(sa) => match aliased(sa) {
+                (name, LogicalPlan::TableScan(ts)) if ts.source.get_logical_plan().is_some() => {
                     let vp = ts.source.get_logical_plan().unwrap().into_owned();
-                    out.push(self.rel_binder(sa.alias.table(), &vp)?);
+                    out.push(self.rel_binder(sa.alias.table(), name, &vp)?);
                 }
-                LogicalPlan::TableScan(ts) => {
+                (_, LogicalPlan::TableScan(ts)) => {
                     let t = ts.table_name.table().to_string();
                     out.push(self.base_binder(sa.alias.table(), &t)?);
                 }
-                inner => {
-                    let b = self.rel_binder(sa.alias.table(), inner)?;
-                    out.push(b);
-                }
+                (name, inner) => out.push(self.rel_binder(sa.alias.table(), name, inner)?),
             },
             LogicalPlan::Join(j) => match j.join_type {
                 JoinType::Inner => {
@@ -943,8 +975,8 @@ impl<'a> Tr<'a> {
         Ok(())
     }
 
-    fn rel_binder(&mut self, alias: &str, plan: &LogicalPlan) -> Res<Binder> {
-        let rel = self.derived(alias, plan)?;
+    fn rel_binder(&mut self, alias: &str, name: &str, plan: &LogicalPlan) -> Res<Binder> {
+        let rel = self.derived(name, plan)?;
         let var = self.var_for(alias);
         self.frame().uses_params = true;
         for c in &rel.chs {
@@ -1305,18 +1337,74 @@ impl<'a> Tr<'a> {
                     bail!("EXTRACT with a non-literal field");
                 };
                 let v = self.expr(&args[1], ctx)?;
-                let day = match v.ty {
-                    Ty::Date => v.code.clone(),
-                    Ty::Ts => format!("{} / {NS_PER_DAY}", v.wrap(2)),
-                    t => bail!("EXTRACT from {t:?}"),
-                };
-                let f = match part.to_uppercase().as_str() {
-                    "YEAR" => "civil_year",
-                    "MONTH" => "civil_month",
-                    "DAY" => "civil_day",
+                let part = part.to_uppercase();
+                let code = match part.as_str() {
+                    "YEAR" | "MONTH" | "DAY" => {
+                        let day = match v.ty {
+                            Ty::Date => v.code.clone(),
+                            Ty::Ts => format!("{} / {NS_PER_DAY}", v.wrap(2)),
+                            t => bail!("EXTRACT from {t:?}"),
+                        };
+                        let f = match part.as_str() {
+                            "YEAR" => "civil_year",
+                            "MONTH" => "civil_month",
+                            _ => "civil_day",
+                        };
+                        format!("{f}({day})")
+                    }
+                    "HOUR" | "MINUTE" | "SECOND" => {
+                        if v.ty != Ty::Ts {
+                            bail!("EXTRACT({part}) from {:?}", v.ty);
+                        }
+                        // Postgres' seconds carry the fraction (numeric)
+                        if part == "SECOND" && self.sch.engine == "postgres" {
+                            bail!("EXTRACT(SECOND) on Postgres (a fraction)");
+                        }
+                        let unit = match part.as_str() {
+                            "HOUR" => 3_600_000_000_000,
+                            "MINUTE" => 60_000_000_000,
+                            _ => 1_000_000_000,
+                        };
+                        let modulus = if part == "HOUR" { NS_PER_DAY } else { unit * 60 };
+                        format!("({} % {modulus}) / {unit}", v.wrap(2))
+                    }
                     p => bail!("EXTRACT({p})"),
                 };
-                Ok(Val::atom(format!("{f}({day})"), Ty::Int).with_meta(&[&v]))
+                Ok(Val::atom(code, Ty::Int).with_meta(&[&v]))
+            }
+            "date_trunc" => {
+                let Expr::Literal(ScalarValue::Utf8(Some(unit)) | ScalarValue::Utf8View(Some(unit)), _) = strip_alias(&args[0]) else {
+                    bail!("date_trunc with a non-literal unit");
+                };
+                let v = self.expr(&args[1], ctx)?;
+                let ns = match v.ty {
+                    Ty::Ts => v.wrap(2),
+                    // DuckDB: a DATE truncates to a TIMESTAMP; Postgres' is a timestamptz
+                    Ty::Date if self.sch.engine == "duckdb" => format!("{} * {NS_PER_DAY}", v.wrap(2)),
+                    t => bail!("date_trunc of {t:?} on {}", self.sch.engine),
+                };
+                let unit = unit.to_lowercase();
+                let sub_day = match unit.as_str() {
+                    "second" => Some(1_000_000_000),
+                    "minute" => Some(60_000_000_000),
+                    "hour" => Some(3_600_000_000_000),
+                    "day" => Some(NS_PER_DAY),
+                    _ => None,
+                };
+                let code = match (sub_day, unit.as_str()) {
+                    (Some(u), _) => format!("({ns} / {u}) * {u}"),
+                    (None, u @ ("week" | "month" | "year")) => {
+                        let day = format!("({ns}) / {NS_PER_DAY}");
+                        let start = match u {
+                            "week" => format!("{day} - (({day} + 3) % 7)"),
+                            "month" => format!("{day} - civil_day({day}) + 1"),
+                            _ => format!("year_start(civil_year({day}))"),
+                        };
+                        format!("({start}) * {NS_PER_DAY}")
+                    }
+                    (None, u) => bail!("date_trunc({u})"),
+                };
+                Ok(Val::atom(format!("({code})"), Ty::Ts).with_meta(&[&v]))
             }
             "substr" | "substring" => {
                 let v = self.expr(&args[0], ctx)?;
@@ -2184,7 +2272,7 @@ impl<'a> Tr<'a> {
             p = &pr.input;
         }
         if projs.is_empty() {
-            bail!("a query block without a SELECT list ({})", p.display());
+            bail!("{}", not_a_select(p));
         }
         let (mut outs_e, out_schema) = projs[0].clone();
         for (inner, ischema) in projs.iter().skip(1) {
@@ -2823,6 +2911,7 @@ struct SortKey {
 struct Top {
     block: Block,
     order: Vec<SortKey>,
+    hidden: usize, // trailing OutRow fields that are ORDER BY keys only, not result columns
     limit: Option<usize>,
     offset: usize,
 }
@@ -2852,6 +2941,40 @@ fn translate(tr: &mut Tr, plan: &LogicalPlan, explicit_nulls: &[Option<bool>]) -
         p = &l.input;
     }
     let mut sort = None;
+    let mut hidden = 0;
+    let widened;
+    if let LogicalPlan::Projection(pr) = p {
+        if let LogicalPlan::Sort(s) = pr.input.as_ref() {
+            // ORDER BY a key outside the SELECT list: DataFusion appends it to
+            // the projection under the Sort and projects it away above
+            let LogicalPlan::Projection(inner) = s.input.as_ref() else {
+                bail!("ORDER BY an expression that is not in the SELECT list ({})", s.input.display());
+            };
+            let plain = pr.expr.iter().enumerate().all(|(i, e)| {
+                matches!(e, Expr::Column(c) if inner.schema.index_of_column(c).ok() == Some(i))
+            });
+            if !plain {
+                bail!("ORDER BY an expression that is not in the SELECT list, with a computed SELECT item");
+            }
+            // a computed key becomes one more column of the projection
+            let computed = |k: &&datafusion::logical_expr::SortExpr| !matches!(k.expr, Expr::Column(_));
+            let extra = s.expr.iter().filter(computed).map(|k| k.expr.clone());
+            let wide = Projection::try_new(inner.expr.iter().cloned().chain(extra).collect(), inner.input.clone()).map_err(|e| e.to_string())?;
+            let mut next = inner.expr.len();
+            let keys: Vec<_> = s.expr.iter().map(|k| {
+                let mut k = k.clone();
+                if computed(&&k) {
+                    k.expr = Expr::Column(Column::from(wide.schema.qualified_field(next)));
+                    next += 1;
+                }
+                k
+            }).collect();
+            hidden = wide.expr.len() - pr.expr.len();
+            sort = Some(keys);
+            widened = LogicalPlan::Projection(wide);
+            p = &widened;
+        }
+    }
     if let LogicalPlan::Sort(s) = p {
         if s.fetch.is_some() {
             bail!("sort with fetch");
@@ -2860,11 +2983,8 @@ fn translate(tr: &mut Tr, plan: &LogicalPlan, explicit_nulls: &[Option<bool>]) -
         p = &s.input;
     }
     match p {
-        LogicalPlan::Projection(pr) if matches!(pr.input.as_ref(), LogicalPlan::Sort(_)) => {
-            bail!("ORDER BY an expression that is not in the SELECT list")
-        }
         LogicalPlan::Projection(_) | LogicalPlan::Distinct(Distinct::All(_)) | LogicalPlan::Union(_) => {}
-        _ => bail!("ORDER BY on an expression that is not selected ({})", p.display()),
+        _ => bail!("{}", not_a_select(p)),
     }
     let schema = p.schema().clone();
     tr.frames.push(Frame::default());
@@ -2886,12 +3006,28 @@ fn translate(tr: &mut Tr, plan: &LogicalPlan, explicit_nulls: &[Option<bool>]) -
         let nulls_first = match explicit_nulls.get(pos).copied().flatten() {
             _ if !col.nullable => false,
             Some(nf) => nf,
-            None if explicit_nulls.len() == nkeys => tr.nulls_first_default[desc as usize],
+            None if explicit_nulls.len() == nkeys => engine_nulls_first(&tr.sch.engine, desc),
             None => bail!("ORDER BY {} on a NULL-able column: cannot tell whether NULLS FIRST / LAST was written", col.sql),
         };
         order.push(SortKey { col: i, desc, nulls_first });
     }
-    Ok(Top { block, order, limit, offset })
+    // a table whose columns the query never reads (COUNT(*)) is still a bag of
+    // rows: it is read through one column, preferably a NOT NULL one
+    for (t, cs) in tr.used.iter_mut().filter(|(_, cs)| cs.is_empty()) {
+        let col = tr.sch.ddl_cols[t].iter().min_by_key(|c| tr.sch.col_ty[&(t.clone(), (*c).clone())].1);
+        cs.extend(col.cloned());
+    }
+    Ok(Top { block, order, hidden, limit, offset })
+}
+
+/// Where the engine puts NULLs when ORDER BY does not say: they sort as the largest value in
+/// Postgres, as the smallest in MySQL, and last in DuckDB.
+fn engine_nulls_first(engine: &str, desc: bool) -> bool {
+    match engine {
+        "postgres" => desc,
+        "mysql" => !desc,
+        _ => false,
+    }
 }
 
 /// NULLS FIRST / LAST as written on the query's ORDER BY keys (None: not written).
@@ -2923,6 +3059,10 @@ fn print(tr: &Tr, top: &Top, sql: &str, src_name: &str) -> String {
     }
     writeln!(w, "//").unwrap();
     writeln!(w, "// Query-specific notes (host contract):").unwrap();
+    if top.hidden > 0 {
+        let names: Vec<&str> = b.outs[b.outs.len() - top.hidden..].iter().map(|c| c.field.as_str()).collect();
+        writeln!(w, "//  * OutRow fields {} are ORDER BY keys outside the SELECT list: sort-only, not result columns (the host drops them).", names.join(", ")).unwrap();
+    }
     writeln!(w, "//  * CHAR(n) text: {} ({}).", if tr.sch.char_semantics.0 == "bytes" {
         "compared as bytes like VARCHAR, trailing spaces significant; the host delivers text unchanged"
     } else {
@@ -3674,13 +3814,11 @@ async fn run() -> Res<()> {
             e => return Err(format!("--engine: duckdb, postgres or mysql, not {e}")),
         },
     };
-    // NULLs sort as the largest value in Postgres, as the smallest in MySQL, and last in DuckDB
-    let nulls_first_default = match engine.as_str() {
-        "postgres" => [false, true],
-        "mysql" => [true, false],
-        _ => [false, false],
-    };
-    let sch = load_schema(&ctx, &ddl, char_semantics).await?;
+    let sch = load_schema(&ctx, &ddl, char_semantics, engine.clone()).await?;
+    if engine == "duckdb" {
+        // DuckDB's strlen is the byte length
+        ctx.register_udf(datafusion::functions::string::octet_length().as_ref().clone().with_aliases(["strlen"]));
+    }
     // Unoptimized: SQL -> LogicalPlan, name/type resolution only.
     let plan = ctx.state().create_logical_plan(&sql).await.map_err(|e| format!("DataFusion: {e}"))?;
     let mut tr = Tr {
@@ -3697,7 +3835,6 @@ async fn run() -> Res<()> {
         perm: perm::Perm::default(),
         ok_calls: vec![],
         guarded_vals: HashSet::new(),
-        nulls_first_default,
     };
     let top = translate(&mut tr, &plan, &explicit_nulls(&sql)?)?;
     let src_name = std::path::Path::new(&query_path).file_name().unwrap().to_string_lossy().to_string();

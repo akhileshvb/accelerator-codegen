@@ -38,7 +38,7 @@ m43 ok
 m44 ok
 m45 ok
 m46 ok
-m47 ok-spec an empty row type
+m47 ok
 m48 ok
 m49 ok
 m50 refused UNION column

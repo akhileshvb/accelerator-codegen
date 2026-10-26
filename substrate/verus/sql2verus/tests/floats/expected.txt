@@ -17,3 +17,4 @@ r04 refused computed float
 r05 refused arithmetic on float aggregates
 f11 ok-spec rounded float aggregates
 f12 ok-spec rounded float aggregates
+f13 ok-spec rounded float aggregates
