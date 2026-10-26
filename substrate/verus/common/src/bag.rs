@@ -130,10 +130,32 @@ pub proof fn lemma_apply_bag_step<T: BagRow>(
     lemma_multiset_cancel(rows_v(new).to_multiset(), after.to_multiset(), minus_rows(dview(d)).to_multiset());
 }
 
+// Each entry of a prefix of the change list adds to the deleted rows, never removes from them.
+proof fn lemma_minus_prefix_count<T: BagRow>(d: Seq<(T, i64)>, t: int, x: T::V)
+    requires
+        0 <= t <= d.len(),
+    ensures
+        minus_rows(dview(d.take(t))).to_multiset().count(x) <= minus_rows(dview(d)).to_multiset().count(x),
+    decreases d.len() - t,
+{
+    broadcast use vstd::seq_lib::group_to_multiset_ensures, vstd::multiset::group_multiset_axioms;
+
+    if t < d.len() {
+        lemma_dview_take(d, t);
+        lemma_minus_prefix_count(d, t + 1, x);
+    } else {
+        assert(d.take(t) =~= d);
+    }
+}
+
 /// old + inserted − deleted.  None if a sign is not ±1 or a deleted row is
-/// not present (both impossible for a faithful capture).
+/// not present (both impossible for a faithful capture): then some row is deleted
+/// more often than the old table and the inserted rows hold it.
 pub fn apply_bag<T: BagRow>(old: &Vec<T>, d: &Vec<(T, i64)>) -> (r: Option<Vec<T>>)
     ensures
+        r is None ==> !unit_signs(dview(d@)) || exists|x: T::V|
+            #[trigger] minus_rows(dview(d@)).to_multiset().count(x)
+                > rows_v(old@).to_multiset().add(plus_rows(dview(d@)).to_multiset()).count(x),
         r matches Some(v) ==> {
             &&& unit_signs(dview(d@))
             &&& rows_v(v@).to_multiset().add(minus_rows(dview(d@)).to_multiset())
@@ -151,6 +173,9 @@ pub fn apply_bag<T: BagRow>(old: &Vec<T>, d: &Vec<(T, i64)>) -> (r: Option<Vec<T
         decreases n - t,
     {
         if d[t].1 != 1 && d[t].1 != -1 {
+            assert(!unit_signs(dview(d@))) by {
+                assert(dview(d@)[t as int].1 == d@[t as int].1 as int);
+            }
             return None;
         }
         t += 1;
@@ -241,6 +266,7 @@ pub fn apply_bag<T: BagRow>(old: &Vec<T>, d: &Vec<(T, i64)>) -> (r: Option<Vec<T
                     0 <= k <= m == r@.len(),
                     t < n == d@.len(),
                     pos == m || (pos < m && r@[pos as int].rv() == d@[t as int].0.rv()),
+                    pos == m ==> forall|j: int| 0 <= j < k ==> (#[trigger] r@[j]).rv() != d@[t as int].0.rv(),
                 decreases m - k,
             {
                 if r[k].same(&d[t].0) {
@@ -251,6 +277,19 @@ pub fn apply_bag<T: BagRow>(old: &Vec<T>, d: &Vec<(T, i64)>) -> (r: Option<Vec<T
                 }
             }
             if pos == m {
+                proof {
+                    let x = d@[t as int].0.rv();
+                    lemma_dview_take(d@, t as int);
+                    lemma_minus_prefix_count(d@, t as int + 1, x);
+                    let mn = minus_rows(dview(d@.take(t as int)));
+                    rows_v(r@).to_multiset_ensures();
+                    mn.to_multiset_ensures();
+                    assert(!rows_v(r@).contains(x));
+                    assert(rows_v(r@).to_multiset().count(x) == 0);
+                    assert(mn.push(x).to_multiset() =~= mn.to_multiset().insert(x));
+                    assert(d@.take(n as int) =~= d@);
+                    assert(minus_rows(dview(d@)).to_multiset().count(x) > total.count(x));
+                }
                 return None;
             }
             let k = pos;

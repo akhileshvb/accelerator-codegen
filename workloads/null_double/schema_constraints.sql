@@ -1,0 +1,1 @@
+-- the num table has no NOT NULL columns
