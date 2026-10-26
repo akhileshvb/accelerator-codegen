@@ -554,6 +554,11 @@ pub(crate) async fn obligations(
     query_sql: &str,
 ) -> Res<(String, String, Model)> {
     let query_sql = query_sql.to_string();
+    for (t, cs) in &tr.used {
+        if let Some(c) = cs.iter().find(|c| tr.sch.col_ty[&(t.clone(), (*c).clone())].1) {
+            return Err(format!("column {t}.{c} is NULL-able: kernel rows have no NULL representation yet"));
+        }
+    }
     let (inputs_name, inputs_text) = match inputs {
         Some((n, t)) => (n.to_string(), t),
         None => ("(default)".to_string(), default_inputs(tr)?),

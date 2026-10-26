@@ -150,6 +150,21 @@ fn verus_ty(t: Ty) -> &'static str {
     }
 }
 
+/// A GROUP BY key value as the key: Option<T> when it may be NULL.
+fn opt_key(v: Val) -> Val {
+    let Some(gd) = v.guard.clone() else { return v };
+    let code = match v.code.strip_suffix("->0") {
+        Some(c) if gd == format!("{c} is Some") => c.to_string(),
+        _ => format!("if {gd} {{ Some({}) }} else {{ None }}", v.code),
+    };
+    Val { code, guard: None, opt: true, ..v }
+}
+
+/// The Verus type of a GROUP BY key.
+fn key_ty(v: &Val) -> String {
+    if v.opt { format!("Option<{}>", verus_ty(v.ty)) } else { verus_ty(v.ty).to_string() }
+}
+
 fn scale_of(t: Ty) -> Option<u32> {
     match t {
         Ty::Int => Some(0),
@@ -172,6 +187,7 @@ struct Val {
     approx: Option<(String, String)>, // computed float: (abs code, rounded-operation count)
     guard: Option<String>,            // the value is NULL unless guard holds
     nullcmp: bool,                    // a boolean that reads NULL as false
+    opt: bool,                        // code is an Option<..> (a GROUP BY key that may be NULL)
     nonlit_div: bool,                 // divides by a non-literal
     den_conds: Vec<String>,           // divisors that must be non-zero
 }
@@ -190,6 +206,7 @@ impl Val {
             approx: None,
             guard: None,
             nullcmp: false,
+            opt: false,
             nonlit_div: false,
             den_conds: vec![],
         }
@@ -598,7 +615,7 @@ mod perm;
 struct RelInfo {
     func: String,                          // rel_x
     row: String,                           // XRow
-    cols: Vec<(String, String, Ty, bool)>, // (sql name, field, ty, char)
+    cols: Vec<(String, String, Ty, bool, bool)>, // (sql name, field, ty, char, nullable)
 }
 
 #[derive(Clone, Debug)]
@@ -728,6 +745,8 @@ struct Tr<'a> {
     notes: BTreeSet<String>,
     pfx: String, // prefix of subquery helper names (obligations)
     perm: perm::Perm,
+    nulls_first_default: [bool; 2], // NULLs first under [ASC, DESC] when ORDER BY does not say
+    guarded_vals: HashSet<String>, // blocks (prefixes) whose aggregates skip NULL values
 }
 
 impl<'a> Tr<'a> {
@@ -890,25 +909,28 @@ impl<'a> Tr<'a> {
             Ctx::Row { tuple: Some(t) } if local => format!("{t}.{}", b.var),
             _ => b.var.clone(),
         };
-        let (field, ty, ch) = match &b.src {
+        let (field, ty, ch, nullable) = match &b.src {
             Src::Base(t) => {
                 let key = (t.clone(), c.name.clone());
                 let (ty, nullable) = self.sch.col_ty.get(&key).cloned().ok_or_else(|| format!("column {t}.{} is not in the schema", c.name))?;
                 let ty = ty.ok_or_else(|| format!("column {t}.{} has an unsupported type", c.name))?;
-                if nullable {
-                    bail!("column {t}.{} is nullable; only NOT NULL columns are supported", c.name);
-                }
                 self.used.get_mut(t).unwrap().insert(key.1.clone());
-                (sanitize(&key.1), ty, self.sch.char_cols.contains(&key))
+                (sanitize(&key.1), ty, self.sch.char_cols.contains(&key), nullable)
             }
             Src::Rel(r) => {
                 let col = r.cols.iter().find(|x| x.0 == c.name).ok_or_else(|| format!("column {alias}.{} not found", c.name))?;
-                (col.1.clone(), col.2, col.3)
+                (col.1.clone(), col.2, col.3, col.4)
             }
         };
-        if b.optional {
-            // the missing side of a LEFT JOIN: NULL unless matched
-            return Ok(Val { guard: Some(format!("{base} is Some")), ..Val::atom(format!("{base}->0.{field}"), ty) });
+        if nullable && ty == Ty::Rat {
+            bail!("column {alias}.{} is a NULL-able fraction", c.name);
+        }
+        if b.optional || nullable {
+            // NULL when the LEFT JOIN side is missing, or the column is NULL
+            let guards: Vec<String> = [b.optional.then(|| format!("{base} is Some")), nullable.then(|| format!("{base}{}.{field} is Some", if b.optional { "->0" } else { "" }))].into_iter().flatten().collect();
+            let opt = if b.optional { format!("{base}->0.{field}") } else { format!("{base}.{field}") };
+            let code = if nullable { format!("{opt}->0") } else { opt };
+            return Ok(Val { guard: Some(guards.join(" && ")), char_col: ch, ..Val::atom(code, ty) });
         }
         if ty == Ty::Rat {
             // a fraction column of a derived table (AVG, or division by a literal): den > 0
@@ -1583,6 +1605,9 @@ impl<'a> Tr<'a> {
         let e = strip_alias(e);
         let key = |i: usize| -> Val {
             let (gv, kv) = &g.keys[i];
+            if kv.opt {
+                return Val { char_col: kv.char_col, guard: Some(format!("{gv} is Some")), ..Val::atom(format!("{gv}->0"), kv.ty) };
+            }
             Val { char_col: kv.char_col, ..Val::atom(gv.clone(), kv.ty) }
         };
         for (i, ge) in g.group_exprs.iter().enumerate() {
@@ -1618,16 +1643,30 @@ impl<'a> Tr<'a> {
         let tt = g.tuple_ty.clone();
         let count = format!("{})", g.call("group_count"));
         let scalar = g.scalar;
-        let nullable = |v: Val| -> Val { if scalar { Val { guard: Some(format!("{count} > 0")), ..v } } else { v } };
+        // the values the aggregate sees: those of tuples where the argument is not NULL
+        let seen = |guard: &Option<String>| match guard {
+            Some(gd) => format!("{}, |t: {tt}| if {gd} {{ 1int }} else {{ 0 }})", g.call("group_sum")),
+            None => count.clone(),
+        };
+        let vals = |v: &Val| match &v.guard {
+            Some(gd) => format!("{}, |t: {tt}| {gd}, |t: {tt}| {})", g.call("group_vals_where"), v.code),
+            None => format!("{}, |t: {tt}| {})", g.call("group_vals"), v.code),
+        };
+        let nullable = |v: Val, arg: &Val| -> Val {
+            if scalar || arg.guard.is_some() { Val { guard: Some(format!("{} > 0", seen(&arg.guard))), ..v } } else { v }
+        };
         if params.distinct {
             if fname != "count" {
                 bail!("{fname}(DISTINCT ...)");
             }
             let v = self.expr(arg, &tctx)?;
-            if v.approx.is_some() || v.ty == Ty::Rat || v.guard.is_some() {
+            if v.approx.is_some() || v.ty == Ty::Rat {
                 bail!("COUNT(DISTINCT {arg})");
             }
-            return Ok(Val::atom(format!("distinct_count({}, |t: {tt}| {}))", g.call("group_vals"), v.code), Ty::Int));
+            if v.guard.is_some() {
+                self.guarded_vals.insert(g.prefix.clone());
+            }
+            return Ok(Val::atom(format!("distinct_count({})", vals(&v)), Ty::Int));
         }
         match fname.as_str() {
             "count" => {
@@ -1635,47 +1674,45 @@ impl<'a> Tr<'a> {
                     return Ok(Val::atom(count, Ty::Int));
                 }
                 let v = self.expr(arg, &tctx)?;
-                Ok(match v.guard {
-                    // COUNT(col) of the missing side of a LEFT JOIN counts the matches
-                    Some(gd) => Val::atom(format!("{}, |t: {tt}| if {gd} {{ 1int }} else {{ 0 }})", g.call("group_sum")), Ty::Int),
-                    None => Val::atom(count, Ty::Int),
-                })
+                Ok(Val::atom(seen(&v.guard), Ty::Int))
             }
             "sum" | "avg" => {
                 let v = self.expr(arg, &tctx)?;
-                if v.guard.is_some() {
-                    bail!("{fname} over the missing side of a LEFT JOIN");
-                }
                 if v.nonlit_div || v.ty == Ty::Rat {
                     bail!("{fname} of a fraction");
                 }
-                let sum = |code: &str| format!("{}, |t: {tt}| {code})", g.call("group_sum"));
+                let n = seen(&v.guard);
+                let skip_null = |code: &str| match &v.guard {
+                    Some(gd) => format!("if {gd} {{ {code} }} else {{ 0 }}"),
+                    None => code.to_string(),
+                };
+                let sum = |code: &str| format!("{}, |t: {tt}| {})", g.call("group_sum"), skip_null(code));
                 match v.ty {
                     Ty::Int | Ty::Dec(_) => {
                         if fname == "sum" {
-                            Ok(nullable(Val::atom(sum(&v.code), v.ty)))
+                            Ok(nullable(Val::atom(sum(&v.code), v.ty), &v))
                         } else {
                             let s = scale_of(v.ty).unwrap();
-                            let den = if s == 0 { count.clone() } else { format!("{count} * {}", pow10(s)) };
-                            Ok(nullable(Val { den: Some(den), ..Val::atom(sum(&v.code), Ty::Rat) }))
+                            let den = if s == 0 { n } else { format!("{n} * {}", pow10(s)) };
+                            Ok(nullable(Val { den: Some(den), ..Val::atom(sum(&v.code), Ty::Rat) }, &v))
                         }
                     }
                     Ty::Flt(p) => {
                         let (abs, k) = v.approx.clone().unwrap_or((format!("abs({})", v.code), "0".into()));
                         // rounded operations on a path: n - 1 additions + k per tuple (+ 1 division for AVG, added in row_ok)
-                        let m = simplify_k(&format!("{count} - 1 + {k}"));
+                        let m = simplify_k(&format!("{n} - 1 + {k}"));
                         let mut out = Val { approx: Some((sum(&abs), m)), ..Val::atom(sum(&v.code), Ty::Flt(p)) };
                         if fname == "avg" {
-                            out.den = Some(count.clone()); // AVG: the value is about code / den
+                            out.den = Some(n); // AVG: the value is about code / den
                         }
-                        Ok(nullable(out))
+                        Ok(nullable(out, &v))
                     }
                     t => bail!("{fname} over {t:?}"),
                 }
             }
             "min" | "max" => {
                 let v = self.expr(arg, &tctx)?;
-                if v.guard.is_some() || v.approx.is_some() || v.ty == Ty::Rat {
+                if v.approx.is_some() || v.ty == Ty::Rat {
                     bail!("{fname}({arg})");
                 }
                 if !matches!(v.ty, Ty::Int | Ty::Dec(_) | Ty::Date | Ty::Ts | Ty::Flt(1) | Ty::Text) {
@@ -1687,7 +1724,10 @@ impl<'a> Tr<'a> {
                     (true, true) => "min_text",
                     (false, true) => "max_text",
                 };
-                Ok(nullable(Val::atom(format!("{f}({}, |t: {tt}| {}))", g.call("group_vals"), v.code), v.ty)))
+                if v.guard.is_some() {
+                    self.guarded_vals.insert(g.prefix.clone());
+                }
+                Ok(nullable(Val::atom(format!("{f}({})", vals(&v)), v.ty), &v))
             }
             other => bail!("aggregate function {other}"),
         }
@@ -1996,7 +2036,7 @@ impl<'a> Tr<'a> {
         let info = RelInfo {
             func: format!("rel_{base}"),
             row: format!("{}Row", camel(&base)),
-            cols: b.outs.iter().map(|o| (o.sql.clone(), o.field.clone(), o.val.ty, o.val.char_col)).collect(),
+            cols: b.outs.iter().map(|o| (o.sql.clone(), o.field.clone(), o.val.ty, o.val.char_col, o.nullable)).collect(),
         };
         let mut w = String::new();
         writeln!(w, "/// The rows of derived table {alias} (a bag).").unwrap();
@@ -2112,19 +2152,21 @@ impl<'a> Tr<'a> {
                     if v.approx.is_some() {
                         bail!("computed float {e} in a SELECT list without aggregation");
                     }
-                    if v.guard.is_some() || v.code.contains("->0") {
+                    if v.guard.is_none() && v.code.contains("->0") {
                         bail!("NULL-able value {e} in the SELECT list");
                     }
                     let field = field_for(&sql, &mut fields);
-                    outs.push(OutCol { sql, field, val: v, nullable: false, key: None });
+                    let nullable = v.guard.is_some();
+                    outs.push(OutCol { sql, field, val: v, nullable, key: None });
                 }
             }
             Some(a) => {
                 for (i, ge) in a.group_expr.iter().enumerate() {
                     let v = self.expr(ge, &tctx)?;
-                    if v.approx.is_some() || v.ty == Ty::Rat || v.guard.is_some() || v.nonlit_div {
+                    if v.approx.is_some() || v.ty == Ty::Rat || v.nonlit_div {
                         bail!("GROUP BY {ge}: not an exact value");
                     }
+                    let v = opt_key(v);
                     let gname = match strip_alias(ge) {
                         Expr::Column(c) => format!("g_{}", sanitize(&c.name).trim_end_matches('_')),
                         _ => format!("g_{}", i + 1),
@@ -2141,7 +2183,7 @@ impl<'a> Tr<'a> {
                             "/// GROUP BY key {}: {}\npub open spec fn {kf}(db: Db, params: Params{op}, t: {tuple}) -> {} {{\n    {}\n}}\n\n",
                             i + 1,
                             ge.to_string().replace('\n', " "),
-                            verus_ty(v.ty),
+                            key_ty(&v),
                             v.code
                         ));
                         {
@@ -2167,7 +2209,7 @@ impl<'a> Tr<'a> {
                 for (i, e) in outs_e.iter().enumerate() {
                     let sql = out_schema.field(i).name().clone();
                     let v = self.expr(e, &gc)?;
-                    let key = keys.iter().position(|(g, _)| *g == v.code);
+                    let key = keys.iter().position(|(g, k)| *g == v.code || (k.opt && format!("{g}->0") == v.code));
                     let nullable = v.guard.is_some();
                     let field = field_for(&sql, &mut fields);
                     outs.push(OutCol { sql, field, val: v, nullable, key });
@@ -2265,6 +2307,7 @@ impl<'a> Tr<'a> {
     }
 
     fn emit_block(&mut self, b: &Block, where_: &[String], top: bool) {
+        let guarded = self.guarded_vals.contains(&b.prefix);
         self.perm.block(b, where_, top);
         if let Some(body) = &b.union_rows {
             let p = &b.prefix;
@@ -2340,7 +2383,7 @@ impl<'a> Tr<'a> {
             writeln!(w, "    {}", nest(b, i)).unwrap();
             writeln!(w, "}}\n").unwrap();
         }
-        let key_params: String = keys.iter().map(|(g, v)| format!(", {g}: {}", verus_ty(v.ty))).collect();
+        let key_params: String = keys.iter().map(|(g, v)| format!(", {g}: {}", key_ty(v))).collect();
         let key_args: String = keys.iter().map(|(g, _)| format!(", {g}")).collect();
         let cond = keys.iter().map(|(g, v)| format!("{} == {g}", v.code)).collect::<Vec<_>>().join(" && ");
         if b.shape != Shape::Plain {
@@ -2369,6 +2412,16 @@ impl<'a> Tr<'a> {
                 writeln!(w, "    map_where({p}tuples(db, params{oa}), |t: {tt}| {cond}, f)").unwrap();
             }
             writeln!(w, "}}\n").unwrap();
+            if guarded {
+                writeln!(w, "/// The values of f over {grp} where keep holds (the non-NULL ones).").unwrap();
+                writeln!(w, "pub open spec fn {p}group_vals_where<V>(db: Db, params: Params{op}{key_params}, keep: spec_fn({tt}) -> bool, f: spec_fn({tt}) -> V) -> Seq<V> {{").unwrap();
+                if cond.is_empty() {
+                    writeln!(w, "    map_where({p}tuples(db, params{oa}), keep, f)").unwrap();
+                } else {
+                    writeln!(w, "    map_where({p}tuples(db, params{oa}), |t: {tt}| {cond} && keep(t), f)").unwrap();
+                }
+                writeln!(w, "}}\n").unwrap();
+            }
         }
         let _ = key_args;
         writeln!(w, "/// One output row of {what}.").unwrap();
@@ -2480,9 +2533,9 @@ fn nest(b: &Block, i: usize) -> String {
 
 fn key_tuple_ty(keys: &[(String, Val)]) -> String {
     if keys.len() == 1 {
-        verus_ty(keys[0].1.ty).into()
+        key_ty(&keys[0].1)
     } else {
-        format!("({})", keys.iter().map(|(_, v)| verus_ty(v.ty)).collect::<Vec<_>>().join(", "))
+        format!("({})", keys.iter().map(|(_, v)| key_ty(v)).collect::<Vec<_>>().join(", "))
     }
 }
 
@@ -2612,9 +2665,16 @@ fn inline_proj(e: Expr, inner: &[Expr], ischema: &DFSchemaRef) -> Res<Expr> {
 }
 
 // ── the top level ─────────────────────────────────────────────────────────
+/// One ORDER BY key: an output column, its direction, and where its NULLs go.
+struct SortKey {
+    col: usize,
+    desc: bool,
+    nulls_first: bool,
+}
+
 struct Top {
     block: Block,
-    order: Vec<(usize, bool)>,
+    order: Vec<SortKey>,
     limit: Option<usize>,
     offset: usize,
 }
@@ -2628,7 +2688,7 @@ fn cut(top: &Top, a: &str) -> String {
     }
 }
 
-fn translate(tr: &mut Tr, plan: &LogicalPlan) -> Res<Top> {
+fn translate(tr: &mut Tr, plan: &LogicalPlan, explicit_nulls: &[Option<bool>]) -> Res<Top> {
     let mut p = plan;
     let mut limit = None;
     let mut offset = 0;
@@ -2662,16 +2722,37 @@ fn translate(tr: &mut Tr, plan: &LogicalPlan) -> Res<Top> {
     tr.frames.push(Frame::default());
     let block = tr.block(p, String::new(), true)?;
     let mut order = vec![];
-    for s in sort.unwrap_or_default() {
+    let sort = sort.unwrap_or_default();
+    let nkeys = sort.len();
+    for (pos, s) in sort.into_iter().enumerate() {
         let Expr::Column(c) = strip_alias(&s.expr) else { bail!("ORDER BY {}: only output columns", s.expr) };
         let i = schema.index_of_column(c).map_err(|_| format!("ORDER BY {c}: not an output column"))?;
         let col = &block.outs[i];
-        if col.val.ty == Ty::Rat || col.nullable {
-            bail!("ORDER BY on a fraction / NULL-able column ({})", col.sql);
+        if col.val.ty == Ty::Rat {
+            bail!("ORDER BY on a fraction column ({})", col.sql);
         }
-        order.push((i, !s.asc));
+        let desc = !s.asc;
+        let nulls_first = match explicit_nulls.get(pos).copied().flatten() {
+            _ if !col.nullable => false,
+            Some(nf) => nf,
+            None if explicit_nulls.len() == nkeys => tr.nulls_first_default[desc as usize],
+            None => bail!("ORDER BY {} on a NULL-able column: cannot tell whether NULLS FIRST / LAST was written", col.sql),
+        };
+        order.push(SortKey { col: i, desc, nulls_first });
     }
     Ok(Top { block, order, limit, offset })
+}
+
+/// NULLS FIRST / LAST as written on the query's ORDER BY keys (None: not written).
+fn explicit_nulls(sql: &str) -> Res<Vec<Option<bool>>> {
+    let stmts = Parser::parse_sql(&GenericDialect {}, sql).map_err(|e| format!("{e}"))?;
+    Ok(match stmts.first() {
+        Some(ast::Statement::Query(q)) => match q.order_by.as_ref().map(|o| &o.kind) {
+            Some(ast::OrderByKind::Expressions(es)) => es.iter().map(|e| e.options.nulls_first).collect(),
+            _ => vec![],
+        },
+        _ => vec![],
+    })
 }
 
 // ── printing ──────────────────────────────────────────────────────────────
@@ -2736,11 +2817,12 @@ fn print(tr: &Tr, top: &Top, sql: &str, src_name: &str) -> String {
         writeln!(w, "pub struct {} {{", table_row(t)).unwrap();
         for c in &tr.sch.ddl_cols[t] {
             if cs.contains(c) {
-                let (ty, _) = tr.sch.col_ty[&(t.clone(), c.clone())];
+                let (ty, nullable) = tr.sch.col_ty[&(t.clone(), c.clone())];
                 let ty = ty.unwrap();
                 let ch = if tr.sch.char_cols.contains(&(t.clone(), c.clone())) { ", CHAR" } else { "" };
-                writeln!(w, "    /// {}{ch}", ty_doc(ty)).unwrap();
-                writeln!(w, "    pub {}: {},", sanitize(c), verus_ty(ty)).unwrap();
+                let (null_doc, vty) = if nullable { ("; None = NULL", format!("Option<{}>", verus_ty(ty))) } else { ("", verus_ty(ty).to_string()) };
+                writeln!(w, "    /// {}{ch}{null_doc}", ty_doc(ty)).unwrap();
+                writeln!(w, "    pub {}: {vty},", sanitize(c)).unwrap();
             }
         }
         writeln!(w, "}}\n").unwrap();
@@ -2823,7 +2905,15 @@ fn print(tr: &Tr, top: &Top, sql: &str, src_name: &str) -> String {
         }
         _ => {}
     }
-    let ob: Vec<String> = top.order.iter().map(|(i, d)| format!("{} {}", b.outs[*i].sql, if *d { "DESC" } else { "ASC" })).collect();
+    let ob: Vec<String> = top
+        .order
+        .iter()
+        .map(|k| {
+            let c = &b.outs[k.col];
+            let nulls = if c.nullable { if k.nulls_first { " NULLS FIRST" } else { " NULLS LAST" } } else { "" };
+            format!("{} {}{nulls}", c.sql, if k.desc { "DESC" } else { "ASC" })
+        })
+        .collect();
     writeln!(w, "/// ORDER BY {}: a sorts strictly before b.", if ob.is_empty() { "(none)".into() } else { ob.join(", ") }).unwrap();
     writeln!(w, "pub open spec fn row_lt(a: OutRow, b: OutRow) -> bool {{").unwrap();
     writeln!(w, "    {}", lex_lt(b, &top.order)).unwrap();
@@ -2836,7 +2926,7 @@ fn print(tr: &Tr, top: &Top, sql: &str, src_name: &str) -> String {
             writeln!(w, "    &&& forall|i: int| 0 <= i < out.len() ==> row_ok(db, params, #[trigger] out[i])").unwrap();
             writeln!(w, "    &&& forall|i: int, j: int| 0 <= i < j < out.len() ==>").unwrap();
             writeln!(w, "        !same_group(#[trigger] out[i], #[trigger] out[j]) && !row_lt(out[j], out[i])").unwrap();
-            let gq: Vec<String> = keys.iter().map(|(g, v)| format!("{g}: {}", verus_ty(v.ty))).collect();
+            let gq: Vec<String> = keys.iter().map(|(g, v)| format!("{g}: {}", key_ty(v))).collect();
             let gm: Vec<String> = key_cols(b)
                 .iter()
                 .enumerate()
@@ -2927,28 +3017,50 @@ fn key_cols(b: &Block) -> Vec<&OutCol> {
     v
 }
 
-/// One column comparison: (strictly before, equal).
-fn col_cmp(field: &str, ty: Ty, desc: bool) -> (String, String) {
-    let (x, y) = if desc { ("b", "a") } else { ("a", "b") };
-    let lt = match ty {
-        Ty::Text => format!("bytes_lt({x}.{field}, {y}.{field})"),
-        Ty::Bool => format!("(!{x}.{field} && {y}.{field})"),
-        _ => format!("{x}.{field} < {y}.{field}"),
-    };
-    (lt, format!("a.{field} == b.{field}"))
+/// An ORDER BY column: `nulls_first` is Some for a NULL-able column.
+struct OrdCol {
+    field: String,
+    ty: Ty,
+    desc: bool,
+    nulls_first: Option<bool>,
 }
 
-fn lex_lt_cols(cols: &[(String, Ty, bool)]) -> String {
+fn ord_col(c: &OutCol, desc: bool, nulls_first: bool) -> OrdCol {
+    OrdCol { field: c.field.clone(), ty: c.val.ty, desc, nulls_first: c.nullable.then_some(nulls_first) }
+}
+
+/// One column comparison: (strictly before, equal).
+fn col_cmp(c: &OrdCol) -> (String, String) {
+    let f = &c.field;
+    let (x, y) = if c.desc { ("b", "a") } else { ("a", "b") };
+    let val = |r: &str| if c.nulls_first.is_some() { format!("{r}.{f}->0") } else { format!("{r}.{f}") };
+    let (xv, yv) = (val(x), val(y));
+    let vlt = match c.ty {
+        Ty::Text => format!("bytes_lt({xv}, {yv})"),
+        Ty::Bool => format!("(!{xv} && {yv})"),
+        _ => format!("{xv} < {yv}"),
+    };
+    let lt = match c.nulls_first {
+        None => vlt,
+        Some(first) => {
+            let (n, m) = if first { ("a", "b") } else { ("b", "a") };
+            format!("(({n}.{f} is None && {m}.{f} is Some) || (a.{f} is Some && b.{f} is Some && {vlt}))")
+        }
+    };
+    (lt, format!("a.{f} == b.{f}"))
+}
+
+fn lex_lt_cols(cols: &[OrdCol]) -> String {
     let mut expr = "false".to_string();
-    for (f, t, d) in cols.iter().rev() {
-        let (lt, eq) = col_cmp(f, *t, *d);
+    for c in cols.iter().rev() {
+        let (lt, eq) = col_cmp(c);
         expr = if expr == "false" { lt } else { format!("{lt} || ({eq} && {})", if expr.contains("||") { format!("({expr})") } else { expr }) };
     }
     expr
 }
 
-fn lex_lt(b: &Block, order: &[(usize, bool)]) -> String {
-    let cols: Vec<(String, Ty, bool)> = order.iter().map(|(i, d)| (b.outs[*i].field.clone(), b.outs[*i].val.ty, *d)).collect();
+fn lex_lt(b: &Block, order: &[SortKey]) -> String {
+    let cols: Vec<OrdCol> = order.iter().map(|k| ord_col(&b.outs[k.col], k.desc, k.nulls_first)).collect();
     lex_lt_cols(&cols)
 }
 
@@ -2998,19 +3110,19 @@ fn print_facts(w: &mut String, top: &Top, approx: bool, defined: &[String]) -> F
         return Facts::Scalar;
     }
     // ORDER BY, extended so that it orders every pair of different rows
-    let ordered: Vec<usize> = top.order.iter().map(|(i, _)| *i).collect();
-    let mut ext: Vec<(String, Ty, bool)> = top.order.iter().map(|(i, d)| (b.outs[*i].field.clone(), b.outs[*i].val.ty, *d)).collect();
+    let ordered: Vec<usize> = top.order.iter().map(|k| k.col).collect();
+    let mut ext: Vec<OrdCol> = top.order.iter().map(|k| ord_col(&b.outs[k.col], k.desc, k.nulls_first)).collect();
     let tiebreak: Vec<&OutCol> = if as_bag(b) { b.outs.iter().collect() } else { key_cols(b) };
     let mut total = true;
     for t in &tiebreak {
         let i = b.outs.iter().position(|c| c.field == t.field).unwrap();
         if !ordered.contains(&i) {
             total = false;
-            if t.val.ty == Ty::Rat || t.nullable {
+            if t.val.ty == Ty::Rat {
                 writeln!(w, "// No facts: column {} has no canonical order.\n", t.sql).unwrap();
                 return Facts::None;
             }
-            ext.push((t.field.clone(), t.val.ty, false));
+            ext.push(ord_col(t, false, true));
         }
     }
     if total {
@@ -3019,27 +3131,32 @@ fn print_facts(w: &mut String, top: &Top, approx: bool, defined: &[String]) -> F
         writeln!(w, "// ORDER BY leaves ties, so the answer is unique only up to the order of tied").unwrap();
         writeln!(w, "// rows (as a bag; with LIMIT, which tied rows make the cut is not determined).\n").unwrap();
     }
-    let text_cols: Vec<String> = ext.iter().filter(|c| c.1 == Ty::Text).map(|c| c.0.clone()).collect();
+    // a text column's value: `x.n`, or `x.n->0` when it may be NULL
+    let text_cols: Vec<(String, bool)> = ext.iter().filter(|c| c.ty == Ty::Text).map(|c| (c.field.clone(), c.nulls_first.is_some())).collect();
+    let tv = |r: &str, n: &(String, bool)| if n.1 { format!("{r}.{}->0", n.0) } else { format!("{r}.{}", n.0) };
     writeln!(w, "/// ORDER BY, extended by {} so that it orders every pair of different rows.", if !as_bag(b) { "the GROUP BY columns" } else { "the other columns" }).unwrap();
     writeln!(w, "pub open spec fn ext_lt(a: OutRow, b: OutRow) -> bool {{\n    {}\n}}\n", lex_lt_cols(&ext)).unwrap();
     writeln!(w, "pub open spec fn ext_order() -> spec_fn(OutRow, OutRow) -> bool {{\n    |a: OutRow, b: OutRow| ext_lt(a, b)\n}}\n").unwrap();
     writeln!(w, "pub proof fn lemma_ext_order()\n    ensures\n        strict_order(ext_order()),\n{{").unwrap();
     writeln!(w, "    assert forall|x: OutRow| !#[trigger] ext_order()(x, x) by {{").unwrap();
     for n in &text_cols {
-        writeln!(w, "        lemma_bytes_lt_irrefl(x.{n});").unwrap();
+        writeln!(w, "        lemma_bytes_lt_irrefl({});", tv("x", n)).unwrap();
     }
     writeln!(w, "    }}").unwrap();
     writeln!(w, "    assert forall|x: OutRow, y: OutRow, z: OutRow| #[trigger] ext_order()(x, y) && #[trigger] ext_order()(y, z) implies ext_order()(x, z) by {{").unwrap();
     for n in &text_cols {
-        writeln!(w, "        if bytes_lt(x.{n}, y.{n}) && bytes_lt(y.{n}, z.{n}) {{ lemma_bytes_lt_trans(x.{n}, y.{n}, z.{n}); }}").unwrap();
-        writeln!(w, "        if bytes_lt(z.{n}, y.{n}) && bytes_lt(y.{n}, x.{n}) {{ lemma_bytes_lt_trans(z.{n}, y.{n}, x.{n}); }}").unwrap();
+        let (x, y, z) = (tv("x", n), tv("y", n), tv("z", n));
+        writeln!(w, "        if bytes_lt({x}, {y}) && bytes_lt({y}, {z}) {{ lemma_bytes_lt_trans({x}, {y}, {z}); }}").unwrap();
+        writeln!(w, "        if bytes_lt({z}, {y}) && bytes_lt({y}, {x}) {{ lemma_bytes_lt_trans({z}, {y}, {x}); }}").unwrap();
     }
     writeln!(w, "    }}\n}}\n").unwrap();
     let differ: Vec<String> = tiebreak.iter().map(|c| format!("a.{f} != b.{f}", f = c.field)).collect();
     writeln!(w, "/// Rows that differ in {} are ordered one way or the other.", if !as_bag(b) { "a GROUP BY column" } else { "some column" }).unwrap();
     writeln!(w, "pub proof fn lemma_ext_total(a: OutRow, b: OutRow)\n    requires\n        {},\n    ensures\n        ext_order()(a, b) || ext_order()(b, a),\n{{", differ.join(" || ")).unwrap();
     for n in &text_cols {
-        writeln!(w, "    if a.{n} != b.{n} {{ lemma_bytes_lt_total(a.{n}, b.{n}); }}").unwrap();
+        let (a, b) = (tv("a", n), tv("b", n));
+        let both = if n.1 { format!("a.{0} is Some && b.{0} is Some && ", n.0) } else { String::new() };
+        writeln!(w, "    if {both}{a} != {b} {{ lemma_bytes_lt_total({a}, {b}); }}").unwrap();
     }
     writeln!(w, "}}\n").unwrap();
     writeln!(w, "/// ORDER BY implies the extended order{}.", if total { " (they are the same)" } else { "" }).unwrap();
@@ -3254,7 +3371,7 @@ fn print_grouped_facts(w: &mut String, top: &Top, total: bool, defined: &[String
     writeln!(w, "    let f = |t: Tuple| if {} {{ 1int }} else {{ 0 }};", cond_t0.join(" && ")).unwrap();
     writeln!(w, "    assert(group_count(db, params{}) == sum(tuples(db, params), f));", tk("t0")).unwrap();
     writeln!(w, "    lemma_sum_pos(tuples(db, params), f, k);\n}}\n").unwrap();
-    let gq: String = keys.iter().map(|(g, v)| format!(", {g}: {}", verus_ty(v.ty))).collect();
+    let gq: String = keys.iter().map(|(g, v)| format!(", {g}: {}", key_ty(v))).collect();
     let ga: String = keys.iter().map(|(g, _)| format!(", {g}")).collect();
     writeln!(w, "/// A non-empty group has a tuple.").unwrap();
     writeln!(w, "proof fn lemma_group_tuple(db: Db, params: Params{gq}) -> (k: int)\n    requires\n        group_count(db, params{ga}) > 0,\n    ensures\n        0 <= k < tuples(db, params).len(),").unwrap();
@@ -3267,7 +3384,7 @@ fn print_grouped_facts(w: &mut String, top: &Top, total: bool, defined: &[String
     // the answer is an answer: one lemma per conjunct of full_result, combined
     // with `tuples` hidden (unfolding the FROM product there is costly)
     let a = "answer(db, params)";
-    let gq2: Vec<String> = keys.iter().map(|(g, v)| format!("{g}: {}", verus_ty(v.ty))).collect();
+    let gq2: Vec<String> = keys.iter().map(|(g, v)| format!("{g}: {}", key_ty(v))).collect();
     let gm = |ans: &str| -> String {
         kcols
             .iter()
@@ -3389,6 +3506,12 @@ async fn run() -> Res<()> {
             e => return Err(format!("--engine: duckdb, postgres or mysql, not {e}")),
         },
     };
+    // NULLs sort as the largest value in Postgres, as the smallest in MySQL, and last in DuckDB
+    let nulls_first_default = match engine.as_str() {
+        "postgres" => [false, true],
+        "mysql" => [true, false],
+        _ => [false, false],
+    };
     let sch = load_schema(&ctx, &ddl, char_semantics).await?;
     // Unoptimized: SQL -> LogicalPlan, name/type resolution only.
     let plan = ctx.state().create_logical_plan(&sql).await.map_err(|e| format!("DataFusion: {e}"))?;
@@ -3404,8 +3527,10 @@ async fn run() -> Res<()> {
         notes: BTreeSet::new(),
         pfx: String::new(),
         perm: perm::Perm::default(),
+        guarded_vals: HashSet::new(),
+        nulls_first_default,
     };
-    let top = translate(&mut tr, &plan)?;
+    let top = translate(&mut tr, &plan, &explicit_nulls(&sql)?)?;
     let src_name = std::path::Path::new(&query_path).file_name().unwrap().to_string_lossy().to_string();
     let text = print(&tr, &top, &sql, &src_name);
     std::fs::write(&out_path, &text).map_err(|e| format!("{out_path}: {e}"))?;
