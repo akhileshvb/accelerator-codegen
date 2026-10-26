@@ -1,0 +1,1 @@
+SELECT uid FROM ev GROUP BY uid ORDER BY SUM(amt) DESC, uid

@@ -291,6 +291,8 @@ pub(crate) struct Model {
     pub(crate) structs: Vec<CStruct>,
     /// Result columns: runtime type, nullable, SQL type.
     pub(crate) outs: Vec<(&'static str, bool, Ty)>,
+    /// How many of them the host reports: the rest are ORDER BY keys only.
+    pub(crate) visible: usize,
     /// Query parameters ($n) and their SQL types.
     pub(crate) params: Vec<(u32, Ty)>,
     pub(crate) scans: Vec<ScanDecl>,
@@ -1157,6 +1159,7 @@ pub(crate) async fn obligations(
     let model = Model {
         fns,
         structs,
+        visible: outs_rt.len() - top.hidden,
         outs: outs_rt,
         params,
         scans: scan_decls,
