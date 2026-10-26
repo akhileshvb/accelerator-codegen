@@ -750,6 +750,17 @@ struct Choice {
     group: String,    // the groups it is chosen for: `group_count > 0` or the aggregate's guard
 }
 
+impl Choice {
+    fn of(&self, v: &Val) -> bool {
+        self.exact.code == v.code && self.exact.den == v.den
+    }
+    /// Its value for the group: `name(keys)`.
+    fn call(&self) -> String {
+        let name = &self.var.var;
+        if self.keys.is_empty() { name.clone() } else { format!("{name}({})", self.keys.iter().map(|k| k.0.as_str()).collect::<Vec<_>>().join(", ")) }
+    }
+}
+
 /// How column references render.
 #[derive(Clone)]
 enum Ctx {
@@ -1918,19 +1929,14 @@ impl<'a> Tr<'a> {
             bail!("rounded float aggregate in a correlated subquery");
         }
         self.perm.unsupported("rounded float aggregates the engine chooses");
-        let same = |c: &Choice| c.exact.code == exact.code && c.exact.den == exact.den;
-        let name = match self.frame().own.iter().find(|c| same(c)) {
-            Some(c) => c.var.var.clone(),
-            None => {
-                let name = format!("ch_{}{}", r.prefix, self.frame().own.len() + 1);
-                let ty = if r.keys.is_empty() { "int".to_string() } else { format!("spec_fn({}) -> int", r.keys.iter().map(|k| k.1.as_str()).collect::<Vec<_>>().join(", ")) };
-                let group = exact.guard.clone().unwrap_or(r.nonempty);
-                let var = Binder { alias: String::new(), var: name.clone(), src: Src::Choice(ty), optional: false, on: vec![] };
-                self.frame().own.push(Choice { var, keys: r.keys.clone(), exact: exact.clone(), group });
-                name
-            }
-        };
-        let code = if r.keys.is_empty() { name } else { format!("{name}({})", r.keys.iter().map(|k| k.0.as_str()).collect::<Vec<_>>().join(", ")) };
+        if !self.frame().own.iter().any(|c| c.of(&exact)) {
+            let name = format!("ch_{}{}", r.prefix, self.frame().own.len() + 1);
+            let ty = if r.keys.is_empty() { "int".to_string() } else { format!("spec_fn({}) -> int", r.keys.iter().map(|k| k.1.as_str()).collect::<Vec<_>>().join(", ")) };
+            let group = exact.guard.clone().unwrap_or(r.nonempty);
+            let var = Binder { alias: String::new(), var: name, src: Src::Choice(ty), optional: false, on: vec![] };
+            self.frame().own.push(Choice { var, keys: r.keys, exact: exact.clone(), group });
+        }
+        let code = self.frame().own.iter().find(|c| c.of(&exact)).unwrap().call();
         Ok(Val { guard: exact.guard, ..Val::atom(code, Ty::Flt(1)) })
     }
 
@@ -2426,7 +2432,7 @@ impl<'a> Tr<'a> {
         }
         // a rounded float is chosen once consumed: a column of a nested block, or one that HAVING compared
         for i in 0..outs.len() {
-            if outs[i].val.rounded.is_some() && (!top || self.frame().own.iter().any(|c| c.exact.code == outs[i].val.code && c.exact.den == outs[i].val.den)) {
+            if outs[i].val.rounded.is_some() && (!top || self.frame().own.iter().any(|c| c.of(&outs[i].val))) {
                 outs[i].val = self.choose(outs[i].val.clone())?;
             }
         }
@@ -2686,7 +2692,7 @@ impl<'a> Tr<'a> {
             let name = &c.var.var;
             let (read, ro) = (params_of(b.read_outer()), args_of(b.read_outer()));
             let kd: Vec<String> = c.keys.iter().map(|(g, t)| format!("{g}: {t}")).collect();
-            let call = if c.keys.is_empty() { name.clone() } else { format!("{name}({})", c.keys.iter().map(|k| k.0.as_str()).collect::<Vec<_>>().join(", ")) };
+            let call = c.call();
             writeln!(w, "/// {name} is within the rounding bound of its exact value, in every group it is chosen for.").unwrap();
             writeln!(w, "pub open spec fn {name}_ok(db: Db, params: Params{read}, {name}: {}) -> bool {{", c.var.row()).unwrap();
             let bound = format!("{} ==> {}", c.group, within(&call, &c.exact));
