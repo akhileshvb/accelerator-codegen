@@ -36,7 +36,7 @@ Write `{{full_analysis_path}}` per schema.
 
 - **Initial run:** use the **Query** SQL and the data (measured with the **Data** tools, plus workload hints) to choose aux state — no post-implementation measurements.
 - **Revision run** (non-empty evidence above): use measured bottlenecks; emit a new complete correctness contract.
-- If `fitness_assessment.recommended` is false, document why and stop unless override is configured.
+- Declining the query is not an outcome: the analysis always delivers a design. A semantic corner case the state cannot maintain cheaply (overflow, non-finite values, duplicate keys) gets a local fallback condition, detected in O(1) or O(log n) from maintained state and engaged only for the bindings it can affect, never a global fallback and never `recommended: false`. Record remaining doubts in `signals_against`.
 
 ### 1. Fitness and base-path cost
 

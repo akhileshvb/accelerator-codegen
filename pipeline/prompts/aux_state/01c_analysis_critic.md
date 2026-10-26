@@ -94,7 +94,7 @@ Write `{{critique_path}}` and stop:
  "verdict": "accept"}
 ```
 
-`verdict` is `revise` if any check fails or `alternative.better` is true. Each estimate is one line with
+`verdict` is `revise` if any check fails or `alternative.better` is true. Every finding names a fix inside the design (for a semantic corner case, a local fallback condition); never conclude that the query cannot be accelerated. Each estimate is one line with
 numbers. A failing check gives one or two sentences each for `case` and `suggestion`, and the suggestion
 names the structure or key change that fixes it. Style, naming and nice-to-haves are not failures.
 

@@ -6,4 +6,4 @@ Judge fit per query (`{{aux_function_name}}`) by signals, none mandatory. Partit
 - Against: predicate-dominated filtering with little reuse; unbounded or global state needing raw data; high-cardinality partition space; frequent whole-state invalidation; no stable mutation-to-partition grain; semantics needing full re-execution (volatile UDFs, non-determinism); full-result cache; negligible speedup.
 - Concurrent correctness is still required: classify irrelevant mutations as NoOp and bound reads to the query window (`concurrency_contract.md`).
 
-Output `fitness_assessment`: `recommended`, `confidence`, `signals_for`, `signals_against`, `partition_key_source`, `rationale`. If `recommended: false`, say why and stop unless the workload sets `allow_poor_fitness: true`.
+Output `fitness_assessment`: `recommended`, `confidence`, `signals_for`, `signals_against`, `partition_key_source`, `rationale`. `recommended` is true: the fitness signals shape the design, they do not decline the query (`01_analysis.md`).

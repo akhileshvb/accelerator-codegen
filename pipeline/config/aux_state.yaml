@@ -111,5 +111,5 @@ stage_max_turns:
   layer_critique: 20
 
 # Independent critic rounds on the analysis (each may send it back for one revision; the next round
-# re-checks that revision); 0 disables.
-analysis_critique_max_rounds: 2
+# re-checks that revision); 0 disables. One round names the issues; the revision fixes them.
+analysis_critique_max_rounds: 1
