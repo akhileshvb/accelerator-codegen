@@ -1,5 +1,3 @@
-# <query> ok | <query> refused <text the refusal must contain>
-# <query> ok-spec <text the obligations refusal must contain>: spec only
 n01 ok
 n02 ok
 n03 ok
@@ -7,6 +5,22 @@ n04 ok
 n05 ok
 n06 ok
 n07 ok
-n08 ok-spec a NULL-able column needs AS <Type>
-n09 ok-spec not an exact row value
-n10 ok-spec KEYS a is NULL-able
+n08 ok
+n09 ok
+n10 ok
+n11 ok
+n12 ok
+n13 ok
+n14 ok
+n15 ok
+n16 ok
+n17 ok
+n18 ok
+r01 refused possibly-NULL
+r02 refused NULL literal
+r03 refused CASE
+r04 refused possibly-NULL
+r05 refused NULL-able
+r06 refused NOT LIKE
+n19 ok
+n20 ok

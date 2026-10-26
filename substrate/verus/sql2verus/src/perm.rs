@@ -307,6 +307,9 @@ impl Perm {
                 )
             };
             let all = format!("{rtext} {htext}");
+            if mentions(&all, "min_text") || mentions(&all, "max_text") {
+                self.unsupported("MIN / MAX over text");
+            }
             for (gvf, bag, extra) in [("group_vals", &vals_bag, ""), ("group_vals_where", &vals_where_bag, ", keep")] {
                 let mut af = ak.clone();
                 if gvf == "group_vals_where" {
@@ -325,9 +328,6 @@ impl Perm {
                         let last = self.reg.pop().unwrap();
                         self.reg.push((format!("{fun}({p}{gvf}("), last.1));
                     }
-                }
-                if mentions(&all, "min_text") || mentions(&all, "max_text") {
-                    self.unsupported("MIN / MAX over text");
                 }
                 if mentions(&all, &format!("distinct_count({p}{gvf}(")) {
                     for (suffix, ty) in [("int", "int"), ("text", "Seq<u8>")] {

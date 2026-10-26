@@ -1,0 +1,1 @@
+SELECT s, SUM(a) AS sa FROM t GROUP BY s ORDER BY sa NULLS LAST, s

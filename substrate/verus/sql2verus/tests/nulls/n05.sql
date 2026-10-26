@@ -1,1 +1,1 @@
-SELECT t.id, u.v FROM t JOIN u ON t.a = u.k WHERE u.v IS NOT NULL ORDER BY t.id
+SELECT s, SUM(a) AS sa, COUNT(a) AS ca, MIN(b) AS lo, MAX(b) AS hi, AVG(a) AS av FROM t GROUP BY s ORDER BY s

@@ -19,8 +19,7 @@
 //                  (FROM (SELECT ...) AS t, WITH t AS (...)), and as
 //                  subqueries; ORDER BY and LIMIT at the top level
 //   FROM           base tables and derived tables, comma / INNER JOIN ... ON,
-//                  LEFT JOIN ... ON (the right side a single table, whose
-//                  columns may then only be counted: COUNT(col))
+//                  LEFT JOIN ... ON (the right side a single table)
 //   expressions    comparisons, AND / OR / NOT, + - * /, unary -, CASE WHEN
 //                  ... ELSE, [NOT] IN (list), [NOT] BETWEEN, [NOT] LIKE,
 //                  EXTRACT(YEAR | MONTH | DAY FROM d), SUBSTRING(s FROM i
@@ -30,13 +29,23 @@
 //   aggregates     COUNT(*), COUNT(col), COUNT(DISTINCT e), SUM, AVG, MIN, MAX
 //
 // Semantic rules applied (the decisions a reviewer signs off on once, here):
-//   * Tables are bags (sequences; duplicates count).  Every column the query
-//     reads must be NOT NULL; parameters are non-NULL by host contract.
-//     The only NULLs are those SQL itself produces: an aggregate other than
-//     COUNT over no rows (a scalar subquery or a query without GROUP BY),
-//     modelled as Option, and the missing side of a LEFT JOIN.  A NULL
-//     comparison is false; such comparisons are refused under NOT, where
-//     SQL's three-valued logic would differ.
+//   * Tables are bags (sequences; duplicates count).  Parameters are non-NULL
+//     by host contract.
+//   * NULL: a NULL-able column the query reads is an `Option<T>` field of its
+//     row.  In expressions it is a guarded value (`c->0`, guard `c is Some`);
+//     the missing side of a LEFT JOIN adds the guard `p is Some`, so
+//     `p.c IS NULL` holds for an unmatched row and for a NULL `c`.  A
+//     comparison (or LIKE) with a NULL is false, in WHERE, ON and HAVING
+//     alike; under NOT, and for NULL literals, IN with a NULL-able value
+//     and CASE branches that may be NULL, SQL's three-valued logic would
+//     differ, so they are refused.  Arithmetic on a NULL is NULL.
+//     Aggregates skip NULL arguments: COUNT(e) and COUNT(DISTINCT e) count
+//     the non-NULL values; SUM, AVG, MIN and MAX are NULL when the group
+//     (or, without GROUP BY, the table) has no non-NULL value, and are
+//     Option in the output (also an aggregate over no rows, in a scalar
+//     subquery or a query without GROUP BY).  GROUP BY puts all NULLs of a
+//     key into one group; the key is `Option<T>`.  A NULL-able SELECT item
+//     is an `Option` output column, also from a derived table.
 //   * A query block means: the FROM-clause tuples (bag product) that satisfy
 //     WHERE (`tuples`); GROUP BY splits them into groups, one output row per
 //     non-empty group that satisfies HAVING; without GROUP BY, aggregates
@@ -63,7 +72,10 @@
 //     host contract).  LIKE and
 //     SUBSTRING count bytes (= characters for ASCII text).
 //   * ORDER BY: rows are sorted, ties in any order; LIMIT n takes the first n
-//     rows of some such ordering.
+//     rows of some such ordering.  NULLs go where NULLS FIRST / LAST says,
+//     else where the target engine puts them: last in DuckDB; in Postgres
+//     last under ASC, first under DESC (NULL is the largest value); in MySQL
+//     first under ASC, last under DESC (the smallest).
 //
 // After the definitions the file carries facts about them, which Verus
 // checks (so they add nothing to what is trusted): an answer exists, and it
@@ -153,11 +165,16 @@ fn verus_ty(t: Ty) -> &'static str {
 /// A GROUP BY key value as the key: Option<T> when it may be NULL.
 fn opt_key(v: Val) -> Val {
     let Some(gd) = v.guard.clone() else { return v };
-    let code = match v.code.strip_suffix("->0") {
-        Some(c) if gd == format!("{c} is Some") => c.to_string(),
-        _ => format!("if {gd} {{ Some({}) }} else {{ None }}", v.code),
-    };
-    Val { code, guard: None, opt: true, ..v }
+    Val { code: option_of(&gd, &v.code), guard: None, opt: true, ..v }
+}
+
+/// `value` as an Option, NULL unless `guard`: a NULL-able column read as it is (`c->0`, guard
+/// `c is Some`) is the Option `c` itself.
+fn option_of(guard: &str, value: &str) -> String {
+    match value.strip_suffix("->0") {
+        Some(c) if guard == format!("{c} is Some") => c.to_string(),
+        _ => format!("if {guard} {{ Some({value}) }} else {{ None }}"),
+    }
 }
 
 /// The Verus type of a GROUP BY key.
@@ -927,9 +944,9 @@ impl<'a> Tr<'a> {
         }
         if b.optional || nullable {
             // NULL when the LEFT JOIN side is missing, or the column is NULL
-            let guards: Vec<String> = [b.optional.then(|| format!("{base} is Some")), nullable.then(|| format!("{base}{}.{field} is Some", if b.optional { "->0" } else { "" }))].into_iter().flatten().collect();
-            let opt = if b.optional { format!("{base}->0.{field}") } else { format!("{base}.{field}") };
-            let code = if nullable { format!("{opt}->0") } else { opt };
+            let col = if b.optional { format!("{base}->0.{field}") } else { format!("{base}.{field}") };
+            let guards: Vec<String> = [b.optional.then(|| format!("{base} is Some")), nullable.then(|| format!("{col} is Some"))].into_iter().flatten().collect();
+            let code = if nullable { format!("{col}->0") } else { col };
             return Ok(Val { guard: Some(guards.join(" && ")), char_col: ch, ..Val::atom(code, ty) });
         }
         if ty == Ty::Rat {
@@ -2029,8 +2046,8 @@ impl<'a> Tr<'a> {
             bail!("derived table {alias} refers to an enclosing query (LATERAL)");
         }
         for o in &b.outs {
-            if o.nullable || o.val.approx.is_some() || o.val.nonlit_div {
-                bail!("derived table {alias}: column {} is NULL-able / a computed float / divides by a non-literal", o.sql);
+            if o.val.approx.is_some() || o.val.nonlit_div {
+                bail!("derived table {alias}: column {} is a computed float / divides by a non-literal", o.sql);
             }
         }
         let info = RelInfo {
@@ -2114,9 +2131,6 @@ impl<'a> Tr<'a> {
             }
             if v.nonlit_div {
                 bail!("WHERE divides by a non-literal: {e}");
-            }
-            if binders.iter().any(|b| b.optional && v.code.contains(&format!("{}->0", b.var))) {
-                bail!("WHERE reads the missing side of a LEFT JOIN ({e})");
             }
             where_.push(bool_code(&v));
         }
@@ -2495,7 +2509,7 @@ fn row_expr(c: &OutCol) -> String {
         _ => v.code.clone(),
     };
     if c.nullable {
-        format!("if {} {{ Some({base}) }} else {{ None }}", v.guard.clone().unwrap())
+        option_of(v.guard.as_deref().unwrap(), &base)
     } else {
         base
     }

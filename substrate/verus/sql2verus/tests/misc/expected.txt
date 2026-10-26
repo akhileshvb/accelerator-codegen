@@ -8,7 +8,7 @@ m05 ok
 m06 ok
 m07 ok
 m08 ok
-m09 refused column events.note is nullable; only NOT
+m09 ok
 m10 ok
 m11 ok
 m12 ok
@@ -35,14 +35,14 @@ m32 ok
 m41 ok
 m42 ok
 m43 ok
-m44 refused NULL-able value
+m44 ok
 m45 ok
 m46 ok
 m47 ok-spec an empty row type
 m48 ok
 m49 ok
 m50 refused UNION column
-m51 refused only NOT NULL columns
+m51 refused NOT LIKE on a possibly-NULL
 m52 ok
 m53 ok
 m54 ok

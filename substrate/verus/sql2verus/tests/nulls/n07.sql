@@ -1,1 +1,1 @@
-SELECT id FROM t WHERE c < 2.5 AND e >= 1.25
+SELECT a + 1 AS a1, COUNT(*) AS n FROM t GROUP BY a + 1 ORDER BY a1

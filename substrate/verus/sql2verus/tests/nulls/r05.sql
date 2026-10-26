@@ -1,0 +1,1 @@
+SELECT id FROM t WHERE a IN (SELECT a FROM u)

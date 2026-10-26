@@ -1,1 +1,1 @@
-SELECT b, SUM(c) AS s, MAX(d) AS m, MIN(ts) AS lo FROM t GROUP BY b ORDER BY b
+SELECT id FROM t WHERE a > 5 AND b IS NULL ORDER BY id
