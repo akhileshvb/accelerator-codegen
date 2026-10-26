@@ -69,7 +69,7 @@ def suite_path(repo_root: Path, benchmark: str, query: int) -> Path:
 
 def gate_settings(pipeline_config: Any, workload: dict[str, Any], query: int) -> dict[str, Any]:
     """What the gates need to run the query's suite (the gate context's `test_suite`)."""
-    from accel_pipeline.layout import workload_query_sql, workload_schema_constraints
+    from accel_pipeline.layout import query_sql_path, workload_schema_constraints
     from accel_pipeline.naming import aux_function_name, base_function_name
 
     root, bench = pipeline_config.repo_root, str(workload.get("benchmark_name", "tpch"))
@@ -77,7 +77,7 @@ def gate_settings(pipeline_config: Any, workload: dict[str, Any], query: int) ->
     constraints = workload_schema_constraints(bench)
     return {
         "dir": str(suite_path(root, bench, query)),
-        "query_sql": str(root / workload_query_sql(bench, query)),
+        "query_sql": str(root / query_sql_path(workload, query)),
         "function": (aux_function_name if aux else base_function_name)(bench, query),
         "arity": len(workload.get("parameters") or []),
         "param_names": [str(p["name"]) for p in workload.get("parameters") or []],

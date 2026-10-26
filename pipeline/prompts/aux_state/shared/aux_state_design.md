@@ -8,11 +8,11 @@ Aux state must materially accelerate the query and stay maintainable: the fast p
 
 | Anti-pattern | Why |
 |---|---|
-| Full-result cache | Entries encode the final answer or output rows with no reusable intermediate structure. |
+| Full-result cache | Entries hold the answer for particular parameter bindings: they serve only those bindings, and covering every binding would multiply the state. |
 | Negligible-speedup state | The fast path still does most of the query's work. |
 | Scan-for-scan swap | The base scan is replaced by a linear scan or merge over many partitions, buckets or nodes of similar asymptotic cost. |
 
-**Full-result cache test:** the stored payload is isomorphic to the answer at output-row grain, with no meaningful derivation left (rows per parameter binding, wide rows mirroring the output schema, a result set keyed only by parameters). Valid: sufficient statistics at state-partition grain (`month -> {sum_a, sum_b}`), per-partition scalars, coarse join intermediates, all needing a bounded final combine. Document `state_grain` vs `output_grain`.
+**Full-result cache test:** the state answers some bindings and not others: result sets keyed by parameter values, rows computed for a default or recently seen binding, or anything a new binding would have to add. Valid: one binding-independent state that serves every binding, with the parameter-dependent work (filter, range seek, grouping, top-k, final combine) done at read time. That state may sit at output-row grain: finished per-group aggregates that every binding selects from are allowed; decomposing them into partials only to avoid that grain adds work and buys nothing. Document `state_grain` vs `output_grain`.
 
 ## Parameter generality (every family)
 

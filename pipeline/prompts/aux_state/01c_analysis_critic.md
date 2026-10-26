@@ -38,7 +38,8 @@ key after the serial lookups, and nothing is one serial pass over the data.
 
 Entries per component times real bytes (container overhead included) at SF3000, plus the build's transient
 peak. Name any component that stores what no read or write needs, duplicates another, or has a materially
-smaller layout at the same read and write speed.
+smaller layout at the same read and write speed. Compare the total with the base tables the state summarizes: state that rivals them blows up at
+high scale factors, so shrinking it is a `revise` unless the analysis shows no smaller layout keeps the read and write cost.
 
 ## 4. Try to beat it
 

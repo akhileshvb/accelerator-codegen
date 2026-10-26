@@ -2,6 +2,7 @@ benchmark_name: sec_edgar
 query_number: 24
 engines: [duckdb]
 reference_sql_path: workloads/sec_edgar/q24.sql
+query_sql_path: workloads/sec_edgar/parameterized/q24.sql   # $n form of the query: test suites bind tuples to it
 parameters:   # spec: eval/bench/sec_edgar/params/q24.json (zero-arg function = defaults)
   - {name: year, type: BIGINT, default: 2023, domain: [2019, 2020, 2021, 2022, 2023, 2024]}
   - {name: uom, type: VARCHAR, default: "USD", domain: ["USD", "shares", "pure", "CAD", "CNY", "EUR"]}
