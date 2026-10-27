@@ -67,6 +67,9 @@ harnesses even though everything built. Typical holes:
 - Style, extra comments, unused includes
 - Per-query accelerators or kernels not generated yet — harnesses are shared
 - Demanding another engine's surfaces
+- Anything outside the three bootstrap paths above (`host.sh`, `api/`, `backend.cmake`, `eval/`, `substrate/`):
+  the bootstrap may not change it, so never ask it to. A defect there goes in `notes`; ask only for fixes inside
+  the harness paths (a harness that needs a missing shared source carries its own copy under them)
 
 ## Output (mandatory — last action)
 
