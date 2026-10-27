@@ -282,6 +282,9 @@ def _main(argv: list[str] | None = None) -> int:
     model_overrides = _parse_model_overrides(args.models)
 
     mode = args.mode or str(workload.get("mode") or "cpp")
+    if not args.dry_run:
+        from accel_pipeline.session import clear_stale_run
+        clear_stale_run(query_artifacts_dir(repo_root, query, workload=workload))
     if mode == "cpp" and not args.dry_run and pipeline_config.sandbox == "bwrap":
         _sandbox_preflight(pipeline_config, query)
     if mode == "cpp" and not args.dry_run and workload.get("workload_kind") == "aux_state":

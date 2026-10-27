@@ -5,7 +5,7 @@ from types import SimpleNamespace
 from accel_pipeline.backends.base import StageRunRequest, StageRunResult
 from accel_pipeline.config import SessionConfig
 from accel_pipeline.session import (
-    HEARTBEAT_FILE, MAIN, SessionStore, budget_footer, context_tokens, keep_alive, run_in_session,
+    HEARTBEAT_FILE, MAIN, SessionStore, budget_footer, clear_stale_run, context_tokens, keep_alive, run_in_session,
 )
 
 
@@ -123,6 +123,13 @@ def test_budget_footer_is_silent_then_asks_to_wrap_up_then_to_checkpoint(tmp_pat
     assert "Wrap up" in budget_footer(None, "x", 1)
     _run_file(tmp_path, 950)
     assert "about to be stopped" in budget_footer(None, "x", 1)
+
+
+def test_a_killed_run_leaves_no_footer_for_the_next_one(tmp_path, monkeypatch):
+    monkeypatch.setenv("ACCEL_PIPELINE_ART_DIR", str(tmp_path))
+    _run_file(tmp_path, 950)
+    clear_stale_run(tmp_path)
+    assert budget_footer(None, "x", 1) == ""
 
 
 def test_keep_alive_beats_while_a_tool_call_blocks_and_stops_after(tmp_path):

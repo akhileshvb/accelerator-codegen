@@ -177,6 +177,12 @@ def agent_run(art: Path | None, stage: str, pipeline_config: Any) -> Iterator[No
             (art / name).unlink(missing_ok=True)
 
 
+def clear_stale_run(art: Path) -> None:
+    """A run killed mid-stage leaves its agent markers (agent_run's cleanup never ran); none is live at startup."""
+    for name in (RUN_FILE, PROGRESS_FILE):
+        (art / name).unlink(missing_ok=True)
+
+
 def heartbeat(art: Path) -> None:
     (art / HEARTBEAT_FILE).touch()
 
