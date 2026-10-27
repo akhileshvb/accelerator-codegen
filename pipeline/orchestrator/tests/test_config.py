@@ -27,7 +27,7 @@ from accel_pipeline.config import (
     validate_engine_profile,
     workload_supported_engines,
 )
-from accel_pipeline.engine_backend.stage import _layer_extra_context, implementation_layers
+from accel_pipeline.engine_backend import _layer_extra_context, implementation_layers
 from accel_pipeline.prompts import render_prompt
 
 

@@ -6,7 +6,7 @@
 #   engine_canary        every check, the plain build
 #   engine_canary_asan   every check, our code under ASan + UBSan (embedded engines)
 #   engine_canary_tsan   the concurrency checks, our code under TSan (embedded engines)
-# ACCEL_CANARY_CHECKS ("id id ...") and ACCEL_CANARY_OWNERS ("layer ...") select a subset (quick_layer).
+# ACCEL_CANARY_CHECKS ("id id ...") and ACCEL_CANARY_OWNERS ("layer ...") select a subset.
 # A sanitizer report fails the gate with the report in the log: whether it is in the backend's code or
 # only in the engine's decides who must fix it (repair.py), never whether it counts.
 set -uo pipefail

@@ -140,7 +140,6 @@ GATE_SCRIPTS = {
     "engine_contract": "run_engine_contract.sh",
     "engine_adversarial": "run_engine_adversarial.sh",
     "engine_hit_contract": "run_engine_hit_contract.sh",
-    "engine_quick": "run_engine_quick.sh",
     "engine_canary": "run_engine_canary.sh",
     "engine_canary_asan": "run_engine_canary.sh",
     "engine_canary_tsan": "run_engine_canary.sh",

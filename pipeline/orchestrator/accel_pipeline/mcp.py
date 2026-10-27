@@ -92,7 +92,7 @@ from accel_pipeline.layout import (
 
 MODE_TOOLS = {
     "optimization": "accel_pipeline.optimization.tools",
-    "engine_backend": "accel_pipeline.engine_backend.tools",
+    "engine_backend": "accel_pipeline.engine_backend",
     "pack": "accel_pipeline.pack.tools",
     "verus": "accel_pipeline.verus.tools",
 }

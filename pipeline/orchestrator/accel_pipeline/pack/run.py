@@ -268,7 +268,7 @@ def run_pack(
 
     # One-shot host bootstrap per engine BEFORE parallel query workers.
     from accel_pipeline.config import load_model_config, load_pipeline_config
-    from accel_pipeline.engine_backend.host_bootstrap import ensure_host_bootstrap_for_pack
+    from accel_pipeline.engine_backend import ensure_host_bootstrap_for_pack
 
     pipeline_cfg_path = pipeline_config_path or pack.get("pipeline_config")
     models_cfg_path = models_config or pack.get("models_config")
@@ -281,7 +281,7 @@ def run_pack(
         repo_root=repo_root,
     )
     # Backend defects earlier query runs recorded go back to the engine's backend run first.
-    from accel_pipeline.engine_backend.backend_requests import reopen_engine_backend
+    from accel_pipeline.engine_backend import reopen_engine_backend
 
     for engine in sorted({str(q.engine) for q in queries if q.engine}):
         reopen_engine_backend(pipeline_config, model_config, engine, dry_run=dry_run)

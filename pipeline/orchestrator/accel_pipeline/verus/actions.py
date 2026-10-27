@@ -1129,7 +1129,7 @@ def playbook_append(ctx: VerusContext, section: str, title: str, body: str, evid
 
 def backend_addition_record(ctx: VerusContext, engine: str, helper: str, reason: str) -> dict[str, Any]:
     """Log a request for the engine_backend run; query runs never write backends/ themselves."""
-    from accel_pipeline.engine_backend.backend_requests import record, requests_path
+    from accel_pipeline.engine_backend import record, requests_path
 
     repo_root = Path(ctx.pipeline_root).parent
     with file_lock(requests_path(repo_root, engine).with_suffix(".lock")):

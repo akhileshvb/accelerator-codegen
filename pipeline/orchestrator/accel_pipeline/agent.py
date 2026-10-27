@@ -654,7 +654,7 @@ CHECKS_FILE = "check_signatures.json"  # written by the MCP server: {check: sign
 BLOCKER_FILE = "blocker.md"
 DATA_LOG = "data_queries.jsonl"  # the data tools in mcp.py
 
-CHECK_TOOLS = frozenset({"quick_check", "quick_layer", "request_gate", "run_engine_build", "run_layer_gate"})
+CHECK_TOOLS = frozenset({"quick_check", "request_gate", "run_engine_build", "run_layer_gate"})
 STAGE_ARTIFACTS = ("analysis*.json", "experiment_log.md", "layer_critique_*", "test_suite_change_request*")
 DATA_STAGES = frozenset({"analysis", "analysis_critic"})
 GUARDED_READ_LIMIT = 10

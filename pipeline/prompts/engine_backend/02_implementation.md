@@ -90,8 +90,6 @@ Do **not** implement the whole layer and then hope. After each small increment
 `accel_pipeline`. These are **tools**, not resources — do **not**
 `list_mcp_resources`. Preferred calls (zero-arg):
 
-- `quick_layer()` → seconds: incremental build of `{{layer_cmake_target}}`, ONE run of the harness, and (once
-  the canary binding exists) the canary checks this layer owns. Call it after every edit; it is not a gate of record
 - `run_engine_build()` → official `engine_build`
 - `run_layer_gate()` → official `{{layer_gate}}` for this `impl_*` stage (repeats the harness to catch races)
 

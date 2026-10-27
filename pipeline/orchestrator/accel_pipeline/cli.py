@@ -327,7 +327,7 @@ def _run_main(argv: list[str] | None = None) -> int:
         require(Probe(pipeline_config, model_config, workload, args.workload, query))
 
     if workload.get("workload_kind") == "engine_backend":
-        from accel_pipeline.engine_backend import stage as engine_backend_stage
+        from accel_pipeline import engine_backend as engine_backend_stage
 
         print(f"=== engine_backend workload: {args.workload} ===", file=sys.stderr)
         engine_backend_stage.run_engine_pipeline(
@@ -381,8 +381,7 @@ def _run_main(argv: list[str] | None = None) -> int:
 
     # One-shot query-host bootstrap (engines without a query-scoped harness) before per-query stages.
     if args.stage in {"all", "host_bootstrap"}:
-        from accel_pipeline.engine_backend.backend_requests import reopen_engine_backend
-        from accel_pipeline.engine_backend.host_bootstrap import ensure_host_bootstrap_for_workload
+        from accel_pipeline.engine_backend import ensure_host_bootstrap_for_workload, reopen_engine_backend
 
         if pipeline_config.engine_name and repo_root == primary_root:
             # Backend defects earlier query runs recorded go back to the engine's backend run first
