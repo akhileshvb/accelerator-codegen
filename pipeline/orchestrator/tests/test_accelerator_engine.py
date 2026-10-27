@@ -187,7 +187,7 @@ def test_every_engine_follows_one_harness_naming_convention():
     for engine in ("duckdb", "postgres", "mysql"):
         host = engine_host_conventions(engine, "tpch", 7)
         assert host["differential_binary"] == f"test_{engine}_tpch_differential"
-        assert host["differential_source"] == f"backends/{engine}/tests/harness/test_{engine}_tpch_differential.cpp"
+        assert host["differential_source"] == f"backends/{engine}/tests/harness/test_{engine}_differential.cpp"
         assert host["multi_conn_target"] == f"test_{engine}_aux_multi_connection_stress"
         assert host["cross_accel_target"] == f"test_{engine}_cross_accel"
         assert host["bench_target"] == f"benchmark_{engine}_tpch_aux"

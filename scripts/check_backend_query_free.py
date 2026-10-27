@@ -16,9 +16,10 @@ edgar) may appear there, comments and README included.  A small allowlist
 
 usage: scripts/check_backend_query_free.py [--engine duckdb|postgres|mysql] [--json]
                                            [--no-prims-vocab | --prims-only] [--prims-file PATH ...]
-                                           [--file PATH ...]
+                                           [--file PATH ...] [--bench-free]
 Exit 1 if any backend/substrate file names or dispatches on a query, or a prims
-file uses workload vocabulary.  --file checks only the given files (query-free rules).
+file uses workload vocabulary.  --file checks only the given files (query-free rules);
+with --bench-free they may not name a benchmark either (any directory under workloads/).
 """
 
 from __future__ import annotations
@@ -156,11 +157,29 @@ def scan_prims(files: list[Path] | None = None, root: Path = ROOT) -> list[dict]
 COMMENT_LINE = re.compile(r"^\s*(?://|/\*|\*|--|#(?!include|if|ifdef|ifndef|define|endif|else|elif))")
 
 
-def strip_comment(line: str, sql: bool) -> str:
+def strip_comment(line: str, sql: bool, marker: str = "") -> str:
     if COMMENT_LINE.match(line):
         return ""
-    cut = line.find("--" if sql else "//")
+    cut = line.find(marker or ("--" if sql else "//"))
     return line if cut < 0 else line[:cut]
+
+
+def benchmark_names(root: Path = ROOT) -> re.Pattern[str]:
+    """Every benchmark (a directory under workloads/), as written in paths and identifiers: sec_edgar, SecEdgar."""
+    names = {p.name for p in (root / "workloads").iterdir() if p.is_dir()}
+    forms = sorted(names | {n.replace("_", "") for n in names}, key=len, reverse=True)
+    return re.compile("|".join(map(re.escape, forms)), re.I)
+
+
+def scan_benchmark_names(path: Path, label: str, pattern: re.Pattern[str]) -> list[dict]:
+    """Benchmark names in one file's code (comments ignored): the harnesses take the benchmark as an input."""
+    marker = "#" if path.suffix == ".cmake" else ""
+    hits = []
+    for no, raw in enumerate(path.read_text(encoding="utf-8", errors="replace").splitlines()):
+        m = pattern.search(strip_comment(raw, path.suffix == ".sql", marker))
+        if m:
+            hits.append({"file": label, "line": no + 1, "kind": "benchmark", "match": m.group(0), "text": raw.strip()[:160]})
+    return hits
 
 
 # ---- dispatch on a query number ----------------------------------------------
@@ -228,14 +247,17 @@ def scan_text(text: str, label: str, *, sql: bool = False) -> list[dict]:
     return hits
 
 
-def scan_files(paths: list[Path]) -> list[dict]:
+def scan_files(paths: list[Path], bench_free: bool = False) -> list[dict]:
     hits: list[dict] = []
+    benchmarks = benchmark_names() if bench_free else None
     for path in paths:
         try:
             label = str(path.resolve().relative_to(ROOT))
         except ValueError:
             label = str(path)
         hits += scan_text(path.read_text(encoding="utf-8", errors="replace"), label, sql=path.suffix == ".sql")
+        if benchmarks:
+            hits += scan_benchmark_names(path, label, benchmarks)
     return hits
 
 
@@ -268,12 +290,13 @@ def main() -> int:
                     help="check only these files for workload vocabulary (candidate prims files)")
     ap.add_argument("--file", action="append", type=Path,
                     help="check only these files for query names / query-number dispatch")
+    ap.add_argument("--bench-free", action="store_true", help="with --file: the files may not name a benchmark either")
     args = ap.parse_args()
     if args.file:
-        fhits = scan_files([p.resolve() for p in args.file])
+        fhits = scan_files([p.resolve() for p in args.file], bench_free=args.bench_free)
         for h in fhits:
             print(f"{h['file']}:{h['line']}: {h['kind']}: {h['match']}: {h['text']}")
-        print(f"{len(fhits)} query reference(s)" if fhits else "files name no query")
+        print(f"{len(fhits)} query or benchmark reference(s)" if fhits else "files name no query")
         return 1 if fhits else 0
     if args.prims_file:
         vhits = scan_prims([p.resolve() for p in args.prims_file])

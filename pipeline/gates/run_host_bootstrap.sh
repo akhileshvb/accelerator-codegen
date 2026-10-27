@@ -29,8 +29,8 @@ done
 for file in "${DIFF_SOURCE}" "backends/${ENGINE_NAME}/tests/harness.cmake"; do
   [[ -f "${ROOT}/${file}" ]] || finish fail "missing ${file}. ${HOST_HINT}" ""
 done
-grep -Eq "aux/(register|finalize)\.cpp" "${ROOT}/backends/${ENGINE_NAME}/tests/harness.cmake" ||
-  finish fail "harness.cmake declares no module test: glob accelerators/*/q*/${ENGINE_NAME}/aux/register.cpp (or finalize.cpp) into test_<bench>_q<N>_aux (query_host_bootstrap.md)" ""
+grep -Eq 'accelerators/\*/q\*/[^/"]+/aux/(register|finalize)\.cpp' "${ROOT}/backends/${ENGINE_NAME}/tests/harness.cmake" ||
+  finish fail "harness.cmake declares no module test for every benchmark: glob accelerators/*/q*/${ENGINE_NAME}/aux/finalize.cpp into test_<bench>_q<N>_aux (query_host_bootstrap.md)" ""
 
 HARNESS_FILES=()
 while IFS= read -r file; do HARNESS_FILES+=("${file}"); done < <(cd "${ROOT}" &&
@@ -38,12 +38,8 @@ while IFS= read -r file; do HARNESS_FILES+=("${file}"); done < <(cd "${ROOT}" &&
     -type f \( -name '*.cpp' -o -name '*.hpp' -o -name '*.cmake' \) 2>/dev/null | sort)
 FILE_ARGS=()
 for file in "${HARNESS_FILES[@]}"; do FILE_ARGS+=(--file "${file}"); done
-if ! QUERY_FREE_LOG="$(cd "${ROOT}" && python3 scripts/check_backend_query_free.py "${FILE_ARGS[@]}" 2>&1)"; then
-  finish fail "the harnesses must be workload-generic (no query names or query-number dispatch)" "${QUERY_FREE_LOG}"
-fi
-
-if ! engine_ready "${TARGETS[@]}"; then
-  finish fail "${ENGINE_FAIL}: fix the harness sources / harness.cmake" "${ENGINE_LOG}"
+if ! QUERY_FREE_LOG="$(cd "${ROOT}" && python3 scripts/check_backend_query_free.py "${FILE_ARGS[@]}" --bench-free 2>&1)"; then
+  finish fail "the harnesses must be workload-generic: no query or benchmark names, no query-number dispatch (the benchmark and query are inputs)" "${QUERY_FREE_LOG}"
 fi
 
 REGISTERED_QUERY=""
@@ -52,6 +48,13 @@ for register in "${ROOT}"/accelerators/"${BENCHMARK_NAME}"/q*/"${ENGINE_NAME}"/a
   REGISTERED_QUERY="$(sed -E 's#.*/q([0-9]+)/.*#\1#' <<<"${register}")"
   break
 done
+# The module test of the registered query (one target per query that has an aux module).
+[[ -z "${REGISTERED_QUERY}" ]] || TARGETS+=("test_${BENCHMARK_NAME}_q${REGISTERED_QUERY}_aux")
+
+if ! engine_ready "${TARGETS[@]}"; then
+  finish fail "${ENGINE_FAIL}: fix the harness sources / harness.cmake" "${ENGINE_LOG}"
+fi
+
 
 SMOKE_LOG=""
 SMOKES="[]"
@@ -70,7 +73,7 @@ if [[ -n "${REGISTERED_QUERY}" ]]; then
 else
   smoke "${DIFF_BINARY}" --help
 fi
-for target in "${MULTI_CONN_TARGET}" "${CROSS_ACCEL_TARGET}" "${HARNESS_BENCH_TARGET}" "${HARNESS_CALIBRATE_TARGET}"; do
+for target in "${TARGETS[@]:1}"; do
   smoke "${target}" --help
 done
 
