@@ -17,6 +17,7 @@ from typing import Any, Callable, TypeVar
 from accel_pipeline.config import ModelConfig, PipelineConfig, load_run_workload
 from accel_pipeline.failure import (
     AGENT_BLOCKER,
+    HARNESS_MISSING,
     PROVIDER_CREDITS,
     PROVIDER_FLAKE,
     Failure,
@@ -123,6 +124,8 @@ def run_with_repair(ctx: RepairCtx, attempt: Callable[[], T], *, gates: list[str
             failure = replace(failure, kind="code", infra_reason=None)  # nothing left to check: the agent adapts
         if failure.infra_reason == PROVIDER_CREDITS:
             raise stop_stage(ctx, failure, failure.summary)
+        if failure.infra_reason == HARNESS_MISSING:
+            raise stop_stage(ctx, failure, "a workload-harness target is missing: run `--stage host_bootstrap`, then `--resume`")
         if failure.infra_reason == PROVIDER_FLAKE:
             flakes += 1
             if flakes > cfg.provider_retries:
@@ -207,14 +210,15 @@ _VOLATILE = re.compile(r"0x[0-9a-fA-F]+|\d+")
 
 @dataclass
 class _Stall:
-    """The same failure source and summary, round after round; the advisor is consulted once per stall."""
+    """The same failure source, summary and last log line, round after round; the advisor is consulted once per stall."""
 
     signature: str = ""
     rounds: int = 0
     consulted: bool = False
 
     def seen(self, failure: Failure) -> None:
-        signature = f"{failure.source}:{_VOLATILE.sub('#', failure.summary)}"
+        ending = next((line for line in reversed(failure.evidence.splitlines()) if line.strip()), "")
+        signature = _VOLATILE.sub("#", f"{failure.source}:{failure.summary}:{ending}")
         if signature == self.signature:
             self.rounds += 1
         else:

@@ -52,8 +52,8 @@ accelerators/<bench>/q{N}/
       finalize.hpp, finalize.cpp   # optional payload helpers
       register.cpp                 # the query's registrars, where the engine has per-query registration files
   tests/              # test_{bench}_q{N}.cpp, q{N}_manifest.hpp (the aux module test is shared: unit_test_contract.md)
-  bench/              # benchmark_q{N}.cpp, benchmark_q{N}_aux.cpp, calibrate_q{N}_aux_cost_model.cpp
-  config/             # q{N}_aux_cost_model[_<engine>][_sf<N>].json (sec_edgar: sec_edgar_q{N}_aux_cost_model.json; see sec_edgar/aux_state_notes.md)
+  bench/              # benchmark_q{N}.cpp (base kernels; the aux bench and calibrator are the backend's shared harness)
+  config/             # the cost models: <stem>[_<engine>][_sf<N>].json, <stem> as cost_model.hpp names it
     verus/            # Verus variants (ACCEL_AUX_COST_MODEL_DIR=verus selects them)
   verus_kit/<crate>/  # Verus accelerator: glue, C header, kernel crate
 ```
@@ -71,7 +71,7 @@ Rules for the files above:
 
 `aux_correctness` also runs the iteration-scale differential against the engine's results. `aux/module.cpp` follows `read_path_scaffold.md`.
 
-CMake: neither the root `CMakeLists.txt` nor `cmake/` is edited. Each `{engine}/aux/finalize.cpp` is discovered (`accel_register_aux_state_queries`, `cmake/AuxState.cmake`); bench/calibrate targets are the backend's shared harness; a benchmark's targets live in `accelerators/{bench}/build.cmake`, an engine's in `backends/{engine}/backend.cmake` (globs per `cmake/Backend.cmake`).
+CMake: neither the root `CMakeLists.txt` nor `cmake/` is edited. Each `{engine}/aux/finalize.cpp` is discovered (`accel_register_aux_state_queries`, `cmake/AuxState.cmake`); the harness targets (differential, multi-connection, cross-accelerator, bench, calibrate, aux module test) are host_bootstrap's, in `backends/{engine}/tests/harness.cmake`; a benchmark's own extra targets live in `accelerators/{bench}/build.cmake`, which never names a harness target (the gates refuse a tree where it does), and an engine's in `backends/{engine}/backend.cmake` (globs per `cmake/Backend.cmake`).
 
 ## Registration: the query registers itself (backends name no query)
 

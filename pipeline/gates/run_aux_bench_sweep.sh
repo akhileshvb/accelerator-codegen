@@ -89,7 +89,8 @@ export ACCEL_AUX_BENCH_BASELINE_CACHE="${ACCEL_AUX_BENCH_BASELINE_CACHE:-${ROOT}
 # The acceptance sweep draws its write frequencies from the suite's write_mix.yaml (0% always), anew for each of
 # bench_repeats repeats; the seeds are recorded. Optimization sweeps and trees without a suite use the fixed list.
 # A bench that runs several points in one process (host.sh info: bench_multi_point) gets all the points of every
-# repeat in one call and builds once; the rows come back in order and are split into the repeats.
+# repeat in one call (ACCEL_AUX_WRITE_FREQUENCIES, no percent argument) and builds once; the rows come back in order
+# and are split into the repeats. Any other bench is called once per point, the percent as its argument.
 SWEEP_LOG="${OUT}/aux_bench_sweep.log"
 mkdir -p "${ACCEL_AUX_BENCH_WORK_DIR}"
 : > "${SWEEP_LOG}"
@@ -133,8 +134,10 @@ for suite in "${SUITE_LIST[@]}"; do
   : > "${SUITE_ROWS}"
   for ((first = 0; first < ${#ALL_FREQS[@]}; first += POINTS_PER_CALL)); do
     points=("${ALL_FREQS[@]:first:POINTS_PER_CALL}")
-    export ACCEL_AUX_WRITE_FREQUENCIES="$(IFS=,; echo "${points[*]}")"   # the harness runs the frequencies of this variable
-    engine_measure "${BENCH_TARGET}" --query "${QUERY}" "${points[0]}"
+    export ACCEL_AUX_WRITE_FREQUENCIES="$(IFS=,; echo "${points[*]}")"
+    percent=()
+    [[ ${POINTS_PER_CALL} -gt 1 ]] || percent=("${points[0]}")
+    engine_measure "${BENCH_TARGET}" --query "${QUERY}" "${percent[@]}"
     printf '%s\n' "${LOG}" >> "${SWEEP_LOG}"
     [[ ${RC} -eq 0 ]] || SWEEP_RC=${RC}
     # keep the CSV rows (one header), drop banners
@@ -208,16 +211,14 @@ expected_rows = [int(n) for n in "${FREQ_COUNTS[*]}".split()]
 if int("${SWEEP_RC}") != 0:
     status = "fail"
     notes.append("bench sweep script failed")
+printed = next((line for line in log_tail.splitlines() if line.startswith("suite,")), "")
 for one, expected in zip(summaries, expected_rows):
-    if one.get("status") in ("empty", "missing_csv"):
-        status = "fail"
-        notes.append(f"sweep status={one.get('status')}")
-    elif one.get("row_count", 0) < expected:
+    if one.get("row_count", 0) < expected:
         status = "fail"
         notes.append(
-            f"expected {expected} sweep rows, got {one.get('row_count', 0)} "
-            "(benchmark must emit CSV with workload_speedup per write frequency)"
-        )
+            f"expected {expected} sweep rows, got {one.get('row_count', 0)}: the bench must print one row per write "
+            "frequency of ACCEL_AUX_WRITE_FREQUENCIES, at least 10 columns under the header of bench_sweep_contract.md"
+            + (f" (it printed the header `{printed}`)" if printed else " (it printed no `suite,` header)"))
 
 threads1_csv, threadsn_csv = pathlib.Path("${THREADS1_CSV}"), pathlib.Path("${THREADSN_CSV}")
 scaling = {}
@@ -239,6 +240,7 @@ gate = {
     "repeats": summary.get("repeats") or draws,
     "score_spread": summary.get("score_spread", {}),
     "thread_scaling": scaling,
+    "reason": "; ".join(dict.fromkeys(notes)),
     "notes": "; ".join(notes) if notes else "sweep complete",
     "log_tail": log_tail,
 }

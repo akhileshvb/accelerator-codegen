@@ -27,44 +27,14 @@ def _implementation_user_message(
     if not aux_module.is_file():
         return "Implement the accelerator, tests, and benchmark. Build and run correctness tests."
 
-    from accel_pipeline.config import engine_host_conventions, sanitize_engine_name
-
-    test_target = paths["aux_test_target"]
-    bench_target = paths["aux_bench_target"]
-    calibrate_target = paths["aux_calibrate_target"]
-    q = query
-    build = pipeline_config.build_dir.name
-    engine = sanitize_engine_name(str(workload.get("engine_name") or ""))
-    host = dict(workload.get("engine_host") or engine_host_conventions(engine, repo_root=pipeline_config.repo_root))
-    diff_bin = str(host["differential_binary"])
-    diff_cmd = str(host["differential_command"])
-    diff_src = str(host["differential_source"])
-    multi = str(host["multi_conn_target"])
-    diff_step = (
-        f"3. ./{build}/{diff_bin} {q}\n"
-        f"   (the harness {diff_src} is made by host_bootstrap; {diff_cmd})\n"
-    )
-    trailing = (
-        f"4. MCP run_multi_connection until pass ({multi})\n"
-        "Keep fixing and re-running steps 3–4 until both pass. "
-    )
     return (
-        "RESUME partial aux implementation: sources already exist on disk from a prior run. "
-        "Do NOT rewrite module.hpp/module.cpp from scratch or explore cmake/ (never edited).\n"
-        f"Host engine: {engine}. Registered CMake targets: {test_target}, {bench_target}, "
-        f"{calibrate_target}, {diff_bin}.\n"
-        "Correctness requires SF1 SQL differential on the engine-selected host "
-        "(see unit_test_contract.md / query_host_bootstrap.md / engine_host in gate context).\n"
-        f"Register this query on every shared surface peer queries use (catalog / allowlists / "
-        f"{engine} SQL entrypoint / helpers) — search a neighbor query to find sites.\n"
-        "Build and test with these commands (this worker's build dir):\n"
-        f"1. cmake --build {build} --target {test_target} {bench_target} {diff_bin} -j$(nproc)\n"
-        f"2. ctest --test-dir {build} -R tpch_q{q}_aux --output-on-failure\n"
-        f"{diff_step}"
-        "   (or MCP run_correctness / request_gate aux_correctness — preferred)\n"
-        f"{trailing}"
-        "Fix compile/test failures with minimal edits to the generated aux + shared registration appends. "
-        "Do not weaken unit fixtures to hide kernel bugs."
+        "RESUME partial aux implementation: the query's sources already exist on disk from a prior run. Continue "
+        "from them; do not rewrite the module from scratch.\n"
+        "Validate with `quick_check` after each edit, then the gates (`request_gate`, e.g. `aux_exit`). The workload "
+        "harnesses (differential, multi-connection, cross-accelerator, bench, calibrate, module test) and their "
+        "targets belong to host_bootstrap: build them through the gate tools, never define or redirect them. If one "
+        "is missing or broken, call `report_blocker` with the evidence.\n"
+        "Fix failures with minimal edits to the query's own files. Do not weaken tests or fixtures to hide bugs."
     )
 
 

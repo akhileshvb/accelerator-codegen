@@ -87,7 +87,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--engine", default="duckdb")
     parser.add_argument("--rev", default="HEAD")
     parser.add_argument("--work", type=Path, default=None)
-    parser.add_argument("--timeout", type=float, default=float(os.environ.get("ACCEL_CANARY_TIMEOUT_SEC", 4 * 3600)))
+    parser.add_argument("--timeout", type=float, default=float(os.environ.get("ACCEL_CANARY_TIMEOUT_SEC", 12 * 3600)))
     parser.add_argument("--probe-models", action="store_true")
     parser.add_argument("--stage", default="all", help="run this stage only (e.g. optimization again, on --resume)")
     parser.add_argument("--until", default=None, help="pause after this stage; --resume continues")

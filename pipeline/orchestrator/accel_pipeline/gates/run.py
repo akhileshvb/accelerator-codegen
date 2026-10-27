@@ -131,24 +131,18 @@ GATES_ALLOW_SKIP = frozenset(
 
 
 def gate_failure_message(result: GateResult) -> str:
-    data = result.data
-    detail = str(data.get("notes") or data.get("reason") or "").strip()
-    tail = log_tail_for_agent(data, max_chars=500)
-    rc = data.get("returncode")
-    if rc is None:
-        rc = data.get("exit_code")
-    rc_bit = ""
-    if rc is not None and str(rc).lstrip("-").isdigit():
-        rc_bit = describe_returncode(int(rc))
-    parts = [p for p in (detail, rc_bit, tail) if p]
-    # De-dupe if tail already contains notes.
-    uniq: list[str] = []
-    for part in parts:
-        if not any(part in seen for seen in uniq):
-            uniq.append(part)
-    if uniq:
-        return f"gate {result.name} {result.status}: " + " | ".join(uniq)
-    return f"gate {result.name} {result.status}"
+    """One line: the gate, its reason and how its run ended (the traces go in render_evidence)."""
+    parts = [p for p in (_reason(result.data), describe_returncode(_exit_code(result.data))) if p]
+    return f"gate {result.name} {result.status}" + (": " + " | ".join(parts) if parts else "")
+
+
+def _reason(data: Mapping[str, Any]) -> str:
+    return str(data.get("reason") or data.get("notes") or "").strip()
+
+
+def _exit_code(data: Mapping[str, Any]) -> int | None:
+    rc = data.get("returncode", data.get("exit_code"))
+    return int(rc) if rc is not None and str(rc).lstrip("-").isdigit() else None
 
 
 def require_gate_pass(result: GateResult, *, allow_skip: bool = False) -> None:
@@ -280,7 +274,8 @@ def run_gate(
     art = query_artifacts_dir(pipeline_config.repo_root, query, workload=workload)
     out_json = (out_dir or gates_dir_for_query(art)) / f"{gate_name}.json"
     out_json.parent.mkdir(parents=True, exist_ok=True)
-    out_json.with_suffix(".phases").unlink(missing_ok=True)
+    for sidecar in (".phases", ".run.json", ".run.json.stacks"):
+        out_json.with_suffix(sidecar).unlink(missing_ok=True)
     out_json.unlink(missing_ok=True)  # a gate that dies before writing never reads as its last result
 
     gate_env = os.environ.copy()
@@ -617,28 +612,12 @@ def format_reloop_failure_sections(
     max_chars: int = 8000,
 ) -> list[str]:
     """Markdown sections appended to layer/host-bootstrap gate-fail prompts."""
-    rc = data.get("returncode")
-    if rc is None:
-        rc = data.get("exit_code")
-    desc = ""
-    if rc is not None and str(rc).lstrip("-").isdigit():
-        desc = describe_returncode(int(rc))
-    notes = str(data.get("notes") or data.get("reason") or "").strip()
-    tail = log_tail_for_agent(data, max_chars=max_chars)
-    lines = [
-        "",
-        "### Notes",
-        notes or "(none)",
-        "",
-        "### returncode",
-        desc or "(unset)",
-        "",
-        "### log_tail",
-        "```",
-        tail,
-        "```",
-    ]
-    return lines
+    from accel_pipeline.failure import render_evidence
+
+    head = " | ".join(p for p in (_reason(data), describe_returncode(_exit_code(data))) if p)
+    return ["", head or "(no reason recorded)",
+            *render_evidence(str(data.get("stacks") or ""), log_tail_for_agent(data, max_chars=max_chars),
+                             max_chars=max_chars)]
 
 
 # --- the build directory the gates build in

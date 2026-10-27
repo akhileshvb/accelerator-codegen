@@ -64,7 +64,7 @@ def test_the_run_limit_follows_the_measured_build_time(tmp_path):
                              env={"PATH": "/usr/bin:/bin", "GATE_OUT": str(gates), **env})
         return int(out.stdout)
 
-    assert limit("") == 900  # never measured
-    assert limit("105.5") == 8 * 105 + 300 + 4  # 8 builds and a margin: 1144 s, not the fixed 900
-    assert limit("1.2") == 309 and limit("0.01") == 300
+    assert limit("") == 3600  # never measured (phases side by side start before a build was timed)
+    assert limit("300") == 8 * 300 + 600  # 8 builds and a margin
+    assert limit("1.2") == 1800 and limit("0.01") == 1800
     assert limit("105.5", ACCEL_GATE_RUN_TIMEOUT="77") == 77

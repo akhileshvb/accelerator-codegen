@@ -409,10 +409,9 @@ def resolve_workload_paths(
     eng_seg = f"{engine}/" if engine else ""
     source_subdir = str(workload.get("source_subdir", f"{benchmark}/q{q}/{eng_seg}base/single-threaded"))
     generated_base = f"{qdir}/{eng_seg}base/single-threaded"
-    # Every engine ships one query-parameterised bench/calibrate harness per benchmark that has one
-    # (backends/<engine>/bench/, made by host_bootstrap); the others keep per-query targets.
+    # The base kernels' bench: one query-parameterised target per engine for the benchmarks listed in
+    # shared_bench_harness, else one per query. (Aux targets are always the host_bootstrap harness's.)
     shared_harness = bool(engine) and kind != "engine_backend" and benchmark in pipeline_config.shared_bench_harness
-    harness = harness_targets(engine, benchmark) if shared_harness else {}
     bench_target = f"benchmark_{engine}_{benchmark}_q{q}" if shared_harness else naming.benchmark_target(benchmark, q)
     test_target = naming.unit_test_target(benchmark, q)
 
@@ -449,9 +448,10 @@ def resolve_workload_paths(
             {
                 "aux_function_name": naming.aux_function_name(benchmark, q),
                 "aux_test_target": f"{test_target}_aux",
-                "aux_bench_target": harness.get("bench_target") or f"{naming.benchmark_target(benchmark, q)}_aux",
+                # host_bootstrap makes every engine's harnesses for every benchmark (benchmark-free sources)
+                "aux_bench_target": harness_targets(engine, benchmark)["bench_target"],
                 "aux_hybrid_bench_target": naming.hybrid_benchmark_target(benchmark, q),
-                "aux_calibrate_target": harness.get("calibrate_target") or f"calibrate_{benchmark}_q{q}_aux_cost_model",
+                "aux_calibrate_target": harness_targets(engine, benchmark)["calibrate_target"],
                 "aux_ctest_smoke_regex": f"^{naming.aux_smoke_ctest_name(benchmark, q)}$",
                 "aux_state_subdir": aux_state_subdir,
                 # The query-wide default model (cost_model.hpp's location); an engine with its

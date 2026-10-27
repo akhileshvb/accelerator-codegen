@@ -20,6 +20,7 @@ if TYPE_CHECKING:
 PROVIDER_FLAKE = "provider_flake"  # the infra_reason of a network or provider error: the agent never ran
 AGENT_BLOCKER = "agent_reported_blocker"  # the infra_reason of a blocker the agent handed to the operator
 PROVIDER_CREDITS = "provider_out_of_credits"  # the infra_reason of a 402 from the provider: retrying cannot help
+HARNESS_MISSING = "harness_missing"  # a harness target host_bootstrap should have made is not there: its stage, not this one
 FailureKind = Literal["code", "infra", "timeout", "measurement", "orchestrator"]
 
 
@@ -33,6 +34,7 @@ class Failure:
     reproduce: str = ""
     infra_reason: str | None = None
     diagnosis: list[str] = field(default_factory=list)
+    stacks: str = ""  # every thread's stack when a run hit its deadline (gates/run_outcome.py)
 
 
 class StageFailure(Exception):
@@ -48,9 +50,17 @@ def render_failure(f: Failure) -> str:
         lines += ["", *(f"- {d}" for d in f.diagnosis)]
     if f.reproduce:
         lines += ["", f"Reproduce: `{f.reproduce}`"]
-    if f.evidence:
-        lines += ["", "```", f.evidence[-6000:], "```"]
-    return "\n".join(lines)
+    return "\n".join(lines + render_evidence(f.stacks, f.evidence))
+
+
+def render_evidence(stacks: str, log_tail: str, *, max_chars: int = 6000) -> list[str]:
+    """The traces of a failure: the thread stacks at a deadline, then the end of the log."""
+    lines = []
+    if stacks:
+        lines += ["", "Thread stacks at the deadline:", "```", stacks, "```"]
+    if log_tail:
+        lines += ["", "Log tail:", "```", log_tail[-max_chars:], "```"]
+    return lines
 
 
 _CRASH_SIGNALS = re.compile(
@@ -61,14 +71,15 @@ _CRASH_SIGNALS = re.compile(
 )
 
 
+def crash_lines(log_tail: str, *, max_lines: int = 40) -> list[str]:
+    """The log lines that name a crash, an error or a failed test."""
+    return [line.strip() for line in log_tail.splitlines() if _CRASH_SIGNALS.search(line)][-max_lines:]
+
+
 def extract_crash_highlights(log_tail: str, *, max_lines: int = 40) -> list[str]:
-    if not log_tail:
-        return []
-    lines = log_tail.splitlines()
-    highlighted = [line.strip() for line in lines if _CRASH_SIGNALS.search(line)]
-    if highlighted:
-        return highlighted[-max_lines:]
-    return [line.strip() for line in lines[-max_lines:] if line.strip()]
+    """crash_lines, else the last lines of the log."""
+    return crash_lines(log_tail, max_lines=max_lines) or [
+        line.strip() for line in log_tail.splitlines()[-max_lines:] if line.strip()]
 
 
 def gate_log_tail(gate_data: dict[str, Any], *, max_chars: int = 6000) -> str:
@@ -92,19 +103,16 @@ def failure_from_gate(
     workload = workload or {}
     kind, reason = classify(result.name, result.data, workload, repo_root, load_factor=load_factor)
     tail = gate_log_tail(result.data)
-    reproduce = str(result.data.get("reproduce") or "")
-    if not reproduce and workload.get("test_target"):
-        reproduce = (f"cmake --build build-release --target {workload['test_target']} -j$(nproc) && "
-                     f"ctest -R {workload.get('ctest_smoke_regex', '')}")
     return Failure(
         kind=kind,  # type: ignore[arg-type]
         stage=stage,
         source=f"gate:{result.name}",
         summary=gate_failure_message(result),
         evidence=tail,
-        reproduce=reproduce,
+        reproduce=str(result.data.get("reproduce") or f'request_gate("{result.name}")'),
         infra_reason=reason,
-        diagnosis=_racy_diagnosis(result.data) + [f"`{line}`" for line in extract_crash_highlights(tail, max_lines=15)],
+        diagnosis=_racy_diagnosis(result.data) + [f"`{line}`" for line in crash_lines(tail, max_lines=15)],
+        stacks=str(result.data.get("stacks") or ""),
     )
 
 
@@ -259,6 +267,8 @@ def classify(
         query = int(workload["query_number"])
     if _HARNESS_ERROR.search(text):
         return "infra", "harness_error"
+    if gate_name != "host_bootstrap" and missing_harness_target(text, workload):  # making them is that gate's stage
+        return "infra", HARNESS_MISSING
     if _MISSING_PRODUCER.search(text):
         return "infra", "missing_producer"
     if gate_name == "test_suite_validate" and _REGISTRATION_ERROR.search(text):
@@ -273,6 +283,22 @@ def classify(
     if (_TIMEOUT.search(text) or _returncode(data) in _TIMEOUT_RC) and _loaded(repo_root, load_factor, text):
         return "infra", "timeout_under_load"
     return "code", None
+
+
+_UNKNOWN_TARGET = re.compile(r"unknown target '([A-Za-z0-9_]+)'|No rule to make target '([A-Za-z0-9_]+)'")
+
+
+def missing_harness_target(text: str, workload: Mapping[str, Any]) -> str:
+    """The workload-harness target a build could not find (host_bootstrap makes them), if that is why it failed."""
+    from accel_pipeline.config import harness_targets, sanitize_engine_name
+    from accel_pipeline.naming import unit_test_target
+
+    engine, bench = str(workload.get("engine_name") or ""), str(workload.get("benchmark_name") or "")
+    if not (engine and bench and workload.get("query_number") is not None):
+        return ""
+    harness = {*harness_targets(sanitize_engine_name(engine), bench).values(),
+               f"{unit_test_target(bench, int(workload['query_number']))}_aux"}
+    return next((t for m in _UNKNOWN_TARGET.finditer(text) for t in m.groups() if t in harness), "")
 
 
 # --- shared-tree infrastructure failures: repaired without burning agent turns

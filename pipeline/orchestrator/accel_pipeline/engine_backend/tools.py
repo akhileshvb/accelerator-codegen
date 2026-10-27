@@ -88,6 +88,8 @@ def _compact(layer_id: str, status: str, data: dict[str, Any]) -> dict[str, Any]
     if status != "pass":
         out["reason"] = data.get("reason")
         out["failure_summary"] = str(data.get("log_tail") or "")[-_FAILURE_TAIL_CHARS:]
+        if data.get("stacks"):
+            out["stacks"] = data["stacks"]
     return out
 
 

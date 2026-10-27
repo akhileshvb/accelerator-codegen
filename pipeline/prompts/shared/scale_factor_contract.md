@@ -10,7 +10,6 @@ The pipeline iterates on small datasets; production targets much larger scale fa
 
 A technique that wins on SF1 but uses SF1-hardcoded capacities, SF1-sized full-domain scans or structures growing superlinearly in table cardinality is not acceptable. Ask whether a change still wins if the largest tables grow x3000 with distinct keys; prefer changes that improve SF1 and remove SF1-specific constants. If SF1 read-path gains stall, redesign the aux structure for cardinality and shape, without caching final answers.
 
-SEC-EDGAR workloads use SF3 as both iteration and production scale (`ACCEL_SEC_EDGAR_DB`); the same rules apply.
 
 ## Sizing rules
 

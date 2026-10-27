@@ -1,8 +1,8 @@
 """One-shot workload-harness bootstrap, for every engine.
 
 Builds backends/<engine>/tests/harness/, bench/ and tests/harness.cmake (the differential,
-multi-connection, cross-accelerator, bench and calibrate harnesses), once per engine before
-pack workers fan out (and before a single-query accelerator pipeline), after the engine's
+multi-connection, cross-accelerator, bench and calibrate harnesses), once per engine and benchmark
+(the harness sources are benchmark-free, the targets are per benchmark) before pack workers fan out (and before a single-query accelerator pipeline), after the engine's
 backend exists.
 """
 
@@ -17,6 +17,7 @@ from accel_pipeline.config import (
     ModelConfig,
     PipelineConfig,
     apply_workload_overrides,
+    harness_targets,
     load_run_workload,
     load_workload,
     sanitize_engine_name,
@@ -52,9 +53,9 @@ def pending_harness_requests(repo_root: Path, engine_name: str) -> str:
     return as_required_fixes(pending(repo_root, sanitize_engine_name(engine_name), "harness"))
 
 
-def host_bootstrap_passed(repo_root: Path, engine_name: str) -> bool:
-    """The last gate run passed (it built and smoked every harness), the sources are still there,
-    and no query run has recorded a harness defect since."""
+def host_bootstrap_passed(repo_root: Path, engine_name: str, benchmark: str) -> bool:
+    """The last gate run passed and built and smoked this benchmark's harness targets, the sources are still
+    there, and no query run has recorded a harness defect since."""
     if pending_harness_requests(repo_root, engine_name):
         return False
     path = host_bootstrap_status_path(repo_root, engine_name)
@@ -71,8 +72,9 @@ def host_bootstrap_passed(repo_root: Path, engine_name: str) -> bool:
     if gate.get("status") != "pass" or not gate.get("smokes"):
         return False
     engine = sanitize_engine_name(engine_name)
-    harness = Path(repo_root) / "backends" / engine / "tests" / "harness"
-    return any(harness.glob(f"test_{engine}_*_differential.cpp"))
+    if not set(harness_targets(engine, benchmark).values()) <= set(gate.get("targets") or []):
+        return False
+    return any((Path(repo_root) / "backends" / engine / "tests" / "harness").glob("*.cpp"))
 
 
 def write_host_bootstrap_status(
@@ -102,8 +104,9 @@ def engines_needing_bootstrap_from_workloads(
     repo_root: Path,
     runs: list[tuple[str, str]],
 ) -> list[tuple[str, str]]:
-    """Return unique (engine_name, representative_workload) needing bootstrap, from (workload, engine) runs."""
-    seen: set[str] = set()
+    """Return (engine_name, representative_workload) needing bootstrap, one per engine and benchmark, from
+    (workload, engine) runs."""
+    seen: set[tuple[str, str]] = set()
     out: list[tuple[str, str]] = []
     for name, run_engine in runs:
         try:
@@ -113,11 +116,10 @@ def engines_needing_bootstrap_from_workloads(
         if not needs_host_bootstrap(w):
             continue
         engine = sanitize_engine_name(str(w.get("engine_name") or ""))
-        if engine in seen:
+        key = (engine, str(w.get("benchmark_name") or ""))
+        if key in seen or host_bootstrap_passed(repo_root, *key):
             continue
-        if host_bootstrap_passed(repo_root, engine):
-            continue
-        seen.add(engine)
+        seen.add(key)
         out.append((engine, name))
     return out
 
@@ -165,14 +167,6 @@ def run_host_bootstrap(
 ) -> dict[str, Any]:
     """Run the host_bootstrap agent stage for one engine (idempotent unless force)."""
     engine = sanitize_engine_name(engine_name)
-    if not force and host_bootstrap_passed(pipeline_config.repo_root, engine):
-        return {
-            "engine_name": engine,
-            "status": "pass",
-            "skipped": True,
-            "path": str(host_bootstrap_status_path(pipeline_config.repo_root, engine)),
-        }
-
     if not (dry_run or skip_gates) and not (pipeline_config.repo_root / f"backends/{engine}/host.sh").is_file():
         report = host_bootstrap_dir(pipeline_config.repo_root, engine) / "stop_report.md"
         report.write_text(f"# Stopped: the {engine} backend is missing\n\nhost_bootstrap needs the backend first: run its "
@@ -180,6 +174,13 @@ def run_host_bootstrap(
         raise StageStopped("the engine backend is missing", report)
 
     workload = load_workload(representative_workload, pipeline_config.repo_root, engine=engine)
+    if not force and host_bootstrap_passed(pipeline_config.repo_root, engine, str(workload.get("benchmark_name") or "")):
+        return {
+            "engine_name": engine,
+            "status": "pass",
+            "skipped": True,
+            "path": str(host_bootstrap_status_path(pipeline_config.repo_root, engine)),
+        }
 
     query = int(workload.get("query_number") or 0)
     pipeline_config = apply_workload_overrides(pipeline_config, workload)
@@ -356,7 +357,7 @@ def ensure_host_bootstrap_for_pack(
     dry_run: bool = False,
     skip_gates: bool = False,
 ) -> list[dict[str, Any]]:
-    """Pack entry: bootstrap each distinct engine once before its workers."""
+    """Pack entry: bootstrap each distinct engine and benchmark once before its workers."""
     needed = engines_needing_bootstrap_from_workloads(
         repo_root, [(str(q.workload), str(q.engine)) for q in queries]
     )

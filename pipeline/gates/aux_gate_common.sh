@@ -3,12 +3,16 @@
 # Usage: source aux_gate_common.sh; load_aux_gate_context "${ROOT}" "${QUERY}"
 
 # Wall seconds of each phase, one "name=seconds" line each. The EXIT trap leaves them in
-# <gate json>.phases, which gates.run_gate folds into the result's phase_timings.
+# <gate json>.phases, which gates.run_gate folds into the result's phase_timings, and folds the last harness
+# run's outcome (run_outcome.py: its exit code, its reason, the stacks at a deadline) into a failed result.
 PHASE_LOG=""
-flush_phase_log() {
-	[[ -z "${ACCEL_GATE_OUT:-}" ]] || printf '%s' "${PHASE_LOG}" >"${ACCEL_GATE_OUT%.json}.phases"
+RUN_OUTCOME="$(dirname "${BASH_SOURCE[0]}")/run_outcome.py"
+on_gate_exit() {
+	[[ -n "${ACCEL_GATE_OUT:-}" ]] || return 0
+	printf '%s' "${PHASE_LOG}" >"${ACCEL_GATE_OUT%.json}.phases"
+	[[ ! -f "${ACCEL_GATE_OUT%.json}.run.json" ]] || python3 "${RUN_OUTCOME}" fold "${ACCEL_GATE_OUT}"
 }
-trap flush_phase_log EXIT
+trap on_gate_exit EXIT
 now_us() { echo "${EPOCHREALTIME/./}"; }
 
 # record_phase <name> <start_us>: add the seconds since start_us to <name>.
@@ -90,7 +94,7 @@ engine_trait() {
 }
 
 # Run host.sh steps in order (each argument is one "verb args" string). On failure
-# sets ENGINE_FAIL and returns 1; ENGINE_LOG collects every step's output. Builds of one
+# sets ENGINE_FAIL and returns 1; ENGINE_LOG has a line per step and the failed step's output. Builds of one
 # build dir run one at a time (build_stamp.build_lock takes the same lock).
 engine_steps() {
 	ENGINE_LOG=""
@@ -103,8 +107,9 @@ engine_steps() {
 		# shellcheck disable=SC2086
 		out="$("${runner[@]}" ${step} 2>&1)" && rc=0 || rc=$?
 		record_phase "host_${step%% *}" "${started}"
-		ENGINE_LOG+="[host.sh ${step}] rc=${rc}"$'\n'"${out}"$'\n'
+		ENGINE_LOG+="[host.sh ${step}] rc=${rc}"$'\n'
 		if [[ ${rc} -ne 0 && ${rc} -ne 77 ]]; then
+			ENGINE_LOG+="${out}"$'\n'
 			ENGINE_FAIL="host.sh ${step%% *} failed (exit ${rc})"
 			return 1
 		fi
@@ -125,6 +130,7 @@ build_stamp() {
 # turns the cache off).
 engine_ready() {
 	local started stamp="" stamp_file
+	harness_unclaimed "$@" || return 1
 	stamp_file="${ACCEL_ENGINE_STATE_DIR}/build_stamps/$(printf '%s' "$*" | sha1sum | cut -c1-16)"
 	if [[ "${ACCEL_BUILD_STAMP_CACHE:-1}" != 0 ]]; then
 		started="$(now_us)"
@@ -174,18 +180,34 @@ engine_ready_for_ctest() {
 	[[ ${#targets[@]} -eq 0 ]] || engine_ready "${targets[@]}"
 }
 
+# The harness targets are host_bootstrap's (backends/<engine>/tests/harness.cmake): a benchmark's build.cmake that
+# names one redefines what the gates measure. Sets ENGINE_FAIL and returns 1 when one does.
+harness_unclaimed() {
+	local target file
+	for target in "$@"; do
+		[[ " ${HARNESS_TARGETS:-} " == *" ${target} "* ]] || continue
+		for file in "${GATE_ROOT}"/accelerators/*/build.cmake; do
+			[[ -f "${file}" ]] && grep -Eq "(^|[^A-Za-z0-9_])${target}([^A-Za-z0-9_]|$)" "${file}" || continue
+			ENGINE_FAIL="${file#"${GATE_ROOT}"/} names the harness target ${target}: the workload harnesses belong to host_bootstrap; build the query's own targets only"
+			ENGINE_LOG="$(grep -En "(^|[^A-Za-z0-9_])${target}([^A-Za-z0-9_]|$)" "${file}")"
+			return 1
+		done
+	done
+}
+
 # Seconds one run may take: ACCEL_GATE_RUN_TIMEOUT, else what the build time the last full run measured allows
-# (<gates dir>/build_seconds: a run builds the module a few times, and again for each write it cannot maintain), else 900.
+# (<gates dir>/build_seconds: a run builds the module a few times, and again for each write it cannot maintain),
+# else an hour (phases that run side by side start before any build was measured).
 run_limit() {
 	local built
 	[[ -z "${ACCEL_GATE_RUN_TIMEOUT:-}" ]] || { echo "${ACCEL_GATE_RUN_TIMEOUT}"; return; }
 	built="$(cat "${GATE_OUT:-/nonexistent}/build_seconds" 2>/dev/null)" || built=""
-	python3 -c "import sys; b = float(sys.argv[1] or 0); print(int(max(300, 8 * b + 300)) if b else 900)" "${built}"
+	python3 -c "import sys; b = float(sys.argv[1] or 0); print(int(max(1800, 8 * b + 600)) if b else 3600)" "${built}"
 }
 
-# Run a built target through host.sh with a time limit (run_limit), so a hung harness fails the gate instead of
-# stalling the run. Sets LOG, RC and, on a timeout, RUN_REASON. The output goes to <gate json>.run.<random>.log while
-# it runs (gate_status shows its last line).
+# Run a built target through host.sh with a time limit (run_limit, run_outcome.py), so a hung harness fails the gate
+# instead of stalling the run, with every thread's stack at the deadline. Sets LOG, RC and, on a timeout, RUN_REASON.
+# The output goes to <gate json>.run.<random>.log while it runs (gate_status shows its last line).
 engine_run() { _engine_run "" "$@"; }
 
 # engine_run for a benchmark: queues for the host-wide measurement lease (outside the time limit), runs
@@ -204,7 +226,8 @@ _engine_run() {
 		wrap=(env "PYTHONPATH=${ACCEL_PIPELINE_PYTHONPATH:-${GATE_ROOT}/pipeline/orchestrator}:${PYTHONPATH:-}" python3 -m accel_pipeline.pack.measurement_lease
 			--holder "${ACCEL_INSTANCE_TAG:-${ACCEL_PIPELINE_WORKER_ID:-w0}}" --reason "${lease}" --)
 	[[ -z "${ACCEL_RUN_CPUS:-}" ]] || pin=(taskset -c "${ACCEL_RUN_CPUS}")   # after the lease's own pinning: a wider set
-	"${wrap[@]}" "${pin[@]}" timeout --kill-after=15 "${limit}" "${ENGINE_HOST}" run "$@" >"${live}" 2>&1 && RC=0 || RC=$?
+	"${wrap[@]}" "${pin[@]}" python3 "${RUN_OUTCOME}" run "${limit}" "${ACCEL_GATE_OUT:+${ACCEL_GATE_OUT%.json}.run.json}" "${1##*/}" -- \
+		"${ENGINE_HOST}" run "$@" >"${live}" 2>&1 && RC=0 || RC=$?
 	LOG="$(<"${live}")"
 	rm -f "${live}"
 	record_phase "run_${1##*/}" "${started}"
@@ -213,8 +236,7 @@ _engine_run() {
 		[[ -z "${waited}" ]] || PHASE_LOG+="measurement_lease_wait=${waited}"$'\n'
 	fi
 	RUN_REASON=""
-	[[ ${RC} -ne 124 && ${RC} -ne 137 ]] ||
-		RUN_REASON="$1 did not finish within ${limit}s: it hangs (a deadlock, or a wait that never ends)"
+	[[ ${RC} -ne 124 ]] || RUN_REASON="${1##*/} did not finish within ${limit}s"
 }
 
 # write_result <json> <gate> <status> <reason> <log> [key=value ...]

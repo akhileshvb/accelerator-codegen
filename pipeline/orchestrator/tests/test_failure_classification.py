@@ -126,3 +126,28 @@ def test_registration_errors_in_suite_validation_are_infra(repo):
     text = "aux warmup failed for Q1: Catalog Error: Table Function with name accel_x_q1_aux does not exist!"
     assert gate_classify("test_suite_validate", {"log_tail": text}, {}, repo)[0] == "infra"
     assert gate_classify("aux_correctness", {"log_tail": text}, {}, repo)[0] == "code"
+
+
+HOSTED = {"benchmark_name": "toybench", "query_number": 3, "engine_name": "toydb"}
+
+
+def test_a_missing_harness_target_is_host_bootstraps_not_the_querys(repo):
+    text = "[host.sh build test_toydb_cross_accel] rc=1\nninja: error: unknown target 'test_toydb_cross_accel'"
+    assert failure.classify("aux_exit", {"log_tail": text}, HOSTED, repo) == ("infra", failure.HARNESS_MISSING)
+    assert failure.classify("host_bootstrap", {"log_tail": text}, HOSTED, repo)[1] != failure.HARNESS_MISSING
+    own = "ninja: error: unknown target 'agent_toybench_q3_oracle'"  # the query's own target is the query's to fix
+    assert failure.classify("quick_check", {"log_tail": own}, HOSTED, repo) == ("code", None)
+
+
+def test_the_failure_report_carries_the_reason_the_stacks_one_log_tail_and_the_gate_to_rerun():
+    from accel_pipeline.gates.run import GateResult
+
+    data = {"reason": "cross_accel: test_toydb_cross_accel did not finish within 900s", "exit_code": 124,
+            "stacks": "== process 7 (harness) ==\n  3 threads:\n    Pool::Wait  pool.cpp:88",
+            "log_tail": "workload=toybench query=3 argument_seed=1\nworkload=toybench query=3 argument_seed=2"}
+    f = failure.failure_from_gate(GateResult("aux_exit", "fail", data), stage="implementation", workload=WORKLOAD)
+    assert f.summary == "gate aux_exit fail: cross_accel: test_toydb_cross_accel did not finish within 900s | exit 124"
+    assert f.reproduce == 'request_gate("aux_exit")' and f.diagnosis == []  # no crash lines: nothing restated
+    report = failure.render_failure(f)
+    assert report.index("Thread stacks at the deadline:") < report.index("Log tail:")
+    assert report.count("argument_seed=2") == 1 and "Pool::Wait" in report

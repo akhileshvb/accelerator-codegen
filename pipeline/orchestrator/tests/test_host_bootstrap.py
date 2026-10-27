@@ -10,6 +10,7 @@ import json
 import pytest
 
 from accel_pipeline.config import (
+    harness_targets,
     load_model_config,
     load_pipeline_config,
     load_workload,
@@ -42,17 +43,28 @@ def _write_differential_source(tmp_path):
     source.write_text("// harness\n", encoding="utf-8")
 
 
+def _green(benchmark):
+    return {"status": "pass", "smokes": [{"target": "t", "exit_code": 0}],
+            "targets": list(harness_targets("postgres", benchmark).values())}
+
+
 def test_passed_needs_a_green_gate_result_and_the_harness_source(tmp_path, monkeypatch):
-    _passing_status(tmp_path, monkeypatch, {"status": "pass", "smokes": [{"target": "t", "exit_code": 0}]})
-    assert host_bootstrap_passed(tmp_path, "postgres") is False  # source missing
+    _passing_status(tmp_path, monkeypatch, _green("tpch"))
+    assert host_bootstrap_passed(tmp_path, "postgres", "tpch") is False  # source missing
     _write_differential_source(tmp_path)
-    assert host_bootstrap_passed(tmp_path, "postgres") is True
+    assert host_bootstrap_passed(tmp_path, "postgres", "tpch") is True
+
+
+def test_a_pass_covers_only_the_benchmark_whose_targets_it_built(tmp_path, monkeypatch):
+    _passing_status(tmp_path, monkeypatch, _green("tpch"))
+    _write_differential_source(tmp_path)
+    assert host_bootstrap_passed(tmp_path, "postgres", "sec_edgar") is False
 
 
 def test_a_marker_without_a_gate_result_is_not_a_pass(tmp_path, monkeypatch):
     _passing_status(tmp_path, monkeypatch, {})
     _write_differential_source(tmp_path)
-    assert host_bootstrap_passed(tmp_path, "postgres") is False
+    assert host_bootstrap_passed(tmp_path, "postgres", "tpch") is False
 
 
 def test_host_bootstrap_fails_before_the_backend_exists(tmp_path):

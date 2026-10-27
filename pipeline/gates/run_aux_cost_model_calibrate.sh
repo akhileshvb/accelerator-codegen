@@ -69,7 +69,8 @@ reason = ""
 interference = {}
 if int("${RC_RUN}") != 0:
     status = "fail"
-    reason = "calibrate binary failed"
+    last = next((l for l in reversed(os.environ["GATE_LOG"].splitlines()) if l.strip()), "")
+    reason = f"calibrate binary failed (exit ${RC_RUN})" + (f": {last.strip()}" if last else "")
 elif not config_path.is_file():
     status = "fail"
     reason = "cost model json missing"

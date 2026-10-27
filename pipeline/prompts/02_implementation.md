@@ -40,7 +40,7 @@ The kernel consumes **{{engine_name}}**'s native batches and rows. Registration 
 {{accelerator_engine_profile}}
 {{engine_host_discovery}}
 
-If the host's harnesses lack a surface this query needs, the **`host_bootstrap`** stage creates the shared SQL entrypoints, differential and gate harnesses once per engine. Per-query work only adds this query's files in its own directory. If bootstrap artifacts are missing, follow `pipeline/prompts/shared/query_host_bootstrap.md` or re-run `--stage host_bootstrap`. Never edit a backend's registration code or registries: register from the query's directory. The root `CMakeLists.txt` and `cmake/` are never edited; targets come from `accelerators/<bench>/build.cmake`.
+If the host's harnesses lack a surface this query needs, the **`host_bootstrap`** stage creates the shared SQL entrypoints, differential and gate harnesses once per engine. Per-query work only adds this query's files in its own directory. If bootstrap artifacts are missing, follow `pipeline/prompts/shared/query_host_bootstrap.md` or re-run `--stage host_bootstrap`. Never edit a backend's registration code or registries: register from the query's directory. The root `CMakeLists.txt` and `cmake/` are never edited. The harness targets (differential, multi-connection, cross-accelerator, bench, calibrate, the aux module test) are host_bootstrap's: build them through the gate tools and never define or redirect them; the query's own extra targets (its oracle test) go in `accelerators/<bench>/build.cmake`. A missing or broken harness target is a `report_blocker`, not something to rebuild in the query's tree.
 
 ## Requirements
 

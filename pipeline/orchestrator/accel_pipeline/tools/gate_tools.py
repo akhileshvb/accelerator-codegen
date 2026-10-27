@@ -35,6 +35,7 @@ def _compact_gate_payload(gate_name: str, data: dict) -> dict:
         "differential_exit_code",
         "failed_phases",
         "phases",
+        "stacks",
     ):
         if key in data and data[key] is not None:
             compact[key] = data[key]
@@ -43,8 +44,7 @@ def _compact_gate_payload(gate_name: str, data: dict) -> dict:
     if data.get("status") == "fail":
         from accel_pipeline.gates.run import log_tail_for_agent
 
-        tail = log_tail_for_agent(data, max_chars=4000)
-        compact["failure_summary"] = tail
+        compact["failure_summary"] = log_tail_for_agent(data, max_chars=4000)
     for key in ("layer", "cmake_target", "harness", "mode", "engine"):
         if data.get(key):
             compact[key] = data[key]

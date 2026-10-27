@@ -19,7 +19,7 @@ Write-frequency / write-interval points must exercise **query-specific maintenan
 
 ## Sweep protocol
 
-The `aux_bench_sweep` gate calls the bench for each suite (the workload's `aux_bench_sweep.suites`): once with all the points of all the repeats when the host says `bench_multi_point` (one build, each point starting from the same data), else once per point. The write frequencies are drawn on every run from the query's frozen `write_mix.yaml` (0% always, then its sampled range; seed recorded in the gate result) and the sweep repeats `test_suite.bench_repeats` times with fresh draws: the points are in `ACCEL_AUX_WRITE_FREQUENCIES` (and the first is the percent argument), and the score is the median over the repeats with [min-max]. Without a suite, `ACCEL_AUX_WRITE_FREQUENCIES` (0, 1, 10, 50) is the fixed list.
+The `aux_bench_sweep` gate calls the bench for each suite (the workload's `aux_bench_sweep.suites`): once with all the points of all the repeats when the host says `bench_multi_point` (one build, each point starting from the same data), else once per point. The write frequencies are drawn on every run from the query's frozen `write_mix.yaml` (0% always, then its sampled range; seed recorded in the gate result) and the sweep repeats `test_suite.bench_repeats` times with fresh draws: the points are in `ACCEL_AUX_WRITE_FREQUENCIES` (a `bench_multi_point` bench gets no percent argument and runs every point of the list; any other bench gets one point, as its percent argument), and the score is the median over the repeats with [min-max]. Without a suite, `ACCEL_AUX_WRITE_FREQUENCIES` (0, 1, 10, 50) is the fixed list.
 
 ### Env vars (read in benchmark)
 

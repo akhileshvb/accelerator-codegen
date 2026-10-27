@@ -53,6 +53,10 @@ def shell_variables(ctx: dict, *, aux: bool) -> dict[str, str]:
             "AUX_WRITE_FREQUENCIES_CTX": ctx.get("aux_write_frequencies", ""),
             "HARNESS_BENCH_TARGET": host.get("bench_target") or "",
             "HARNESS_CALIBRATE_TARGET": host.get("calibrate_target") or "",
+            # every target host_bootstrap's harness.cmake defines for this query, the module test included
+            "HARNESS_TARGETS": " ".join(filter(None, (
+                host.get("differential_binary"), host.get("multi_conn_target"), host.get("cross_accel_target"),
+                host.get("bench_target"), host.get("calibrate_target"), ctx.get("aux_test_target")))),
         }
     )
     return variables

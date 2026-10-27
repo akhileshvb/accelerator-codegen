@@ -92,13 +92,16 @@ for phase in phases:
     report[name] = {"status": status or "pass", "seconds": float((runs / f"{name}.seconds").read_text()),
                     "result": str(result) if result.is_file() else ""}
     if report[name]["status"] not in ("pass", "skip"):
-        failed.append((name, data, (runs / f"{name}.log").read_text()[-4000:]))
-first = failed[0] if failed else None
+        failed.append((name, gate, data, data.get("log_tail") or (runs / f"{name}.log").read_text()))
+# Every failed phase reaches the report, each with an even share of the log budget.
+share = 6000 // max(1, len(failed))
 payload = {
     "gate": "aux_exit", "status": "fail" if failed else "pass",
-    "reason": f"{first[0]}: {first[1].get('reason') or 'failed'}" if first else "",
+    "reason": "; ".join(f"{name}: {data.get('reason') or data.get('notes') or 'failed'}" for name, _, data, _ in failed),
     "failed_phases": [name for name, *_ in failed], "phases": report,
-    "log_tail": (first[1].get("log_tail") or first[2]) if first else "",
+    "log_tail": "\n".join(f"=== {name} ===\n{tail[-share:]}" for name, _, _, tail in failed),
+    "stacks": "\n".join(f"=== {name} ===\n{data['stacks']}" for name, _, data, _ in failed if data.get("stacks")),
+    "reproduce": "; ".join(f'request_gate("{gate}")' for _, gate, _, _ in failed),
 }
 pathlib.Path(out).write_text(json.dumps(payload, indent=2))
 print(json.dumps(payload, indent=2))

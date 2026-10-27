@@ -118,8 +118,8 @@ def _shared_keys(cfg: PipelineConfig, workload: dict[str, Any], query: int, stag
         "analysis_artifact_path": analysis_artifact,
         "full_analysis_path": str(analysis_path.relative_to(repo)) if analysis_path.is_file() else analysis_artifact,
         "schema_reference_section": _schema_reference_section(workload, repo),
-        "benchmark_notes": _benchmark_notes(workload, paths, query, engine_name),
-        "audit_gate_suffix": "" if benchmark == "sec_edgar" else " and `sf10`",
+        "benchmark_notes": _benchmark_notes(workload, paths),
+        "audit_gate_suffix": "".join(f" and `{g}`" for g in _audit_gates(workload) if g != "fairness"),
         "fused_scan_path": paths["fused_scan_path"],
         "test_template_path": str(workload.get("test_template_path", "")),
         "benchmark_template_path": str(workload.get("benchmark_template_path", "")),
@@ -163,35 +163,38 @@ def _schema_reference_section(workload: dict[str, Any], repo: Path) -> str:
     return f"## Schema reference\n\nRead `{rel}` for table/column layout."
 
 
-def _benchmark_notes(workload: dict[str, Any], paths: dict[str, Any], query: int, engine_name: str) -> str:
-    if str(workload.get("benchmark_name", "tpch")) != "sec_edgar":
-        return (
-            "- **Iteration scale (SF1)**: correctness, baseline, profile, and A/B benchmarks run on "
-            f"`{paths['dataset_db']}` for fast feedback.\n"
-            "- **Scale check (SF10)**: `sf10` gate runs on `scale_db` when configured — catches sizing "
-            "and state blowups at ~10× rows.\n"
-            "- **Production target (SF20+)**: final benchmarking uses much larger scale factors. "
-            "Designs must scale: bind-time `row_estimate` sizing, no SF1-hardcoded capacities, "
-            "bounded aux/read paths. See `pipeline/prompts/shared/scale_factor_contract.md`.\n"
-            "- Do not optimize for SF1 micro-wins that add full-domain scans or cardinality constants "
-            "from the iteration dataset."
-        )
-    notes = (
-        "- SEC-EDGAR queries use **embedded literals** (no bind parameters); table functions may be zero-arg.\n"
-        "- Correctness requires **full multi-row ordered result match**, not a single scalar.\n"
-        "- Benchmark/profile use **one scale factor** (SF3); size structures from bind-time `row_estimate`, "
-        "not hardcoded row/distinct counts from the current profile."
-    )
+def _benchmark_notes(workload: dict[str, Any], paths: dict[str, Any]) -> str:
+    """What the workload's own settings say about its data and checks (no benchmark is special)."""
+    db = f" (`{paths['dataset_db']}`)" if paths["dataset_db"] else ""
+    lines = [f"- **Iteration data**: correctness, profile and A/B runs use the iteration dataset{db} for fast feedback."]
+    if "sf10" in _planned_gates(workload):
+        lines.append(f"- **Scale check**: the `sf10` gate reruns on `{paths['scale_db']}`, about 10x the rows: it "
+                     "catches sizing and state blowups.")
+    lines += [
+        "- **Production target**: far larger data. Size from bind-time `row_estimate` and table statistics, never "
+        "from the iteration data's row or distinct counts; keep aux and read paths bounded "
+        "(`pipeline/prompts/shared/scale_factor_contract.md`).",
+        "- Do not optimize for iteration-scale wins that add full-domain scans or cardinality constants.",
+    ]
+    if not workload.get("parameters"):
+        lines.append("- The query has **no bind parameters**: its literals are embedded, so its table function may "
+                     "take no arguments.")
     if workload.get("workload_kind") == "aux_state":
-        notes += (
-            f"\n- SEC EDGAR aux state: `accelerators/sec_edgar/q{query}/{engine_name}/aux/module.hpp` "
-            f"(base API: `accelerators/sec_edgar/q{query}/{engine_name}/base/query.hpp`).\n"
-            "- Write workload suite is **`filing_append`** / **`value_append`**.\n"
-            "- Partition by filing semantics (`stmt`, `adsh`, `cik`+`fy`) — see `pipeline/prompts/sec_edgar/aux_state_notes.md`.\n"
-            "- The aux state is discovered from `aux/finalize.cpp`; no CMake registration.\n"
-            "- Scale: SF3 is both iteration and production scale here — still size from `row_estimate`, not profile snapshots."
-        )
-    return notes
+        lines.append(f"- The bench's write suites are `{paths['aux_bench_suites']}` (the workload's "
+                     "`aux_bench_sweep.suites`).")
+    return "\n".join(lines)
+
+
+def _audit_gates(workload: dict[str, Any]) -> list[str]:
+    from accel_pipeline.stages.gate_plan import workload_post_audit_gates
+
+    return workload_post_audit_gates(workload)
+
+
+def _planned_gates(workload: dict[str, Any]) -> list[str]:
+    from accel_pipeline.stages.gate_plan import workload_post_optimization_gates
+
+    return [*workload_post_optimization_gates(workload), *_audit_gates(workload)]
 
 
 def _accelerator_keys(cfg: PipelineConfig, workload: dict[str, Any]) -> dict[str, str]:
