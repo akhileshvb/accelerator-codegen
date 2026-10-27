@@ -6,7 +6,7 @@ when the engine does not report it), each adversarial probe's, and the state bui
 project() scales them to the full dataset and sums what the full gate would spend on writes.
 
 The model, deliberately conservative and linear where it cannot tell:
-- scale of a table set = rows of those tables in the engine's full dataset / in the subset (test_db.CutDatasets.scale);
+- scale of a table set = rows of those tables in the engine's full dataset / in the subset (datasets.CutDatasets.scale);
 - a write costing at least REBUILD_SHARE of the subset build is taken to rebuild the state: it scales with the
   tables the state depends on, linearly;
 - other writes scale with the square root of their tables' scale (index probes, cache effects), linearly for bulk kinds

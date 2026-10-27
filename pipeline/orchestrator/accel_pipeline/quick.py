@@ -1,6 +1,6 @@
 """The seconds-level inner loop: incremental build, the query's tests, a subset differential.
 
-run_quick_check runs the quick_check gate (gates/run_aux_quick_check.sh) on the test databases (test_db.py) and
+run_quick_check runs the quick_check gate (gates/run_aux_quick_check.sh) on the test databases (datasets.py) and
 turns its result into a QuickResult: correctness, and on a plain pass the compact report of check_report.py
 (build time and scaling, read latency, write cost per kind, perf counters).
 """
@@ -27,7 +27,7 @@ from accel_pipeline.gates.stamps import check_version, current_stamp
 from accel_pipeline.gates.run import run_gate
 from accel_pipeline.layout import query_dir
 from accel_pipeline.perf_profile import render_for_agent
-from accel_pipeline.test_db import CutDatasets, ensure_cut_datasets
+from accel_pipeline.datasets import CutDatasets, ensure_cut_datasets
 from accel_pipeline.test_suite import suite_path
 
 QUICK_GATE = "quick_check"

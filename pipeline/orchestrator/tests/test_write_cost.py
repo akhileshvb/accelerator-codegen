@@ -10,7 +10,7 @@ from accel_pipeline import quick, write_cost
 from accel_pipeline.config import QuickTierConfig
 from accel_pipeline.workload import gates_dir_for_query, query_artifacts_dir
 from accel_pipeline.layout import suite_dir
-from accel_pipeline.test_db import CutDatasets
+from accel_pipeline.datasets import CutDatasets
 from conftest import WORKLOAD, Gate
 
 PROFILES = {"001.sql": ("point_update", ("orders",)), "002.sql": ("bulk_delete", ("orders",))}

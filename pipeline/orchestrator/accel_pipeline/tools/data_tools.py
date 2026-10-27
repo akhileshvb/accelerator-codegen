@@ -2,7 +2,7 @@
 
 Every statement runs on the target engine through its host.sh `sql` verb.  `query_data` runs the
 agent's own read-only statement (in the engine's SQL); the convenience tools (column_stats,
-join_fanout, rows_qualifying, column_spread, query_shape) emit portable SQL through data_shape_stats,
+join_fanout, rows_qualifying, column_spread, query_shape) emit portable SQL through datasets,
 transpiled to the dialect the engine profile names (`data_sql.dialect`).  Tables and columns come
 from the engine's catalog and the query template, never from this code.  Every statement is
 time-boxed, every result capped, and every call is logged to the run's artifacts (data_queries.jsonl)
@@ -29,9 +29,9 @@ import sqlglot
 from sqlglot import exp
 from sqlglot.tokens import Tokenizer, TokenType
 
-from accel_pipeline import data_shape_stats as stats
+from accel_pipeline import datasets
 from accel_pipeline.config import PipelineConfig, pipeline_root
-from accel_pipeline.data_shape import md_table
+from accel_pipeline.datasets import build_data_shape_markdown, catalog_sql, md_table
 from accel_pipeline.engine_host import host_script, instance_env
 
 LOG_FILE = "data_queries.jsonl"
@@ -185,9 +185,9 @@ class Dataset:
         self.runner = HostSql(ctx)
         self.runner.require_up()
         seconds = ctx.limits.query_seconds
-        self.probe = stats.Probe(self.runner, statement_seconds=seconds, total_seconds=seconds)
+        self.probe = datasets.Probe(self.runner, statement_seconds=seconds, total_seconds=seconds)
         try:
-            self.schema = stats.read_schema(self.runner, CATALOG_SECONDS, self.runner.catalog_sql)
+            self.schema = datasets.read_schema(self.runner, CATALOG_SECONDS, self.runner.catalog_sql)
         except (RuntimeError, TimeoutError) as exc:
             raise RuntimeError(f"cannot read the engine's catalog: {exc}") from exc
         if not self.schema:
@@ -200,7 +200,7 @@ class Dataset:
 
     def rows(self, table: str) -> int:
         if table not in self._rows:
-            self._rows[table] = self.probe.count(f"SELECT COUNT(*) FROM {stats._q(table)}") or 0
+            self._rows[table] = self.probe.count(f"SELECT COUNT(*) FROM {datasets._q(table)}") or 0
         return self._rows[table]
 
     def column(self, spec: str) -> tuple[str, str]:
@@ -216,15 +216,15 @@ class Dataset:
         return table, columns[column.lower()]
 
     def sampling_note(self, tables: list[str]) -> str:
-        big = [f"{t} ({self.rows(t):,} rows)" for t in dict.fromkeys(tables) if self.rows(t) > stats.SAMPLE_ROWS]
+        big = [f"{t} ({self.rows(t):,} rows)" for t in dict.fromkeys(tables) if self.rows(t) > datasets.SAMPLE_ROWS]
         if not big:
-            return f"exact (tables are at most {stats.SAMPLE_ROWS:,} rows)"
-        return (f"sampled: about {stats.SAMPLE_ROWS:,} rows of {', '.join(big)} (key modulo, or a prefix without an "
+            return f"exact (tables are at most {datasets.SAMPLE_ROWS:,} rows)"
+        return (f"sampled: about {datasets.SAMPLE_ROWS:,} rows of {', '.join(big)} (key modulo, or a prefix without an "
                 "integer column); counts are rescaled, quantiles and NDV are estimates")
 
     def table_of(self, predicate: str) -> str:
         """The one table whose columns a predicate uses (qualified `table.column` or bare column names)."""
-        tree = stats.parse_template(f"SELECT 1 WHERE {predicate}", self.dialect)
+        tree = datasets.parse_template(f"SELECT 1 WHERE {predicate}", self.dialect)
         candidates: set[str] | None = None
         for col in tree.find_all(exp.Column):
             owners = (
@@ -251,7 +251,7 @@ def dataset_row_counts(ctx: DataToolContext, tables: list[str]) -> dict[str, int
 
 
 def _source(ds: Dataset, table: str) -> tuple[str, float]:
-    return stats.sample_of(table, ds.rows(table), ds.schema[table])
+    return datasets.sample_of(table, ds.rows(table), ds.schema[table])
 
 
 def _quantile_cells(res: tuple) -> list[Any]:
@@ -334,7 +334,7 @@ def make_data_tools(ctx: DataToolContext) -> dict[str, Callable[..., str]]:
             rows = []
             for table in dict.fromkeys(t for t, _ in refs):
                 cols = [c for t, c in refs if t == table]
-                found = stats.column_stats(ds.probe, table, cols, ds.schema[table], ds.rows(table))
+                found = datasets.column_stats(ds.probe, table, cols, ds.schema[table], ds.rows(table))
                 for c in cols:
                     st = found.get(c)
                     if st:
@@ -358,7 +358,7 @@ def make_data_tools(ctx: DataToolContext) -> dict[str, Callable[..., str]]:
             (lt, lc), (rt, rc) = ds.column(left), ds.column(right)
             rows = []
             for (t, c), (ot, oc) in (((lt, lc), (rt, rc)), ((rt, rc), (lt, lc))):
-                res, match = stats.fanout(ds.probe, t, c, ot, oc, ds.rows(t), ds.schema[t])
+                res, match = datasets.fanout(ds.probe, t, c, ot, oc, ds.rows(t), ds.schema[t])
                 if res:
                     rows.append([f"{t}.{c} -> {ot}.{oc}", f"{res[0]:,}", res[1], res[2], res[3],
                                  "-" if match is None else f"{match:.1%}"])
@@ -390,8 +390,8 @@ def make_data_tools(ctx: DataToolContext) -> dict[str, Callable[..., str]]:
             src, scale = _source(ds, table)
             rows = []
             for v in values:
-                where = re.sub(r"\$1\b", lambda _: stats.literal(v), predicate_sql)
-                n = ds.probe.count(f"SELECT COUNT(*) FROM {src} AS {stats._q(table)} WHERE {where}")
+                where = re.sub(r"\$1\b", lambda _: datasets.literal(v), predicate_sql)
+                n = ds.probe.count(f"SELECT COUNT(*) FROM {src} AS {datasets._q(table)} WHERE {where}")
                 n = None if n is None else int(n * scale)
                 rows.append([v, "-" if n is None else f"{n:,}", "-" if n is None or not total else f"{n / total:.2%}"])
             text = (f"table {table} ({total:,} rows); {ds.sampling_note([table])}\n\n"
@@ -410,13 +410,13 @@ def make_data_tools(ctx: DataToolContext) -> dict[str, Callable[..., str]]:
         def run() -> tuple[str, dict[str, Any]]:
             ds = Dataset(ctx)
             ka, kb = ds.column(a), ds.column(b)
-            shape = stats.QueryShape()
+            shape = datasets.QueryShape()
             if ka[0] != kb[0]:
                 shape.joins.append(_equality(ds, join_sql, {ka[0], kb[0]}))
-            res, _ = stats.spread(ds.probe, ka, kb, shape, {t: ds.rows(t) for t in {ka[0], kb[0]}}, ds.schema)
+            res, _ = datasets.spread(ds.probe, ka, kb, shape, {t: ds.rows(t) for t in {ka[0], kb[0]}}, ds.schema)
             if not res:
                 raise RuntimeError("no result (timed out, or no joined rows)")
-            unit = "days" if stats.type_family(ds.schema[ka[0]][ka[1]]) == "date" else "units"
+            unit = "days" if datasets.type_family(ds.schema[ka[0]][ka[1]]) == "date" else "units"
             text = (f"{a} - {b} over {'joined ' if ka[0] != kb[0] else ''}rows, in {unit}; "
                     f"{ds.sampling_note([ka[0], kb[0]])}\n\n"
                     + "\n".join(md_table(["rows", "min", "p1", "p50", "p99", "max"], [_quantile_cells(res)])))
@@ -431,8 +431,6 @@ def make_data_tools(ctx: DataToolContext) -> dict[str, Callable[..., str]]:
         """
 
         def run() -> tuple[str, dict[str, Any]]:
-            from accel_pipeline.data_shape import build_data_shape_markdown, catalog_sql
-
             sql = catalog_sql(ctx.workload, ctx.pipeline_config.repo_root, ctx.query)
             if not sql:
                 raise RuntimeError("the query template is not available to this run")
@@ -458,7 +456,7 @@ def _equality(ds: Dataset, join_sql: str, tables: set[str]) -> tuple[tuple[str, 
     """The two (table, column) sides of `join_sql`, an equality between columns of `tables`."""
     if not join_sql.strip():
         raise ValueError("join_sql is required when the columns are in different tables")
-    tree = stats.parse_template(f"SELECT 1 WHERE {join_sql}", ds.dialect).args["where"].this
+    tree = datasets.parse_template(f"SELECT 1 WHERE {join_sql}", ds.dialect).args["where"].this
     if not (isinstance(tree, exp.EQ) and isinstance(tree.this, exp.Column) and isinstance(tree.expression, exp.Column)):
         raise ValueError("join_sql must be one equality between two columns")
     sides = []

@@ -321,7 +321,7 @@ def run_gate(
     if tier:
         gate_env["ACCEL_GATE_TIER"] = tier
     if tier == "quick" or gate_name in SUBSET_DATASET_GATES:
-        from accel_pipeline.test_db import ensure_cut_datasets
+        from accel_pipeline.datasets import ensure_cut_datasets
 
         if cuts := ensure_cut_datasets(pipeline_config, workload, query):
             gate_env["ACCEL_SUBSET_DATASET_DIR"] = str(cuts.subset)

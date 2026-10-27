@@ -275,9 +275,6 @@
  "pipeline/gates/tests/test_gate_plumbing.py": {
   "engine": 3
  },
- "pipeline/orchestrator/accel_pipeline/data_shape.py": {
-  "engine": 4
- },
  "pipeline/orchestrator/accel_pipeline/mcp_server.py": {
   "path": 1
  },

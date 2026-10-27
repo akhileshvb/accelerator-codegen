@@ -1,12 +1,63 @@
-"""The run's test databases: join-closed cuts of the engine's dataset, made once through its host.sh."""
+"""The run's data: the query-shape statistics the agents query, and the test cuts made out of the dataset."""
 
 from __future__ import annotations
 
 import pytest
 from fake_engine import QUERY, make_engine
 
-from accel_pipeline import test_db
-from accel_pipeline.test_db import CutDatasets, cut_selects, ensure_cut_datasets, key_links
+from accel_pipeline import datasets
+from accel_pipeline.datasets import CutDatasets, build_data_shape_markdown, cut_selects, ensure_cut_datasets, key_links
+from accel_pipeline.tools.data_tools import Dataset
+
+
+@pytest.fixture()
+def dataset(tmp_path, monkeypatch):
+    return Dataset(make_engine(tmp_path, monkeypatch))
+
+
+def test_analysis_finds_roles_joins_params_and_spreads(dataset):
+    shape = datasets.analyze_query(QUERY, dataset.schema, "sqlite")
+    assert shape.roles[("orders", "region")] == {"G"}
+    assert shape.roles[("events", "order_id")] == {"J"}
+    assert len(shape.joins) == 1
+    ops = {(p.table, p.column, p.op) for p in shape.params}
+    assert ops == {("orders", "kind", "="), ("orders", "placed", "<"), ("events", "happened", ">"), ("events", "amount", ">")}
+    assert [(a[1], b[1]) for a, b, _ in shape.spread_pairs] == [("placed", "happened")]
+
+
+def _markdown(dataset):
+    return build_data_shape_markdown(QUERY, dataset.runner, dataset.schema, "fake", 10, 30)
+
+
+def test_spread_values_are_the_real_differences(dataset):
+    facts = datasets.compute(QUERY, dataset.runner, dataset.schema)
+    (_, _, _, res, sampled), = facts["spreads"]
+    n, lo, qs, hi = res
+    assert n == 400 and not sampled
+    expected = [i % 100 + 5 + i % 7 - (1 + i % 100) for i in range(400)]
+    assert (int(float(lo)), int(float(hi))) == (-max(expected), -min(expected))
+
+
+def test_large_tables_are_sampled(dataset, monkeypatch):
+    monkeypatch.setattr(datasets, "SAMPLE_ROWS", 50)
+    facts = datasets.compute(QUERY, dataset.runner, dataset.schema)
+    assert facts["spreads"][0][4] is True
+    assert facts["rows"] == {"events": 400, "orders": 100}
+
+
+def test_date_difference_is_built_for_the_engine_to_transpile():
+    import sqlglot
+    from sqlglot import exp
+
+    tree = sqlglot.parse_one(f"SELECT {datasets.diff_sql('a', 'b', 'date')}")
+    assert tree.find(exp.DateDiff) is not None
+    assert "CAST" in datasets.diff_sql("a", "b", "number")
+
+
+def test_percentiles_are_window_functions_not_engine_functions():
+    sql = datasets._quantile_cells([0.5]) + datasets._ranked("SELECT 1 AS v")
+    assert "OVER" in sql and "quantile" not in sql.lower() and "percentile" not in sql.lower()
+
 
 SCHEMA = """CREATE TABLE orders(id INTEGER, kind TEXT, region TEXT, placed INTEGER);
 CREATE TABLE events(order_id INTEGER, happened INTEGER, amount NUMERIC);
@@ -38,13 +89,13 @@ def test_tables_no_join_reaches_are_cut_on_their_own():
 
 
 def test_the_stride_is_a_prime_so_it_cannot_line_up_with_blocks_of_keys():
-    strides = {rows: test_db._sample("t", rows, 100, ["k"], ["k"]).rsplit("% ", 1)[1].split(" ")[0] for rows in (1000, 6400, 99_999)}
+    strides = {rows: datasets._sample("t", rows, 100, ["k"], ["k"]).rsplit("% ", 1)[1].split(" ")[0] for rows in (1000, 6400, 99_999)}
     assert strides == {1000: "11", 6400: "67", 99_999: "1009"}
 
 
 def test_a_sample_with_no_rows_is_an_error(tmp_path):
     with pytest.raises(ValueError, match="no rows"):
-        test_db._write_cut(type("R", (), {"rows": lambda self, sql, seconds: []})(), {"t": "SELECT 1"}, tmp_path / "cut")
+        datasets._write_cut(type("R", (), {"rows": lambda self, sql, seconds: []})(), {"t": "SELECT 1"}, tmp_path / "cut")
 
 
 def test_a_table_no_key_links_keeps_its_first_rows():
@@ -94,8 +145,8 @@ def cut_env(tmp_path, monkeypatch):
     data.mkdir()
     (data / "orders.tbl").write_text("1|k|r|1|\n")
     (data / "events.tbl").write_text("1|1|1|\n")
-    monkeypatch.setattr(test_db, "SUBSET_ROOT_ROWS", 120)
-    monkeypatch.setattr(test_db, "TINY_ROOT_ROWS", 30)
+    monkeypatch.setattr(datasets, "SUBSET_ROOT_ROWS", 120)
+    monkeypatch.setattr(datasets, "TINY_ROOT_ROWS", 30)
     workload = {**ctx.workload, "workload_kind": "aux_state", "dataset_dir": str(data),
                 "reference_sql_path": str(repo / "workloads" / "acme" / "inst.sql")}
     return ctx.pipeline_config, workload, data
@@ -136,7 +187,7 @@ def test_the_cuts_are_made_once_per_dataset(cut_env, monkeypatch):
     cfg, workload, data = cut_env
     first = ensure_cut_datasets(cfg, workload, 1)
     with monkeypatch.context() as m:
-        m.setattr(test_db, "_cut", lambda *a: pytest.fail("cut again"))
+        m.setattr(datasets, "_cut", lambda *a: pytest.fail("cut again"))
         assert ensure_cut_datasets(cfg, workload, 1).subset == first.subset
     (data / "orders.tbl").write_text("1|k|r|1|\n2|k|r|2|\n")  # another dataset: another key
     assert ensure_cut_datasets(cfg, workload, 1).subset != first.subset
@@ -166,4 +217,4 @@ def test_ready_made_databases_from_the_environment_win(cut_env, monkeypatch):
 
 def test_the_description_names_the_sizes():
     manifest = {"source_rows": {"orders": 100}, "subset_rows": {"orders": 10}, "tiny_rows": {"orders": 2}}
-    assert test_db.describe(manifest) == "subset 10 rows (of 100), tiny 2 rows; per table orders 10/2"
+    assert datasets.describe(manifest) == "subset 10 rows (of 100), tiny 2 rows; per table orders 10/2"

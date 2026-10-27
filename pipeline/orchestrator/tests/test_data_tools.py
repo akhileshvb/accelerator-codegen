@@ -128,7 +128,7 @@ def test_rows_qualifying_refuses_writes_and_other_parameters(tools):
 
 
 def test_sampling_is_stated_and_counts_rescaled(tools, monkeypatch):
-    monkeypatch.setattr(data_tools.stats, "SAMPLE_ROWS", 40)
+    monkeypatch.setattr(data_tools.datasets, "SAMPLE_ROWS", 40)
     out = tools["rows_qualifying"]("orders.placed < $1", ["200"])
     assert "sampled: about 40 rows of orders (100 rows)" in out
     count = int(out.splitlines()[-3].split("|")[2].replace(",", ""))
@@ -161,7 +161,7 @@ def test_no_code_path_names_an_engine_or_benchmark():
     names = [p.name for p in (repo / "backends").iterdir() if p.is_dir()]
     names += [p.name for p in (repo / "workloads").iterdir() if p.is_dir()]
     forbidden = re.compile(r"\b(" + "|".join(map(re.escape, names)) + r")\b")
-    for name in ("tools/data_tools.py", "data_shape.py", "data_shape_stats.py"):
+    for name in ("tools/data_tools.py", "datasets.py"):
         assert not forbidden.search((package / name).read_text().lower()), name
 
 

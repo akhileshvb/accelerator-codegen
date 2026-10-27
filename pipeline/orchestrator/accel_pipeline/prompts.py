@@ -339,7 +339,7 @@ def _aux_keys(cfg: PipelineConfig, workload: dict[str, Any], query: int, stage: 
 
 def _analysis_reference(cfg: PipelineConfig, workload: dict[str, Any], query: int, reference_sql: str) -> dict[str, str]:
     """The query, its parameters and the data, as the analysis stages see them."""
-    from accel_pipeline.data_shape import build_data_section, dependent_table_names
+    from accel_pipeline.datasets import build_data_section, dependent_table_names
     from accel_pipeline.tools.data_tools import DataToolContext, dataset_row_counts
 
     if not reference_sql.strip():
