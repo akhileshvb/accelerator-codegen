@@ -164,7 +164,7 @@ GATE_SCRIPTS = {
 # The iterate tier is the stage-exit gate of an optimization iteration: the full dataset, a lighter suite and fewer
 # write probes, one thread count (the design already passed the full tier; the audit runs it again).
 GATE_TIERS = {"aux_correctness_quick": "quick", "quick_check": "quick", "aux_tsan": "quick", "aux_correctness_iterate": "iterate",
-              "harness_acceptance": "quick"}
+              "harness_acceptance": "quick", "host_bootstrap": "quick"}  # the bootstrap's smokes only show each harness runs
 # The exit run has a phase on the subset dataset (the sanitizer run) beside the full-tier ones.
 SUBSET_DATASET_GATES = frozenset({"aux_exit"})
 
