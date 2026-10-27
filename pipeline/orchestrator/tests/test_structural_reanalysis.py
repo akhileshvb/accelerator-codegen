@@ -136,7 +136,7 @@ class TestReanalysisToolPolicy:
     def test_request_tool_rejects_exhausted_budget(self, tmp_path, monkeypatch):
         from accel_pipeline.config import load_pipeline_config
         from accel_pipeline.runlog import PipelineState, state_path
-        from accel_pipeline.tools.reanalysis_tools import ToolContext, make_reanalysis_tools
+        from accel_pipeline.structural_reanalysis import ReanalysisToolContext, make_reanalysis_tools
 
         monkeypatch.setenv("ACCEL_PIPELINE_PRIMARY_REPO", str(REPO_ROOT))
         state = PipelineState(query=3, workload="tpch_q3_aux", engine="duckdb", structural_reanalysis_count=2)
@@ -146,10 +146,10 @@ class TestReanalysisToolPolicy:
         pipeline_config = type(pipeline_config)(
             **{**pipeline_config.__dict__, "repo_root": tmp_path, "engine_name": "duckdb"}
         )
-        ctx = ToolContext(pipeline_config, 3, "implementation", "tpch_q3_aux")
+        ctx = ReanalysisToolContext(pipeline_config, 3, "implementation", "tpch_q3_aux")
         tool = make_reanalysis_tools(ctx)
         monkeypatch.setattr(
-            "accel_pipeline.tools.reanalysis_tools.load_run_workload",
+            "accel_pipeline.structural_reanalysis.load_run_workload",
             lambda pc, name: {**RUN, "max_structural_reanalysis": 2},
         )
         out = json.loads(

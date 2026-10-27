@@ -11,7 +11,7 @@ from accel_pipeline import mcp_server
 from accel_pipeline.config import QuickTierConfig, load_pipeline_config
 from accel_pipeline.quick import QuickResult
 from accel_pipeline.failure import Failure
-from accel_pipeline.tools import gate_tools, quick_tools
+from accel_pipeline.tools import gate_tools
 from accel_pipeline.tools.gate_tools import ToolContext
 
 CONFIG = SimpleNamespace(quick_tier=QuickTierConfig())
@@ -25,8 +25,8 @@ def test_quick_check_passes_its_arguments_on_and_renders_the_result(monkeypatch)
         seen.update(query=query, targets=targets, differential=differential, sanitizer=sanitizer, threads=threads)
         return QuickResult("pass", {"host_build": 0.5}, summary="quick_check passed")
 
-    monkeypatch.setattr(quick_tools, "run_quick_check", fake)
-    quick_check = quick_tools.make_quick_tools(ToolContext(CONFIG, 6, WORKLOAD))
+    monkeypatch.setattr(gate_tools, "run_quick_check", fake)
+    quick_check = gate_tools.make_quick_tools(ToolContext(CONFIG, 6, WORKLOAD))
     out = json.loads(quick_check(["my_test"], False, "thread", 6))
     assert seen == {"query": 6, "targets": ["my_test"], "differential": False, "sanitizer": "thread", "threads": 6}
     assert out == {"status": "pass", "summary": "quick_check passed", "phase_seconds": {"host_build": 0.5}}
@@ -34,8 +34,8 @@ def test_quick_check_passes_its_arguments_on_and_renders_the_result(monkeypatch)
 
 def test_a_failed_quick_check_shows_the_failure_and_how_to_reproduce(monkeypatch):
     failure = Failure("code", "quick_check", "quick_check", "differential failed", evidence="row 3", reproduce="host.sh run d 6")
-    monkeypatch.setattr(quick_tools, "run_quick_check", lambda *a, **k: QuickResult("fail", failure=failure, summary="x"))
-    out = json.loads(quick_tools.make_quick_tools(ToolContext(CONFIG, 6, WORKLOAD))())
+    monkeypatch.setattr(gate_tools, "run_quick_check", lambda *a, **k: QuickResult("fail", failure=failure, summary="x"))
+    out = json.loads(gate_tools.make_quick_tools(ToolContext(CONFIG, 6, WORKLOAD))())
     assert out["status"] == "fail" and "Reproduce: `host.sh run d 6`" in out["failure"]
 
 

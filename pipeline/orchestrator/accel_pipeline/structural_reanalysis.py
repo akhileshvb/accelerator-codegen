@@ -1,16 +1,27 @@
-"""Bounded re-run of analysis when implementation/optimization finds a structural bottleneck."""
+"""Structural re-analysis: a bounded re-run of analysis when implementation or optimization finds a structural bottleneck.
+
+The agent files a request (the `request_structural_reanalysis` tool, below); after the stage the orchestrator
+validates it, spends one of the workload's reanalysis budget, hands the analysis stage the evidence and re-runs the
+stages downstream of it.
+"""
 
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from accel_pipeline.workload import query_artifacts_dir
+from accel_pipeline.config import PipelineConfig
 from accel_pipeline.runlog import (
+    STAGES,
+    append_experiment_log,
+    load_or_create,
+    log_structural_reanalysis_request,
     log_structural_reanalysis_skipped,
     log_structural_reanalysis_triggered,
 )
+from accel_pipeline.workload import load_run_workload, query_artifacts_dir
 
 REQUEST_FILENAME = "structural_reanalysis_request.json"
 HISTORY_FILENAME = "structural_reanalysis_history.jsonl"
@@ -196,8 +207,6 @@ def process_after_stage(
 
     errors = validate_request(request)
     if errors:
-        from accel_pipeline.runlog import append_experiment_log
-
         reason = "; ".join(errors)
         log_structural_reanalysis_skipped(
             repo_root, query, workload, triggered_after=triggered_after, reason=f"invalid request: {reason}"
@@ -213,8 +222,6 @@ def process_after_stage(
         return None
 
     if not can_rerun_analysis(structural_reanalysis_count, workload):
-        from accel_pipeline.runlog import append_experiment_log
-
         reason = (
             f"budget exhausted ({structural_reanalysis_count}/"
             f"{max_structural_reanalysis_count(workload)})"
@@ -256,8 +263,6 @@ def process_after_stage(
             "request": request,
         },
     )
-    from accel_pipeline.runlog import append_experiment_log
-
     append_experiment_log(
         repo_root,
         query,
@@ -283,7 +288,110 @@ def process_after_stage(
     if triggered_after == "optimization":
         run_optimization()
 
-    from accel_pipeline.runlog import STAGES
-
     next_stage = STAGES.index("audit") if triggered_after == "optimization" else STAGES.index("optimization")
     return new_count, next_stage
+
+
+@dataclass
+class ReanalysisToolContext:
+    pipeline_config: PipelineConfig
+    query: int
+    stage: str
+    workload_name: str
+    optimization_iter: int = 0
+
+
+def make_reanalysis_tools(ctx: ReanalysisToolContext):
+    def request_structural_reanalysis(
+        bottleneck_type: str,
+        evidence: str,
+        proposed_direction: str,
+        current_candidate_id: str,
+        alternate_candidate_ids: list[str] | None = None,
+        cost_model_insufficient_reason: str | None = "",
+    ) -> str:
+        """Request a bounded structural re-analysis (max 2 per pipeline run).
+
+        Use only when a structural bottleneck is confirmed — e.g. residual O(n) state scan,
+        scan-for-scan swap, wrong partition grain, or maintenance semantics that cannot be fixed
+        by cost-model tuning or switching among viable alternates already in analysis.json.
+
+        Do NOT use for coefficient tweaks, EWMA tuning, or minor threshold changes.
+        """
+        cost_model_insufficient_reason = str(cost_model_insufficient_reason or "")
+        workload = load_run_workload(ctx.pipeline_config, ctx.workload_name)
+        state = load_or_create(
+            ctx.pipeline_config.repo_root, ctx.query, ctx.workload_name, ctx.pipeline_config.engine_name, resume=True
+        )
+        if state.structural_reanalysis_count >= max_structural_reanalysis_count(workload):
+            log_structural_reanalysis_request(
+                ctx.pipeline_config.repo_root,
+                ctx.query,
+                workload,
+                status="rejected",
+                source_stage=ctx.stage,
+                source_iteration=ctx.optimization_iter,
+                bottleneck_type=bottleneck_type,
+                current_candidate_id=current_candidate_id,
+                reason=f"budget exhausted ({state.structural_reanalysis_count})",
+            )
+            return json.dumps(
+                {
+                    "status": "rejected",
+                    "reason": f"structural reanalysis budget exhausted ({state.structural_reanalysis_count})",
+                }
+            )
+
+        try:
+            payload = write_request(
+                ctx.pipeline_config.repo_root,
+                ctx.query,
+                workload,
+                source_stage=ctx.stage,
+                source_iteration=ctx.optimization_iter,
+                bottleneck_type=bottleneck_type,
+                evidence=evidence,
+                proposed_direction=proposed_direction,
+                current_candidate_id=current_candidate_id,
+                alternate_candidate_ids=alternate_candidate_ids,
+                cost_model_insufficient_reason=cost_model_insufficient_reason,
+            )
+        except ValueError as exc:
+            log_structural_reanalysis_request(
+                ctx.pipeline_config.repo_root,
+                ctx.query,
+                workload,
+                status="rejected",
+                source_stage=ctx.stage,
+                source_iteration=ctx.optimization_iter,
+                bottleneck_type=bottleneck_type,
+                current_candidate_id=current_candidate_id,
+                reason=str(exc),
+            )
+            return json.dumps({"status": "rejected", "reason": str(exc), "allowed_bottleneck_types": sorted(BOTTLENECK_TYPES)})
+
+        allowed = sorted(BOTTLENECK_TYPES)
+        log_structural_reanalysis_request(
+            ctx.pipeline_config.repo_root,
+            ctx.query,
+            workload,
+            status="queued",
+            source_stage=ctx.stage,
+            source_iteration=ctx.optimization_iter,
+            bottleneck_type=payload["bottleneck_type"],
+            current_candidate_id=payload["current_candidate_id"],
+        )
+        return json.dumps(
+            {
+                "status": "queued",
+                "message": (
+                    "Request recorded. The orchestrator will re-run analysis after this stage "
+                    "if the request is valid and budget remains."
+                ),
+                "bottleneck_type": payload["bottleneck_type"],
+                "allowed_bottleneck_types": allowed,
+                "validation_errors": [],
+            }
+        )
+
+    return request_structural_reanalysis

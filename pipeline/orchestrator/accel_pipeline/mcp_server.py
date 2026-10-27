@@ -107,9 +107,9 @@ def build_mcp_tool_callables(
         _compact_gate_payload,
         admission_refusal_payload,
         make_gate_tools,
+        make_quick_tools,
     )
-    from accel_pipeline.tools.quick_tools import make_quick_tools
-    from accel_pipeline.tools.reanalysis_tools import ToolContext as ReanalysisCtx, make_reanalysis_tools
+    from accel_pipeline.structural_reanalysis import ReanalysisToolContext, make_reanalysis_tools
     from accel_pipeline.tools.shell_tools import ToolContext as ShellCtx, make_shell_tools
 
     is_aux = workload.get("workload_kind") == "aux_state"
@@ -241,7 +241,7 @@ def build_mcp_tool_callables(
         "run_correctness": run_correctness,
         "run_multi_connection": run_multi_connection,
         "request_structural_reanalysis": make_reanalysis_tools(
-            ReanalysisCtx(pipeline_config, query, stage, workload_name, optimization_iter)
+            ReanalysisToolContext(pipeline_config, query, stage, workload_name, optimization_iter)
         ),
         "run_pipeline_command": run_pipeline_command,
         "primitive_publish": primitive_publish,
