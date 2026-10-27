@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from accel_pipeline.audit_digest import record_implementation_base
+from accel_pipeline.digests import record_implementation_base
 from accel_pipeline.config import ModelConfig, PipelineConfig
 from accel_pipeline.workload import (
     load_run_workload,

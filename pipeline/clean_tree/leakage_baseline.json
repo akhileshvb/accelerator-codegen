@@ -369,10 +369,6 @@
   "symbol": 1,
   "target": 11
  },
- "pipeline/orchestrator/tests/test_analysis_context.py": {
-  "engine": 4,
-  "path": 3
- },
  "pipeline/orchestrator/tests/test_api_contract.py": {
   "engine": 3,
   "engine_branch": 1
@@ -398,6 +394,10 @@
  "pipeline/orchestrator/tests/test_codex_backend.py": {
   "engine": 17,
   "target": 1
+ },
+ "pipeline/orchestrator/tests/test_digests.py": {
+  "engine": 1,
+  "path": 2
  },
  "pipeline/orchestrator/tests/test_engine_backend.py": {
   "engine": 93,

@@ -14,7 +14,7 @@ from typing import Any
 
 import yaml
 
-from accel_pipeline.analysis_context import (
+from accel_pipeline.digests import (
     analysis_for_audit,
     analysis_for_implementation,
     build_shared_docs_reference,
