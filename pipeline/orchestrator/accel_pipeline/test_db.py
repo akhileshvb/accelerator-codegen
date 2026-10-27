@@ -39,7 +39,7 @@ from accel_pipeline.tools.data_tools import DataToolContext, HostSql
 SUBSET_ROOT_ROWS = 40_000  # rows of the largest table in the quick cut
 TINY_ROOT_ROWS = 1_500  # the adversarial phase needs a few rows the point-write probes can invalidate
 STATEMENT_SECONDS = 900.0
-FORMAT_VERSION = 5
+FORMAT_VERSION = 6
 _IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
@@ -99,21 +99,21 @@ def _sample(table: str, rows: int, root_rows: int, join_columns: list[str], inte
     """Every P-th key value, P a prime near rows / root_rows: an even spread over the key range (no bias to early
     keys), and a prime stride cannot line up with the blocks a generator numbers its keys in. An integer join key is
     sampled by value; a text one by its rank among the distinct keys (a modulo of another integer column would keep
-    whatever few values happen to divide, e.g. none of a handful of dates)."""
+    whatever few values happen to divide, e.g. none of a handful of dates). A table no key links to any other has no
+    neighbour to stay consistent with: its first rows."""
     if rows <= root_rows:
         return f"SELECT * FROM {table}"
+    if not join_columns:
+        order = f" ORDER BY {', '.join(integers)}" if integers else ""
+        return f"SELECT * FROM {table}{order} LIMIT {root_rows}"
     stride = math.ceil(rows / root_rows)
     while any(stride % d == 0 for d in range(2, math.isqrt(stride) + 1)):
         stride += 1
     if column := next((c for c in join_columns if c in integers), None):
         return f"SELECT * FROM {table} WHERE {column} % {stride} = 0"
-    if join_columns:
-        key = join_columns[0]
-        ranked = f"SELECT {key}, ROW_NUMBER() OVER (ORDER BY {key}) AS key_rank FROM (SELECT DISTINCT {key} FROM {table}) AS keys"
-        return f"SELECT * FROM {table} WHERE {key} IN (SELECT {key} FROM ({ranked}) AS ranked WHERE key_rank % {stride} = 0)"
-    if integers:
-        return f"SELECT * FROM {table} WHERE {integers[0]} % {stride} = 0"
-    raise ValueError(f"{table} has no join key or integer column to sample by")
+    key = join_columns[0]
+    ranked = f"SELECT {key}, ROW_NUMBER() OVER (ORDER BY {key}) AS key_rank FROM (SELECT DISTINCT {key} FROM {table}) AS keys"
+    return f"SELECT * FROM {table} WHERE {key} IN (SELECT {key} FROM ({ranked}) AS ranked WHERE key_rank % {stride} = 0)"
 
 
 def _write_cut(runner: HostSql, selects: dict[str, str], directory: Path) -> dict[str, int]:

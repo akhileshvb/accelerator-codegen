@@ -33,7 +33,8 @@ def test_a_table_within_the_row_target_is_kept_whole():
 
 def test_tables_no_join_reaches_are_cut_on_their_own():
     out = cut_selects(["orders", "nation"], [], {"orders": 1000, "nation": 5000}, {"orders": ["o_orderkey"], "nation": ["n_key"]}, 500)
-    assert "n_key %" in out["nation"] and "o_orderkey %" in out["orders"] and "IN" not in out["orders"]
+    assert out["nation"] == "SELECT * FROM nation ORDER BY n_key LIMIT 500"
+    assert out["orders"] == "SELECT * FROM orders ORDER BY o_orderkey LIMIT 500"
 
 
 def test_the_stride_is_a_prime_so_it_cannot_line_up_with_blocks_of_keys():
@@ -46,9 +47,13 @@ def test_a_sample_with_no_rows_is_an_error(tmp_path):
         test_db._write_cut(type("R", (), {"rows": lambda self, sql, seconds: []})(), {"t": "SELECT 1"}, tmp_path / "cut")
 
 
-def test_a_table_without_a_join_key_or_integer_column_cannot_be_sampled():
-    with pytest.raises(ValueError, match="no join key or integer column"):
-        cut_selects(["notes"], [], {"notes": 10}, {"notes": []}, 5)
+def test_a_table_no_key_links_keeps_its_first_rows():
+    # SEC-EDGAR's pre, for a query that reads num and sub: its integers are a few report and line numbers, and a
+    # modulo of them by the stride kept no row at all
+    out = cut_selects(["num", "pre", "notes"], [], {"num": 50, "pre": 9_600_799, "notes": 10},
+                      {"num": ["ddate"], "pre": ["report", "line"], "notes": []}, 5)
+    assert out["pre"] == "SELECT * FROM pre ORDER BY report, line LIMIT 5"
+    assert out["notes"] == "SELECT * FROM notes LIMIT 5" and "%" not in out["pre"]
 
 
 def test_a_text_join_key_is_sampled_by_rank_not_by_another_integer_column():
