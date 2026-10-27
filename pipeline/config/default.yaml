@@ -10,6 +10,7 @@ datasets:
   tpch_sf10: ACCEL_TPCH_SF10_DB
   tpch_test: ACCEL_TPCH_TEST_DB
   sec_edgar_sf3: ACCEL_SEC_EDGAR_DB
+  kestrel_sf1: ACCEL_KESTREL_DB
 
 # backends/<engine>/bench/: benchmark_<engine>_<bench>_aux, calibrate_<engine>_<bench>_aux_cost_model
 shared_bench_harness: [tpch]
@@ -44,7 +45,7 @@ allowed_commands:
   - "^cmake -S \\. -B build-release( .*)?$"
   - "^cmake -S \\. -B build-release && cmake --build build-release( .*)?$"
   - "^cmake --build build-release( .*)?$"
-  - "^ctest -R tpch_q\\d+.*$"
+  - "^ctest -R [a-z0-9_]*q\\d+.*$"
   - "^ctest --test-dir build-release( .*)?$"
   - "^ctest -N( .*)?$"
   - "^ninja -C build-release.*$"

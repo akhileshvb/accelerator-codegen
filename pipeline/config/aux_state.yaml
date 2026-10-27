@@ -8,7 +8,7 @@ allowed_commands:
   # Build / test (gates and agent loop)
   - "^touch CMakeLists\\.txt && cmake -S \\. -B build-release$"
   - "^touch CMakeLists\\.txt && cmake --build build-release( .*)?$"
-  - "^ctest -R (q\\d+_|tpch_q\\d+_aux|test_[a-z0-9]+_(cross_accel|aux_multi_connection)).*"
+  - "^ctest -R ([a-z0-9_]*q\\d+_|test_[a-z0-9]+_(cross_accel|aux_multi_connection)).*"
   # test / bench / calibrate binaries land in the build root (no tests/ or benchmarks/ subdir)
   - "^(\\./)?build-release/(test|benchmark|calibrate)_[A-Za-z0-9_]+( .*)?$"
   - "^(ACCEL_[A-Z_]+=\\S+ )+(\\.\\/)?build-release\\/(test|benchmark|calibrate)_[A-Za-z0-9_]+( .*)?$"

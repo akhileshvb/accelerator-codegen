@@ -97,3 +97,25 @@ Thread 1 (Thread 0x7d (LWP 42) "harness"):
         "    start_thread  libc.so.6",
         "  1 thread:", "    Build::Seal  build_state.hpp:149", "    main  harness.cpp:12",
     ]
+
+
+def test_harness_acceptance_runs_every_harness_on_the_query_with_its_suite(repo):
+    from test_gate_fast_path import suite_ctx
+
+    ctx = suite_ctx(repo, "point_writes: {max_probes: 2, min_count: 1}\n")
+    proc, calls, _, gj, _ = run_gate(repo, "run_harness_acceptance.sh", "5", ctx_extra=ctx)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert [c for c in calls if c.startswith("run ")] == ["run diff_bin 5", "run multi_bin 5", "run cross_bin 5"]
+    assert result(gj, "harness_acceptance")["status"] == "pass"
+
+
+def test_a_harness_that_fails_on_the_declining_module_is_named_as_the_harness(repo):
+    from test_gate_fast_path import suite_ctx
+
+    ctx = suite_ctx(repo, "point_writes: {max_probes: 2, min_count: 1}\n")
+    proc, _, _, gj, _ = run_gate(repo, "run_harness_acceptance.sh", "5", ctx_extra=ctx,
+                                 env_extra={"ACCEL_GATE_OUT": str(repo / "art" / "gates" / "harness_acceptance.json"),
+                                            "FAKE_RC_run": "1"})
+    assert proc.returncode == 1
+    data = result(gj, "harness_acceptance")
+    assert data["reason"].startswith("diff_bin exited 1 on query 5 with the declining module") and "harness is wrong" in data["reason"]

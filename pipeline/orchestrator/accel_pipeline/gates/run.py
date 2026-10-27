@@ -36,6 +36,7 @@ from accel_pipeline.workload_facts import FACTS_FILE, workload_facts
 GATE_SCRIPTS = {
     "scaffold": "scaffold_query.sh",
     "host_bootstrap": "run_host_bootstrap.sh",
+    "harness_acceptance": "run_harness_acceptance.sh",
     "correctness": "run_correctness.sh",
     "baseline": "run_baseline.sh",
     "sf10": "run_sf10.sh",
@@ -91,7 +92,8 @@ GATE_SCRIPTS = {
 # build and differential on it took 20+ min per run (past the MCP tool-call limit).
 # The iterate tier is the stage-exit gate of an optimization iteration: the full dataset, a lighter suite and fewer
 # write probes, one thread count (the design already passed the full tier; the audit runs it again).
-GATE_TIERS = {"aux_correctness_quick": "quick", "quick_check": "quick", "aux_tsan": "quick", "aux_correctness_iterate": "iterate"}
+GATE_TIERS = {"aux_correctness_quick": "quick", "quick_check": "quick", "aux_tsan": "quick", "aux_correctness_iterate": "iterate",
+              "harness_acceptance": "quick"}
 # The exit run has a phase on the subset dataset (the sanitizer run) beside the full-tier ones.
 SUBSET_DATASET_GATES = frozenset({"aux_exit"})
 

@@ -47,7 +47,7 @@ If the host's harnesses lack a surface this query needs, the **`host_bootstrap`*
 - Ordered full-result test: reference SQL vs accelerator on the **{{engine_name}}** host.
 - The kernel factories the scaffolded `{{kernel_path}}` declares (`Create…Kernel` and `Create…ProfilingKernel`), with phase counters (`num_aggregate_us` on fused paths).
 - Benchmark: median timing and a `speedup_median` CSV (templates `{{test_template_path}}`, `{{benchmark_template_path}}`).
-- Differential: create or register host SQL entrypoints and `test_{{engine_name}}_tpch_differential` where absent (`query_host_bootstrap.md`); never fall back to another engine's registration.
+- Differential: create or register host SQL entrypoints and `{{differential_binary}}` where absent (`query_host_bootstrap.md`); never fall back to another engine's registration.
 
 **Build and smoke:** `backends/{{engine_name}}/host.sh build {{bench_target}} {{test_target}}`, then `host.sh run` the smoke tests (`ctest -R {{ctest_smoke_regex}}`).
 

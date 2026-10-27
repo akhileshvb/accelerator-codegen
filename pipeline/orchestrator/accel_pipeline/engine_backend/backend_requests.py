@@ -54,6 +54,14 @@ def pending(repo_root: Path, engine: str, scope: str) -> list[dict[str, Any]]:
     return _requests(repo_root, engine, scope)[handled:]
 
 
+def record(repo_root: Path, engine: str, request: dict[str, Any]) -> None:
+    """Append one request (a defect the run found in a part another stage owns) for its owner's next run."""
+    path = requests_path(repo_root, engine)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as out:
+        out.write(json.dumps(request) + "\n")
+
+
 def mark_handled(repo_root: Path, engine: str, scope: str) -> None:
     count = len(_requests(repo_root, engine, scope))
     _done_path(repo_root, engine, scope).write_text(json.dumps({"count": count}) + "\n", encoding="utf-8")

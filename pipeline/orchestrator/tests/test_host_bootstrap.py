@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from types import SimpleNamespace
 from pathlib import Path
 
 import json
@@ -386,3 +387,42 @@ def test_an_existing_harness_that_passes_the_gate_needs_no_agent_run(tmp_path, m
                              representative_workload="tpch_q1_aux")
     assert out == {**out, "status": "pass", "skipped": True}
     assert calls == {"stage": 0, "gates": 1}
+
+
+def _acceptance(tmp_path, monkeypatch, statuses):
+    """accept_harness with the gate answering `statuses` in turn; returns (bootstrap runs, recorded requests)."""
+    import accel_pipeline.engine_backend.host_bootstrap as hb
+    import accel_pipeline.gates.run as gates_run
+
+    answers = iter(statuses)
+    monkeypatch.setattr(gates_run, "run_gate", lambda *a, **k: GateResult(
+        "harness_acceptance", next(answers), {"reason": "diff_bin exited 1 on query 3", "log_tail": "boom"}))
+    boots = []
+    monkeypatch.setattr(hb, "run_host_bootstrap", lambda *a, **k: boots.append(k["engine_name"]))
+    monkeypatch.setattr(hb, "host_bootstrap_dir", lambda root, engine: tmp_path)
+    cfg = SimpleNamespace(repo_root=tmp_path)
+    workload = {"workload_kind": "aux_state", "engine_name": "toydb", "benchmark_name": "toybench", "query_number": 3}
+    run = lambda: hb.accept_harness(cfg, None, "toybench_q3_aux", workload, 3)  # noqa: E731
+    requests = lambda: [json.loads(l) for l in (tmp_path / "pipeline/artifacts/backend_additions/toydb.jsonl").read_text().splitlines()]  # noqa: E731
+    return run, boots, requests
+
+
+def test_harnesses_that_pass_on_the_declining_module_need_no_repair(tmp_path, monkeypatch):
+    run, boots, _ = _acceptance(tmp_path, monkeypatch, ["pass"])
+    run()
+    assert boots == []
+
+
+def test_a_harness_failure_goes_to_host_bootstrap_as_a_request_and_is_checked_again(tmp_path, monkeypatch):
+    run, boots, requests = _acceptance(tmp_path, monkeypatch, ["fail", "pass"])
+    run()
+    assert boots == ["toydb"]
+    [request] = requests()
+    assert request["scope"] == "harness" and request["query"] == 3 and "diff_bin exited 1" in request["reason"]
+
+
+def test_harnesses_that_keep_failing_stop_the_stage(tmp_path, monkeypatch):
+    run, boots, requests = _acceptance(tmp_path, monkeypatch, ["fail", "fail", "fail"])
+    with pytest.raises(StageStopped, match="harnesses fail on Q3"):
+        run()
+    assert len(boots) == 2 and len(requests()) == 2 and "boom" in (tmp_path / "stop_report.md").read_text()

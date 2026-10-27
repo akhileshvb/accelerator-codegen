@@ -39,6 +39,7 @@ keep:
   - eval/tests/test_versioned_aux_store_caps.cpp
   - eval/tests/make_sec_edgar_test_db.cpp
   - eval/tests/make_tpch_test_db.cpp
+  - eval/tests/make_test_db.cpp
   - eval/tests/tpch_fuzz_writes.hpp
   - eval/tests/test_support/db_paths.hpp
   - eval/tests/test_support/result_compare.hpp

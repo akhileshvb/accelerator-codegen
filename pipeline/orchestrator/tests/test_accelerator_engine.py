@@ -80,7 +80,7 @@ def test_gate_context_includes_engine_for_base_and_aux():
     aux_ctx = build_gate_context(pc, _duckdb_workload("tpch_q14_aux"), 14)
     assert base_ctx["engine_name"] == "duckdb"
     assert aux_ctx["engine_name"] == "duckdb"
-    assert base_ctx["engine_host"]["dataset_env"] == "ACCEL_TPCH_DB"
+    assert base_ctx["engine_host"]["dataset_env"] == "ACCEL_DB"
     assert aux_ctx["engine_host"]["differential_binary"] == "test_duckdb_tpch_differential"
 
 

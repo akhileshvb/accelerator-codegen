@@ -306,11 +306,11 @@ def missing_harness_target(text: str, workload: Mapping[str, Any]) -> str:
 _UNSUPPORTED = re.compile(r"unsupported shared query(?:\s+binding)?", re.IGNORECASE)
 _REBUILD_REVERT = re.compile(r"rebuild after (?:revert|restore) failed", re.IGNORECASE)
 _FOREIGN_COMPILE = re.compile(
-    r"(?:error|fatal error):.*?accelerators/(?:tpch|sec_edgar)/q(\d+)/",
+    r"(?:error|fatal error):.*?accelerators/[A-Za-z0-9_]+/q(\d+)/",
     re.IGNORECASE | re.DOTALL,
 )
 _FOREIGN_COMPILE_PATH = re.compile(
-    r"accelerators/(?:tpch|sec_edgar)/q(\d+)/[^\s:]+",
+    r"accelerators/[A-Za-z0-9_]+/q(\d+)/[^\s:]+",
     re.IGNORECASE,
 )
 

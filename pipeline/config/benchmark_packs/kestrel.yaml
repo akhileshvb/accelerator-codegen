@@ -1,0 +1,10 @@
+# Kestrel: the synthetic retail benchmark (workloads/kestrel; scripts/make_kestrel_dataset.py makes its data).
+benchmark_name: kestrel
+display_name: Kestrel
+artifact_namespace: kestrel
+dataset_key: kestrel_sf1
+db_env_var: ACCEL_KESTREL_DB
+ctest_resource_lock: kestrel_db
+
+write_paths:
+  - accelerators/kestrel/**

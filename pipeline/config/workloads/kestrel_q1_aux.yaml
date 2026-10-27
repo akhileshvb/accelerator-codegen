@@ -1,0 +1,15 @@
+workload_kind: aux_state
+benchmark_name: kestrel
+query_number: 1
+engines: [duckdb]
+reference_sql_path: workloads/kestrel/instances/seed_1/01.sql
+parameters:
+  - {name: sold_from, type: DATE}
+  - {name: sold_to, type: DATE}
+  - {name: region, type: VARCHAR}
+
+aux_bench_sweep:
+  write_frequencies: [0, 1, 10, 50]
+  suites: sale_append
+  bench_warmup: 10
+  bench_queries: 100

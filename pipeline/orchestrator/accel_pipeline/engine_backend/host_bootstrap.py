@@ -12,7 +12,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from accel_pipeline.engine_backend.backend_requests import as_required_fixes, mark_handled, pending
+from accel_pipeline.engine_backend.backend_requests import as_required_fixes, mark_handled, pending, record
 from accel_pipeline.config import (
     ModelConfig,
     PipelineConfig,
@@ -31,6 +31,7 @@ from accel_pipeline.stages.base import run_agent_stage
 _GATE_LOG_TAIL_CHARS = 8000
 _DEFAULT_GATE_MAX_ROUNDS = 3
 _DEFAULT_CRITIQUE_MAX_ROUNDS = 1
+_ACCEPTANCE_REPAIRS = 2
 
 
 def host_bootstrap_dir(repo_root: Path, engine_name: str) -> Path:
@@ -319,6 +320,44 @@ def _bootstrap_under_repair(
         extra={"gate_data": final.data},
     )
     return {"engine_name": engine, "status": final.status, "skipped": False, "path": str(path), "gate": final.data}
+
+
+def accept_harness(
+    pipeline_config: PipelineConfig,
+    model_config: ModelConfig,
+    workload_name: str,
+    workload: dict[str, Any],
+    query: int,
+    model_overrides: dict[str, str] | None = None,
+) -> None:
+    """The harnesses pass on this query, with the declining module the test_suite stage registered (every answer is
+    the reference SQL's), before any accelerator depends on them: the bootstrap gate can only smoke them, no query
+    being registered yet. A failure is the harness's: it is recorded as a harness request, host_bootstrap re-runs
+    with it as a required fix, and the check repeats."""
+    from accel_pipeline.failure import failure_from_gate, render_failure
+    from accel_pipeline.gates.run import run_gate
+
+    if workload.get("workload_kind") != "aux_state" or not workload.get("engine_name"):
+        return  # no declining module, or no engine harnesses to run
+    engine = sanitize_engine_name(str(workload["engine_name"]))
+    for repairs in range(_ACCEPTANCE_REPAIRS + 1):
+        result = run_gate(pipeline_config, "harness_acceptance", query, workload, change_kind="harness_acceptance")
+        if result.status in ("pass", "skip"):
+            return
+        failure = failure_from_gate(result, stage="harness_acceptance", workload=workload, repo_root=pipeline_config.repo_root)
+        if repairs == _ACCEPTANCE_REPAIRS:
+            break
+        print(f"[host_bootstrap] the {engine} harnesses fail on Q{query}: {failure.summary}; host_bootstrap repairs them",
+              flush=True)
+        record(pipeline_config.repo_root, engine, {
+            "benchmark": str(workload.get("benchmark_name") or ""), "query": query, "scope": "harness",
+            "helper": "harness acceptance", "reason": render_failure(failure)})
+        run_host_bootstrap(pipeline_config, model_config, engine_name=engine, representative_workload=workload_name,
+                           model_overrides=model_overrides)
+    report = host_bootstrap_dir(pipeline_config.repo_root, engine) / "stop_report.md"
+    report.write_text(f"# Stopped: the {engine} harnesses fail on Q{query} after {_ACCEPTANCE_REPAIRS} repairs\n\n"
+                      f"{render_failure(failure)}\n", encoding="utf-8")
+    raise StageStopped(f"the {engine} harnesses fail on Q{query} with the declining module", report)
 
 
 def ensure_host_bootstrap_for_workload(

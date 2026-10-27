@@ -15,6 +15,6 @@ A mandatory check failed after your last edit (build error, crash, correctness m
 
 Workload `engine_name` is **`{{engine_name}}`**.
 - **Do not** "fix" correctness by switching to another engine's registration, smoke tests or datasets.
-- Fix the **{{engine_name}}** host path (SQL entrypoints, `test_{{engine_name}}_tpch_differential`, CMake). Re-run `host_bootstrap` surfaces if missing.
+- Fix the **{{engine_name}}** host path (SQL entrypoints, `{{differential_binary}}`, CMake). Re-run `host_bootstrap` surfaces if missing.
 
 {{constraints}}

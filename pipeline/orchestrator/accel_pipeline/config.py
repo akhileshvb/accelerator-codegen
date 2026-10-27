@@ -424,9 +424,10 @@ def resolve_workload_paths(
         "bench_target": bench_target,
         "ctest_smoke_name": naming.smoke_ctest_name(benchmark, q),
         "ctest_smoke_regex": f"^{naming.smoke_ctest_name(benchmark, q)}$",
-        "dataset_db": _dataset_path(workload.get("dataset_db", pipeline_config.tpch_db_sf1)),
-        "scale_db": _dataset_path(workload.get("scale_db", pipeline_config.tpch_db_sf10)),
-        "db_env_var": str(workload.get("db_env_var", "ACCEL_TPCH_DB")),
+        # the benchmark's own datasets (its pack's dataset_key), never another benchmark's
+        "dataset_db": _dataset_path(workload.get("dataset_db", "")),
+        "scale_db": _dataset_path(workload.get("scale_db", "")),
+        "db_env_var": str(workload.get("db_env_var", f"ACCEL_{benchmark.upper()}_DB")),
         "header_path": f"{qdir}/{eng_seg}base/query.hpp",
         "kernel_path": f"{generated_base}/kernel.cpp",
         "package_path": f"{generated_base}/package.cpp",

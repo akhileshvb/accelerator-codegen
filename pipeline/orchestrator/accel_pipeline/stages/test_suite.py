@@ -81,6 +81,10 @@ def run(
     append_experiment_log(root, query, f"- {STAGE}: suite frozen, hash {record['hash'][:12]} ({record['reason']})",
                           workload=workload)
     print(f"[pipeline] {STAGE} froze {directory} ({record['hash'][:12]})", file=sys.stderr, flush=True)
+    if not change_request:  # the query's module is still the declining one: the harnesses must pass on it
+        from accel_pipeline.engine_backend.host_bootstrap import accept_harness
+
+        accept_harness(pipeline_config, model_config, workload_name, workload, query, model_overrides)
     return result
 
 
