@@ -29,7 +29,7 @@ from accel_pipeline.stages.base import run_agent_stage
 
 _GATE_LOG_TAIL_CHARS = 8000
 _DEFAULT_GATE_MAX_ROUNDS = 3
-_DEFAULT_CRITIQUE_MAX_ROUNDS = 2
+_DEFAULT_CRITIQUE_MAX_ROUNDS = 1
 
 
 def host_bootstrap_dir(repo_root: Path, engine_name: str) -> Path:
@@ -396,9 +396,10 @@ def run_host_bootstrap_agent(
     engine = engine_name or "engine"
     user_message = (
         f"Build the workload harnesses of engine={engine}: the differential, multi-connection, "
-        f"cross-accelerator, bench and calibrate targets under backends/{engine}/tests/harness/ and "
-        f"bench/, declared in backends/{engine}/tests/harness.cmake (the only paths you may write). "
-        "One query-parameterised harness per kind, reaching the engine through the backend api/ and "
+        f"cross-accelerator, bench and calibrate targets and the per-query module test under "
+        f"backends/{engine}/tests/harness/ and bench/, declared in backends/{engine}/tests/harness.cmake "
+        "(the only paths you may write). One query- and benchmark-parameterised harness per kind, "
+        "naming no benchmark, reaching the engine through the backend api/ and "
         "host.sh only. Build through the engine's host.sh (request_gate host_bootstrap), not a host "
         "cmake/make. Call request_gate host_bootstrap until it passes, then finish."
     )
