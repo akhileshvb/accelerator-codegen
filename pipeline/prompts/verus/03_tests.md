@@ -18,43 +18,51 @@ accelerator is specified for, so it tests nothing useful; the pipeline
 enforces the schema's NOT NULL constraints on the test databases, so such a
 write fails validation.
 
-Read `query/`, `spec/gen_spec.rs` and `inputs/q.inputs`. Explore the test
-database with `verus_sql`. Write in `tests/`:
+Read `query/` (the application's writes are `production.writes` in
+`workload.json`), `spec/gen_spec.rs` and `inputs/q.inputs`. Explore the test
+database with `verus_sql` (`iteration=true`: the iteration dataset, where the
+benchmarks run). Write in `tests/`:
 
 * `params.sql`: one parameter tuple per line as SQL literals separated by
-  commas (e.g. `'SAUDI ARABIA'` or `DATE '1995-01-01', 24`). Mostly real
+  commas (e.g. `'some text'` or `DATE '1995-01-01', 24`). Mostly real
   values spread over the domain (large, typical and small answers; for a
   small domain, all of it), plus a few edge values: values that match
   nothing, boundaries, text that differs only in case or spacing, and values
-  outside the TPC-H domain (patterns no TPC-H word matches, far dates, finer
+  outside the domain (text no domain value matches, far dates, finer
   fractions): the kernel must answer those too. Cover each parameter's whole
-  TPC-H domain (all colors, nations, ... or a wide spread).
+  domain (every value of a small one, or a wide spread).
   The pipeline appends random domain tuples to `params.sql` and adds a fresh
   random set to every differential run.
 * `txns/NNN.sql`: one write transaction per file (portable SQL; statements
   separated by `;`). They run **in sequence, committed**: each one runs on
   the state the previous ones left, so write each to be valid there (a
   subquery that picks a row must still find one; otherwise it yields NULL).
-  * Realistic (most): what the application does, e.g. inserting new orders
-    with their lines, deleting orders with their lines, updating the columns
-    the query reads (dates, statuses, amounts) on a few rows or a batch;
+  * Realistic (most): what the application does (`production.writes`), e.g.
+    inserting new entities with their child rows, deleting them with their
+    child rows, updating the columns the query reads (dates, statuses,
+    amounts) on a few rows or a batch;
     transactions that touch several tables; the same kinds of writes in
     different orders and sizes (point, small batch, larger batch); sequences
     that undo or redo earlier writes (insert then delete, update twice).
-  * Edge cases (the rest), all within the schema: duplicate rows (the schema
-    declares no keys), key changes, rows that enter and leave the answer or
-    matter only through EXISTS / NOT EXISTS, changes that need a rescan,
-    ties in the ordering, extreme in-range values, text the collation treats
-    specially.
+  * Edge cases (the rest), all within the schema: NULLs in every NULL-able
+    column the query reads, duplicate rows (except under a declared PRIMARY
+    KEY, which the test and benchmark databases enforce), key changes, rows
+    that enter and leave the answer or matter only through EXISTS / NOT
+    EXISTS, changes that need a rescan, ties in the ordering, extreme
+    in-range values, text the collation treats specially.
   * Every table the query reads gets inserts, deletes and updates. Target
     rows that are in answers: a write that never changes an answer tests
     nothing. Choose rows by SQL (subqueries), not hard-coded ids.
 * `setup.sql` (optional): shape the data first, with schema-valid rows only.
-* `bench_txns/NNN.sql` (optional): realistic point writes for benchmarking
-  (default: txns/).
+* `bench_txns/NNN.sql`: the application's writes for benchmarking, each one
+  write of `production.writes` at its real size (default: txns/). The
+  benchmarks replay them many times in any order on the iteration dataset,
+  so each must apply again after it has run: fresh keys (derived from the
+  current maximum, never a fixed literal), rows chosen by subquery.
 
 Run `verus_validate_tests` until every tuple and transaction runs (it applies
-the schema's constraints and runs the transactions in sequence).
+the schema's constraints, runs the transactions in sequence, and applies each
+bench write three times over on the iteration dataset).
 
 Feedback from the previous round: {{feedback}}
 

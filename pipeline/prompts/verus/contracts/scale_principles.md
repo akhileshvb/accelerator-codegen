@@ -1,21 +1,25 @@
 # Scale principles (guidance, not gates)
 
-Iteration runs at SF1; production runs reach SF3000 (TPC-H: lineitem ≈ 18
-billion rows, orders ≈ 4.5 billion). Aux state lives in memory. Design so the
-accelerator keeps its advantage as data grows:
+Iteration runs on the iteration dataset; production holds many times its data:
+`query/workload.json` gives the factor (`production.scale`; the `fixed` tables
+do not grow) and what the application writes (`production.writes`), and
+`query/data_shape.md` the tables' rows, key counts and fan-outs at iteration
+scale. Aux state lives in memory. Design so the accelerator keeps its
+advantage as data grows:
 
 * **State size**: at most linear, and in what queries read (groups,
-  qualifying keys), not in whole tables. At SF3000 it may exceed RAM: the
+  qualifying keys), not in whole tables. In production it may exceed RAM: the
   store will spill cold state to NVMe, so keep it compact and local (a read
   or write touches few pages, in key order) rather than capping its size.
 * **Memory footprint** is the third objective, after fast reads and cheap
   maintenance: never give up a read or per-write bound below for it, but
   among designs that meet those, take the smallest, and size every
   structure. Every accelerated query of the database shares one host with
-  the DBMS, so budget about **3 GB of state per accelerator at SF20**
-  (TPC-H orders = 30M rows, lineitem = 120M), and a build peak of at most
-  about twice that on top of the DBMS's own scans. A state keyed by order or
-  customer fits only at about 32-64 bytes per key, all overheads included.
+  the DBMS, so budget about **25 bytes of state per row of the largest table
+  the query reads** (3 GB for a 120M-row table), at every scale, and a build
+  peak of at most about twice that on top of the DBMS's own scans. A state
+  with an entry per entity of a large table (one per order, filing,
+  customer) fits only at about 32-64 bytes per entry, all overheads included.
   Count real bytes, not payload (64-bit Rust, glibc malloc):
   * every heap allocation (`Box`, `Arc`, a `Vec`'s buffer) adds about 16
     bytes of allocator header, and an `Arc` adds 16 bytes of counts;
@@ -39,40 +43,42 @@ accelerator keeps its advantage as data grows:
     so pages stay evenly full;
   * **exact, small first**: sums and counts over joined tuples use
     the prooflib's exact integer `wide`, whose `i128` fast path holds their
-    SF3000 magnitude without allocating; counts of one table's rows fit
+    production magnitude without allocating; counts of one table's rows fit
     `i64` (at most 2^63 rows, the DBMS's row-id space), sums of counts need more; never narrow a stored value below what the
     envelope allows;
   * keep one copy of each fact: rank or secondary indexes hold small
     records (key + ranking value), not pointers to or copies of full rows.
-  State the bytes per entry and the SF20 total (steady and build peak) in
-  the analysis, from these costs, not from the payload.
+  State the bytes per entry and the totals at iteration and at production
+  scale (steady and build peak) in the analysis, from these costs, not from
+  the payload.
 * **Any parameter value**: every substitution parameter is a runtime `$n`
   parameter (LIKE patterns and fractions too) and the state must serve any
-  value of its TPC-H domain at the same cost bounds. State kept for one
-  parameter value (one color, one nation, one pattern) is not allowed;
-  benchmarks and tests draw random values from the domain on every run.
-  Values outside the TPC-H domain must be answered too (a slower general
-  path is fine; a decline is not).
+  value of its domain at the same cost bounds. State kept for one parameter
+  value (one category, one code, one pattern) is not allowed; benchmarks and
+  tests draw random values from the domain on every run. Values outside the
+  domain must be answered too (a slower general path is fine; a decline is
+  not). A domain over values the data accumulates (years, dates, ids) grows
+  with the data: never size or index the state by today's values.
 * **Maintenance**: cost per changed row, independent of table size. A point
   write touches its own keys; rescans are restricted to touched keys; no full
   rebuild on ordinary writes. A keyed rescan is a scan filtered by key: it
   reads only the touched rows when the table is stored (clustered) or
-  indexed by that key (TPC-H `orders` and `lineitem` by orderkey, `part` by
-  partkey, `customer` by custkey) and the WHOLE table otherwise (e.g.
-  `lineitem` by partkey or suppkey, `orders` by custkey). The frequent
-  writes are inserts and deletes of orders with their lineitems (TPC-H
-  refresh functions): keep their rescans on clustered keys. Apply may not
-  decline inside the envelope (the host passes back exactly the rescan keys
-  the kernel asked for), and a write that cannot use its delta and rebuilds
-  costs hours at SF3000.
-  A refresh touches nearly every key range (0.1% of orders and their
-  lineitems, keys spread uniformly), so the unit a write copies must itself
+  indexed by that key and the WHOLE table otherwise. Assume a table is
+  clustered only by the key its rows arrive grouped by (the entity a write
+  inserts with its child rows: an order with its lines, a filing with its
+  facts), not by its other columns. The frequent writes are those of
+  `production.writes`: keep their rescans on the keys they arrive grouped by.
+  Apply may not decline inside the envelope (the host passes back exactly the
+  rescan keys the kernel asked for), and a write that cannot use its delta
+  and rebuilds costs hours in production.
+  A write batch may touch nearly every key range (its keys spread over the
+  key space, e.g. new entities across all categories), so the unit a write copies must itself
   cost O(changed rows): plain records in small pages or persistent maps with
   small leaves, never a large container cloned whole on first touch; batch a
   commit's changes per page so each page is copied once. Do not re-read the
   base rows of a touched key when the delta suffices: keep what maintenance
   needs (per-key sums and counts, multisets) in the state. One rescan of ~3.5M
-  lineitems per refresh took ~50 s as chunked IN-lists and 5.6 s as one
+  rows per write batch took ~50 s as chunked IN-lists and 5.6 s as one
   semi-join: declare any unavoidable rescan in the inputs so it runs as one
   set-oriented query over all touched keys. Cost must scale with the delta
   plus a small fixed per-commit cost.
@@ -102,7 +108,7 @@ accelerator keeps its advantage as data grows:
   confine the visit to keys that can contribute: prune with stored bounds
   (e.g. skip a range whose maximum shows none of its keys can qualify, stop
   a top-k walk once the k-th answer beats the best bound left). State the
-  keys visited per read at SF3000: a single-threaded read that visits more
+  keys visited per read at production scale: a single-threaded read that visits more
   than a small fraction of the rows the base query scans in parallel does
   not beat it.
 * **Production scale**: judge every cost at the production scale above, not
@@ -131,19 +137,19 @@ accelerator keeps its advantage as data grows:
 * **Build**: one pass, or close to it, over the scanned rows, with O(1)
   map operations per row (aggregate per key first, then fan out to coarse
   levels once per key, not once per row). The build is single-threaded:
-  at 1 microsecond per lineitem row it already takes 5 hours at SF3000.
+  at 1 microsecond per row, 18 billion rows already take 5 hours.
   Keep its peak memory near the final state: pre-size containers from the
   input counts, fill pages in place and wrap them into the final structure
   without a second copy (never keep a source map alive while re-bucketing
   it into a new one), process the largest table in bounded chunks so
   temporaries stay small, and drop each temporary as soon as it is consumed.
-* **Magnitudes**: at SF3000 order keys exceed 2^31 and sums of decimal
-  products exceed i64. Size every value for the envelope, not the data: keys
+* **Magnitudes**: in production, ids and counts exceed 2^31 and sums of
+  decimal products exceed i64. Size every value for the envelope, not the data: keys
   as their column type, row counts up to 2^63 (the DBMS's row ids), sums over joins exact (the
   prooflib's `wide`).
   The only overflow decline left is a correct answer that does not fit the
   result types, proven with that answer as the witness.
-* **No SF1 constants**: size from the inputs, never from literals.
+* **No iteration-scale constants**: size from the inputs, never from literals.
 * **Final answers**: do not cache the query's final answer as the state,
   unless the answer is small, keeping it right is really cheap (a changed row
   updates it locally, no recount), and it gives a large speedup for the real

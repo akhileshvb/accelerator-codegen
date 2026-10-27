@@ -51,7 +51,7 @@ that does not fit.
   ids it never frees). Build yields 0 and each apply adds at most its changed
   rows; apply may decline only past `max_history()` (2^62) rows since the build.
 * Tracked parameter values: a design may precompute answers for chosen
-  values (e.g. the TPC-H colors) as a fast path, but every other value of the
+  values (e.g. the most frequent ones) as a fast path, but every other value of the
   parameter's type needs a total general path, compact and maintained
   incrementally (no full-table copies, no rebuild per read). A fast-path
   decline falls back to the general path without degrading the state.

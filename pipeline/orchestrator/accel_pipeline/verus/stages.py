@@ -178,7 +178,7 @@ def preflight(r: Run) -> None:
         if not p or not Path(p).exists():
             problems.append(f"{what}: {p or '(unset)'} not found (set verus.{what.split()[0]}... in the workload)")
     if not (Path(ctx.build_dir) / "CMakeCache.txt").is_file() and not r.dry_run:
-        Path(ctx.build_dir).mkdir(parents=True, exist_ok=True)
+        Path(ctx.build_dir).resolve().mkdir(parents=True, exist_ok=True)  # the tree's build-release links to build/
         with actions.file_lock(Path(ctx.build_dir) / ".verus_build.lock"):  # parallel pipelines, one tree
             done = (Path(ctx.build_dir) / "CMakeCache.txt").is_file()
             cfg = {"ok": True} if done else actions.configure_build(ctx)

@@ -11,8 +11,9 @@ You write one C++ file against two APIs:
 
 * `ref/kit/verus_kit.hpp` (namespace `accelerator_codegen::verus_kit`): the
   engine-neutral kit. Read it fully. `Host` runs SQL; `I64` / `Ts` / `Date` /
-  `Bool` / `Text` read cells exactly (they throw `Declined` on NULL or a value
-  outside the type); `TextColumn` builds a text column; `QueryKeys` runs a
+  `Bool` / `Text` / `F64` (a DOUBLE's IEEE-754 bits) read cells exactly (they
+  throw `Declined` on NULL or a value outside the type); `IsNull` tests a
+  cell first, for a NULL-able field; `TextColumn` builds a text column; `QueryKeys` runs a
   keyed rescan in chunks; `Arg*` read query arguments; `Out*` make result
   cells; `Glue` describes the query; `Registrar` registers it.
 * `frozen/<crate>_verus.h`: the kernel's C ABI (prefix `{{ffi_prefix}}_` for
@@ -24,7 +25,10 @@ You write one C++ file against two APIs:
   as the concatenated bytes `x__<f>` plus n + 1 offsets `x__<f>__off`; a
   `(row, sign)` delta is the row under `x__row` plus `int64_t *x__sign`. Text
   parameters are `(const uint8_t *, size_t)`. Results are read with
-  `_result_len` and `_result_c<k>` (0: NULL).
+  `_result_len` and `_result_c<k>` (0: NULL). A NULL-able field `f` comes
+  with a flag `f__null` (nonzero: NULL): set it from `kit::IsNull` and leave
+  the value slot zero (`kit::kNoText` for text); never read the value of a
+  NULL cell.
 
 ## The Glue to define and register
 
@@ -44,8 +48,8 @@ const kit::Registrar kRegistrar(&kGlue);
   (`Change::row` holds them; `Change::sign` is +1 / -1; an update is both).
   List exactly the table's own columns that the delta declaration's SELECT
   reads (its base columns, never an output alias): for
-  `SELECT s_suppkey, s_comment LIKE '%x%' AS is_blocked FROM supplier`, capture
-  `s_suppkey, s_comment` and compute `is_blocked` in Apply.
+  `SELECT id, note LIKE '%x%' AS flagged FROM t`, capture `id, note` and
+  compute `flagged` in Apply.
   `Changes` (in Apply) is indexed in this table order.
 * `Build(Host &h)`: run every declared `scan`'s SQL **verbatim** through
   `h.Query`, fill the C ABI's arrays (cells in the SELECT's column order), and

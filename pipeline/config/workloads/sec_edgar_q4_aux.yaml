@@ -4,8 +4,8 @@ query_number: 4
 engines: [duckdb]
 reference_sql_path: workloads/sec_edgar/instances/seed_1/04.sql
 parameters:   # spec: eval/bench/sec_edgar/params/q4.json (zero-arg function = defaults)
-  - {name: sic_lo, type: INTEGER, default: 4000, domain: "see joint_domain in the json spec"}
-  - {name: sic_hi, type: INTEGER, default: 4999, domain: "see joint_domain in the json spec"}
+  - {name: sic_lo, type: INTEGER, default: 4000, domain: "with sic_hi, one of the SIC divisions (lo, hi): [[100, 999], [1000, 1499], [1500, 1799], [2000, 3999], [4000, 4999], [5000, 5199], [5200, 5999], [6000, 6799], [7000, 8999], [9000, 9999]]"}
+  - {name: sic_hi, type: INTEGER, default: 4999, domain: "with sic_lo, one of the SIC divisions (lo, hi) above"}
   - {name: stmt, type: VARCHAR, default: "EQ", domain: ["BS", "IS", "CF", "EQ", "CI"]}
   - {name: uom, type: VARCHAR, default: "USD", domain: ["USD", "shares", "pure", "CAD", "CNY", "EUR"]}
 

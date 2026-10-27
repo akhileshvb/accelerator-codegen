@@ -1,17 +1,19 @@
 # Verus pipeline: critique the analysis ({{benchmark}} q{{query}})
 
-Decide: **will this design be fast at production scale (SF3000) for reads
-AND writes, and provable?** The query, the spec, the analysis and the
+Decide: **will this design be fast at production scale for reads AND
+writes, and provable?** The query, the spec, the analysis and the
 declared inputs are inlined below. A design you accept is built and proved
 over hours; one that breaks at scale wastes all of it. Reject it now.
 
-**First, estimate at SF3000** (`scale_principles` gives the table sizes),
-from the design itself, not from the analysis's own numbers (they have
-undercounted per-entry cost by 5-20x):
+**First, estimate at production scale** (the iteration rows, key counts and
+fan-outs in `query/data_shape.md`, grown by `production.scale` of
+`query/workload.json`), from the design itself, not from the analysis's own
+numbers (they have undercounted per-entry cost by 5-20x):
 
 * **state**: entries per structure x real bytes per entry (the per-entry
   costs in `scale_principles`: allocations, `Vec` / `HashMap` slack, map
-  nodes, alignment), summed, at SF20 (steady and build peak) and at SF3000;
+  nodes, alignment), summed, at iteration and at production scale (steady
+  and build peak);
 * **read**: keys visited by one read, for the worst parameter values,
   next to the answer's size and the rows the base query scans;
 * **write**: work per changed row, for each table, including the physical
@@ -25,43 +27,45 @@ what goes wrong) or when the analysis leaves the cost unbounded and your
 estimate breaks the check.
 
 * **C1 writes**: every table the query reads is maintained under insert,
-  delete and update, including key changes and duplicate rows (tables have no
-  declared keys).
+  delete and update, including key changes and duplicate rows (the spec
+  treats every table as a bag: only a declared PRIMARY KEY rules duplicates
+  out).
 * **C2 cost of a write**: no ordinary write forces a rebuild or a rescan of a
-  whole table. Fails if a frequent write (inserts and deletes of the fact
-  tables' rows, e.g. orders with their lineitems) needs a rescan keyed on a
-  column the table is not clustered or indexed by, if any write's cost grows
-  with a table, or if apply can decline inside the envelope (the obligations
-  forbid it). Also fails if a refresh (0.1% of orders and lineitems, keys
-  spread uniformly, so nearly every page is touched) copies a unit much
+  whole table. Fails if a frequent write (`production.writes`) needs a
+  rescan keyed on a column the table is not clustered or indexed by (rows
+  arrive grouped only by the entity a write inserts), if any write's cost
+  grows with a table, or if apply can decline inside the envelope (the
+  obligations forbid it). Also fails if a write batch whose keys spread over
+  the key space (nearly every page touched) copies a unit much
   larger than the changed rows (whole pages or per-key containers cloned on
   first touch), or if a rescan re-reads every row of each touched key when
   per-key sums, counts or multisets in the state would let the delta suffice.
 * **C3 size**: the state grows with what queries read, not with whole tables;
-  a read does not touch the whole state. Fails if your SF20 estimate exceeds
-  the budget in `scale_principles` (about 3 GB steady per accelerator, build
-  peak about twice that), if the state keeps a map entry per row of the
-  largest table, or if a structure with millions of keys (one per order,
-  customer, part, ...) gives each key its own heap containers (a `Vec`, a
-  `HashMap`, an `Arc`'d node per key) instead of plain records in shared
-  pages. At SF3000 the state may spill to NVMe: there it fails only if a
+  a read does not touch the whole state. Fails if your estimate exceeds the
+  budget in `scale_principles` (about 25 bytes per row of the largest table
+  the query reads, steady; build peak about twice that), if the state keeps a
+  map entry per row of the largest table, or if a structure with millions of
+  keys (one per entity of a large table) gives each key its own heap
+  containers (a `Vec`, a `HashMap`, an `Arc`'d node per key) instead of plain
+  records in shared pages. In production the state may spill to NVMe: there it fails only if a
   read or a write would touch many scattered entries (no locality), not for
   its size alone. Size never excuses a slower read or write: a compact
   design that breaks C2 or C7 still fails those.
-* **C4 values**: NULLs handled; magnitudes sized for SF3000 (order keys
-  exceed 2^31, sums of decimal products exceed i64); totality inside the
+* **C4 values**: NULLs handled (every NULL-able column the query reads);
+  magnitudes sized for production (ids and counts exceed 2^31, sums of
+  decimal products exceed i64); totality inside the
   envelope (`verus_kernel.md`): every
   sum or count over joined tuples is exact (the prooflib's exact integer `wide`;
   bags have no unique keys, so join groups are unbounded), no narrow counter
   can overflow, and every value of each parameter's type is answered (LIKE
   patterns and fractions included). Fails if the design is specialized to
-  one parameter value (state only for parts of one color, one pattern, one
-  nation), or can decline inside the envelope for a reason other than a
+  one parameter value (state only for the rows of one category, one pattern,
+  one code) or to today's values of a growing domain, or can decline inside the envelope for a reason other than a
   correct answer overflowing the result types.
 * **C5 no answer cache**: the state is not a cache of final answers (unless
   the analysis justifies it convincingly).
 * **C7 fast reads at scale**: the read path's cost follows the answer, not
-  the state. Fails if a read visits a slice that grows with SF while the
+  the state. Fails if a read visits a slice that grows with the data while the
   answer does not (ORDER BY ... LIMIT, MAX / MIN, a threshold), sorts a large
   result it could keep pre-ordered, or probes one fine bucket per unit of a
   range parameter. When the ranking value depends on a parameter, the
@@ -102,6 +106,10 @@ fixes it. Style, naming and nice-to-haves are not failures.
 You have these files in full below: do not re-read them.
 
 {{file:query/query.sql}}
+
+{{file:query/workload.json}}
+
+{{file:query/data_shape.md}}
 
 {{file:analysis/analysis.json}}
 

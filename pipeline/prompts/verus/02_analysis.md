@@ -3,17 +3,18 @@
 Design the auxiliary state of a Verus-verified accelerator for
 `query/query.sql`, from the query alone. The state is maintained across
 write transactions and answers the query (for any parameter values) much
-faster than running the SQL. Read `query/`, `spec/gen_spec.rs`,
+faster than running the SQL. Read `query/` (the query, the schema, the
+parameters and production scale in `workload.json`, and the iteration data as
+the query sees it in `data_shape.md`), `spec/gen_spec.rs`,
 `contracts/inputs_language.md`, `contracts/scale_principles.md`,
 `contracts/verus_kernel.md` and the playbook.
 
-**Every parameter is a runtime parameter.** Every TPC-H substitution
-parameter (spec 2.4) of the query is a `$n` parameter in `query/query.sql`,
-including LIKE patterns (a color, a word pair, a type syllable or prefix) and
-numeric factors (Q11's fraction). The kit must answer correctly and
-efficiently for ANY value in the parameter's TPC-H domain. A design
-specialized to one value (e.g. only the parts of one color, one nation, one
-pattern, one fraction) is not allowed. Its benchmarks and tests draw fresh
+**Every parameter is a runtime parameter.** Every substitution parameter of
+the query is a `$n` parameter in `query/query.sql`, including LIKE patterns
+and numeric factors. The kit must answer correctly and efficiently for ANY
+value in the parameter's domain. A design specialized to one value (e.g. only
+the rows of one category, one code, one pattern, one fraction) is not
+allowed. Its benchmarks and tests draw fresh
 random values from the domain on every run, which you cannot see ahead of
 time. Beyond that domain the kernel must still answer every value of the
 parameter's type (any LIKE pattern, any date, any fraction): it may decline
@@ -35,20 +36,22 @@ Decide:
    table size, including keeping the read-side indexes above in order. Which changes need rows the state
    does not keep (a rescan), and of which keys. Prefer keeping per-key
    sums, counts or multisets so a delta suffices; a rescan of every row of each
-   touched key (e.g. all lineitems of each touched part) is paid per refresh and
-   dominates it. If one is unavoidable, declare it in the inputs so it runs as
-   one set-oriented query. Obligations are frozen before implementation, so this
-   is decided here. A refresh (0.1% of orders, keys spread uniformly) touches
-   nearly every page: state the unit a write copies and why it is O(changed rows).
+   touched key (e.g. all child rows of each touched parent) is paid per write
+   batch and dominates it. If one is unavoidable, declare it in the inputs so it
+   runs as one set-oriented query, keyed by what the writes arrive grouped by.
+   Obligations are frozen before implementation, so this is decided here. A
+   write batch (`production.writes`) may touch nearly every page: state the
+   unit a write copies and why it is O(changed rows).
 3. **The kernel inputs** (`inputs/q.inputs`): the scans the build needs, the
    rescans, and one delta per table (lossy where you can drop columns or text).
 4. **Complexity notes** (guidance, see scale_principles): state size, build,
    per-write maintenance and per-query read cost as rough formulas of table
-   sizes and distinct keys; integer widths at SF3000. For the state, give
-   each structure's entry layout, its real bytes per entry (with the
-   overheads `scale_principles` lists) and its entry count, and total them
-   at SF20 for the steady state and for the build peak, against the
-   per-accelerator budget there.
+   sizes and distinct keys (measured in `query/data_shape.md`; `verus_sql`
+   with `iteration=true` measures more); integer widths at production scale.
+   For the state, give each structure's entry layout, its real bytes per entry
+   (with the overheads `scale_principles` lists) and its entry count, and
+   total them at iteration and at production scale, for the steady state and
+   for the build peak, against the per-accelerator budget there.
 5. If you cache the final answer, justify it (small, cheap to maintain
    locally, large speedup).
 6. **How it will be proved** (`contracts/proof_method.md`): the invariant as
