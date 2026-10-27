@@ -14,7 +14,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Callable, TypeVar
 
-from accel_pipeline.config import ModelConfig, PipelineConfig, load_run_workload
+from accel_pipeline.config import ModelConfig, PipelineConfig, load_run_workload, query_artifacts_dir
 from accel_pipeline.failure import (
     AGENT_BLOCKER,
     HARNESS_MISSING,
@@ -30,7 +30,6 @@ from accel_pipeline.failure import (
 from accel_pipeline.gates.parallel import first_failure, run_gates_parallel
 from accel_pipeline.gates.run import GateFailure, GateResult
 from accel_pipeline.layout import query_dir
-from accel_pipeline.paths import query_artifacts_dir
 from accel_pipeline.playbook import append_experiment_log
 from accel_pipeline.session import MAIN, SessionStore
 from accel_pipeline.stages.gate_plan import run_post_stage_gates_collect
@@ -487,7 +486,7 @@ def _replan(ctx: RepairCtx, failure: Failure) -> bool:
 
 
 def _selected_candidate(ctx: RepairCtx) -> str:
-    from accel_pipeline.paths import analysis_artifact_path
+    from accel_pipeline.config import analysis_artifact_path
 
     try:
         analysis = json.loads(analysis_artifact_path(ctx.pipeline_config.repo_root, ctx.query,

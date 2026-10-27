@@ -4,8 +4,13 @@ from pathlib import Path
 
 import pytest
 
-from accel_pipeline.config import load_benchmark_pack, load_pipeline_config, load_workload
-from accel_pipeline.paths import find_repo_root, query_artifacts_dir
+from accel_pipeline.config import (
+    load_benchmark_pack,
+    load_pipeline_config,
+    load_workload,
+    find_repo_root,
+    query_artifacts_dir,
+)
 
 
 REPO_ROOT = find_repo_root()

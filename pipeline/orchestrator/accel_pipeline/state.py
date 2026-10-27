@@ -4,8 +4,7 @@ import json
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-from accel_pipeline.config import load_workload
-from accel_pipeline.paths import query_artifacts_dir
+from accel_pipeline.config import load_workload, query_artifacts_dir
 
 
 STAGES = ("analysis", "test_suite", "implementation", "optimization", "audit")

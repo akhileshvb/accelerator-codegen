@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from accel_pipeline.paths import pipeline_root
+from accel_pipeline.config import pipeline_root
 
 NEGATIVE_MEMORY_FILE = "optimization_negative_memory.json"
 MAX_ENTRIES = 24

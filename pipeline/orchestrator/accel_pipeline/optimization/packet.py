@@ -12,9 +12,14 @@ from accel_pipeline.analysis_context import (
     compact_base_analysis_for_optimization,
 )
 from accel_pipeline.optimization.base_bench import compact_summary_for_prompt
-from accel_pipeline.config import PipelineConfig, resolve_optimization_edit_paths, resolve_workload_paths
+from accel_pipeline.config import (
+    PipelineConfig,
+    resolve_optimization_edit_paths,
+    resolve_workload_paths,
+    load_query_analysis,
+    query_artifacts_dir,
+)
 from accel_pipeline.optimization.kernel_hot_path_review import analyze_kernel_source
-from accel_pipeline.paths import load_query_analysis, query_artifacts_dir
 from accel_pipeline.optimization.signals import (
     diagnostic_deltas,
     extract_store_diagnostics,

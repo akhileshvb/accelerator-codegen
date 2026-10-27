@@ -1,11 +1,14 @@
-"""The pipeline's settings: config/default.yaml and models.yaml, and the workloads that refine them.
+"""The run's settings: config/default.yaml and models.yaml, the repo roots, and the environment.
 
 Every tunable is a field below with its default; default.yaml and models.yaml only set what differs.
+A workload refines the settings (workload.apply_workload_overrides); which model a stage runs is
+resolved here from the model config.
 """
 from __future__ import annotations
 
 import copy
 import dataclasses
+import json
 import os
 import re
 from dataclasses import dataclass, field, replace
@@ -23,7 +26,6 @@ from accel_pipeline.engine_profile import (
     validate_engine_profile,
 )
 from accel_pipeline.layout import backend_glob, query_dir, query_glob
-from accel_pipeline.paths import find_repo_root, pipeline_root
 from accel_pipeline.test_suite import SuiteConfig
 
 DEFAULT_BUILD_DIR = "build-release"
@@ -262,6 +264,52 @@ class PipelineConfig:
                 raise ValueError(f"{name}: {getattr(self, name)!r} (expected one of {', '.join(allowed)})")
 
 
+# ---- repo roots and the environment -----------------------------------------------------------
+
+def find_repo_root(start: Path | None = None) -> Path:
+    cur = (start or Path.cwd()).resolve()
+    for parent in [cur, *cur.parents]:
+        if (parent / "CMakeLists.txt").is_file() and (parent / "pipeline").is_dir():
+            return parent
+    raise FileNotFoundError("could not locate accelerator-codegen repo root")
+
+
+def pipeline_root(repo_root: Path | None = None) -> Path:
+    return (repo_root or find_repo_root()) / "pipeline"
+
+
+def _strip_quotes(value: str) -> str:
+    value = value.strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+        return value[1:-1]
+    return value
+
+
+def load_repo_dotenv(repo_root: Path) -> Path | None:
+    """Load `.env` then `.env.local` from repo_root. Returns path loaded, if any."""
+    loaded: Path | None = None
+    for name in (".env", ".env.local"):
+        path = repo_root / name
+        if not path.is_file():
+            continue
+        for raw_line in path.read_text(encoding="utf-8").splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if line.startswith("export "):
+                line = line[len("export ") :].strip()
+            if "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            key = key.strip()
+            if not key:
+                continue
+            if not os.environ.get(key):  # set and non-empty in the environment wins
+                os.environ[key] = _strip_quotes(value)
+        loaded = path
+    return loaded
+
+
 # ---- loading default.yaml and models.yaml -----------------------------------------------------
 
 def _load_yaml(path: Path) -> dict[str, Any]:
@@ -364,6 +412,98 @@ def _resolve_config_path(repo_root: Path, path: Path) -> Path:
         if candidate.is_file():
             return candidate
     return repo_root / path
+
+
+# ---- which model a stage runs ----------------------------------------------------------------
+
+_OPTIMIZATION_STAGE_FALLBACKS = (
+    "optimization",
+    "optimization_unified",
+    "optimization_unified_hypothesis",
+    "optimization_unified_patch",
+    "optimization_fix",
+    "optimization_worker",
+)
+
+_STAGE_PROVIDER_PARENTS = {
+    "optimization": "optimization_unified",
+    "optimization_unified_hypothesis": "optimization_unified",
+    "optimization_unified_patch": "optimization_unified",
+    "optimization_fix": "optimization_worker",
+    "optimization_worker": "optimization_unified",
+    "preflight_live": "analysis",  # the live model probe runs the way an analysis turn does
+}
+
+
+def is_implementation_stage(stage: str) -> bool:
+    return stage == "implementation" or stage.startswith("impl_")
+
+
+def is_critique_stage(stage: str) -> bool:
+    return stage == "layer_critique" or stage.startswith("critique_")
+
+
+def resolve_stage_provider(stage: str, model_config: ModelConfig) -> str:
+    """Per-stage provider: the stage's own entry, else its family or parent stage's; unknown stages raise."""
+    providers = model_config.stage_providers
+    if stage in providers:
+        return providers[stage]
+    if is_critique_stage(stage) and "layer_critique" in providers:
+        return providers["layer_critique"]
+    if is_implementation_stage(stage) and "implementation" in providers:
+        return providers["implementation"]
+    parent = _STAGE_PROVIDER_PARENTS.get(stage)
+    if parent and parent in providers:
+        return providers[parent]
+    if stage in _OPTIMIZATION_STAGE_FALLBACKS and "optimization_unified" in providers:
+        return providers["optimization_unified"]
+    raise KeyError(f"no provider configured for stage {stage!r} (stage_providers)")
+
+
+def resolve_preset(stage: str, model_config: ModelConfig, overrides: dict[str, str] | None = None) -> str:
+    overrides = overrides or {}
+    preset_name = overrides.get(stage)
+    if not preset_name and is_implementation_stage(stage):
+        preset_name = overrides.get("implementation")
+    if not preset_name and is_critique_stage(stage):
+        preset_name = overrides.get("layer_critique")
+    if not preset_name:
+        preset_name = model_config.stages.get(stage)
+    if not preset_name and is_critique_stage(stage):
+        preset_name = model_config.stages.get("layer_critique")
+        if not preset_name and "cheap_code" in model_config.presets:
+            preset_name = "cheap_code"
+    if not preset_name and is_implementation_stage(stage):
+        preset_name = model_config.stages.get("implementation")
+    if not preset_name and stage in _OPTIMIZATION_STAGE_FALLBACKS:
+        preset_name = (
+            model_config.stages.get("optimization_unified")
+            or model_config.stages.get("optimization_worker")
+            or "default"
+        )
+    preset_name = preset_name or "default"
+    if preset_name not in model_config.presets:
+        raise KeyError(f"unknown model preset: {preset_name}")
+    return model_config.presets[preset_name]
+
+
+def _require_api_key(model_config: ModelConfig) -> None:
+    if model_config.api_key_env not in os.environ and os.environ.get("ACCEL_PIPELINE_DRY_RUN") != "1":
+        raise EnvironmentError(f"set {model_config.api_key_env} or use --dry-run")
+
+
+def make_model_id(
+    stage: str,
+    pipeline_config: PipelineConfig,  # noqa: ARG001 — reserved for future provider options
+    model_config: ModelConfig,
+    overrides: dict[str, str] | None = None,
+) -> str:
+    """Return the model id string for logging and dry-run display."""
+    provider = resolve_stage_provider(stage, model_config)
+    if provider != "codex_exec":
+        raise ValueError(f"unsupported provider: {provider!r}")
+    _require_api_key(model_config)
+    return resolve_preset(stage, model_config, overrides)
 
 
 def load_aux_state_defaults(repo_root: Path | None = None) -> dict[str, Any]:
@@ -807,3 +947,79 @@ def apply_workload_overrides(pipeline_config: PipelineConfig, workload: dict[str
         engine_name=engine,
         benchmark_name=str(workload.get("benchmark_name") or ("" if kind == "engine_backend" else "tpch")),
     )
+
+
+# ---- artifact paths of a run ------------------------------------------------------------------
+
+def workload_benchmark_name(workload: dict[str, Any] | None) -> str:
+    if not workload:
+        return "tpch"
+    return str(workload.get("artifact_namespace") or workload.get("benchmark_name") or "tpch")
+
+
+def query_artifacts_dir(
+    repo_root: Path,
+    query_number: int,
+    *,
+    workload: dict[str, Any] | None = None,
+    benchmark_name: str | None = None,
+) -> Path:
+    """artifacts/<bench>/q<N>/<engine>/ for accelerator runs (one per query x engine)."""
+    if workload and workload.get("workload_kind") == "engine_backend":
+        engine = str(workload.get("engine_name") or workload.get("artifact_namespace") or "engine")
+        path = pipeline_root(repo_root) / "artifacts" / "engines" / engine
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    bench = benchmark_name or workload_benchmark_name(workload)
+    path = pipeline_root(repo_root) / "artifacts" / bench / f"q{query_number}"
+    engine = str((workload or {}).get("engine_name") or "")
+    if engine:
+        path = path / engine
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def engine_artifacts_dir(repo_root: Path, engine_name: str) -> Path:
+    path = pipeline_root(repo_root) / "artifacts" / "engines" / engine_name
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def gates_dir_for_query(artifacts_dir: Path) -> Path:
+    return artifacts_dir / "gates"
+
+
+def analysis_artifact_name(workload: dict[str, Any] | None) -> str:
+    """Aux-state workloads use analysis.json; base accelerators use base_analysis.json."""
+    if workload and workload.get("workload_kind") == "aux_state":
+        return "analysis.json"
+    return "base_analysis.json"
+
+
+def analysis_artifact_path(
+    repo_root: Path,
+    query_number: int,
+    *,
+    workload: dict[str, Any] | None = None,
+    benchmark_name: str | None = None,
+) -> Path:
+    art = query_artifacts_dir(repo_root, query_number, workload=workload, benchmark_name=benchmark_name)
+    return art / analysis_artifact_name(workload)
+
+
+def load_query_analysis(
+    repo_root: Path,
+    query_number: int,
+    *,
+    workload: dict[str, Any] | None = None,
+) -> tuple[Path, dict[str, Any]]:
+    art = query_artifacts_dir(repo_root, query_number, workload=workload)
+    path = art / analysis_artifact_name(workload)
+    if not path.is_file():
+        return path, {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return path, {}
+    return path, data if isinstance(data, dict) else {}

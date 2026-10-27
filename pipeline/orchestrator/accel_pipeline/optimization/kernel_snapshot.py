@@ -7,8 +7,12 @@ from pathlib import Path
 from typing import Any
 
 from accel_pipeline.gates.run import build_jobs
-from accel_pipeline.config import PipelineConfig, resolve_optimization_edit_paths, resolve_workload_paths
-from accel_pipeline.paths import query_artifacts_dir
+from accel_pipeline.config import (
+    PipelineConfig,
+    resolve_optimization_edit_paths,
+    resolve_workload_paths,
+    query_artifacts_dir,
+)
 from accel_pipeline.playbook import append_experiment_log
 
 SNAPSHOT_DIRNAME = "best_kernel_snapshot"

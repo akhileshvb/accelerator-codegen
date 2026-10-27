@@ -3,8 +3,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from accel_pipeline.backends.base import StageRunRequest, StageRunResult
-from accel_pipeline.config import ModelConfig, PipelineConfig, load_run_workload
-from accel_pipeline.paths import query_artifacts_dir
+from accel_pipeline.config import ModelConfig, PipelineConfig, load_run_workload, query_artifacts_dir
 
 if TYPE_CHECKING:
     from accel_pipeline.backends.codex_exec import CodexExecBackend
@@ -38,7 +37,7 @@ def create_agent_backend(
     workload_name: str = "",
     optimization_iter: int = 0,
 ) -> CodexExecBackend:
-    from accel_pipeline.models import resolve_stage_provider
+    from accel_pipeline.config import resolve_stage_provider
 
     resolved = provider or resolve_stage_provider(stage, model_config)
     if resolved != "codex_exec":

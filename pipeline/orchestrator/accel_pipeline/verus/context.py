@@ -31,7 +31,7 @@ from typing import Any
 import yaml
 
 from accel_pipeline.layout import query_dir, workload_query_sql, workload_schema_sql
-from accel_pipeline.paths import query_artifacts_dir
+from accel_pipeline.config import query_artifacts_dir
 
 
 @dataclass

@@ -16,8 +16,7 @@ from typing import Any
 import yaml
 
 from accel_pipeline.engine_host import instance_tag
-from accel_pipeline.env_loader import load_repo_dotenv
-from accel_pipeline.paths import find_repo_root, pipeline_root
+from accel_pipeline.config import load_repo_dotenv, find_repo_root, pipeline_root
 from accel_pipeline.pack.worker_isolation import (
     apply_worker_isolation,
     default_build_dir_for_worker,

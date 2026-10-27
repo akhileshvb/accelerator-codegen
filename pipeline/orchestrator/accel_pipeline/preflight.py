@@ -95,7 +95,7 @@ def _capture_argv(probe: Probe, stage: str) -> tuple[object, list[str]]:
     """(the backend, the `codex exec` command line it builds for `stage`), without starting codex."""
     from accel_pipeline.backends import StageRunRequest, create_agent_backend
     from accel_pipeline.backends.codex_exec import _Outcome
-    from accel_pipeline.models import make_model_id
+    from accel_pipeline.config import make_model_id
 
     backend = create_agent_backend(pipeline_config=probe.cfg, query=probe.query, stage=stage, model_config=probe.models,
                                    workload_name=probe.workload_name)
@@ -165,7 +165,7 @@ async def _mcp_probe(probe: Probe) -> tuple[dict[str, set[str]], list[str]]:
 @contextlib.contextmanager
 def _unlogged(probe: Probe):
     """The data tools log every query to the run's artifacts, which analysis cites: the probe leaves that log as it was."""
-    from accel_pipeline.paths import query_artifacts_dir
+    from accel_pipeline.config import query_artifacts_dir
     from accel_pipeline.tools.data_tools import LOG_FILE
 
     log = query_artifacts_dir(probe.cfg.repo_root, probe.query, workload=probe.workload) / LOG_FILE
@@ -208,7 +208,7 @@ def _rollout_calls(backend, result, tool: str) -> bool:
 def live_models(probe: Probe) -> list[str]:
     """One tiny codex turn per model the run uses, calling one MCP tool: the model speaks Codex's tool-call format."""
     from accel_pipeline.backends import StageRunRequest, create_agent_backend
-    from accel_pipeline.models import make_model_id
+    from accel_pipeline.config import make_model_id
     from accel_pipeline.state import STAGES
 
     models = {make_model_id(stage, probe.cfg, probe.models, None) for stage in (*STAGES, "analysis_critic", "advisor")}
@@ -352,9 +352,14 @@ def require(probe: Probe, **kwargs) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    from accel_pipeline.config import apply_workload_overrides, load_model_config, load_pipeline_config, load_workload
-    from accel_pipeline.env_loader import load_repo_dotenv
-    from accel_pipeline.paths import find_repo_root
+    from accel_pipeline.config import (
+        apply_workload_overrides,
+        load_model_config,
+        load_pipeline_config,
+        load_workload,
+        load_repo_dotenv,
+        find_repo_root,
+    )
 
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--workload", required=True)

@@ -20,6 +20,7 @@ from accel_pipeline.config import (
     PipelineConfig,
     resolve_optimization_edit_paths,
     resolve_workload_paths,
+    query_artifacts_dir,
 )
 from accel_pipeline.optimization.kernel_snapshot import resolve_snapshot_paths
 from accel_pipeline.layout import query_dir
@@ -34,7 +35,6 @@ from accel_pipeline.optimization.scoreboard import (
     primary_score_from_metrics,
     write_scoreboard,
 )
-from accel_pipeline.paths import query_artifacts_dir
 from accel_pipeline.tools import none_default
 
 CHECKPOINT_DIRNAME = "ab_checkpoint"

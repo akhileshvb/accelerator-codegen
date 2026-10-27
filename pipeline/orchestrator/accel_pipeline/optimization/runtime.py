@@ -11,7 +11,13 @@ from accel_pipeline.optimization.base_bench import (
     build_optimization_diagnosis,
     load_base_optimization_state,
 )
-from accel_pipeline.config import PipelineConfig, resolve_optimization_edit_paths, resolve_workload_paths
+from accel_pipeline.config import (
+    PipelineConfig,
+    resolve_optimization_edit_paths,
+    resolve_workload_paths,
+    load_query_analysis,
+    query_artifacts_dir,
+)
 from accel_pipeline.jsonio import read_json
 from accel_pipeline.optimization.kernel_hot_path_review import (
     analyze_kernel_source,
@@ -24,7 +30,6 @@ from accel_pipeline.optimization.negative_memory import (
     load_negative_memory,
     load_negative_memory_guidance,
 )
-from accel_pipeline.paths import load_query_analysis, query_artifacts_dir
 
 RUNTIME_MD = "optimization_runtime.md"
 RUNTIME_JSON = "optimization_runtime.json"

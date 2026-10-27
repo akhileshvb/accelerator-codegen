@@ -6,9 +6,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from accel_pipeline.config import ModelConfig, PipelineConfig, load_run_workload
+from accel_pipeline.config import ModelConfig, PipelineConfig, load_run_workload, analysis_artifact_path
 from accel_pipeline.failure import StageFailure
-from accel_pipeline.paths import analysis_artifact_path
 from accel_pipeline.pipeline_log import log_analysis_candidates, log_event
 from accel_pipeline.session import MAIN
 from accel_pipeline.stages.base import run_agent_stage

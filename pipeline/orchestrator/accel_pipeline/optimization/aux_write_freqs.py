@@ -15,7 +15,7 @@ import random
 from pathlib import Path
 from typing import Any
 
-from accel_pipeline.paths import find_repo_root
+from accel_pipeline.config import find_repo_root
 from accel_pipeline.test_suite import draw_write_frequencies, read_write_mix, suite_path
 
 LOCK_FILENAME = "optimization_write_frequencies.json"

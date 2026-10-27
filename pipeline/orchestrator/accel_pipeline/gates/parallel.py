@@ -29,11 +29,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, Sequence
 
-from accel_pipeline.config import PipelineConfig
+from accel_pipeline.config import PipelineConfig, gates_dir_for_query, query_artifacts_dir
 from accel_pipeline.engine_host import instance_tag
 from accel_pipeline.gates.run import GATES_ALLOW_SKIP, GateResult, jobs_per_gate, run_gate
 from accel_pipeline.gates.stamps import check_version, current_stamp, reusable_gate_result
-from accel_pipeline.paths import gates_dir_for_query, query_artifacts_dir
 from accel_pipeline.pipeline_log import log_gate_batch_start
 
 

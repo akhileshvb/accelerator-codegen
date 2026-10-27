@@ -30,10 +30,9 @@ from sqlglot import exp
 from sqlglot.tokens import Tokenizer, TokenType
 
 from accel_pipeline import data_shape_stats as stats
-from accel_pipeline.config import PipelineConfig
+from accel_pipeline.config import PipelineConfig, pipeline_root
 from accel_pipeline.data_shape import md_table
 from accel_pipeline.engine_host import host_script, instance_env
-from accel_pipeline.paths import pipeline_root
 
 LOG_FILE = "data_queries.jsonl"
 CATALOG_SECONDS = 30.0

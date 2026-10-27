@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, Mapping
 
 from accel_pipeline.layout import query_dir
-from accel_pipeline.paths import query_artifacts_dir
+from accel_pipeline.config import query_artifacts_dir
 
 if TYPE_CHECKING:
     from accel_pipeline.gates.run import GateResult

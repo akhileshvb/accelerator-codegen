@@ -619,7 +619,7 @@ def run_single_benchmark(
     include_profile: bool = False,
 ) -> tuple[dict[str, Any] | None, str]:
     """Run one benchmark invocation; return (metrics, output_or_error)."""
-    from accel_pipeline.paths import query_artifacts_dir
+    from accel_pipeline.config import query_artifacts_dir
     from accel_pipeline.pack.worker_isolation import ensure_private_dataset_db
 
     paths = resolve_workload_paths(pipeline_config, workload, query)

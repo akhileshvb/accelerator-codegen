@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from accel_pipeline.env_loader import load_repo_dotenv
+from accel_pipeline.config import load_repo_dotenv
 
 
 def test_load_repo_dotenv_sets_missing_keys(tmp_path: Path):

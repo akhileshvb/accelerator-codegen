@@ -107,7 +107,7 @@ def test_materialize_registration_fills_the_engines_template_once(tmp_path, monk
         (repo / rel).write_text(text)
     analysis = tmp_path / "analysis.json"
     analysis.write_text(json.dumps({"accelerator_id": "toybench_q1_aux"}))
-    monkeypatch.setattr("accel_pipeline.paths.analysis_artifact_path", lambda *a, **k: analysis)
+    monkeypatch.setattr("accel_pipeline.config.analysis_artifact_path", lambda *a, **k: analysis)
     (tmp_path / "art").mkdir()
     monkeypatch.setattr("accel_pipeline.workload_facts.query_artifacts_dir", lambda *a, **k: tmp_path / "art")
     register = "accelerators/toybench/q1/toyengine/aux/register.cpp"

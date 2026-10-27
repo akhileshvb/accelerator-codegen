@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from accel_pipeline.paths import find_repo_root
+from accel_pipeline.config import find_repo_root
 from accel_pipeline.stages.base import resolve_optimization_max_turns, resolve_stage_max_turns
 
 

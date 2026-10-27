@@ -24,7 +24,7 @@ def primary_repo_root(repo_root: Path | None = None) -> Path:
         return Path(env).resolve()
     if repo_root is not None:
         return Path(repo_root).resolve()
-    from accel_pipeline.paths import find_repo_root
+    from accel_pipeline.config import find_repo_root
 
     return find_repo_root().resolve()
 

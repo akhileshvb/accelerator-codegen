@@ -19,11 +19,14 @@ from accel_pipeline.config import (
     load_run_workload,
     resolve_optimization_edit_paths,
     resolve_workload_paths,
+    make_model_id,
+    analysis_artifact_path,
+    load_query_analysis,
+    query_artifacts_dir,
 )
 from accel_pipeline.failure import Failure, StageFailure, is_transient_provider_failure
 from accel_pipeline.jsonio import read_json
 from accel_pipeline.optimization.kernel_hot_path_review import analyze_kernel_source
-from accel_pipeline.models import make_model_id
 from accel_pipeline.optimization.bootstrap import build_optimization_bootstrap, save_optimization_bootstrap
 from accel_pipeline.optimization.checkpoint import (
     advance_best_valid_baseline,
@@ -73,7 +76,6 @@ from accel_pipeline.optimization.saturation import (
     record_trial_protocol,
 )
 from accel_pipeline.optimization.smoke import SmokeResult, run_build, run_smoke_correctness_repeated
-from accel_pipeline.paths import analysis_artifact_path, load_query_analysis, query_artifacts_dir
 from accel_pipeline.optimization.structural import (
     design_revision_error,
     is_structural_attempt,
@@ -448,7 +450,7 @@ def _run_agent_substage(
     else:
         max_turns = resolve_optimization_max_turns(pipeline_config, "patch")
 
-    from accel_pipeline.models import resolve_stage_provider
+    from accel_pipeline.config import resolve_stage_provider
 
     stage_provider = resolve_stage_provider(stage, model_config)
     backend = create_agent_backend(

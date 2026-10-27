@@ -65,8 +65,13 @@ def _budget_footer(pipeline_config, stage: str, query: int) -> str:
 
 
 def _build_context(args: argparse.Namespace):
-    from accel_pipeline.config import load_pipeline_config, load_workload, apply_workload_overrides
-    from accel_pipeline.paths import find_repo_root, query_artifacts_dir
+    from accel_pipeline.config import (
+        load_pipeline_config,
+        load_workload,
+        apply_workload_overrides,
+        find_repo_root,
+        query_artifacts_dir,
+    )
 
     repo_root = Path(args.repo_root or os.environ.get("ACCEL_PIPELINE_REPO_ROOT") or find_repo_root())
     pipeline_config = load_pipeline_config(repo_root=repo_root)
@@ -102,13 +107,15 @@ def build_mcp_tool_callables(
     from accel_pipeline.gates.run import run_gate
     from accel_pipeline.gates.stamps import current_stamp
     from accel_pipeline.tools.data_tools import DataToolContext, make_data_tools
-    from accel_pipeline.tools.gate_tools import ToolContext as GateCtx
-    from accel_pipeline.tools.gate_tools import _compact_gate_payload, admission_refusal_payload, make_gate_tools
+    from accel_pipeline.tools.gate_tools import (
+        ToolContext as GateCtx,
+        _compact_gate_payload,
+        admission_refusal_payload,
+        make_gate_tools,
+    )
     from accel_pipeline.tools.quick_tools import make_quick_tools
-    from accel_pipeline.tools.reanalysis_tools import ToolContext as ReanalysisCtx
-    from accel_pipeline.tools.reanalysis_tools import make_reanalysis_tools
-    from accel_pipeline.tools.shell_tools import ToolContext as ShellCtx
-    from accel_pipeline.tools.shell_tools import make_shell_tools
+    from accel_pipeline.tools.reanalysis_tools import ToolContext as ReanalysisCtx, make_reanalysis_tools
+    from accel_pipeline.tools.shell_tools import ToolContext as ShellCtx, make_shell_tools
 
     is_aux = workload.get("workload_kind") == "aux_state"
     gate_ctx = GateCtx(pipeline_config, query, workload=workload, stage=stage, workload_name=workload_name,
@@ -204,7 +211,7 @@ def build_mcp_tool_callables(
 
     def validate_analysis() -> str:
         """Check analysis.json as the analysis stage will when the turn ends."""
-        from accel_pipeline.paths import analysis_artifact_path
+        from accel_pipeline.config import analysis_artifact_path
         from accel_pipeline.validation import AuxAnalysisValidationError, validate_aux_analysis_file
 
         try:
@@ -217,7 +224,7 @@ def build_mcp_tool_callables(
     def update_analysis(operations: list[dict[str, Any]]) -> str:
         """Apply JSON Patch operations to analysis.json, write it, and validate."""
         from accel_pipeline.json_patch import PatchError, apply
-        from accel_pipeline.paths import analysis_artifact_path
+        from accel_pipeline.config import analysis_artifact_path
 
         path = analysis_artifact_path(pipeline_config.repo_root, query, workload=workload)
         try:

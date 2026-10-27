@@ -20,11 +20,10 @@ import json
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from accel_pipeline.config import PipelineConfig
+from accel_pipeline.config import PipelineConfig, gates_dir_for_query, query_artifacts_dir
 from accel_pipeline.gates.build_stamp import code_stamp
 from accel_pipeline.jsonio import read_json
 from accel_pipeline.layout import query_dir
-from accel_pipeline.paths import gates_dir_for_query, query_artifacts_dir
 
 if TYPE_CHECKING:
     from accel_pipeline.gates.run import GateResult

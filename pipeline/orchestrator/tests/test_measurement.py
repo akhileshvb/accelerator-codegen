@@ -184,7 +184,7 @@ def test_sweep_records_measurement_ok(tmp_path, monkeypatch):
     snapshots = []
     monkeypatch.setattr(kernel_snapshot, "snapshot_best_kernel", lambda *a, **k: snapshots.append(k))
 
-    from accel_pipeline.paths import find_repo_root
+    from accel_pipeline.config import find_repo_root
 
     workload = {"name": "q6", "workload_kind": "aux_state"}
     (tmp_path / "pipeline" / "config").mkdir(parents=True)

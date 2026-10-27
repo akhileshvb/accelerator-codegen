@@ -89,8 +89,7 @@ def test_stage_prompts_of_this_repository_render_clean(probe):
 
 
 def test_the_live_model_probe_has_a_provider():
-    from accel_pipeline.config import ModelConfig
-    from accel_pipeline.models import resolve_stage_provider
+    from accel_pipeline.config import ModelConfig, resolve_stage_provider
 
     models = ModelConfig(api_key_env="K", presets={"default": "m"}, stages={}, stage_providers={"analysis": "codex_exec"})
     assert resolve_stage_provider("preflight_live", models) == "codex_exec"

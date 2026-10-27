@@ -6,14 +6,13 @@ import json
 from pathlib import Path
 from typing import Any
 
-from accel_pipeline.config import load_pipeline_config, resolve_workload_paths
+from accel_pipeline.config import load_pipeline_config, resolve_workload_paths, load_query_analysis, query_artifacts_dir
 from accel_pipeline.optimization.kernel_hot_path_review import analyze_kernel_source, format_kernel_review_for_prompt
 from accel_pipeline.optimization.kernel_snapshot import (
     has_best_kernel_snapshot,
     maybe_restore_best_kernel,
     snapshot_best_kernel,
 )
-from accel_pipeline.paths import load_query_analysis, query_artifacts_dir
 from accel_pipeline.playbook import append_experiment_log
 from accel_pipeline.optimization.profile_investigation import build_profile_investigation
 

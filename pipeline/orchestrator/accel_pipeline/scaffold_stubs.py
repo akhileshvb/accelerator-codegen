@@ -197,7 +197,7 @@ def materialize_registration(pipeline_config: PipelineConfig, workload: dict[str
     every call and the fallback SQL answers. Written only when missing: the implementation replaces it in place."""
     import json
 
-    from accel_pipeline.paths import analysis_artifact_path
+    from accel_pipeline.config import analysis_artifact_path
 
     repo = pipeline_config.repo_root
     if workload.get("workload_kind") != "aux_state":  # the declining module is an aux module; a stateless query has none

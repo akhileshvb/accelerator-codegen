@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from accel_pipeline.paths import query_artifacts_dir
+from accel_pipeline.config import query_artifacts_dir
 from accel_pipeline.pipeline_log import (
     log_structural_reanalysis_skipped,
     log_structural_reanalysis_triggered,

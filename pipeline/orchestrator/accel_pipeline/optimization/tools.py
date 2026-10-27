@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from typing import Callable
 
-from accel_pipeline.config import resolve_optimization_edit_paths
+from accel_pipeline.config import resolve_optimization_edit_paths, query_artifacts_dir
 from accel_pipeline.jsonio import read_json
 from accel_pipeline.optimization.ab_tools import AbToolContext, make_ab_tools
 from accel_pipeline.optimization.aux_profile import build_aux_profile_digest, load_aux_store_diagnostics
@@ -15,7 +15,6 @@ from accel_pipeline.optimization.scoreboard import (
     profile_freshness,
     write_scoreboard,
 )
-from accel_pipeline.paths import query_artifacts_dir
 from accel_pipeline.tools.gate_tools import ToolContext
 
 _FEEDBACK_TAIL_CHARS = 4000

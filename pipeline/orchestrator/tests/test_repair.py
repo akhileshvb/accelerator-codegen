@@ -254,7 +254,7 @@ def test_a_crashing_gate_runner_is_an_orchestrator_failure(world, monkeypatch):
 
 def _stage_world(tmp_path, monkeypatch, mode="ok"):
     """Real run_agent_stage and CodexExecBackend on a fake codex; only prompts, logs and gates are stubbed."""
-    import accel_pipeline.models as models
+    import accel_pipeline.config as config_mod
     import accel_pipeline.stages.base as base
 
     world = World(tmp_path, monkeypatch)
@@ -285,7 +285,7 @@ def _stage_world(tmp_path, monkeypatch, mode="ok"):
         "restore_frozen": lambda root, snap: [],
     }.items():
         monkeypatch.setattr(base, name, value)
-    monkeypatch.setattr(models, "resolve_stage_provider", lambda stage, cfg: "codex_exec")
+    monkeypatch.setattr(config_mod, "resolve_stage_provider", lambda stage, cfg: "codex_exec")
     monkeypatch.setattr("accel_pipeline.prims_library.refresh_for_stage", lambda root: None)
     world.models, world.backend = models_cfg, backend
     return world

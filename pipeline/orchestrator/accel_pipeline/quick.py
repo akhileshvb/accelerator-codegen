@@ -16,18 +16,16 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from accel_pipeline import check_report, write_cost
-from accel_pipeline import test_suite as ts
+from accel_pipeline import check_report, write_cost, test_suite as ts
 from accel_pipeline.gates.build_stamp import code_stamp
 from accel_pipeline.check_measure import Bench
-from accel_pipeline.config import PipelineConfig
+from accel_pipeline.config import PipelineConfig, gates_dir_for_query, load_query_analysis, query_artifacts_dir
 from accel_pipeline.engine_host import ensure_dataset_loaded, workload_dataset_dir
 from accel_pipeline.failure import Failure, render_failure
 from accel_pipeline.gates.stamps import check_version, current_stamp
 from accel_pipeline.gates.run import run_gate
 from accel_pipeline.layout import query_dir
 from accel_pipeline.perf_profile import render_for_agent
-from accel_pipeline.paths import gates_dir_for_query, load_query_analysis, query_artifacts_dir
 from accel_pipeline.test_db import CutDatasets, ensure_cut_datasets
 from accel_pipeline.test_suite import suite_path
 

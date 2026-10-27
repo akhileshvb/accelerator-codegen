@@ -2,11 +2,7 @@ from __future__ import annotations
 
 import json
 
-from accel_pipeline.paths import (
-    analysis_artifact_name,
-    analysis_artifact_path,
-    load_query_analysis,
-)
+from accel_pipeline.config import analysis_artifact_name, analysis_artifact_path, load_query_analysis
 
 
 def test_analysis_artifact_names_by_workload_kind():

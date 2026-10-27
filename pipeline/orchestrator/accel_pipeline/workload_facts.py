@@ -21,7 +21,7 @@ from sqlglot.optimizer.qualify import qualify
 from sqlglot.optimizer.scope import traverse_scope
 
 from accel_pipeline.layout import workload_schema_sql
-from accel_pipeline.paths import query_artifacts_dir
+from accel_pipeline.config import query_artifacts_dir
 
 FACTS_FILE = "workload_facts.json"
 SCRATCH_DIALECT = "duckdb"  # the scratch SQL engine's sqlglot dialect

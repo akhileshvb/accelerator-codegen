@@ -14,7 +14,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from accel_pipeline.paths import engine_artifacts_dir, pipeline_root
+from accel_pipeline.config import engine_artifacts_dir, pipeline_root
 
 
 def requests_path(repo_root: Path, engine: str) -> Path:

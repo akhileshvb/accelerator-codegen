@@ -10,8 +10,14 @@ from pathlib import Path
 from typing import Any
 
 from accel_pipeline.backends import StageRunRequest, create_agent_backend
-from accel_pipeline.config import ModelConfig, PipelineConfig, apply_workload_overrides, load_run_workload
-from accel_pipeline.models import make_model_id
+from accel_pipeline.config import (
+    ModelConfig,
+    PipelineConfig,
+    apply_workload_overrides,
+    load_run_workload,
+    make_model_id,
+    query_artifacts_dir,
+)
 from accel_pipeline.optimization.pending import PendingFeedback
 from accel_pipeline.optimization.saturation import (
     OPTIMIZATION_SATURATED,
@@ -23,7 +29,6 @@ from accel_pipeline.optimization.worker_checkpoint import (
     load_worker_checkpoint,
 )
 from accel_pipeline.optimization.worker_metrics import WorkerMetrics, save_worker_metrics
-from accel_pipeline.paths import query_artifacts_dir
 from accel_pipeline.pipeline_log import log_event
 from accel_pipeline.session import MAIN, run_in_session
 from accel_pipeline.prompts import render_prompt, save_rendered_prompt, with_codex_tooling
@@ -127,7 +132,7 @@ class OptimizationWorker:
         model_overrides: dict[str, str] | None = None,
         resume: bool = False,
     ) -> OptimizationWorker:
-        from accel_pipeline.models import resolve_stage_provider
+        from accel_pipeline.config import resolve_stage_provider
 
         workload = load_run_workload(pipeline_config, workload_name)
         pipeline_config = apply_workload_overrides(pipeline_config, workload)

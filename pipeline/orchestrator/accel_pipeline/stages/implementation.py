@@ -3,10 +3,16 @@ from __future__ import annotations
 import json
 
 from accel_pipeline.audit_digest import record_implementation_base
-from accel_pipeline.config import ModelConfig, PipelineConfig, load_run_workload, resolve_workload_paths
+from accel_pipeline.config import (
+    ModelConfig,
+    PipelineConfig,
+    load_run_workload,
+    resolve_workload_paths,
+    analysis_artifact_path,
+    query_artifacts_dir,
+)
 from accel_pipeline.gates.run import run_gate
 from accel_pipeline.layout import query_dir
-from accel_pipeline.paths import analysis_artifact_path, query_artifacts_dir
 from accel_pipeline.repair import RepairCtx, run_with_repair
 from accel_pipeline.session import MAIN
 from accel_pipeline.stages.gate_plan import workload_post_implementation_gates
