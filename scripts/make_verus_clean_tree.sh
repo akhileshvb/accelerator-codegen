@@ -64,6 +64,6 @@ removed: ${remove[*]}
 
 run (agents are sandboxed to this tree by bwrap; preflight checks it):
   export VERUS_BIN=${VERUS}
-  cd ${DEST}/pipeline/orchestrator && .venv/bin/python -m accel_pipeline.run_pipeline \\
+  cd ${DEST}/pipeline/orchestrator && .venv/bin/python -m accel_pipeline.cli \\
     --query 21 --workload tpch_q21_aux --mode verus --models-config pipeline/config/models.codex.yaml
 EOF

@@ -13,7 +13,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from accel_pipeline import preflight, prompts
+from accel_pipeline import prompts, cli, stages as audit_stage
 from accel_pipeline.config import (
     apply_workload_overrides,
     load_pipeline_config,
@@ -41,7 +41,6 @@ from accel_pipeline.prompts import (
     snapshot,
     touched_since,
 )
-from accel_pipeline import stages as audit_stage
 from accel_pipeline.data import STATE_STORAGE_TEXT_FIELDS
 
 
@@ -61,8 +60,8 @@ def _render(name: str, engine: str, prompt: str, stage: str) -> str:
 @pytest.mark.parametrize("name,engine", RUNS)
 def test_every_stage_prompt_renders_with_every_path_it_names_existing(name, engine):
     problems = []
-    for stage, prompt in preflight.PROMPTS.items():
-        problems += [f"{stage}: {p}" for p in preflight.prompt_problems(_render(name, engine, prompt, stage), REPO)]
+    for stage, prompt in cli.PROMPTS.items():
+        problems += [f"{stage}: {p}" for p in cli.prompt_problems(_render(name, engine, prompt, stage), REPO)]
     assert not problems, problems
 
 

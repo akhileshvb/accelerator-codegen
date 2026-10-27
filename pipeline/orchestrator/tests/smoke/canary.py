@@ -133,7 +133,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"[canary] {work}: tail -f {work / 'pipeline.log'}", flush=True)
 
     if args.probe_models and not args.resume:
-        probe = smoke.launch(tree, work, env, ["accel_pipeline.preflight", "--workload", args.workload, "--query", str(query),
+        probe = smoke.launch(tree, work, env, ["accel_pipeline.cli", "--workload", args.workload, "--query", str(query),
                                                "--engine", args.engine, "--models-config", str(models), "--config", str(config),
                                                "--models", "--only", "live_models"], data=(inputs,), log_name="models_probe.log")
         if run_to_end(probe, work / "models_probe.log", 1800):

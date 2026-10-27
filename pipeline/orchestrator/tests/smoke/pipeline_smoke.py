@@ -261,7 +261,7 @@ def launch(tree: Path, work: Path, env: dict[str, str], module_args: list[str], 
 
 
 def pipeline_args(workload: str, query: int, engine: str, models: Path, config: Path, stage: str = "all") -> list[str]:
-    return ["accel_pipeline.run_pipeline", "--workload", workload, "--query", str(query), "--engine", engine, "--stage", stage,
+    return ["accel_pipeline.cli", "--workload", workload, "--query", str(query), "--engine", engine, "--stage", stage,
             "--models-config", str(models), "--config", str(config)]
 
 

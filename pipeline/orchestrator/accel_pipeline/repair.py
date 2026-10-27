@@ -474,7 +474,7 @@ def _replan(ctx: RepairCtx, failure: Failure) -> bool:
     """One structural re-plan (analysis, tests, implementation again, in a fresh session) for the whole run."""
     if ctx.stage not in _REPLANNABLE or _replan_budget(ctx) <= 0:
         return False
-    from accel_pipeline import run_pipeline, stages
+    from accel_pipeline import stages, cli
     from accel_pipeline.runlog import PipelineState, state_path
 
     path = ctx.art / REPAIR_STATE_FILE
@@ -493,7 +493,7 @@ def _replan(ctx: RepairCtx, failure: Failure) -> bool:
         )
         state = PipelineState.load(state_path(ctx.pipeline_config.repo_root, ctx.query, ctx.workload_name,
                                               ctx.pipeline_config.engine_name))
-        next_idx = run_pipeline._maybe_process_structural_reanalysis(
+        next_idx = cli._maybe_process_structural_reanalysis(
             triggered_after="implementation", pipeline_config=ctx.pipeline_config, model_config=ctx.model_config,
             workload_name=ctx.workload_name, workload=ctx.workload, query=ctx.query,
             model_overrides=ctx.model_overrides or {}, dry_run=False, state=state)

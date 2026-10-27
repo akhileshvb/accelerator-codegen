@@ -275,6 +275,9 @@
  "pipeline/gates/tests/test_gate_plumbing.py": {
   "engine": 3
  },
+ "pipeline/orchestrator/accel_pipeline/cli.py": {
+  "engine": 1
+ },
  "pipeline/orchestrator/accel_pipeline/config.py": {
   "engine": 7
  },
@@ -309,9 +312,6 @@
  "pipeline/orchestrator/accel_pipeline/prompts.py": {
   "path": 2,
   "symbol": 1
- },
- "pipeline/orchestrator/accel_pipeline/run_pipeline.py": {
-  "engine": 1
  },
  "pipeline/orchestrator/accel_pipeline/runlog.py": {
   "engine": 3

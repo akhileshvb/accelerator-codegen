@@ -150,7 +150,7 @@ def run_pack_query(
     cmd = [
         sys.executable,
         "-m",
-        "accel_pipeline.run_pipeline",
+        "accel_pipeline.cli",
         "--query",
         str(entry.query),
         "--workload",
