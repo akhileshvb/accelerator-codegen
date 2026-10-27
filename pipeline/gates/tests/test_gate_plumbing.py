@@ -74,7 +74,7 @@ def repo(tmp_path):
     (root / "scripts").mkdir()
     (root / "scripts" / "check_backend_query_free.py").write_text("import sys; sys.exit(0)\n")
     (root / "build-release" / "test_dbs").mkdir(parents=True)
-    (root / "build-release" / "test_dbs" / "tpch_test.duckdb").write_text("")  # the benchmark's test DB fixture ran
+    (root / "build-release" / "test_dbs" / "tpch_test.db").write_text("")  # the benchmark's test DB fixture ran
     return root
 
 

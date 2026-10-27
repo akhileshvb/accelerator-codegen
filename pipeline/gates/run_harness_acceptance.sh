@@ -26,12 +26,36 @@ engine_ready "${DIFF_BINARY}" "${MULTI_CONN_TARGET}" "${CROSS_ACCEL_TARGET}" ||
 suite_prepare quick "${JSON}" harness_acceptance
 suite_adversarial_env
 export ACCEL_MULTI_CONN_TEST_QUERIES="${QUERY}" ACCEL_CROSS_ACCEL_TEST_QUERIES="${QUERY}" ACCEL_AUX_BENCHMARK="${BENCHMARK_NAME}"
+# All three at once on the one instance, as aux_exit runs them: a harness that writes the shared database instead of
+# its own copy fails here. Each run keeps its output and outcome under harness_acceptance/<target>.*.
+RUNS="${GATE_OUT}/harness_acceptance"
+rm -rf "${RUNS}"
+mkdir -p "${RUNS}"
+HARNESSES=("${DIFF_BINARY}" "${MULTI_CONN_TARGET}" "${CROSS_ACCEL_TARGET}")
+PIDS=()
+for target in "${HARNESSES[@]}"; do
+  (
+    ACCEL_GATE_OUT="${RUNS}/${target}.json"
+    engine_run "${target}" "${QUERY}"
+    printf '%s' "${LOG}" >"${RUNS}/${target}.log"
+    printf '%s' "${RUN_REASON}" >"${RUNS}/${target}.reason"
+    echo "${RC}" >"${RUNS}/${target}.rc"
+  ) &
+  PIDS+=($!)
+done
+wait "${PIDS[@]}" || true
 LOGS=""
-for target in "${DIFF_BINARY}" "${MULTI_CONN_TARGET}" "${CROSS_ACCEL_TARGET}"; do
-  engine_run "${target}" "${QUERY}"
-  LOGS+="[${target}] rc=${RC}"$'\n'"${LOG}"$'\n'
-  [[ ${RC} -eq 0 ]] || emit_result "${JSON}" harness_acceptance fail \
-    "${RUN_REASON:-${target} exited ${RC}} on query ${QUERY} with the declining module, whose answers are the reference SQL's: the harness is wrong" \
-    "${LOGS}" "target=${target}" "exit_code:=${RC}"
+for target in "${HARNESSES[@]}"; do
+  RC="$(cat "${RUNS}/${target}.rc" 2>/dev/null || echo 1)"
+  LOGS+="[${target}] rc=${RC}"$'\n'"$(cat "${RUNS}/${target}.log" 2>/dev/null)"$'\n'
+done
+for target in "${HARNESSES[@]}"; do
+  RC="$(cat "${RUNS}/${target}.rc" 2>/dev/null || echo 1)"
+  [[ ${RC} -ne 0 ]] || continue
+  [[ ! -f "${RUNS}/${target}.run.json" ]] || mv "${RUNS}/${target}.run.json" "${JSON%.json}.run.json"
+  reason="$(cat "${RUNS}/${target}.reason" 2>/dev/null)"
+  emit_result "${JSON}" harness_acceptance fail \
+    "${reason:-${target} exited ${RC}} on query ${QUERY} with the declining module, whose answers are the reference SQL's, run beside the other harnesses as aux_exit runs them: the harness is wrong" \
+    "${LOGS}" "target=${target}" "exit_code:=${RC}" "owner=harness"
 done
 emit_result "${JSON}" harness_acceptance pass "the differential, multi-connection and cross-accelerator harnesses pass on query ${QUERY}" "${LOGS}"

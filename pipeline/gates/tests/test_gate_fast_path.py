@@ -325,7 +325,7 @@ def test_a_failing_build_stops_the_quick_check_before_any_run(repo):
 
 
 def test_quick_check_makes_the_benchmarks_test_database_when_the_build_dir_has_none(repo):
-    (repo / "build-release" / "test_dbs" / "tpch_test.duckdb").unlink()
+    (repo / "build-release" / "test_dbs" / "tpch_test.db").unlink()
     proc, calls, _, _, _ = run_gate(repo, "run_aux_quick_check.sh", "5")
     assert proc.returncode == 0, proc.stdout + proc.stderr
     runs = [c for c in calls if c.startswith("run ")]
