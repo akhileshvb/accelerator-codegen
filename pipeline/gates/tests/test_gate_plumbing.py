@@ -374,3 +374,11 @@ def test_a_harness_that_names_a_benchmark_fails_with_the_files_that_do(repo):
     assert proc.returncode == 1
     assert result(gj, "host_bootstrap")["reason"].endswith(
         "still naming one: backends/fake/bench/sweep.cpp (2), backends/fake/tests/harness.cmake (1)")
+
+
+@pytest.mark.parametrize("script", ["run_aux_correctness.sh", "run_aux_quick_check.sh"])
+def test_every_benchmark_runs_the_differential_not_only_tpch(repo, script):
+    # the correctness gates once ran the differential (and with it the frozen suite) for tpch alone
+    proc, calls, _, _, _ = run_gate(repo, script, "5", ctx_extra={"benchmark_name": "toybench"})
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert any(c.startswith("run diff_bin 5") for c in calls), calls

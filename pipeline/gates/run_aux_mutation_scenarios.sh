@@ -16,11 +16,7 @@ load_aux_gate_context "${ROOT}" "${QUERY}"
 OUT="${GATE_OUT}"
 mkdir -p "${OUT}"
 
-if [[ "${BENCHMARK_NAME}" == "tpch" ]]; then
-  PATTERN="tpch_q${QUERY}_(write_policies|hybrid_policy|staged_publication|multi_partition_delta|action_failure)"
-else
-  PATTERN="${BENCHMARK_NAME}_q${QUERY}_(write_policies|hybrid_policy|staged_publication|multi_partition_delta|action_failure)"
-fi
+PATTERN="${BENCHMARK_NAME}_q${QUERY}_(write_policies|hybrid_policy|staged_publication|multi_partition_delta|action_failure)"
 
 if ! engine_ready_for_ctest "${PATTERN}"; then
   emit_result "${OUT}/aux_mutation_scenarios.json" aux_mutation_scenarios fail "${ENGINE_FAIL}" "${ENGINE_LOG}" "query:=${QUERY}"

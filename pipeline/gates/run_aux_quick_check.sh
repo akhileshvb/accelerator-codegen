@@ -30,7 +30,7 @@ load_aux_gate_context "${ROOT}" "${QUERY}"
 
 JSON="${GATE_OUT}/${ACCEL_GATE_NAME:-quick_check}.json"
 WITH_DIFF=0
-[[ "${BENCHMARK_NAME}" == "tpch" && "${ACCEL_QUICK_DIFFERENTIAL:-1}" != 0 ]] && WITH_DIFF=1
+[[ "${ACCEL_QUICK_DIFFERENTIAL:-1}" == 0 ]] || WITH_DIFF=1
 if [[ -z "${AUX_TEST_TARGET}" ]] || { [[ ${WITH_DIFF} -eq 1 && -z "${DIFF_BINARY}" ]]; }; then
   emit_result "${JSON}" quick_check fail "aux test / differential target missing from the gate context. ${HOST_HINT}" ""
 fi

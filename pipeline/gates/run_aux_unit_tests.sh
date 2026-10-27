@@ -16,15 +16,10 @@ load_aux_gate_context "${ROOT}" "${QUERY}"
 OUT="${GATE_OUT}"
 mkdir -p "${OUT}"
 
-# Scope by benchmark prefix — bare "q${N}_" also matches sec_edgar_q${N}_* (and vice versa).
-if [[ "${BENCHMARK_NAME}" == "tpch" ]]; then
-  PATTERN="tpch_q${QUERY}_"
-  # Keep aux smoke; drop base-kernel smoke for this query.
-  EXCLUDE="^tpch_q${QUERY}_smoke_test$"
-else
-  PATTERN="${BENCHMARK_NAME}_q${QUERY}_"
-  EXCLUDE="^${BENCHMARK_NAME}_q${QUERY}_smoke_test$"
-fi
+# Scope by benchmark prefix (a bare "q${N}_" would match every benchmark's q<N>); keep the aux smoke test, drop the
+# base kernel's.
+PATTERN="${BENCHMARK_NAME}_q${QUERY}_"
+EXCLUDE="^${BENCHMARK_NAME}_q${QUERY}_smoke_test$"
 
 thread_lint
 if [[ ${THREAD_LINT_RC} -ne 0 ]]; then
