@@ -20,7 +20,9 @@ mkdir -p "$OUT"
   for lib in common substrate prooflib; do
     case $lib in common) src="$ROOT/substrate/verus/common/src" ;; substrate) src="$ROOT/substrate/verus/store/src" ;; prooflib) src="$ROOT/accelerators/prooflib/src" ;; esac
     stamp="$OUT/verus_$lib.stamp"
-    hash="$(cat "$src"/*.rs | sha256sum | cut -d' ' -f1)"
+    srcs=("$src"/*.rs)
+    [ "$lib" = prooflib ] && srcs+=("$ROOT"/substrate/verus/common/src/*.rs)   # built against common
+    hash="$(cat "${srcs[@]}" | sha256sum | cut -d' ' -f1)"
     [ -f "$stamp" ] && [ "$(cat "$stamp")" = "$hash" ] && [ -f "$OUT/libverus_$lib.rlib" ] && continue
     deps=()
     [ "$lib" = prooflib ] && deps=(--import "verus_common=$OUT/verus_common.vir" --extern "verus_common=$OUT/libverus_common.rlib" -L "dependency=$OUT")

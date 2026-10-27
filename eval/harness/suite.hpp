@@ -167,6 +167,9 @@ inline Rows RunAccel(duckdb::Connection &c, const std::string &function, const s
   return Collect(*r);
 }
 
+// Numeric cells agree within a relative 1e-9: the engine and the kernel sum DOUBLEs in different
+// orders, so their results differ in the last bits.  This slack is for testing only; what is trusted
+// is the generated spec's error bound (verus_common::rel::float_within), not this tolerance.
 inline bool SameCell(const std::string &a, const std::string &b) {
   if (a == b)
     return true;
@@ -205,6 +208,7 @@ inline int Compare(const Rows &accel, const Rows &query) {
 // accelerator's answer is right if it is sorted by the keys, has the query's key
 // sequence, and its rows are among the query's (unlimited) rows.
 struct Ordering {
+  bool bag = false;                               // no ORDER BY: any order is right
   std::vector<std::pair<std::size_t, bool>> keys; // column, descending
   bool limited = false;
   std::string unlimited_sql;                      // the query without its LIMIT
@@ -244,8 +248,10 @@ inline std::size_t TopLevel(const std::string &sql, const std::string &word) {
 inline Ordering MakeOrdering(duckdb::Connection &c, const std::string &sql, const std::vector<std::string> &tuples) {
   Ordering o;
   const auto ob = TopLevel(sql, "ORDER BY");
-  if (ob == std::string::npos)
+  if (ob == std::string::npos) {
+    o.bag = true;
     return o;
+  }
   const auto lim = TopLevel(sql, "LIMIT");
   o.limited = lim != std::string::npos && lim > ob;
   o.unlimited_sql = o.limited ? sql.substr(0, lim) : sql;
@@ -321,6 +327,8 @@ inline bool SortedBy(const Ordering &o, const Rows &rows) {
 // yields the query's rows without its LIMIT (only asked for when needed).
 inline int CompareOrdered(const Ordering &o, const Rows &accel, const Rows &query, const std::function<Rows()> &full) {
   const int c = Compare(accel, query);
+  if (o.bag && c == 1)
+    return 0;
   if (c == 0 || o.keys.empty())
     return c;
   if (c == 1)

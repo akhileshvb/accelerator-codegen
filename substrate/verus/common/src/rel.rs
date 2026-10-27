@@ -233,4 +233,24 @@ pub open spec fn float_within(v: int, e: int, a: int, m: int) -> bool {
     v == e || m >= pow2(53) || (pow2(53) - m) * abs(v - e) <= m * a
 }
 
+/// The exact value of IEEE binary64 bits, times 2^1074 (the spec's float scale),
+/// so every finite double is an integer.  NaN and infinity (exponent 2047) decode
+/// to 2^2098, which no finite double reaches: `f64_in_range` excludes it.
+pub open spec fn f64_val(bits: u64) -> int {
+    let e = (bits as int / pow2(52)) % 2048;
+    let frac = bits as int % pow2(52);
+    let sign = bits as int / pow2(63);
+    if e == 2047 {
+        pow2(2098)
+    } else {
+        let mag = if e == 0 { frac } else { (frac + pow2(52)) * pow2((e - 1) as nat) };
+        if sign == 1 { -mag } else { mag }
+    }
+}
+
+/// The finite doubles' range, at the spec's float scale: |v| <= (2^53 - 1) * 2^2045.
+pub open spec fn f64_in_range(v: int) -> bool {
+    abs(v) <= (pow2(53) - 1) * pow2(2045)
+}
+
 } // verus!

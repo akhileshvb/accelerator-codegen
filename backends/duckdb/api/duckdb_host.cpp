@@ -341,9 +341,8 @@ DuckdbHost::~DuckdbHost() {
 
 DuckdbHost::Accelerator &DuckdbHost::Ensure(const SharedQueryCatalogEntry &entry) {
   std::lock_guard<std::mutex> lock(impl->mutex);
-  auto &slot = impl->accelerators[entry.accelerator_id];
-  if (slot) {
-    return *slot;
+  if (auto existing = impl->accelerators.find(entry.accelerator_id); existing != impl->accelerators.end()) {
+    return *existing->second;
   }
   auto accelerator = std::make_unique<Accelerator>();
   accelerator->entry = &entry;
@@ -409,8 +408,7 @@ DuckdbHost::Accelerator &DuckdbHost::Ensure(const SharedQueryCatalogEntry &entry
   accelerator->connection->Rollback();
   accelerator->registered_at = impl->registered_at.load();
 
-  slot = std::move(accelerator);
-  return *slot;
+  return *(impl->accelerators[entry.accelerator_id] = std::move(accelerator));
 }
 
 DuckdbHost::Accelerator *DuckdbHost::Find(const std::string &accelerator_id) {

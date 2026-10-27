@@ -1,0 +1,1 @@
+SELECT id FROM t WHERE c < 2.5 AND e >= 1.25

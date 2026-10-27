@@ -1,0 +1,1 @@
+SELECT a, COUNT(*) AS n, SUM(e) AS s FROM t GROUP BY a ORDER BY a

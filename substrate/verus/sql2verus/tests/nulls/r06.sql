@@ -1,0 +1,1 @@
+SELECT id FROM t WHERE s NOT LIKE 'a%'

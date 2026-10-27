@@ -1,0 +1,1 @@
+SELECT id, x FROM m WHERE x > 1.5 AND y <= 100.25 ORDER BY id

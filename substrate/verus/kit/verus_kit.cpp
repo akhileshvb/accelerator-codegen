@@ -10,6 +10,7 @@
 #include <cstdio>
 #include <cmath>
 #include <cstdlib>
+#include <cstring>
 #include <limits>
 #include <map>
 #include <mutex>
@@ -950,6 +951,24 @@ uint8_t Bool(const core::AuxRow &row, std::size_t i) {
   throw Declined("not a boolean cell");
 }
 
+bool IsNull(const core::AuxRow &row, std::size_t i) { return i >= row.values.size() || row.values[i].is_null; }
+
+const std::string kNoText;
+
+uint64_t F64(const core::AuxRow &row, std::size_t i) {
+  const auto &v = Cell(row, i);
+  double d;
+  if (const auto *x = std::get_if<double>(&v.payload))
+    d = *x;
+  else
+    throw Declined("not a floating-point cell");
+  if (!std::isfinite(d))
+    throw Declined("non-finite DOUBLE");
+  uint64_t bits;
+  std::memcpy(&bits, &d, sizeof bits);
+  return bits;
+}
+
 const std::string &Text(const core::AuxRow &row, std::size_t i) {
   const auto &v = Cell(row, i);
   if (const auto *x = std::get_if<std::string>(&v.payload))
@@ -1053,6 +1072,12 @@ core::AuxValue OutText(const uint8_t *bytes, std::size_t len) {
 core::AuxValue OutI64(int64_t v) { return core::AuxValue::Of(core::AuxType::Int64, v); }
 core::AuxValue OutDate(int32_t days) { return core::AuxValue::Of(core::AuxType::Date, core::AuxDate{days}); }
 core::AuxValue OutBool(uint8_t v) { return core::AuxValue::Of(core::AuxType::Boolean, v != 0); }
+
+core::AuxValue OutF64(uint64_t bits) {
+  double d;
+  std::memcpy(&d, &bits, sizeof d);
+  return core::AuxValue::Of(core::AuxType::Double, d);
+}
 
 core::AuxValue OutTs(int64_t ns) {
   int64_t days = ns / 86400000000000LL, rem = ns % 86400000000000LL;

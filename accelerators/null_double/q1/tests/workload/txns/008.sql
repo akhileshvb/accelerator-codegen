@@ -1,0 +1,1 @@
+INSERT INTO num SELECT * FROM num WHERE qtrs = 4 AND (ddate IS NULL OR value IS NULL) LIMIT 40;
