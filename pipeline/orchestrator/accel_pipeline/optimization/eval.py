@@ -392,7 +392,7 @@ def _aux_quick_env(
     resolved = freqs if freqs is not None else _aux_write_frequencies(workload)
     env = {
         paths["db_env_var"]: str(paths["dataset_db"]),
-        f"ACCEL_Q{query}_BENCH_SUITE": paths.get("aux_bench_suites", "lineitem_only"),
+        f"ACCEL_Q{query}_BENCH_SUITE": paths["aux_bench_suites"],
         "ACCEL_AUX_WRITE_FREQUENCIES": ",".join(str(f) for f in resolved),
         "ACCEL_BENCH_WARMUP": str(int(opt.get("bench_warmup", 1))),
         "ACCEL_BENCH_QUERIES": str(int(opt.get("quick_bench_queries", opt.get("bench_queries", 3)))),

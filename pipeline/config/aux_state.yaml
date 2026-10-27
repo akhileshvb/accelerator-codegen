@@ -23,7 +23,7 @@ allowed_commands:
 
 aux_bench_sweep:
   write_frequencies: [0, 1, 10, 50]
-  suites: lineitem_only
+  # suites: each benchmark names its own write suites (its workload or template)
   # Fair SF1 sweep per bench_sweep_contract.md (measured DuckDB ref + full table scans).
   bench_warmup: 10
   bench_queries: 100

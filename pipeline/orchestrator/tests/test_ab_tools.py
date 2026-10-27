@@ -130,7 +130,7 @@ def test_a_quick_bench_that_overruns_its_limit_reports_it(monkeypatch, tmp_path)
         raise subprocess.TimeoutExpired("bench", k["timeout"])
 
     monkeypatch.setattr(ab_tools.subprocess, "run", hang)
-    paths = {"db_env_var": "X", "dataset_db": "/d"}
+    paths = {"db_env_var": "X", "dataset_db": "/d", "aux_bench_suites": "s"}
     rows, output = ab_tools._run_aux_quick_sweep(
         tmp_path / "bench", repo=tmp_path, paths=paths, query=6,
         workload={"workload_kind": "aux_state", "aux_bench_sweep_quick": {"bench_timeout_sec": 7}}, acceptance=False)

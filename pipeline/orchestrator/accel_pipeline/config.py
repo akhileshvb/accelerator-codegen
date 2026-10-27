@@ -441,8 +441,7 @@ def resolve_workload_paths(
 
     if kind == "aux_state":
         aux_state_subdir = f"{qdir}/{eng_seg}aux"
-        sec_edgar = benchmark == "sec_edgar"
-        cost_model_stem = f"sec_edgar_q{q}_aux_cost_model" if sec_edgar else f"q{q}_aux_cost_model"
+        cost_model_stem = f"q{q}_aux_cost_model"  # the query's own config dir already names the benchmark
         bench_sweep = workload.get("aux_bench_sweep", {})
         if not isinstance(bench_sweep, dict):
             bench_sweep = {}
@@ -460,10 +459,8 @@ def resolve_workload_paths(
                 # own calibration keeps it beside the default as <stem>_<engine>.json.
                 "cost_model_default": f"{qdir}/config/{cost_model_stem}.json",
                 "cost_model_config": f"{qdir}/config/{cost_model_stem}_{engine}.json",
-                "aux_bench_work_dir_suffix": str(
-                    workload.get("aux_bench_work_dir_suffix", f"q{q}_aux_bench_sf3" if sec_edgar else f"q{q}_aux_bench_sf1")
-                ),
-                "aux_bench_suites": str(bench_sweep.get("suites", workload.get("aux_bench_suites", "lineitem_only"))),
+                "aux_bench_work_dir_suffix": str(workload.get("aux_bench_work_dir_suffix", f"q{q}_aux_bench")),
+                "aux_bench_suites": str(bench_sweep.get("suites") or workload.get("aux_bench_suites") or ""),
             }
         )
     return paths

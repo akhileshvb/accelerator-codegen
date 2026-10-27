@@ -5,6 +5,6 @@
 
 namespace accelerator_codegen::aux_state::core {
 
-inline constexpr AuxCostModelLocation kSecEdgarQ4CostModel{"accelerators/sec_edgar/q4/config", "sec_edgar_q4_aux_cost_model"};
+inline constexpr AuxCostModelLocation kSecEdgarQ4CostModel{"accelerators/sec_edgar/q4/config", "q4_aux_cost_model"};
 
 } // namespace accelerator_codegen::aux_state::core

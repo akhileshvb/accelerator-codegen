@@ -44,7 +44,7 @@ if ! engine_ready "${BENCH_TARGET}"; then
   emit_result "${OUT}/aux_bench_sweep.json" aux_bench_sweep fail "${ENGINE_FAIL}" "${ENGINE_LOG}" "query:=${QUERY}"
 fi
 
-export ACCEL_AUX_BENCH_WORK_DIR="${BUILD}/${AUX_BENCH_WORK_DIR_SUFFIX:-q${QUERY}_aux_bench_sf1}"
+export ACCEL_AUX_BENCH_WORK_DIR="${BUILD}/${AUX_BENCH_WORK_DIR_SUFFIX:-q${QUERY}_aux_bench}"
 # Prefer gate-context write frequencies. Do not inherit ambient optimization
 # quick-sweep env (e.g. ACCEL_AUX_WRITE_FREQUENCIES=0,10) into fair audit/impl sweeps.
 if [[ -n "${AUX_WRITE_FREQUENCIES_CTX:-}" ]]; then
@@ -53,6 +53,8 @@ else
   export ACCEL_AUX_WRITE_FREQUENCIES="${ACCEL_AUX_WRITE_FREQUENCIES:-0,1,10,50}"
 fi
 export ACCEL_AUX_BENCH_SUITES="${ACCEL_AUX_BENCH_SUITES:-${AUX_BENCH_SUITES}}"
+[[ -n "${ACCEL_AUX_BENCH_SUITES}" ]] || emit_result "${OUT}/aux_bench_sweep.json" aux_bench_sweep fail \
+  "the workload names no write suite: set aux_bench_sweep.suites in its workload config" "" "query:=${QUERY}"
 export ACCEL_AUX_BENCHMARK="${BENCHMARK_NAME}"
 export ACCEL_AUX_BENCH_TARGET="${BENCH_TARGET}"
 

@@ -18,7 +18,8 @@ def test_load_sec_edgar_pack() -> None:
     assert "fairness" in pack.get("post_optimization_gates", [])
     assert "snapshot_paths" in pack
     assert any("fused_scan" in p for p in pack["snapshot_paths"])
-    assert any("duckdb_scan_adapter" in p for p in pack["write_paths"])
+    assert f"accelerators/{pack['benchmark_name']}/**" in pack["write_paths"]
+    assert not any(p.startswith("backends/") for p in pack["write_paths"])  # backends are the engine_backend run's
 
 
 def test_load_tpch_pack() -> None:

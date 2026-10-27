@@ -344,23 +344,23 @@ def test_recorded_defects_reach_their_owner_once(tmp_path):
 
     path = br.requests_path(tmp_path, "anyengine")
     path.parent.mkdir(parents=True, exist_ok=True)
+    def request(scope, helper):
+        return {"benchmark": "toybench", "query": 3, "scope": scope, "helper": helper, "reason": "found by a run"}
+
     lines = [
-        {"scope": "harness", "helper": "transaction-safe setup"},
-        {"scope": "backend", "helper": "commit outside the engine lock"},
-        {"helper": "unscoped: both owners see it"},
+        request("harness", "transaction-safe setup"),
+        request("backend", "commit outside the engine lock"),
+        {"scope": "backend", "kind": "helper", "reason": "no benchmark, query or helper: names nothing to fix"},
     ]
     path.write_text("".join(json.dumps(line) + "\n" for line in lines))
 
-    assert [r["helper"] for r in br.pending(tmp_path, "anyengine", "harness")] == [
-        "transaction-safe setup", "unscoped: both owners see it"]
-    assert [r["helper"] for r in br.pending(tmp_path, "anyengine", "backend")] == [
-        "commit outside the engine lock", "unscoped: both owners see it"]
+    assert [r["helper"] for r in br.pending(tmp_path, "anyengine", "harness")] == ["transaction-safe setup"]
+    assert [r["helper"] for r in br.pending(tmp_path, "anyengine", "backend")] == ["commit outside the engine lock"]
 
     br.mark_handled(tmp_path, "anyengine", "backend")
     assert br.pending(tmp_path, "anyengine", "backend") == []
-    assert len(br.pending(tmp_path, "anyengine", "harness")) == 2
-    with path.open("a") as f:
-        f.write(json.dumps({"scope": "backend", "helper": "a new one"}) + "\n")
+    assert len(br.pending(tmp_path, "anyengine", "harness")) == 1
+    br.record(tmp_path, "anyengine", request("backend", "a new one"))
     assert [r["helper"] for r in br.pending(tmp_path, "anyengine", "backend")] == ["a new one"]
 
 

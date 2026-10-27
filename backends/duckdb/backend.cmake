@@ -66,7 +66,8 @@ endfunction()
 cmake_language(DEFER DIRECTORY ${CMAKE_SOURCE_DIR} CALL _accel_duckdb_alias_base_benches)
 
 # Unit tests of the backend's own state.
-accel_add_backend_exe(duckdb test_shared_aux_state backends/duckdb/tests/harness/test_shared_aux_state.cpp)
+accel_add_backend_exe(duckdb test_shared_aux_state backends/duckdb/tests/test_shared_aux_state.cpp)
+accel_add_backend_exe(duckdb test_duckdb_hit_contract backends/duckdb/tests/test_duckdb_hit_contract.cpp)
 accel_add_backend_exe(duckdb test_wide_types backends/duckdb/tests/test_wide_types.cpp)
 accel_add_backend_exe(duckdb test_versioned_aux_state backends/duckdb/tests/test_versioned_aux_state.cpp)
 accel_add_backend_exe(duckdb test_duckdb_canary backends/duckdb/tests/test_duckdb_canary.cpp)

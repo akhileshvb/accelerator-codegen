@@ -1130,12 +1130,13 @@ def playbook_append(ctx: VerusContext, section: str, title: str, body: str, evid
 
 def backend_addition_record(ctx: VerusContext, engine: str, helper: str, reason: str) -> dict[str, Any]:
     """Log a request for the engine_backend run; query runs never write backends/ themselves."""
-    path = Path(ctx.pipeline_root) / "artifacts" / "backend_additions" / f"{engine}.jsonl"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with file_lock(path.with_suffix(".lock")):
-        with path.open("a", encoding="utf-8") as fh:
-            fh.write(json.dumps({"ts": time.time(), "benchmark": ctx.benchmark, "query": ctx.query,
-                                 "scope": "backend", "helper": helper, "reason": reason, "status": "requested"}) + "\n")
+    from accel_pipeline.engine_backend.backend_requests import record, requests_path
+
+    repo_root = Path(ctx.pipeline_root).parent
+    with file_lock(requests_path(repo_root, engine).with_suffix(".lock")):
+        record(repo_root, engine, {"ts": time.time(), "benchmark": ctx.benchmark, "query": ctx.query,
+                                   "scope": "backend", "helper": helper, "reason": reason})
+    path = requests_path(repo_root, engine)
     return {"ok": True, "logged": str(path),
             "note": f"request logged for the {engine} engine_backend run; backends/{engine}/** is "
                     "not writable from a query run, so do not wait for or rely on the helper here"}

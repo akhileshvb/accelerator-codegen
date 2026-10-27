@@ -167,7 +167,7 @@ def _aux_quick_benchmark_env(
         }
     env = {
         paths["db_env_var"]: str(paths["dataset_db"]),
-        f"ACCEL_Q{query}_BENCH_SUITE": paths.get("aux_bench_suites", "lineitem_only"),
+        f"ACCEL_Q{query}_BENCH_SUITE": paths["aux_bench_suites"],
         "ACCEL_AUX_WRITE_FREQUENCIES": ",".join(str(f) for f in resolved),
         **{name: str(value) for name, value in reps.items()},
         "ACCEL_BENCH_SKIP_PARTITION_REBUILD_CALIB": "1",

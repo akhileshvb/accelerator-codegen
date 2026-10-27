@@ -9,9 +9,7 @@ test_template_path: pipeline/templates/sec_edgar/test_template.cpp
 benchmark_template_path: pipeline/templates/sec_edgar/benchmark_template.cpp
 
 write_paths:
-  - backends/duckdb/api/duckdb_scan_adapter.hpp
   - accelerators/sec_edgar/**
-  - backends/duckdb/api/duckdb_scan_adapter.cpp
   - eval/bench/sec_edgar/**
 
 allowed_commands:

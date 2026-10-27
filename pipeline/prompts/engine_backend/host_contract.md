@@ -41,9 +41,9 @@ After the build and after each committed transaction the accelerated answer must
 | verb | args | does |
 |---|---|---|
 | `info` | | print one JSON line: `{"engine", "embedded": bool, "verbs": [...], "hit_contract": true, "mounts": {"ro": [abs paths], "rw": [abs paths]}, "docker": bool}`; `hit_contract` is `true` once the backend meets the hit contract below (required: a backend without it fails the `engine_hit_contract` gate); `bench_multi_point: true` says the aux bench runs every write frequency of `ACCEL_AUX_WRITE_FREQUENCIES` (comma-separated) in one process with one module build, each point from the same data, one CSV row each (else the gate calls it once per point, the percent as its argument); `mounts` are the existing external checkouts/SDKs/caches the verbs need at runtime (the agents' sandbox binds them), `docker` says the verbs need the docker daemon |
-| `up` | | start the instance if absent (idempotent), with its empty database; write `$ACCEL_ENGINE_STATE_DIR/env` (`KEY=VALUE` lines the other verbs and harness binaries read). `build` works after `up` alone |
+| `up` | | start the instance if absent (idempotent), with its empty database; write `$ACCEL_ENGINE_STATE_DIR/env` (`KEY=VALUE` lines the other verbs and harness binaries read, among them the profile's `query_host.dataset_env` holding the instance's database or connection). `build` works after `up` alone |
 | `down` | | stop the instance and remove everything it created |
-| `load` | `<schema.sql> [constraints.sql]` | create the schema and load `$ACCEL_DATASET_DIR`; idempotent (skip when already loaded from the same dataset) |
+| `load` | `<schema.sql> [constraints.sql]` | create the schema and load `$ACCEL_DATASET_DIR`; idempotent (skip when already loaded from the same dataset); a table whose `.tbl` file is missing or empty stays empty |
 | `build` | `[target...]` | build the backend and its registered accelerators, then install or load them into the instance. The build dir is configured with `$ACCEL_CMAKE_ARGS` plus what only the backend knows (the `-S`/`-B` paths as its build environment sees them, the engine SDK's locations and the backend's own options), and reconfigured when `$ACCEL_CMAKE_ARGS` changes; nothing but `build` configures it |
 | `sql` | `<file>` or `-` | run SQL against the instance; print the result of the last statement as CSV with a header, NULL as an empty cell |
 | `run` | `<target> [args...]` | run a built test or bench binary where it reaches the instance, with the `env` file applied and the caller's `ACCEL_*` variables passed through (gates set thread caps, forced actions and the SQL entry this way) |
@@ -61,7 +61,7 @@ All output goes to stdout/stderr; logs longer than a screen go under
 
 A benchmark that quietly measures the fallback SQL looks like a working accelerator, so every backend
 proves, through `host.sh` alone, that a read can be told apart from a fallback. The backend ships a
-harness target `test_{engine}_hit_contract` (a name the gate context may override with
+target `test_{engine}_hit_contract` under `tests/` (its own tests never go in `tests/harness/`, which is host_bootstrap's; a name the gate context may override with
 `target_paths.hit_contract_test_target`; it is built by `host.sh build` and run by `host.sh run`) that:
 
 1. registers one small fixture accelerator through the backend's registration API (the SQL entry-point

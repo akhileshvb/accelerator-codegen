@@ -31,16 +31,23 @@ def _requests(repo_root: Path, engine: str, scope: str) -> list[dict[str, Any]]:
             request = json.loads(line)
         except json.JSONDecodeError:
             continue
-        if isinstance(request, dict) and _route(request.get("scope"), scope):
+        if _well_formed(request) and _route(request.get("scope"), scope):
             out.append(request)
     return out
 
 
+REQUIRED_FIELDS = ("benchmark", "query", "scope", "helper", "reason")
+
+
+def _well_formed(request: Any) -> bool:
+    """A request in the documented shape (query_host_bootstrap.md): one that misses a field names no defect its owner
+    could act on, and must not reopen that owner's stage."""
+    return isinstance(request, dict) and all(request.get(k) not in (None, "") for k in REQUIRED_FIELDS)
+
+
 def _route(declared: Any, scope: str) -> bool:
     """A request reaches the harness run only when it says "harness"; any other scope (agents also write
-    descriptive ones, e.g. "runtime registration") is the backend's; a request without one goes to both."""
-    if declared is None:
-        return True
+    descriptive ones, e.g. "runtime registration") is the backend's."""
     return (str(declared).strip().lower() == "harness") == (scope == "harness")
 
 

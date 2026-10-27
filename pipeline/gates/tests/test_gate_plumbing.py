@@ -80,7 +80,7 @@ def run_gate(repo, script, *args, ctx_extra=None, env_extra=None, kind="aux_stat
         "engine_name": "fake", "benchmark_name": "tpch", "artifacts_dir": str(art),
         "workload_kind": kind, "bench_target": "bench_base", "schema_sql": "workloads/tpch/schema.sql",
         "dataset_dir": "/data/tbl", "aux_test_target": "aux_unit_bin", "aux_bench_target": "bench_aux",
-        "aux_calibrate_target": "calibrator", "cost_model_config": "cost_model.json",
+        "aux_calibrate_target": "calibrator", "cost_model_config": "cost_model.json", "aux_bench_suites": "lineitem_only",
         "engine_host": {"differential_binary": "diff_bin", "multi_conn_target": "multi_bin",
                         "cross_accel_target": "cross_bin"},
         "target_paths": {"contract_test_target": "contract_bin", "adversarial_test_target": "adv_bin"},

@@ -1,3 +1,4 @@
 workload_kind: aux_state
 benchmark_name: tpch
+aux_bench_sweep: {suites: lineitem_only}
 engines: [duckdb, postgres, mysql]

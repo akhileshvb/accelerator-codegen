@@ -47,7 +47,7 @@ def old_loader_values(ctx: dict) -> dict[str, str]:
         "AUX_CALIBRATE_TARGET": ctx.get("aux_calibrate_target", ""),
         "AUX_CTEST_SMOKE_REGEX": ctx.get("aux_ctest_smoke_regex", ""), "BENCH_TARGET": ctx["bench_target"],
         "COST_MODEL_CONFIG": ctx.get("cost_model_config", ""),
-        "AUX_BENCH_SUITES": ctx.get("aux_bench_suites", "lineitem_only"),
+        "AUX_BENCH_SUITES": ctx.get("aux_bench_suites", ""),
         "AUX_BENCH_WORK_DIR_SUFFIX": ctx.get("aux_bench_work_dir_suffix", ""),
         "AUX_WRITE_FREQUENCIES_CTX": ctx.get("aux_write_frequencies", ""),
         "HARNESS_BENCH_TARGET": host.get("bench_target") or "",
