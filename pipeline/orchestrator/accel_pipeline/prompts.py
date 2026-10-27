@@ -271,13 +271,13 @@ def _benchmark_notes(workload: dict[str, Any], paths: dict[str, Any]) -> str:
 
 
 def _audit_gates(workload: dict[str, Any]) -> list[str]:
-    from accel_pipeline.stages.base import workload_post_audit_gates
+    from accel_pipeline.stages import workload_post_audit_gates
 
     return workload_post_audit_gates(workload)
 
 
 def _planned_gates(workload: dict[str, Any]) -> list[str]:
-    from accel_pipeline.stages.base import workload_post_optimization_gates
+    from accel_pipeline.stages import workload_post_optimization_gates
 
     return [*workload_post_optimization_gates(workload), *_audit_gates(workload)]
 

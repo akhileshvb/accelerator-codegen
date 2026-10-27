@@ -21,7 +21,7 @@ PASSED = GateResult(name="correctness", status="pass", data={})
 
 @pytest.fixture(autouse=True)
 def stubs(monkeypatch):
-    for module in ("accel_pipeline.repair", "accel_pipeline.stages.base", "accel_pipeline.config"):
+    for module in ("accel_pipeline.repair", "accel_pipeline.stages", "accel_pipeline.config"):
         monkeypatch.setattr(f"{module}.load_run_workload", lambda cfg, name: {"benchmark_name": "tpch"})
 
 
@@ -36,7 +36,7 @@ class GateRuns(list):
     def __init__(self, monkeypatch):
         super().__init__()
         self.script: dict[str, list[GateResult]] = {}
-        monkeypatch.setattr("accel_pipeline.stages.base.run_gate", self._run_gate)
+        monkeypatch.setattr("accel_pipeline.stages.run_gate", self._run_gate)
         monkeypatch.setattr("accel_pipeline.gates.run_gate", self._run_gate)
 
     def _run_gate(self, config, name, query, workload, **kwargs):
@@ -50,7 +50,7 @@ def gate_runs(monkeypatch):
     return GateRuns(monkeypatch)
 
 
-@patch("accel_pipeline.stages.base.run_agent_stage")
+@patch("accel_pipeline.stages.run_agent_stage")
 def test_crash_debug_retries_until_gates_pass(run_agent, parallel, gate_runs, tmp_path):
     gate_runs.script["correctness"] = [FAILED, FAILED, PASSED]
     results = run_gates_with_repair(
@@ -62,7 +62,7 @@ def test_crash_debug_retries_until_gates_pass(run_agent, parallel, gate_runs, tm
     assert run_agent.call_args.kwargs["session_role"] == "main"
 
 
-@patch("accel_pipeline.stages.base.run_agent_stage")
+@patch("accel_pipeline.stages.run_agent_stage")
 def test_max_rounds_overrides_the_configured_code_budget(run_agent, parallel, gate_runs, tmp_path):
     gate_runs.script["correctness"] = [FAILED]
     with pytest.raises(StageStopped):
@@ -73,7 +73,7 @@ def test_max_rounds_overrides_the_configured_code_budget(run_agent, parallel, ga
     assert run_agent.call_count == 2
 
 
-@patch("accel_pipeline.stages.base.run_agent_stage")
+@patch("accel_pipeline.stages.run_agent_stage")
 def test_the_failing_gate_of_a_batch_is_the_one_repaired(run_agent, parallel, gate_runs, tmp_path):
     unit_failed = GateResult(name="aux_unit", status="fail", data={"log_tail": "Segmentation fault"})
     gate_runs.script["aux_unit"] = [unit_failed, GateResult(name="aux_unit", status="pass", data={})]

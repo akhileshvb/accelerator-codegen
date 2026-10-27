@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from accel_pipeline.config import ModelConfig, PipelineConfig
-from accel_pipeline.stages.base import run_agent_stage
+from accel_pipeline.stages import run_agent_stage
 from accel_pipeline.engine_backend.layer_critique import read_review, run_until_artifact
 
 CRITIQUE_STAGE = "critique_host_bootstrap"

@@ -39,7 +39,7 @@ class World:
         monkeypatch.setattr(repair_mod, "_run_gates", self._run_gates)
         monkeypatch.setattr(repair_mod, "_rollback", lambda ctx: self.events.append("rollback"))
         monkeypatch.setattr(repair_mod, "_replan", lambda ctx, failure: self.events.append("replan") or False)
-        monkeypatch.setattr("accel_pipeline.stages.base.run_agent_stage", self._agent)
+        monkeypatch.setattr("accel_pipeline.stages.run_agent_stage", self._agent)
         monkeypatch.setattr(repair_mod.time, "sleep", lambda s: None)
         monkeypatch.setattr("accel_pipeline.repair.handle_infra_failure", lambda *a, **k: None)
         self.tmp = tmp_path
@@ -226,7 +226,7 @@ def test_a_flake_in_the_repair_turn_reruns_the_turn_not_the_code_round(world, mo
             raise StageFailure(FLAKE)
         world.agent_messages.append(kwargs["user_message"])
 
-    monkeypatch.setattr("accel_pipeline.stages.base.run_agent_stage", agent)
+    monkeypatch.setattr("accel_pipeline.stages.run_agent_stage", agent)
     world.gate_script = [gate_fail()]
     run_with_repair(world.ctx(), lambda: None, gates=["aux_correctness"])
     assert len(turns) == 2 and len(world.agent_messages) == 1 and len(world.gate_calls) == 2
@@ -244,7 +244,7 @@ def test_a_failing_repair_turn_does_not_escape(world, monkeypatch):
     def broken(**kwargs):
         raise RuntimeError("codex crashed")
 
-    monkeypatch.setattr("accel_pipeline.stages.base.run_agent_stage", broken)
+    monkeypatch.setattr("accel_pipeline.stages.run_agent_stage", broken)
     world.gate_script = [gate_fail()]
     run_with_repair(world.ctx(), lambda: None, gates=["aux_correctness"])
 
@@ -260,8 +260,7 @@ def test_a_crashing_gate_runner_is_an_orchestrator_failure(world, monkeypatch):
 
 def _stage_world(tmp_path, monkeypatch, mode="ok"):
     """Real run_agent_stage and CodexExecBackend on a fake codex; only prompts, logs and gates are stubbed."""
-    import accel_pipeline.config as config_mod
-    import accel_pipeline.stages.base as base
+    import accel_pipeline.stages as base
 
     world = World(tmp_path, monkeypatch)
     monkeypatch.undo()  # World's stubs are for the unit tests; re-stub what this one needs
@@ -291,15 +290,15 @@ def _stage_world(tmp_path, monkeypatch, mode="ok"):
         "frozen_restore": lambda root, snap: [],
     }.items():
         monkeypatch.setattr(base, name, value)
-    monkeypatch.setattr(config_mod, "resolve_stage_provider", lambda stage, cfg: "codex_exec")
-    monkeypatch.setattr("accel_pipeline.prims_library.refresh_for_stage", lambda root: None)
+    monkeypatch.setattr(base, "resolve_stage_provider", lambda stage, cfg: "codex_exec")
+    monkeypatch.setattr("accel_pipeline.stages.refresh_for_stage", lambda root: None)
     world.models, world.backend = models_cfg, backend
     return world
 
 
 def _implement(world):
     from accel_pipeline.agent import MAIN
-    from accel_pipeline.stages.base import run_agent_stage
+    from accel_pipeline.stages import run_agent_stage
 
     return lambda: run_agent_stage(
         stage="implementation", prompt_file="02_implementation.md", pipeline_config=world.config,
@@ -358,7 +357,7 @@ def test_quick_first_fails_the_batch_before_the_heavy_gates(tmp_path, monkeypatc
     monkeypatch.setattr(repair_mod, "load_run_workload", lambda cfg, name: {"benchmark_name": "toybench"})
     heavy = []
     monkeypatch.setattr("accel_pipeline.gates.run_gates_parallel", lambda cfg, names, *a, **k: heavy.append(names) or [])
-    monkeypatch.setattr("accel_pipeline.stages.base.run_post_stage_gates_collect", lambda cfg, w, q, names, **k: heavy.append(names) or ([], None))
+    monkeypatch.setattr("accel_pipeline.stages.run_post_stage_gates_collect", lambda cfg, w, q, names, **k: heavy.append(names) or ([], None))
     verdicts = [QuickResult(status="fail", summary="quick_check: projected full-gate write time ~900 s (budget 450 s)"),
                 QuickResult(status="pass")]
     monkeypatch.setattr("accel_pipeline.gates.run_quick_check", lambda *a, **k: verdicts.pop(0))
@@ -406,14 +405,14 @@ def test_a_blocker_stops_the_stage_only_once_the_repair_budget_is_spent(tmp_path
 
 def test_a_blocker_on_the_frozen_suite_goes_to_the_tester_then_the_gates_rerun(world, monkeypatch):
     revisions = [True, False]
-    monkeypatch.setattr(repair_mod, "_revise_test_suite", lambda ctx: revisions.pop(0))
+    monkeypatch.setattr(repair_mod, "revise_pending_suite", lambda ctx: revisions.pop(0))
     run_with_repair(world.ctx(), _blocked, gates=["aux_correctness"])
     assert world.gate_calls == [["aux_correctness"]] and revisions == [False] and world.agent_messages == []
 
 
 def _out_of_credits():
     from accel_pipeline.repair import Failure, StageFailure
-    from accel_pipeline.stages.base import stage_failure
+    from accel_pipeline.stages import stage_failure
 
     result = type("R", (), {"error": "unexpected status 402 Payment Required: This request requires more credits",
                             "status": "error", "metadata": {}, "final_text": ""})()

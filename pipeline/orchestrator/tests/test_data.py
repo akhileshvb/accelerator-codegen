@@ -491,7 +491,7 @@ class World:
     """A tmp repo whose tester is scripted: each turn writes the next suite; the gate is the real static check."""
 
     def __init__(self, tmp_path, monkeypatch, suites):
-        from accel_pipeline.stages import test_suite as stage
+        from accel_pipeline import stages as stage
 
         self.stage, self.tmp, self.messages, self.roles = stage, tmp_path, [], []
         self.config = PipelineConfig(repo_root=tmp_path, pipeline_root=tmp_path / "pipeline", build_dir=tmp_path / "build",
@@ -530,7 +530,7 @@ class World:
         return [result], result
 
     def run(self, **kw):
-        return self.stage.run(self.config, None, "toy", 3, **kw)
+        return self.stage.run_test_suite(self.config, None, "toy", 3, **kw)
 
 
 def test_a_suite_that_fails_validation_goes_back_to_the_tester_then_is_frozen(tmp_path, monkeypatch):
@@ -545,7 +545,7 @@ def test_a_change_request_reruns_the_tester_and_archives_the_outcome(tmp_path, m
     world = World(tmp_path, monkeypatch, [{}, dict(txns={**TXNS, "001.sql": "INSERT INTO t VALUES (7, 'A', DATE '1995-01-01', 1);"})])
     world.run()
     (world.art / data_mod.CHANGE_REQUEST).write_text("001.sql: key 1 already exists in t")
-    world.stage.revise(world.config, None, "toy", 3)
+    world.stage.revise_test_suite(world.config, None, "toy", 3)
     assert "key 1 already exists" in world.messages[-1] and "change request" in world.messages[-1]
     assert data_mod.pending_change_request(world.art) == "" and data_mod.frozen_problem(world.art, world.directory) == ""
     assert "changed the suite" in (world.art / "test_suite_change_requests" / "01.md").read_text()

@@ -44,7 +44,7 @@ from accel_pipeline.repair import (
     StageFailure,
     StageStopped,
 )
-from accel_pipeline.stages.base import stage_failure
+from accel_pipeline.stages import stage_failure
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -557,7 +557,7 @@ class World:
         monkeypatch.setattr(repair_mod, "_run_gates", self._gates)
         monkeypatch.setattr(repair_mod, "_rollback", lambda ctx: None)
         monkeypatch.setattr(repair_mod, "_replan", lambda ctx, failure: False)
-        monkeypatch.setattr("accel_pipeline.stages.base.run_agent_stage", lambda **kw: self.agent())
+        monkeypatch.setattr("accel_pipeline.stages.run_agent_stage", lambda **kw: self.agent())
         self.gates_pass_from = 2
 
     def ctx(self):

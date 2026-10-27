@@ -36,9 +36,9 @@ from accel_pipeline.runlog import (
     log_event,
     log_pipeline_summary,
 )
-from accel_pipeline.stages import run_stage, stage_module
+from accel_pipeline.stages import run_analysis, run_stage
 from accel_pipeline.verus import STAGES as VERUS_STAGES
-from accel_pipeline.structural_reanalysis import process_after_stage
+from accel_pipeline.stages import process_after_stage
 
 
 def _parse_model_overrides(values: list[str] | None) -> dict[str, str]:
@@ -67,8 +67,8 @@ def _maybe_process_structural_reanalysis(
     if workload.get("workload_kind") != "aux_state":
         return None
 
-    def run_analysis(**kwargs):
-        stage_module("analysis").run(
+    def reanalyse(**kwargs):
+        run_analysis(
             pipeline_config,
             model_config,
             workload_name,
@@ -94,7 +94,7 @@ def _maybe_process_structural_reanalysis(
         workload=workload,
         triggered_after=triggered_after,
         structural_reanalysis_count=state.structural_reanalysis_count,
-        run_analysis=run_analysis,
+        run_analysis=reanalyse,
         run_test_suite=run_suite,
         run_implementation=run_impl,
         run_optimization=run_opt,

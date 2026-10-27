@@ -316,7 +316,7 @@
  "pipeline/orchestrator/accel_pipeline/runlog.py": {
   "engine": 3
  },
- "pipeline/orchestrator/accel_pipeline/scaffold_stubs.py": {
+ "pipeline/orchestrator/accel_pipeline/stages.py": {
   "symbol": 1
  },
  "pipeline/orchestrator/accel_pipeline/verus/actions.py": {
@@ -442,20 +442,14 @@
  "pipeline/orchestrator/tests/test_runlog.py": {
   "engine": 1
  },
- "pipeline/orchestrator/tests/test_scaffold_stubs.py": {
-  "engine": 5,
-  "path": 2,
-  "symbol": 4
- },
  "pipeline/orchestrator/tests/test_shared_tree_pack.py": {
   "engine": 31,
   "path": 14
  },
- "pipeline/orchestrator/tests/test_stage_max_turns.py": {
-  "engine": 3
- },
- "pipeline/orchestrator/tests/test_structural_reanalysis.py": {
-  "engine": 7
+ "pipeline/orchestrator/tests/test_stages.py": {
+  "engine": 10,
+  "path": 2,
+  "symbol": 4
  },
  "pipeline/orchestrator/tests/test_substrate_never_writable.py": {
   "engine": 1,

@@ -26,7 +26,7 @@ from accel_pipeline.config import (
 )
 from accel_pipeline.gates import format_reloop_failure_sections, GateResult
 from accel_pipeline.repair import StageStopped
-from accel_pipeline.stages.base import run_agent_stage
+from accel_pipeline.stages import run_agent_stage
 
 _GATE_LOG_TAIL_CHARS = 8000
 _DEFAULT_GATE_MAX_ROUNDS = 3

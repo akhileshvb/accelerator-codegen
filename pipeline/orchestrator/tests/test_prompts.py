@@ -41,7 +41,7 @@ from accel_pipeline.prompts import (
     snapshot,
     touched_since,
 )
-from accel_pipeline.stages import audit as audit_stage
+from accel_pipeline import stages as audit_stage
 from accel_pipeline.data import STATE_STORAGE_TEXT_FIELDS
 
 
@@ -408,7 +408,7 @@ def test_a_change_request_raised_in_the_repair_round_goes_to_the_tester_before_t
     (stage_ctx.art / "audit_result.json").write_text(json.dumps(BLOCKED))
     monkeypatch.setattr(audit_stage, "repair_turn", rnd.repair)
     handled = []
-    monkeypatch.setattr(audit_stage, "_revise_test_suite", lambda ctx: handled.append(ctx) or True)
+    monkeypatch.setattr(audit_stage, "revise_pending_suite", lambda ctx: handled.append(ctx) or True)
     audit_stage._fix_blocking_findings(stage_ctx, rnd.audit_turn)
     assert handled == [stage_ctx, stage_ctx] and "tester revised the frozen test suite" in rnd.audit_messages[0]
 

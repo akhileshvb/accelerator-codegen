@@ -180,7 +180,7 @@ def build_mcp_tool_callables(
     optimization_iter: int,
     art: Path,
 ) -> dict[str, Callable[..., str]]:
-    from accel_pipeline.structural_reanalysis import ReanalysisToolContext, make_reanalysis_tools
+    from accel_pipeline.stages import ReanalysisToolContext, make_reanalysis_tools
 
     is_aux = workload.get("workload_kind") == "aux_state"
     gate_ctx = ToolContext(pipeline_config, query, workload=workload, stage=stage, workload_name=workload_name,

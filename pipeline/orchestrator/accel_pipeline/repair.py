@@ -37,6 +37,7 @@ from accel_pipeline.config import (
     benchmark_of,
     read_json,
 )
+from accel_pipeline.data import pending_change_request
 from accel_pipeline.layout import query_dir, tree_snapshot
 from accel_pipeline.prompts import render_prompt
 from accel_pipeline.runlog import append_experiment_log, log_event
@@ -136,7 +137,7 @@ def run_with_repair(ctx: RepairCtx, attempt: Callable[[], T], *, gates: list[str
         _record(ctx, failure)
         if failure.infra_reason == AGENT_BLOCKER:
             blocker = last_blocker = failure
-            if _revise_test_suite(ctx):  # the blocker was the frozen suite: the tester decides, then the check reruns
+            if revise_pending_suite(ctx):  # the blocker was the frozen suite: the tester decides, then the check reruns
                 continue
             if gates and from_attempt:  # the obstacle may be a flake: the stage's own checks run once first
                 ctx.log(f"the agent reported a blocker ({failure.summary}); running the stage's gates once")
@@ -335,7 +336,7 @@ def _run_gates(ctx: RepairCtx, names: list[str]) -> tuple[list[GateResult], Gate
     if cfg.quick_tier.parallel_gates:
         results = gate_mod.run_gates_parallel(cfg, names, ctx.query, ctx.workload, **kwargs)
         return results, gate_mod.first_failure(results)
-    from accel_pipeline.stages.base import run_post_stage_gates_collect  # stages.base imports the agent backend, which imports this module
+    from accel_pipeline.stages import run_post_stage_gates_collect  # stages.base imports the agent backend, which imports this module
 
     return run_post_stage_gates_collect(cfg, ctx.workload_name, ctx.query, names, **kwargs)
 
@@ -390,7 +391,7 @@ def repair_turn(ctx: RepairCtx, failure: Failure, *, must_change: bool | None = 
     """One agent turn, in the stage's own session, on the failure report; a provider flake re-runs it.
     must_change: the turn has to edit the query's files (default: when the failure is a code failure).
     Returns the blocker when the agent ended the turn with report_blocker, else None."""
-    if ctx.stage != "test_suite" and _revise_test_suite(ctx):
+    if ctx.stage != "test_suite" and revise_pending_suite(ctx):
         return None
     turn = ctx.repair_turn or _crash_debug_turn(ctx, failure.kind == "code" if must_change is None else must_change)
     retries = ctx.pipeline_config.repair.provider_retries
@@ -416,20 +417,19 @@ def repair_turn(ctx: RepairCtx, failure: Failure, *, must_change: bool | None = 
     return None
 
 
-def _revise_test_suite(ctx: RepairCtx) -> bool:
+def revise_pending_suite(ctx: RepairCtx) -> bool:
     """A change request against the frozen test suite goes to the tester before the implementation is touched again."""
-    from accel_pipeline import data as suite
-    from accel_pipeline.stages import test_suite
+    from accel_pipeline.stages import revise_test_suite  # stages imports this module
 
-    if not suite.pending_change_request(ctx.art):
+    if not pending_change_request(ctx.art):
         return False
-    test_suite.revise(ctx.pipeline_config, ctx.model_config, ctx.workload_name, ctx.query, ctx.model_overrides)
+    revise_test_suite(ctx.pipeline_config, ctx.model_config, ctx.workload_name, ctx.query, ctx.model_overrides)
     ctx.log("the tester handled a test-suite change request; the next check judges the suite it froze")
     return True
 
 
 def _crash_debug_turn(ctx: RepairCtx, must_change: bool) -> Callable[[Failure], None]:
-    from accel_pipeline.stages.base import run_agent_stage
+    from accel_pipeline.stages import run_agent_stage
 
     bench = benchmark_of(ctx.workload)
 
@@ -474,7 +474,7 @@ def _replan(ctx: RepairCtx, failure: Failure) -> bool:
     """One structural re-plan (analysis, tests, implementation again, in a fresh session) for the whole run."""
     if ctx.stage not in _REPLANNABLE or _replan_budget(ctx) <= 0:
         return False
-    from accel_pipeline import run_pipeline, structural_reanalysis
+    from accel_pipeline import run_pipeline, stages
     from accel_pipeline.runlog import PipelineState, state_path
 
     path = ctx.art / REPAIR_STATE_FILE
@@ -483,7 +483,7 @@ def _replan(ctx: RepairCtx, failure: Failure) -> bool:
     ctx.log("repair budget spent; re-planning once (analysis, tests, implementation) in a fresh session")
     SessionStore(ctx.art).reset(ctx.query, MAIN)
     try:
-        structural_reanalysis.write_request(
+        stages.write_request(
             ctx.pipeline_config.repo_root, ctx.query, ctx.workload,
             source_stage=ctx.stage, source_iteration=ctx.iteration, bottleneck_type="other",
             evidence=f"Repair rounds could not fix the failure below.\n{render_failure(failure)}"[:4000],

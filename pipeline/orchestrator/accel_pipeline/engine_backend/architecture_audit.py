@@ -16,7 +16,7 @@ from typing import Any
 from accel_pipeline.engine_backend.backend_digest import backend_digest
 from accel_pipeline.config import ModelConfig, PipelineConfig, load_run_workload, query_artifacts_dir
 from accel_pipeline.runlog import append_experiment_log
-from accel_pipeline.stages.base import run_agent_stage
+from accel_pipeline.stages import run_agent_stage
 from accel_pipeline.engine_backend.layer_critique import read_review, run_until_artifact
 
 

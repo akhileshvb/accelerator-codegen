@@ -15,7 +15,7 @@ from typing import Any
 
 from accel_pipeline.config import ModelConfig, PipelineConfig, load_run_workload, query_artifacts_dir
 from accel_pipeline.repair import StageFailure
-from accel_pipeline.stages.base import run_agent_stage
+from accel_pipeline.stages import run_agent_stage
 
 
 def critique_stage_name(layer_id: str) -> str:

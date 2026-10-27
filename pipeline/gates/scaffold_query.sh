@@ -68,7 +68,7 @@ query = int(sys.argv[2])
 engine = sys.argv[3]
 sys.path.insert(0, str(root / "pipeline" / "orchestrator"))
 
-from accel_pipeline.scaffold_stubs import materialize_from_gate
+from accel_pipeline.stages import materialize_from_gate
 
 result = materialize_from_gate(root, query, engine)
 print(json.dumps({"gate": "scaffold_stubs", "query": query, **result}))

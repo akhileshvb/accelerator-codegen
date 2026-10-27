@@ -13,7 +13,7 @@ from accel_pipeline.config import ModelConfig, PipelineConfig, load_run_workload
 from accel_pipeline.repair import run_gates_with_repair, RepairCtx, run_with_repair
 from accel_pipeline.optimization.attempt import run_optimization_iteration
 from accel_pipeline.optimization.worker import OptimizationWorker, worker_enabled
-from accel_pipeline.stages.base import workload_post_optimization_gates
+from accel_pipeline.stages import workload_post_optimization_gates
 from accel_pipeline.optimization.runtime import merge_playbook_proposal
 from accel_pipeline.runlog import append_experiment_log
 
