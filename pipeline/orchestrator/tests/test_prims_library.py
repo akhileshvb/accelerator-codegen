@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from accel_pipeline import prims_library as pl
+from accel_pipeline import layout, prims_library as pl
 from accel_pipeline.layout import write_allowed
 
 REAL_ROOT = Path(__file__).resolve().parents[3]
@@ -123,7 +123,7 @@ def primary(tmp_path):
 
 
 def stage(root: Path, rel: str, text: str) -> None:
-    p = root / pl.STAGING_REL / rel
+    p = root / layout.STAGING_REL / rel
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(text)
 
@@ -154,7 +154,7 @@ def test_accepts_new_header_with_readme_and_tests(primary, fake):
     assert any("--target test_prims" in c for c in cmds)
     assert any(c.endswith("build-prims/test_prims") for c in cmds)
     # staged files are consumed
-    assert not (primary / pl.STAGING_REL / P / "ring_buffer.hpp").exists()
+    assert not (primary / layout.STAGING_REL / P / "ring_buffer.hpp").exists()
 
 
 def test_rejects_changed_existing_line(primary, fake):
@@ -193,7 +193,7 @@ def test_dependent_build_failure_restores(primary, fake):
     res = publish(primary, [f"{P}/existing.hpp"])
     assert not res["ok"] and "dependent" in res["error"]
     assert (primary / P / "existing.hpp").read_text() == EXISTING
-    assert not (primary / pl.PROVENANCE_REL).exists()
+    assert not (primary / layout.PROVENANCE_REL).exists()
 
 
 def test_rejects_missing_header_comment(primary, fake):
@@ -283,7 +283,7 @@ def test_build_failure_restores_backup(primary, fake):
     assert not (primary / P / "ring_buffer.hpp").exists()
     assert (primary / pl.README_REL).read_text() == README
     assert (primary / pl.TESTS_REL).read_text() == TESTS
-    assert not (primary / pl.PROVENANCE_REL).exists()
+    assert not (primary / layout.PROVENANCE_REL).exists()
 
 
 def test_test_failure_restores_backup(primary, fake):
@@ -347,7 +347,7 @@ def test_concurrent_publishers_serialise_on_readme_and_tests(primary, fake, tmp_
     for name in names:
         assert readme.count(f"| `{name}.hpp` |") == 1
         assert f'prims/{name}.hpp' in tests
-    assert len((primary / pl.PROVENANCE_REL).read_text().splitlines()) == len(names)
+    assert len((primary / layout.PROVENANCE_REL).read_text().splitlines()) == len(names)
 
 
 def test_refresh_prims_mirrors_primary(primary, tmp_path):
@@ -375,7 +375,7 @@ def test_write_policy_denies_direct_prims_writes(primary, rel, stage_name):
 
 
 def test_write_policy_allows_staging(primary):
-    ok, _ = write_allowed(primary, primary / pl.STAGING_REL / P / "new.hpp", query=5, stage="implementation",
+    ok, _ = write_allowed(primary, primary / layout.STAGING_REL / P / "new.hpp", query=5, stage="implementation",
                           write_paths=[])
     assert ok
 

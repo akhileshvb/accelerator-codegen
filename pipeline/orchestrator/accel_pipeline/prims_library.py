@@ -37,14 +37,13 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from accel_pipeline.gates.run import build_jobs, tail_marked
+from accel_pipeline.layout import PROVENANCE_REL, STAGING_REL, primary_root
 
 PRIMS_REL = "accelerators/prims"
 README_REL = f"{PRIMS_REL}/README.md"
 TESTS_REL = f"{PRIMS_REL}/tests/test_prims.cpp"
 # Include form of a primitive: "prims/<name>" (accelerators/ is an include root).
 INCLUDE_PREFIX = "prims"
-STAGING_REL = "pipeline/prims_staging"
-PROVENANCE_REL = "pipeline/prims_provenance.jsonl"
 LOCK_REL = "pipeline/.locks/prims.lock"
 CMAKE_SRC_REL = "pipeline/gates/prims_test"
 BUILD_DIR_NAME = "build-prims"
@@ -59,13 +58,6 @@ _SOURCE_SUFFIXES = (".cpp", ".cc", ".hpp", ".h")
 _RANDOM_RE = re.compile(r"mt19937|minstd|std::rand|\brng\b|random", re.I)
 MIN_TEST_LINES = 15
 
-DENY_MESSAGE = (
-    "the primitives library is shared by every worker and is changed only through the "
-    "primitive_publish tool: stage the candidate file(s) under "
-    f"{STAGING_REL}/<repo-relative path> (new header, full updated README.md, full updated "
-    "test_prims.cpp) and call primitive_publish(files, rationale). Additions only, generic only."
-)
-
 
 # ---------------------------------------------------------------- paths
 
@@ -73,15 +65,6 @@ def is_prims_path(rel: str) -> bool:
     """True for the files only primitive_publish may change."""
     rel = rel.replace("\\", "/").lstrip("./")
     return rel.startswith(PRIMS_REL + "/") or rel == PRIMS_REL or rel == TESTS_REL
-
-
-def is_staging_path(rel: str) -> bool:
-    return rel.replace("\\", "/").lstrip("./").startswith(STAGING_REL + "/")
-
-
-def primary_root(repo_root: Path) -> Path:
-    env = os.environ.get("ACCEL_PIPELINE_PRIMARY_REPO")
-    return Path(env).resolve() if env else Path(repo_root).resolve()
 
 
 def _norm_rel(path: str, repo_root: Path | None = None) -> str:

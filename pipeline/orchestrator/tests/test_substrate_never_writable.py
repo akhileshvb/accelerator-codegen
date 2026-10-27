@@ -130,7 +130,7 @@ def test_primitive_publish_cannot_write_substrate(tmp_path: Path):
     victim.write_text("// substrate\n", encoding="utf-8")
     for rel in ("substrate/aux/core/aux_types.hpp", "substrate/aux/core/new_prim.hpp"):
         assert not pl.is_prims_path(rel)
-        staged = root / pl.STAGING_REL / rel
+        staged = root / layout.STAGING_REL / rel
         staged.parent.mkdir(parents=True, exist_ok=True)
         staged.write_text("#pragma once\n", encoding="utf-8")
         res = pl.primitive_publish(root, [rel], "try to write the substrate", 6)

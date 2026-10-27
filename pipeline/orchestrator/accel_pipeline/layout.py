@@ -39,13 +39,6 @@ from pathlib import Path
 from typing import Any
 
 
-def _prims() -> Any:
-    """The primitives library, imported on use: it needs the gates, which need the config, which needs this module."""
-    from accel_pipeline import prims_library
-
-    return prims_library
-
-
 # ---- the layers -------------------------------------------------------------------------------
 
 SUBSTRATE = "substrate"
@@ -177,6 +170,25 @@ PROOFLIB_DENY = (
     "accelerators/prooflib/** changes only through the prooflib_publish tool "
     "(edit the workspace copy, then publish)"
 )
+
+STAGING_REL = "pipeline/prims_staging"  # where agents stage the candidates primitive_publish takes
+PROVENANCE_REL = "pipeline/prims_provenance.jsonl"  # what primitive_publish published, when
+PRIMS_DENY = (
+    "the primitives library is shared by every worker and is changed only through the "
+    "primitive_publish tool: stage the candidate file(s) under "
+    f"{STAGING_REL}/<repo-relative path> (new header, full updated README.md, full updated "
+    "test_prims.cpp) and call primitive_publish(files, rationale). Additions only, generic only."
+)
+
+
+def is_staging_path(rel: str) -> bool:
+    return rel.replace("\\", "/").lstrip("./").startswith(STAGING_REL + "/")
+
+
+def primary_root(repo_root: Path) -> Path:
+    """The checkout the shared libraries (prims, prooflib) live in: a pack worker's worktree names it."""
+    env = os.environ.get("ACCEL_PIPELINE_PRIMARY_REPO")
+    return Path(env).resolve() if env else Path(repo_root).resolve()
 
 
 _OPTIMIZATION_STAGES = frozenset(
@@ -311,7 +323,7 @@ def layer_write_verdict(
     if lay.kind == "workloads":
         return False, f"direct write denied: {rel}. {WORKLOADS_DENY}"
     if lay.kind == "prims":
-        return False, f"direct write denied: {rel}. {_prims().DENY_MESSAGE}"
+        return False, f"direct write denied: {rel}. {PRIMS_DENY}"
     if lay.kind == "prooflib":
         return False, f"direct write denied: {rel}. {PROOFLIB_DENY}"
     if lay.kind == "backend":
@@ -385,7 +397,7 @@ def write_allowed(
     )
     if verdict is not None:
         return verdict
-    if _prims().is_staging_path(rel):
+    if is_staging_path(rel):
         return True, "prims-staging"
 
     if is_owned_path(repo_root, path, query=query, benchmark=benchmark, engine=engine):
@@ -610,14 +622,13 @@ def tree_snapshot(repo_root: Path) -> dict[str, str] | None:
     return out
 
 
-def _unchecked_prefixes() -> tuple[str, ...]:
-    """Not the agents' to write by this policy but handled elsewhere (artifacts; frozen paths are restored by
-    frozen_restore; the codex home and run dirs are the pipeline's own)."""
-    return (
-        "pipeline/artifacts/", "pipeline/.codex/", "pipeline/verus_runs/", "pipeline/worktrees/",
-        "pipeline/.locks/", _prims().PROVENANCE_REL,
-        *(f if "." in f else f + "/" for f in FROZEN if f != SUBSTRATE),
-    )
+# Not the agents' to write by this policy but handled elsewhere (artifacts; frozen paths are restored by
+# frozen_restore; the codex home and run dirs are the pipeline's own).
+_UNCHECKED_PREFIXES = (
+    "pipeline/artifacts/", "pipeline/.codex/", "pipeline/verus_runs/", "pipeline/worktrees/",
+    "pipeline/.locks/", PROVENANCE_REL,
+    *(f if "." in f else f + "/" for f in FROZEN if f != SUBSTRATE),
+)
 
 
 def _published_since(started_at: float, *roots: Path) -> set[str]:
@@ -625,7 +636,7 @@ def _published_since(started_at: float, *roots: Path) -> set[str]:
     files: set[str] = set()
     for root in roots:
         try:
-            lines = (root / _prims().PROVENANCE_REL).read_text(encoding="utf-8").splitlines()
+            lines = (root / PROVENANCE_REL).read_text(encoding="utf-8").splitlines()
         except OSError:
             continue
         for line in lines:
@@ -640,7 +651,7 @@ def _published_since(started_at: float, *roots: Path) -> set[str]:
 
 def shared_tree_run(repo_root: Path) -> bool:
     """A concurrent pack worker on the primary checkout: other workers write the same tree."""
-    return bool(os.environ.get("ACCEL_PIPELINE_PACK_QUERIES")) and _prims().primary_root(repo_root) == Path(repo_root).resolve()
+    return bool(os.environ.get("ACCEL_PIPELINE_PACK_QUERIES")) and primary_root(repo_root) == Path(repo_root).resolve()
 
 
 class StageWriteCheck:
@@ -678,14 +689,14 @@ class StageWriteCheck:
         if after is None:
             return []
         changed = sorted(r for r, sig in after.items() if self.before.get(r) != sig)
-        prims = _published_since(self.started_at, _prims().primary_root(self.repo_root), self.repo_root)
+        prims = _published_since(self.started_at, primary_root(self.repo_root), self.repo_root)
         shared = shared_tree_run(self.repo_root)
         write_paths = list(getattr(self.cfg, "write_paths", None) or [])
         bench = str(getattr(self.cfg, "benchmark_name", "") or self.benchmark)
         runtime = self._runtime_prefixes()
         out: list[tuple[str, str]] = []
         for rel in changed:
-            if rel.startswith(_unchecked_prefixes() + runtime) or os.path.basename(rel).startswith(".sandbox_probe_"):
+            if rel.startswith(_UNCHECKED_PREFIXES + runtime) or os.path.basename(rel).startswith(".sandbox_probe_"):
                 continue
             lay = classify(rel)
             if rel in prims:
