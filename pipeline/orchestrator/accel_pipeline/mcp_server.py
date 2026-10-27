@@ -193,15 +193,15 @@ def build_mcp_tool_callables(
 
     def ask_advisor(question: str) -> str:
         """A stronger model reads this conversation and answers once (see the MCP tool's description)."""
-        from accel_pipeline import advisor
+        from accel_pipeline import repair as repair_mod
 
         cfg = pipeline_config.advisor
-        if advisor.scope(stage) not in advisor.ADVISED or cfg.max_consults_per_stage <= 0:
+        if repair_mod.scope(stage) not in repair_mod.ADVISED or cfg.max_consults_per_stage <= 0:
             return "No advice: the advisor is not available in this stage."
-        left = cfg.max_consults_per_stage - advisor.consults_used(art, stage)
+        left = cfg.max_consults_per_stage - repair_mod.consults_used(art, stage)
         if left <= 0:
             return f"No advice: advisor limit reached ({cfg.max_consults_per_stage} consults in this stage)."
-        advice = advisor.ask(art, question, min(cfg.timeout_sec + 30, 560))
+        advice = repair_mod.ask(art, question, min(cfg.timeout_sec + 30, 560))
         return f"{advice}\n\n[advisor consults left in this stage: {max(left - 1, 0)}]"
 
     def validate_analysis() -> str:

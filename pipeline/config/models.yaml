@@ -22,7 +22,7 @@ stage_providers:
   optimization_worker: codex_exec
   optimization_fix: codex_exec
   crash_debug: codex_exec
-  advisor: codex_exec   # forks the agent's session (accel_pipeline.advisor)
+  advisor: codex_exec   # forks the agent's session (accel_pipeline.repair)
   audit: codex_exec
   architecture_audit: codex_exec
   # Cheap per-layer critic (cheap_code via Codex exec + OpenRouter).

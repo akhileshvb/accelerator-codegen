@@ -79,7 +79,7 @@ class RepairConfig:
 
 @dataclass(frozen=True)
 class AdvisorConfig:
-    """A stronger model forks the stuck agent's session for a second opinion (accel_pipeline.advisor)."""
+    """A stronger model forks the stuck agent's session for a second opinion (accel_pipeline.repair)."""
 
     max_consults_per_stage: int = 4  # 0 disables the advisor
     stall_rounds: int = 2  # the same failure this many repair rounds in a row triggers an orchestrator consult

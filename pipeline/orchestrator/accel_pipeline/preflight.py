@@ -179,7 +179,7 @@ def _unlogged(probe: Probe):
 
 def mcp_server(probe: Probe) -> list[str]:
     """The server starts for each stage, serves its tools (and the advisor's), and answers parallel data calls (B6)."""
-    from accel_pipeline.advisor import READ_ONLY_TOOLS
+    from accel_pipeline.repair import READ_ONLY_TOOLS
     from accel_pipeline.engine_host import ensure_dataset_loaded
 
     if unreachable := ensure_dataset_loaded(probe.workload, probe.cfg.repo_root, probe.cfg.build_dir):

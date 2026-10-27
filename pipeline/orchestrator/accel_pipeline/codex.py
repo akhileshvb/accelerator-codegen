@@ -22,8 +22,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from accel_pipeline import advisor, session as session_mod
-from accel_pipeline.advisor import READ_ONLY_TOOLS
+from accel_pipeline import repair, session as session_mod
+from accel_pipeline.repair import READ_ONLY_TOOLS
 from accel_pipeline.config import ModelConfig, PipelineConfig, resolve_stage_provider
 from accel_pipeline.gates.run import TOOL_CALL_LIMIT_S
 from accel_pipeline.layout import StageWriteCheck, violation_message
@@ -551,11 +551,11 @@ class CodexExecBackend:
             return _Outcome(0 if reason == "exit_gate" else proc.returncode, out_path.read_text(errors="replace"),
                             err_path.read_text(errors="replace"), killed, reason, detail)
 
-    def _advisor_servicer(self) -> advisor.Servicer | None:
+    def _advisor_servicer(self) -> repair.Servicer | None:
         """Serves the agent's ask_advisor calls during its turn (stages with an artifact dir only)."""
         if self._art_dir is None or self._stage.startswith("verus_") or self._pipeline_config.advisor.max_consults_per_stage <= 0:
             return None
-        return advisor.Servicer(self._pipeline_config, self._model_config, self._workload_name, self._query, self._stage,
+        return repair.Servicer(self._pipeline_config, self._model_config, self._workload_name, self._query, self._stage,
                                 self._optimization_iter, self._art_dir)
 
     def _progress_clock(self, since: float) -> session_mod.ProgressClock | None:
