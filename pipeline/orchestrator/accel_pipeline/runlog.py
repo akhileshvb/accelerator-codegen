@@ -28,8 +28,6 @@ from accel_pipeline.verus.usage import cost_usd, session_usage
 from accel_pipeline.workload import load_workload, query_artifacts_dir
 
 STAGES = ("analysis", "test_suite", "implementation", "optimization", "audit")
-# stage names of older pipeline_state.json files
-STAGE_ALIASES = {"adversarial_tests": "test_suite"}
 
 
 @dataclass
@@ -50,7 +48,6 @@ class PipelineState:
         data = json.loads(path.read_text(encoding="utf-8"))
         known = {f.name for f in cls.__dataclass_fields__.values()}
         filtered = {k: v for k, v in data.items() if k in known}
-        filtered["stage"] = STAGE_ALIASES.get(filtered.get("stage", ""), filtered.get("stage", "analysis"))
         return cls(**filtered)
 
     def save(self, path: Path) -> None:

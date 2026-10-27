@@ -389,7 +389,7 @@
   "path": 3
  },
  "pipeline/orchestrator/tests/test_codex.py": {
-  "engine": 17,
+  "engine": 10,
   "target": 1
  },
  "pipeline/orchestrator/tests/test_digests.py": {
@@ -450,8 +450,8 @@
   "path": 1
  },
  "pipeline/orchestrator/tests/test_prims_library.py": {
-  "engine": 7,
-  "path": 6
+  "engine": 4,
+  "path": 3
  },
  "pipeline/orchestrator/tests/test_prompts.py": {
   "engine": 1
@@ -475,10 +475,10 @@
   "engine": 3
  },
  "pipeline/orchestrator/tests/test_structural_reanalysis.py": {
-  "engine": 9
+  "engine": 7
  },
  "pipeline/orchestrator/tests/test_substrate_never_writable.py": {
-  "engine": 3,
+  "engine": 1,
   "engine_branch": 1
  },
  "pipeline/orchestrator/tests/test_tsan_gate.py": {

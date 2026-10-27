@@ -37,11 +37,10 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from accel_pipeline.gates.run import build_jobs, tail_marked
-from accel_pipeline.layout import PROVENANCE_REL, STAGING_REL, primary_root
+from accel_pipeline.layout import PRIMS, PROVENANCE_REL, STAGING_REL, primary_root
 
-PRIMS_REL = "accelerators/prims"
-README_REL = f"{PRIMS_REL}/README.md"
-TESTS_REL = f"{PRIMS_REL}/tests/test_prims.cpp"
+README_REL = f"{PRIMS}/README.md"
+TESTS_REL = f"{PRIMS}/tests/test_prims.cpp"
 # Include form of a primitive: "prims/<name>" (accelerators/ is an include root).
 INCLUDE_PREFIX = "prims"
 LOCK_REL = "pipeline/.locks/prims.lock"
@@ -64,7 +63,7 @@ MIN_TEST_LINES = 15
 def is_prims_path(rel: str) -> bool:
     """True for the files only primitive_publish may change."""
     rel = rel.replace("\\", "/").lstrip("./")
-    return rel.startswith(PRIMS_REL + "/") or rel == PRIMS_REL or rel == TESTS_REL
+    return rel.startswith(PRIMS + "/") or rel == PRIMS or rel == TESTS_REL
 
 
 def _norm_rel(path: str, repo_root: Path | None = None) -> str:
@@ -131,19 +130,19 @@ def refresh_prims(primary: Path, worktree: Path) -> list[str]:
     if primary == worktree:
         return []
     changed: list[str] = []
-    src_dir, dst_dir = primary / PRIMS_REL, worktree / PRIMS_REL
+    src_dir, dst_dir = primary / PRIMS, worktree / PRIMS
     src_files = {p.relative_to(src_dir) for p in src_dir.rglob("*") if p.is_file()} if src_dir.is_dir() else set()
     for rel in sorted(src_files):
         dst = dst_dir / rel
         if not _same(src_dir / rel, dst):
             dst.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy(src_dir / rel, dst)
-            changed.append(f"{PRIMS_REL}/{rel}")
+            changed.append(f"{PRIMS}/{rel}")
     if dst_dir.is_dir():
         for p in sorted(dst_dir.rglob("*")):
             if p.is_file() and p.relative_to(dst_dir) not in src_files:
                 p.unlink()
-                changed.append(f"{PRIMS_REL}/{p.relative_to(dst_dir)} (removed)")
+                changed.append(f"{PRIMS}/{p.relative_to(dst_dir)} (removed)")
     src_t, dst_t = primary / TESTS_REL, worktree / TESTS_REL
     if src_t.is_file() and not _same(src_t, dst_t):
         dst_t.parent.mkdir(parents=True, exist_ok=True)
@@ -243,7 +242,7 @@ def _stem(header_name: str) -> str:
 def duplicate_of(primary: Path, name: str, purpose: str) -> str | None:
     """Name of a published header with the same name or a near-identical declared purpose."""
     mine = _words(purpose)
-    for path in sorted((primary / PRIMS_REL).glob("*.hpp")) + sorted((primary / PRIMS_REL).glob("*.h")):
+    for path in sorted((primary / PRIMS).glob("*.hpp")) + sorted((primary / PRIMS).glob("*.h")):
         if path.name == name:
             continue
         theirs = _words(header_fields(_read(path) or "").get("PURPOSE", ""))
@@ -418,9 +417,9 @@ def primitive_publish(
     rels: list[str] = []
     for f in files:
         rel = _norm_rel(f, repo_root)
-        ok_header = rel.startswith(PRIMS_REL + "/") and rel.endswith(_HEADER_SUFFIXES) and "/" not in rel[len(PRIMS_REL) + 1:]
+        ok_header = rel.startswith(PRIMS + "/") and rel.endswith(_HEADER_SUFFIXES) and "/" not in rel[len(PRIMS) + 1:]
         if not (ok_header or rel == TESTS_REL):
-            return _fail(f"not publishable: {f} (allowed: a new/extended header directly under {PRIMS_REL}/ and "
+            return _fail(f"not publishable: {f} (allowed: a new/extended header directly under {PRIMS}/ and "
                          f"{TESTS_REL}; the {README_REL} catalogue row is added by primitive_publish)")
         if rel not in rels:
             rels.append(rel)
@@ -438,7 +437,7 @@ def primitive_publish(
             base = _read(repo_root / rel) if repo_root != primary else cur
             merged, err = _merge3(cand, base, cur) if cur is not None else (cand, "")
             if merged is None:
-                return _fail(f"{rel}: {err}; re-copy the current file from {PRIMS_REL}/ into staging and re-apply your additions")
+                return _fail(f"{rel}: {err}; re-copy the current file from {PRIMS}/ into staging and re-apply your additions")
             old[rel] = cur
             final[rel] = merged
             if cur is not None and not additions_only(cur, merged):

@@ -13,7 +13,7 @@ from accel_pipeline import layout, prims_library as pl
 from accel_pipeline.layout import write_allowed
 
 REAL_ROOT = Path(__file__).resolve().parents[3]
-P = pl.PRIMS_REL
+P = layout.PRIMS
 
 EXISTING = """\
 #pragma once

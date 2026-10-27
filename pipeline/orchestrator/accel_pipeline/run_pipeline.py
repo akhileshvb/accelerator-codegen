@@ -13,7 +13,7 @@ from accel_pipeline.workload import workload_facts, apply_workload_overrides, lo
 from accel_pipeline.config import load_model_config, load_pipeline_config, load_repo_dotenv, find_repo_root
 from accel_pipeline.failure import Failure
 from accel_pipeline.repair import EXIT_STOPPED, REPAIR_STATE_FILE, RepairCtx, StageStopped, stop_stage
-from accel_pipeline.runlog import STAGE_ALIASES, STAGES, PipelineState, advance_stage, load_or_create, state_path
+from accel_pipeline.runlog import STAGES, PipelineState, advance_stage, load_or_create, state_path
 from accel_pipeline.stages import run_stage, stage_module
 from accel_pipeline.verus import STAGES as VERUS_STAGES
 from accel_pipeline.structural_reanalysis import process_after_stage
@@ -183,7 +183,6 @@ def _main(argv: list[str] | None = None) -> int:
         "--stage",
         choices=[
             *STAGES,
-            *STAGE_ALIASES,
             *VERUS_STAGES,
             "host_bootstrap",
             "validation",
@@ -224,7 +223,6 @@ def _main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--model", action="append", dest="models", default=[])
     args = parser.parse_args(argv)
-    args.stage = STAGE_ALIASES.get(args.stage, args.stage)
     if args.until and args.stage != "all":
         parser.error("--until applies to --stage all")
 

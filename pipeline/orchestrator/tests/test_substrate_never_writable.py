@@ -124,7 +124,7 @@ def test_shell_reads_of_substrate_stay_allowed(cmd: str):
 
 def test_primitive_publish_cannot_write_substrate(tmp_path: Path):
     root = tmp_path / "primary"
-    (root / pl.PRIMS_REL).mkdir(parents=True)
+    (root / layout.PRIMS).mkdir(parents=True)
     victim = root / "substrate/aux/core/aux_types.hpp"
     victim.parent.mkdir(parents=True)
     victim.write_text("// substrate\n", encoding="utf-8")
@@ -138,7 +138,7 @@ def test_primitive_publish_cannot_write_substrate(tmp_path: Path):
     assert victim.read_text(encoding="utf-8") == "// substrate\n"
     assert not (root / "substrate/aux/core/new_prim.hpp").exists()
     # what publish may write lies in accelerators/prims/ only
-    for rel in (pl.PRIMS_REL, pl.README_REL, pl.TESTS_REL):
+    for rel in (layout.PRIMS, pl.README_REL, pl.TESTS_REL):
         assert layout.classify(rel).kind == "prims", rel
 
 
