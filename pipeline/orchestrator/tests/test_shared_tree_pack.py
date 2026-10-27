@@ -1,67 +1,11 @@
-"""Tests for shared-file lease + pack isolation helpers."""
+"""Build-dir rewriting and write ownership for a worker on the shared tree."""
 
 from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
-from accel_pipeline.pack.run import parse_pack_queries
-from accel_pipeline.pack.shared_file_lease import (
-    SharedFileLease,
-)
-from accel_pipeline.pack.worker_isolation import apply_worker_isolation
 from accel_pipeline.mcp import reject_shared_build_dir_cmd, rewrite_command_build_dir
 from accel_pipeline.config import PipelineConfig
-
-
-def test_lease_blocks_second_holder(tmp_path: Path):
-    lease_a = SharedFileLease(tmp_path)
-    info = lease_a.acquire("q2", timeout_sec=1.0, reason="test")
-    assert info.holder == "q2"
-
-    lease_b = SharedFileLease(tmp_path)
-    with pytest.raises(TimeoutError):
-        lease_b.acquire("q5", timeout_sec=0.4, poll_sec=0.1)
-
-    assert lease_a.release("q2")
-    info2 = lease_b.acquire("q5", timeout_sec=1.0)
-    assert info2.holder == "q5"
-    lease_b.release("q5")
-
-
-def test_worker_isolation_rewrites_build_dir(tmp_path: Path, monkeypatch):
-    monkeypatch.delenv("ACCEL_PIPELINE_BUILD_DIR", raising=False)
-    monkeypatch.delenv("ACCEL_PIPELINE_CODEX_HOME", raising=False)
-    cfg = PipelineConfig(
-        repo_root=tmp_path,
-        pipeline_root=tmp_path / "pipeline",
-        build_dir=tmp_path / "build-release",
-        allowed_commands=[r"^cmake --build build-release( .*)?$"],
-    )
-    isolated = apply_worker_isolation(
-        cfg, query=2, workload_name="tpch_q2_aux", set_environ=False
-    )
-    assert isolated.worker_id == "tpch_q2_aux"
-    assert isolated.build_dir.name == "build-release-tpch_q2_aux"
-    assert any("build-release-tpch_q2_aux" in p for p in isolated.allowed_commands)
-    rewritten = rewrite_command_build_dir(
-        "cmake --build build-release --target benchmark_tpch_q2_aux", isolated
-    )
-    assert "build-release-tpch_q2_aux" in rewritten
-
-
-def test_pack_expands_queries_by_engine(tmp_path: Path):
-    pack = {
-        "engines": ["duckdb", "postgres"],
-        "queries": [1, {"query": 6, "engines": ["mysql"]}],
-    }
-    runs = [(q.query, q.engine, q.workload) for q in parse_pack_queries(pack)]
-    assert runs == [
-        (1, "duckdb", "tpch_q1_aux"),
-        (1, "postgres", "tpch_q1_aux"),
-        (6, "mysql", "tpch_q6_aux"),
-    ]
 
 
 def test_ensure_build_dir_retargets_source(tmp_path: Path, monkeypatch):

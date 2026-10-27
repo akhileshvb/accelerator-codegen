@@ -223,7 +223,7 @@ _engine_run() {
 	set_phase "run $1"
 	live="$(mktemp "${ACCEL_GATE_OUT:-${TMPDIR:-/tmp}/gate.json}.run.XXXXXX.log")"
 	[[ -z "${lease}" ]] ||
-		wrap=(env "PYTHONPATH=${ACCEL_PIPELINE_PYTHONPATH:-${GATE_ROOT}/pipeline/orchestrator}:${PYTHONPATH:-}" python3 -m accel_pipeline.pack.measurement_lease
+		wrap=(env "PYTHONPATH=${ACCEL_PIPELINE_PYTHONPATH:-${GATE_ROOT}/pipeline/orchestrator}:${PYTHONPATH:-}" python3 -m accel_pipeline.pack measure
 			--holder "${ACCEL_INSTANCE_TAG:-${ACCEL_PIPELINE_WORKER_ID:-w0}}" --reason "${lease}" --)
 	[[ -z "${ACCEL_RUN_CPUS:-}" ]] || pin=(taskset -c "${ACCEL_RUN_CPUS}")   # after the lease's own pinning: a wider set
 	"${wrap[@]}" "${pin[@]}" python3 "${RUN_OUTCOME}" run "${limit}" "${ACCEL_GATE_OUT:+${ACCEL_GATE_OUT%.json}.run.json}" "${1##*/}" -- \

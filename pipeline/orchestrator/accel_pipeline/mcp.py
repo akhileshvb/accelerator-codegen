@@ -93,7 +93,7 @@ from accel_pipeline.layout import (
 MODE_TOOLS = {
     "optimization": "accel_pipeline.optimization.tools",
     "engine_backend": "accel_pipeline.engine_backend",
-    "pack": "accel_pipeline.pack.tools",
+    "pack": "accel_pipeline.pack",
     "verus": "accel_pipeline.verus.tools",
 }
 
@@ -1035,7 +1035,7 @@ def make_shell_tools(ctx: ShellToolContext):
 
     def run_command(cmd: str, cwd: str | None = "", timeout: int | None = 600) -> str:
         """Run an allowlisted build/test command."""
-        from accel_pipeline.pack.shared_file_lease import (
+        from accel_pipeline.pack import (
             SharedFileLease,
             command_touches_shared_build,
             sticky_holder,
@@ -1066,7 +1066,7 @@ def make_shell_tools(ctx: ShellToolContext):
         # through cmake so shared TUs rebuild under the same critical section.
         # Otherwise acquire briefly for cmake configure/build.
         if command_touches_shared_build(effective_cmd):
-            from accel_pipeline.pack.shared_file_lease import sticky_lease_obj
+            from accel_pipeline.pack import sticky_lease_obj
 
             if sticky_holder() == holder and sticky_lease_obj() is not None:
                 sticky_lease_obj().ensure_held(holder, reason="cmake under sticky lease")

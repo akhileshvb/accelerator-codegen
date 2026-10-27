@@ -45,7 +45,7 @@ from accel_pipeline.config import (
 from accel_pipeline.data import prepare_host_sdk_payload
 from accel_pipeline.gates import GateResult, format_reloop_failure_sections
 from accel_pipeline.mcp import ToolContext, make_gate_tools
-from accel_pipeline.pack.engine_quarantine import apply_foreign_engine_quarantine, restore_quarantine
+from accel_pipeline.pack import apply_foreign_engine_quarantine, restore_quarantine
 from accel_pipeline.repair import (
     Failure,
     RepairCtx,

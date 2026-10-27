@@ -24,7 +24,7 @@ from accel_pipeline.config import (
 from accel_pipeline.optimization.kernel_snapshot import resolve_snapshot_paths
 from accel_pipeline.layout import query_dir
 from accel_pipeline.optimization.measurement import check_measurement
-from accel_pipeline.pack.measurement_lease import lease_note, noise_warning, run_measured
+from accel_pipeline.pack import lease_note, noise_warning, run_measured
 from accel_pipeline.optimization.checkpoint import load_best_valid_baseline
 from accel_pipeline.optimization.eval import aux_optimization_score, build_win, eval_config_from_pipeline, improvement_ratio
 from accel_pipeline.optimization.saturation import profile_guidance_error, record_trial_protocol
@@ -526,7 +526,7 @@ def make_ab_tools(ctx: AbToolContext):
         include_profile = bool(none_default(include_profile, True))
         acceptance = bool(none_default(acceptance, False))
         paths = resolve_workload_paths(ctx.pipeline_config, ctx.workload, ctx.query)
-        from accel_pipeline.pack.worker_isolation import ensure_private_dataset_db
+        from accel_pipeline.pack import ensure_private_dataset_db
 
         try:
             private_db = ensure_private_dataset_db(

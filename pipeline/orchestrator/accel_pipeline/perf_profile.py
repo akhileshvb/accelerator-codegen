@@ -27,9 +27,6 @@ import tempfile
 from pathlib import Path
 from typing import Any, Callable
 
-from accel_pipeline.pack.core_budget import host_lock_dir
-from accel_pipeline.pack.host_lock import FairLock
-
 PERF_BIN_ENV = "ACCEL_PERF_BIN"
 SAMPLE_HZ = 10000
 TOP_N = 15
@@ -198,6 +195,8 @@ def _run(runner: Runner, cmd: list[str], env: dict[str, str], cwd: Path | None) 
     locked-memory budget, and two concurrent sessions fail with "Permission error mapping pages"."""
     if "record" not in cmd:
         return runner(cmd, env=env, cwd=cwd, capture_output=True, text=True, check=False, timeout=PERF_TIMEOUT_SEC)
+    from accel_pipeline.pack import FairLock, host_lock_dir
+
     turn = FairLock(host_lock_dir(), "perf").acquire(timeout_sec=PERF_TIMEOUT_SEC)
     try:
         return runner(cmd, env=env, cwd=cwd, capture_output=True, text=True, check=False, timeout=PERF_TIMEOUT_SEC)

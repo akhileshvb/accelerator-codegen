@@ -1,46 +1,13 @@
-"""One run per query x engine: sibling-engine hiding and write ownership."""
+"""One run per query x engine: write ownership."""
 
 from __future__ import annotations
 
 from pathlib import Path
 
 from accel_pipeline.config import apply_workload_overrides, load_workload, load_pipeline_config
-from accel_pipeline.pack.engine_quarantine import (
-    apply_foreign_engine_quarantine,
-    foreign_trees_for_workload,
-    restore_quarantine,
-)
 from accel_pipeline.layout import owned_path_globs, write_allowed
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-
-
-def test_a_run_hides_the_querys_other_engines():
-    w = load_workload("tpch_q3_aux", REPO_ROOT, engine="postgres")
-    assert foreign_trees_for_workload(w) == [
-        "accelerators/tpch/q3/duckdb",
-        "pipeline/artifacts/tpch/q3/duckdb",
-        "accelerators/tpch/q3/mysql",
-        "pipeline/artifacts/tpch/q3/mysql",
-    ]
-
-
-def test_quarantine_moves_and_restores_sibling_trees(tmp_path: Path):
-    workload = {
-        "benchmark_name": "tpch",
-        "query_number": 3,
-        "engine_name": "postgres",
-        "engines": ["duckdb", "postgres"],
-    }
-    mine = tmp_path / "accelerators/tpch/q3/postgres/aux/module.cpp"
-    theirs = tmp_path / "accelerators/tpch/q3/duckdb/aux/module.cpp"
-    for path in (mine, theirs):
-        path.parent.mkdir(parents=True)
-        path.write_text("//", encoding="utf-8")
-    session = apply_foreign_engine_quarantine(tmp_path, workload)
-    assert mine.is_file() and not theirs.exists()
-    restore_quarantine(session)
-    assert mine.is_file() and theirs.is_file()
 
 
 def test_run_owns_only_its_engines_artifacts():

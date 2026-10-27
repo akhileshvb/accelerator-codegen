@@ -164,7 +164,7 @@ def advance_best_valid_baseline(
     # Worktree isolation: mirror accepted owned sources back to the primary tree
     # so the main checkout stays current for non-pack use / next pack reset.
     try:
-        from accel_pipeline.pack.worker_worktree import (
+        from accel_pipeline.pack import (
             primary_repo_root,
             sync_owned_to_primary,
             using_worktree_isolation,

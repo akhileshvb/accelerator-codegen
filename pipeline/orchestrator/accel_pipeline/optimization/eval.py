@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from accel_pipeline.gates import build_jobs
-from accel_pipeline.pack.measurement_lease import run_measured
+from accel_pipeline.pack import run_measured
 from accel_pipeline.optimization.aux_bench import summarize_sweep_rows
 from accel_pipeline.data import parse_aux_benchmark_output
 from accel_pipeline.optimization.base_bench import parse_benchmark_log
@@ -620,7 +620,7 @@ def run_single_benchmark(
 ) -> tuple[dict[str, Any] | None, str]:
     """Run one benchmark invocation; return (metrics, output_or_error)."""
     from accel_pipeline.config import query_artifacts_dir
-    from accel_pipeline.pack.worker_isolation import ensure_private_dataset_db
+    from accel_pipeline.pack import ensure_private_dataset_db
 
     paths = resolve_workload_paths(pipeline_config, workload, query)
     try:

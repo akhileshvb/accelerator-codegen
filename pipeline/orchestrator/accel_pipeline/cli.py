@@ -288,7 +288,7 @@ def _run_main(argv: list[str] | None = None) -> int:
     pipeline_config = apply_workload_overrides(pipeline_config, workload)
     # Concurrent pack workers: separate build dir + CODEX_HOME (+ optional worktree).
     if os.environ.get("ACCEL_PIPELINE_WORKER_ID") or os.environ.get("ACCEL_PIPELINE_BUILD_DIR"):
-        from accel_pipeline.pack.worker_isolation import apply_worker_isolation, isolation_summary
+        from accel_pipeline.pack import apply_worker_isolation, isolation_summary
 
         pipeline_config = apply_worker_isolation(
             pipeline_config,
@@ -299,7 +299,7 @@ def _run_main(argv: list[str] | None = None) -> int:
         print(f"worker isolation: {isolation_summary(pipeline_config)}", file=sys.stderr)
     repo_root = Path(pipeline_config.repo_root)
     if not args.dry_run:
-        from accel_pipeline.pack.core_budget import activate, format_cpus
+        from accel_pipeline.pack import activate, format_cpus
 
         budget = activate(pipeline_config.concurrency)
         print(f"core budget: cpus={format_cpus(budget.cpus)} measure={format_cpus(budget.measure) or '-'} slot={budget.slot}", file=sys.stderr)
@@ -353,7 +353,7 @@ def _run_main(argv: list[str] | None = None) -> int:
     # Worker worktrees are private, so the query's other engines can be hidden from the
     # agent (a shared tree would hide them from the sibling runs too).
     if repo_root != primary_root and not args.dry_run:
-        from accel_pipeline.pack.engine_quarantine import apply_foreign_engine_quarantine, restore_quarantine
+        from accel_pipeline.pack import apply_foreign_engine_quarantine, restore_quarantine
 
         atexit.register(restore_quarantine, apply_foreign_engine_quarantine(repo_root, workload))
 

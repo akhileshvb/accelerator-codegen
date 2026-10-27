@@ -887,9 +887,9 @@ def _engine_internal_sanitizer(text: str, workload: Mapping[str, Any], query: in
 
 
 def _queued_for_lease(text: str) -> bool:
-    from accel_pipeline.pack import measurement_lease
+    from accel_pipeline import pack
 
-    waited = measurement_lease.waited_seconds(text)
+    waited = pack.waited_seconds(text)
     return waited is not None and waited >= _QUEUED_SEC
 
 
@@ -901,13 +901,13 @@ def _loaded(repo_root: Path | None, load_factor: float, text: str = "") -> bool:
             return True
     except OSError:
         pass
-    from accel_pipeline.pack import measurement_lease
+    from accel_pipeline import pack
 
-    if _queued_for_lease(text) or measurement_lease.held_by_other(os.environ.get("ACCEL_INSTANCE_TAG", "")):
+    if _queued_for_lease(text) or pack.held_by_other(os.environ.get("ACCEL_INSTANCE_TAG", "")):
         return True
     if repo_root is None:
         return False
-    from accel_pipeline.pack.shared_file_lease import SharedFileLease, worker_id_from_env
+    from accel_pipeline.pack import SharedFileLease, worker_id_from_env
 
     holder = SharedFileLease(repo_root).holder()
     return holder is not None and holder != worker_id_from_env("")
@@ -923,7 +923,7 @@ def classify(
     load_factor: float = 1.5,
 ) -> tuple[str, str | None]:
     """(kind, infra_reason) of a failed gate: kind is "infra" or "code"."""
-    from accel_pipeline.pack import measurement_lease
+    from accel_pipeline import pack
 
     text = failure_text(data)
     if query is None and workload.get("query_number") is not None:
@@ -941,7 +941,7 @@ def classify(
         return "infra", shared
     if _engine_internal_sanitizer(text, workload, query, repo_root):
         return "infra", "engine_internal_sanitizer"
-    if measurement_lease.BUSY.search(text):
+    if pack.BUSY.search(text):
         return "infra", "measurement_lease_busy"
     if (_TIMEOUT.search(text) or _returncode(data) in _TIMEOUT_RC) and _loaded(repo_root, load_factor, text):
         return "infra", "timeout_under_load"
@@ -1008,7 +1008,7 @@ def classify_infra_failure(text: str, *, query: int) -> str | None:
 
 
 def release_shared_lease(repo_root: Path, *, query: int, worker_id: str | None = None) -> bool:
-    from accel_pipeline.pack.shared_file_lease import release_sticky_lease, worker_id_from_env
+    from accel_pipeline.pack import release_sticky_lease, worker_id_from_env
 
     holder = worker_id or worker_id_from_env(f"q{query}")
     return bool(release_sticky_lease(repo_root, holder=holder))

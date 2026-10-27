@@ -409,7 +409,7 @@ def load_pipeline_config(config_path: Path | None = None, repo_root: Path | None
     )
 
     if os.environ.get("ACCEL_PIPELINE_BUILD_DIR"):
-        from accel_pipeline.pack.worker_isolation import _rewrite_build_dir_patterns
+        from accel_pipeline.pack import _rewrite_build_dir_patterns
 
         build_dir = _under(root, os.environ["ACCEL_PIPELINE_BUILD_DIR"])
         cfg = replace(cfg, build_dir=build_dir,

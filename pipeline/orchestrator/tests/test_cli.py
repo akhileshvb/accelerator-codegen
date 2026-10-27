@@ -76,7 +76,7 @@ def test_until_stops_after_that_stage_and_resume_continues_with_the_next(tmp_pat
     monkeypatch.setattr("accel_pipeline.gates.prepare_inner_loop", lambda *a: None)
     monkeypatch.setattr("accel_pipeline.engine_backend.ensure_host_bootstrap_for_workload", lambda *a, **k: None)
     monkeypatch.setattr("accel_pipeline.engine_backend.reopen_engine_backend", lambda *a, **k: None)
-    monkeypatch.setattr("accel_pipeline.pack.core_budget.activate", lambda *a: type("B", (), {"cpus": (), "measure": (), "slot": 0})())
+    monkeypatch.setattr("accel_pipeline.pack.activate", lambda *a: type("B", (), {"cpus": (), "measure": (), "slot": 0})())
     monkeypatch.setattr(cli, "log_pipeline_summary", lambda *a: None)
     monkeypatch.setattr(cli, "_maybe_process_structural_reanalysis", lambda **k: None)
     monkeypatch.setattr(cli, "advance_stage", lambda state, root: (setattr(state, "stage", STAGES[STAGES.index(state.stage) + 1]), state.save(path)))

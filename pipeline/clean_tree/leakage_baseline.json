@@ -306,8 +306,9 @@
  "pipeline/orchestrator/accel_pipeline/optimization/runtime.py": {
   "engine": 2
  },
- "pipeline/orchestrator/accel_pipeline/pack/worker_isolation.py": {
-  "engine": 2
+ "pipeline/orchestrator/accel_pipeline/pack.py": {
+  "engine": 1,
+  "path": 1
  },
  "pipeline/orchestrator/accel_pipeline/prompts.py": {
   "path": 2,
@@ -398,8 +399,8 @@
   "target": 8
  },
  "pipeline/orchestrator/tests/test_engine_runs.py": {
-  "engine": 16,
-  "path": 5
+  "engine": 7,
+  "path": 1
  },
  "pipeline/orchestrator/tests/test_gates.py": {
   "engine": 5
@@ -425,6 +426,10 @@
   "engine": 1,
   "path": 1
  },
+ "pipeline/orchestrator/tests/test_pack.py": {
+  "engine": 14,
+  "path": 4
+ },
  "pipeline/orchestrator/tests/test_prims.py": {
   "engine": 4,
   "path": 3
@@ -437,7 +442,7 @@
   "engine": 1
  },
  "pipeline/orchestrator/tests/test_shared_tree_pack.py": {
-  "engine": 13,
+  "engine": 8,
   "path": 8
  },
  "pipeline/orchestrator/tests/test_stages.py": {

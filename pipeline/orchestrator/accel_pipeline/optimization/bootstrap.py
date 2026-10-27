@@ -85,7 +85,7 @@ def build_optimization_bootstrap(
         or BOOTSTRAP_MAX_CHARS_DEFAULT
     )
     sources = load_editable_sources(repo_root, edit_paths, max_lines_per_file=max_lines)
-    from accel_pipeline.pack.repo_context_pack import format_seed_pointer
+    from accel_pipeline.pack import format_seed_pointer
 
     # Prefer shared pack pointer over re-inlining the full peer aux index every attempt.
     pack_pointer = format_seed_pointer(repo_root, max_preview_lines=24)

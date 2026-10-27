@@ -15,7 +15,7 @@ from accel_pipeline.config import apply_workload_overrides, load_workload, load_
 from accel_pipeline.data import host_info
 from accel_pipeline.gates import build_gate_context
 from accel_pipeline.prompts import render_prompt
-from accel_pipeline.pack.run import parse_pack_queries
+from accel_pipeline.pack import parse_pack_queries
 from accel_pipeline.stages import materialize_workload_stubs, read_api_manifest
 
 REAL_PIPELINE = Path(__file__).resolve().parents[2]

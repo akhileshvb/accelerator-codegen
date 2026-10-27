@@ -154,7 +154,7 @@ def test_concurrent_sampling_sessions_take_turns(tmp_path, monkeypatch):
     import threading
     import time
 
-    monkeypatch.setattr(pp, "host_lock_dir", lambda: tmp_path)
+    monkeypatch.setattr("accel_pipeline.pack.host_lock_dir", lambda: tmp_path)
     active, overlaps = [], []
 
     def runner(cmd, **kwargs):

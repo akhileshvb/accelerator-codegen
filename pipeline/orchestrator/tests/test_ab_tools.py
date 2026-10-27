@@ -151,7 +151,7 @@ def _quick_benchmark_world(monkeypatch, tmp_path, rows):
         {"trial_id": "t", "reference_score": 1.0, "last_metrics": {"stale": True}, "last_score": 9.0}))
     paths = {"aux_bench_target": "bench", "dataset_db": "/d", "db_env_var": "X"}
     monkeypatch.setattr(ab_tools, "resolve_workload_paths", lambda cfg, wl, q: paths)
-    monkeypatch.setattr("accel_pipeline.pack.worker_isolation.ensure_private_dataset_db", lambda cfg, db, query: db)
+    monkeypatch.setattr("accel_pipeline.pack.ensure_private_dataset_db", lambda cfg, db, query: db)
     monkeypatch.setattr(ab_tools, "query_artifacts_dir", lambda root, q, workload=None: art)
     monkeypatch.setattr(ab_tools.subprocess, "run", lambda *a, **k: SimpleNamespace(returncode=0, stdout="", stderr=""))
     monkeypatch.setattr(ab_tools, "_run_aux_quick_sweep", lambda *a, **k: (rows, "out"))
