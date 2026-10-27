@@ -61,9 +61,9 @@ class Probe:
         """The command prefix of the agents' sandbox (empty when the run has none)."""
         if self.cfg.sandbox != "bwrap":
             return []
-        from accel_pipeline import sandbox
+        from accel_pipeline import agent
 
-        return sandbox.cpp_prefix(self.cfg)
+        return agent.cpp_prefix(self.cfg)
 
 
 Check = Callable[[Probe], list[str]]
@@ -93,7 +93,7 @@ def perf_counters(probe: Probe) -> list[str]:
 
 def _capture_argv(probe: Probe, stage: str) -> tuple[object, list[str]]:
     """(the backend, the `codex exec` command line it builds for `stage`), without starting codex."""
-    from accel_pipeline.codex import StageRunRequest, create_agent_backend, _Outcome
+    from accel_pipeline.agent import StageRunRequest, create_agent_backend, _Outcome
     from accel_pipeline.config import make_model_id
 
     backend = create_agent_backend(pipeline_config=probe.cfg, query=probe.query, stage=stage, model_config=probe.models,
@@ -197,7 +197,7 @@ def mcp_server(probe: Probe) -> list[str]:
 
 def _rollout_calls(backend, result, tool: str) -> bool:
     """The codex session of `result` holds a call of the MCP tool `tool`."""
-    from accel_pipeline.session import rollout_path
+    from accel_pipeline.agent import rollout_path
 
     sid = result.metadata.get("session_id")
     rollout = rollout_path(backend.codex_home(), sid) if sid else None
@@ -206,7 +206,7 @@ def _rollout_calls(backend, result, tool: str) -> bool:
 
 def live_models(probe: Probe) -> list[str]:
     """One tiny codex turn per model the run uses, calling one MCP tool: the model speaks Codex's tool-call format."""
-    from accel_pipeline.codex import StageRunRequest, create_agent_backend
+    from accel_pipeline.agent import StageRunRequest, create_agent_backend
     from accel_pipeline.config import make_model_id
     from accel_pipeline.runlog import STAGES
 

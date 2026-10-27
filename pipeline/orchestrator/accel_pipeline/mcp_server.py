@@ -16,7 +16,7 @@ from typing import Any, Callable, Literal
 from accel_pipeline.gates import tool_call_limit, profile_hot_spots
 from accel_pipeline.config import read_json
 from accel_pipeline.data import DataToolContext
-from accel_pipeline.session import record_check, keep_alive
+from accel_pipeline.agent import record_check, keep_alive
 from accel_pipeline.tools import mode_tools
 
 _ENGINE_BACKEND_STAGES = ("impl_", "critique_", "layer_critique", "validation", "architecture_audit", "host_bootstrap")
@@ -55,7 +55,7 @@ def _resolve_query(args: argparse.Namespace) -> int:
 def _budget_footer(pipeline_config, stage: str, query: int) -> str:
     """The wall-budget notice appended to every tool result (empty until a deadline is near); never fails a call."""
     try:
-        from accel_pipeline.session import budget_footer
+        from accel_pipeline.agent import budget_footer
 
         footer = budget_footer(pipeline_config, stage, query)
     except Exception:  # noqa: BLE001
@@ -185,7 +185,7 @@ def build_mcp_tool_callables(
 
     def report_blocker(summary: str, evidence: str) -> str:
         """The obstacle is outside your files: write blocker.md and end the turn."""
-        from accel_pipeline.session import write_blocker
+        from accel_pipeline.agent import write_blocker
 
         write_blocker(art, summary, evidence)
         return "Blocker recorded. Stop now; the orchestrator takes over. Do not continue working."

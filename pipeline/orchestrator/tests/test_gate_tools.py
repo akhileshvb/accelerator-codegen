@@ -65,18 +65,18 @@ def test_gate_status_reports_a_finished_gate_compactly_and_whether_it_is_stale(m
 
 
 def test_the_budget_footer_is_appended_after_a_blank_line(monkeypatch):
-    monkeypatch.setattr("accel_pipeline.session.budget_footer", lambda config, stage, query: "WRAP UP: checkpoint now")
+    monkeypatch.setattr("accel_pipeline.agent.budget_footer", lambda config, stage, query: "WRAP UP: checkpoint now")
     assert mcp_server._budget_footer(CONFIG, "optimization", 6) == "\n\nWRAP UP: checkpoint now"
 
 
 def test_an_empty_footer_adds_nothing_and_a_broken_one_never_fails_the_call(monkeypatch):
-    monkeypatch.setattr("accel_pipeline.session.budget_footer", lambda config, stage, query: "")
+    monkeypatch.setattr("accel_pipeline.agent.budget_footer", lambda config, stage, query: "")
     assert mcp_server._budget_footer(CONFIG, "s", 1) == ""
 
     def broken(config, stage, query):
         raise RuntimeError("no session")
 
-    monkeypatch.setattr("accel_pipeline.session.budget_footer", broken)
+    monkeypatch.setattr("accel_pipeline.agent.budget_footer", broken)
     assert mcp_server._budget_footer(CONFIG, "s", 1) == ""
 
 

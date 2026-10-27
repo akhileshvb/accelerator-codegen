@@ -26,7 +26,7 @@ from accel_pipeline.pack.engine_quarantine import apply_foreign_engine_quarantin
 from accel_pipeline.repair import Failure, render_failure, RepairCtx, run_with_repair
 from accel_pipeline.gates import format_reloop_failure_sections, GateResult
 from accel_pipeline.runlog import append_experiment_log
-from accel_pipeline.session import SessionStore
+from accel_pipeline.agent import SessionStore
 from accel_pipeline.stages.base import run_agent_stage, run_post_stage_gates_collect
 from accel_pipeline.engine_backend.architecture_audit import run_architecture_audit
 from accel_pipeline.engine_backend.layer_critique import (

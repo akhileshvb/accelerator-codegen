@@ -28,7 +28,6 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Callable, Literal, Mapping, TYPE_CHECKING, TypeVar
 
-from accel_pipeline import session as session_mod
 from accel_pipeline.config import (
     load_run_workload,
     make_model_id,
@@ -36,11 +35,12 @@ from accel_pipeline.config import (
     PipelineConfig,
     query_artifacts_dir,
     benchmark_of,
+    read_json,
 )
 from accel_pipeline.layout import query_dir, tree_snapshot
 from accel_pipeline.prompts import render_prompt
 from accel_pipeline.runlog import append_experiment_log, log_event
-from accel_pipeline.session import MAIN, SessionStore
+from accel_pipeline.agent import MAIN, READ_ONLY_TOOLS, SessionStore, write_json
 
 
 T = TypeVar("T")
@@ -57,8 +57,6 @@ ADVISOR_STAGE = "advisor"
 REQUEST_FILE = "advisor_request.json"
 RESPONSE_FILE = "advisor_response.json"
 COUNT_FILE = "advisor_consults.json"
-READ_ONLY_TOOLS = ["quick_check", "gate_status", "get_profile_digest", "get_store_diagnostics",
-                   "get_optimization_evidence", "discover_host_sdk"]
 MAX_ADVICE_CHARS = 6000
 ADVICE_INTRO = "A reviewer with your full context diagnosed:"
 ADVISED = frozenset({"implementation", "optimization", "crash_debug"})  # crash_debug: the repair turns of either
@@ -538,14 +536,14 @@ def scope(stage: str) -> str:
 
 
 def consults_used(art: Path, stage: str) -> int:
-    return int(session_mod._read(art / COUNT_FILE).get(scope(stage), 0))
+    return int(read_json(art / COUNT_FILE).get(scope(stage), 0))
 
 
 def _claim(art: Path, stage: str, cap: int) -> int:
     used = consults_used(art, stage)
     if used >= cap:
         raise Unavailable(f"advisor limit reached ({cap} consults in {scope(stage)})")
-    session_mod._write(art / COUNT_FILE, {**session_mod._read(art / COUNT_FILE), scope(stage): used + 1})
+    write_json(art / COUNT_FILE, {**read_json(art / COUNT_FILE), scope(stage): used + 1})
     return used + 1
 
 
@@ -582,7 +580,7 @@ def restore_tree(repo_root: Path, before: dict[str, str], saved: Path) -> list[s
 def consult(pipeline_config: Any, model_config: Any, workload_name: str, query: int, stage: str, *,
             question: str, trigger: str, optimization_iter: int = 0, session_id: str = "") -> str:
     """Fork the stage's main session on the advisor model and return its advice (raises Unavailable)."""
-    from accel_pipeline.codex import StageRunRequest, create_agent_backend  # codex imports this module
+    from accel_pipeline.agent import StageRunRequest, create_agent_backend  # codex imports this module
 
     cfg = pipeline_config.advisor
     if cfg.max_consults_per_stage <= 0:
@@ -631,10 +629,10 @@ def ask(art: Path, question: str, timeout_sec: float, poll_sec: float = 2.0) -> 
     """The `ask_advisor` tool: file a request and wait for the supervisor's answer."""
     request_id = uuid.uuid4().hex
     (art / RESPONSE_FILE).unlink(missing_ok=True)
-    session_mod._write(art / REQUEST_FILE, {"id": request_id, "question": question})
+    write_json(art / REQUEST_FILE, {"id": request_id, "question": question})
     deadline = time.monotonic() + timeout_sec
     while time.monotonic() < deadline:
-        response = session_mod._read(art / RESPONSE_FILE)
+        response = read_json(art / RESPONSE_FILE)
         if response.get("id") == request_id:
             return str(response.get("advice") or f"No advice: {response.get('reason', 'unavailable')}.")
         time.sleep(poll_sec)
@@ -654,7 +652,7 @@ class Servicer:
         (art / REQUEST_FILE).unlink(missing_ok=True)  # a request left by an earlier turn is nobody's
 
     def poll(self, live_session_id: str = "") -> None:
-        request = session_mod._read(self._art / REQUEST_FILE)
+        request = read_json(self._art / REQUEST_FILE)
         if not request or request.get("id") == self._served or (self._thread and self._thread.is_alive()):
             return
         self._served = str(request.get("id"))
@@ -674,7 +672,7 @@ class Servicer:
             response["reason"] = str(exc)
         except Exception as exc:  # noqa: BLE001 - the agent's turn goes on without advice
             response["reason"] = f"{type(exc).__name__}: {exc}"
-        session_mod._write(self._art / RESPONSE_FILE, response)
+        write_json(self._art / RESPONSE_FILE, response)
         (self._art / REQUEST_FILE).unlink(missing_ok=True)
 
 

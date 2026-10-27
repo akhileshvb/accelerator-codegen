@@ -22,7 +22,7 @@ from accel_pipeline.repair import (
 )
 from accel_pipeline.layout import query_dir
 from accel_pipeline.runlog import append_experiment_log
-from accel_pipeline.session import READONLY
+from accel_pipeline.agent import READONLY
 from accel_pipeline.stages.base import run_agent_stage, workload_post_audit_gates
 
 AUDIT_TASK = (

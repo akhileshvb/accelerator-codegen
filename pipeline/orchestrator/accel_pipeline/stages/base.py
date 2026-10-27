@@ -7,7 +7,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any, Callable
 
-from accel_pipeline.codex import StageRunRequest, create_agent_backend
+from accel_pipeline.agent import StageRunRequest, create_agent_backend
 from accel_pipeline.config import (
     ModelConfig,
     PipelineConfig,
@@ -20,7 +20,7 @@ from accel_pipeline.gates import GateResult, run_gate, reusable_gate_result
 from accel_pipeline.repair import (
     AGENT_BLOCKER, PROVIDER_CREDITS, PROVIDER_FLAKE, Failure, StageFailure, is_out_of_credits, is_transient_provider_failure,
 )
-from accel_pipeline.session import REDIRECT, run_in_session
+from accel_pipeline.agent import REDIRECT, run_in_session
 from accel_pipeline.runlog import (
     log_gate_batch_start,
     log_stage_complete,

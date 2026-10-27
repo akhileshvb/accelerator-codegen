@@ -167,12 +167,12 @@ def _run_stage(
 
 def _sandbox_preflight(pipeline_config, query: int) -> None:
     """Stop at run start when the agents' bwrap sandbox is unavailable or does not hold."""
-    from accel_pipeline import sandbox
+    from accel_pipeline import agent
 
     if not shutil.which("bwrap"):
         raise SystemExit("sandbox: bwrap is selected but bubblewrap is not installed "
                          "(install it, or set sandbox: none in pipeline/config/default.yaml)")
-    check = sandbox.cpp_selfcheck(pipeline_config, query)
+    check = agent.cpp_selfcheck(pipeline_config, query)
     print(f"sandbox (bwrap) selfcheck: {'ok' if check['ok'] else check['problems']}", file=sys.stderr)
     if not check["ok"]:
         raise SystemExit(f"agent sandbox selfcheck failed: {check['problems']}")
@@ -300,7 +300,7 @@ def _main(argv: list[str] | None = None) -> int:
 
     mode = args.mode or str(workload.get("mode") or "cpp")
     if not args.dry_run:
-        from accel_pipeline.session import clear_stale_run
+        from accel_pipeline.agent import clear_stale_run
         clear_stale_run(query_artifacts_dir(repo_root, query, workload=workload))
     if mode == "cpp" and not args.dry_run and pipeline_config.sandbox == "bwrap":
         _sandbox_preflight(pipeline_config, query)

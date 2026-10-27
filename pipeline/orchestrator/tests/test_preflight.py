@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from accel_pipeline import preflight
-from accel_pipeline.codex import CodexExecBackend
+from accel_pipeline.agent import CodexExecBackend
 from accel_pipeline.config import (
     load_model_config,
     load_pipeline_config,

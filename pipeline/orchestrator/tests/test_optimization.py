@@ -160,7 +160,7 @@ def test_structural_attempt_never_gets_keep_explore():
     )
     assert outcome.verdict != "keep_explore"
 def test_frozen_edit_notice_names_the_edited_pipeline_file(tmp_path):
-    from accel_pipeline.session import _frozen_edit_notice
+    from accel_pipeline.agent import _frozen_edit_notice
 
     def git(*args):
         subprocess.run(["git", "-C", str(tmp_path), *args], check=True, capture_output=True)

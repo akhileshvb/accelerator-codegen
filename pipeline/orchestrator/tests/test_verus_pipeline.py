@@ -153,7 +153,7 @@ def test_json_block_takes_the_last_fence() -> None:
 def test_codex_session_id_from_banner_or_log(tmp_path: Path) -> None:
     import time as _time
 
-    from accel_pipeline.codex import CodexExecBackend
+    from accel_pipeline.agent import CodexExecBackend
 
     sid = "01a0fdce-14e4-71c1-acd6-2e3ad015fbd8"
     assert CodexExecBackend._session_id(f"workdir: /x\nsession id: {sid}\n", None, 0) == sid

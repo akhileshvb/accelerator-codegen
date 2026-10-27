@@ -31,8 +31,8 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from accel_pipeline import sandbox as shared
-from accel_pipeline.sandbox import HOME, READONLY_LAYERS
+from accel_pipeline import agent as shared
+from accel_pipeline.agent import HOME, READONLY_LAYERS
 from accel_pipeline.verus.context import VerusContext
 
 

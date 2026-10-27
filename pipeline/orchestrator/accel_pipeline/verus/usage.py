@@ -23,7 +23,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from accel_pipeline.session import rollout_path
+from accel_pipeline.agent import rollout_path
 
 _PRICES_URL = "https://openrouter.ai/api/v1/models"
 _PRICES_CACHE = Path.home() / ".cache" / "accel_verus" / "openrouter_prices.json"

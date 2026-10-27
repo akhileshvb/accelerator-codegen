@@ -135,7 +135,7 @@ class AdvisorConfig:
 
 @dataclass(frozen=True)
 class NoProgressConfig:
-    """Seconds an agent may go without real progress (accel_pipeline.session) before the
+    """Seconds an agent may go without real progress (accel_pipeline.agent) before the
     footer asks it to state its blocker (nudge) and before its turn is ended with a directed
     resume (redirect); 0 disables. `stages` maps a stage to its own nudge_sec / redirect_sec."""
 
@@ -160,7 +160,7 @@ class DataToolsConfig:
 
 @dataclass(frozen=True)
 class SessionConfig:
-    """One codex session per role (accel_pipeline/session.py) and the wall budgets of an agent run."""
+    """One codex session per role (accel_pipeline/agent.py) and the wall budgets of an agent run."""
 
     continuity: bool = True
     soft_deadline_sec: int = 5400  # MCP tool results start asking the agent to wrap up
@@ -269,7 +269,7 @@ class PipelineConfig:
     workload_kind: str = ""
     engine_name: str = ""
     benchmark_name: str = ""
-    # The OS sandbox of every C++-mode agent step (accel_pipeline.sandbox); `none` runs codex unsandboxed.
+    # The OS sandbox of every C++-mode agent step (accel_pipeline.agent); `none` runs codex unsandboxed.
     sandbox: str = "bwrap"
     sandbox_extra_ro: list[str] = field(default_factory=list)  # more host paths for the sandbox, absolute
     sandbox_extra_rw: list[str] = field(default_factory=list)
@@ -1161,12 +1161,12 @@ def load_query_analysis(
 
 
 def read_json(path: Path) -> dict[str, Any]:
-    if not path.is_file():
-        return {}
+    """The JSON object in `path`; {} when it is missing, unreadable or not an object."""
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
         return {}
+    return data if isinstance(data, dict) else {}
 
 
 # ---- facts of the query's SQL ------------------------------------------------------------------

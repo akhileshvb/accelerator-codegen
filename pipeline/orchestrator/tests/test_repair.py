@@ -9,11 +9,11 @@ from pathlib import Path
 import pytest
 
 from accel_pipeline import repair as repair_mod
-from accel_pipeline.codex import CodexExecBackend, StageRunResult
+from accel_pipeline.agent import CodexExecBackend, StageRunResult
 from accel_pipeline.config import AdvisorConfig, ModelConfig, PipelineConfig, RepairConfig, SessionConfig
 from accel_pipeline.gates import GateResult
 from accel_pipeline.repair import Failure, RepairCtx, run_with_repair, StageFailure, StageStopped
-from accel_pipeline.session import MAIN, SessionStore
+from accel_pipeline.agent import MAIN, SessionStore
 
 
 FAKE_CODEX = Path(__file__).parent / "fixtures" / "fake_codex.sh"
@@ -298,7 +298,7 @@ def _stage_world(tmp_path, monkeypatch, mode="ok"):
 
 
 def _implement(world):
-    from accel_pipeline.session import MAIN
+    from accel_pipeline.agent import MAIN
     from accel_pipeline.stages.base import run_agent_stage
 
     return lambda: run_agent_stage(
@@ -471,7 +471,7 @@ class AdvisorWorld:
         monkeypatch.setattr(repair_mod, "load_run_workload", lambda cfg, name: workload)
         monkeypatch.setattr(repair_mod, "make_model_id", lambda *a, **k: "advisor/model")
         monkeypatch.setattr(repair_mod, "render_prompt", lambda *a, **k: "ADVISOR INSTRUCTIONS")
-        monkeypatch.setattr("accel_pipeline.codex.create_agent_backend", lambda **k: self.backend(**k))
+        monkeypatch.setattr("accel_pipeline.agent.create_agent_backend", lambda **k: self.backend(**k))
         self.created = []
 
     def backend(self, **kwargs):
@@ -508,7 +508,7 @@ def fork_backend(tmp_path, monkeypatch, art=True):
 
 
 def test_the_fork_command_forks_the_session_on_the_advisor_model(tmp_path, monkeypatch):
-    from accel_pipeline.codex import StageRunRequest
+    from accel_pipeline.agent import StageRunRequest
 
     request = StageRunRequest(stage="advisor", instructions="INSTR", user_message="why?", agent_name="a",
                               model_id="adv/model", agent_model="adv/model", metadata={"fork_session_id": SID})
@@ -526,7 +526,7 @@ def test_the_fork_command_forks_the_session_on_the_advisor_model(tmp_path, monke
 
 def test_a_fork_never_serves_advisor_requests_or_marks_the_agent_run(tmp_path, monkeypatch):
     backend = fork_backend(tmp_path, monkeypatch)
-    from accel_pipeline.codex import StageRunRequest
+    from accel_pipeline.agent import StageRunRequest
 
     (tmp_path / "art").mkdir()
     (tmp_path / "art" / "agent_run.json").write_text("{}")

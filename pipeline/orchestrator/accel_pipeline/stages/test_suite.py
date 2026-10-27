@@ -23,7 +23,7 @@ from accel_pipeline.config import (
 from accel_pipeline.repair import render_failure, RepairCtx, run_with_repair
 from accel_pipeline.runlog import append_experiment_log
 from accel_pipeline.scaffold_stubs import materialize_registration
-from accel_pipeline.session import TESTER
+from accel_pipeline.agent import TESTER
 from accel_pipeline.stages.base import run_agent_stage
 
 STAGE = "test_suite"

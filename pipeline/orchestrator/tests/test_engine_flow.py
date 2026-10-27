@@ -10,12 +10,12 @@ from pathlib import Path
 
 import pytest
 
-from accel_pipeline import repair as repair_mod, session as session_mod
-from accel_pipeline.codex import StageRunRequest, StageRunResult
+from accel_pipeline import repair as repair_mod, agent as session_mod
+from accel_pipeline.agent import StageRunRequest, StageRunResult
 from accel_pipeline.config import load_model_config, load_pipeline_config, load_workload
 from accel_pipeline.repair import StageFailure, Failure, StageStopped
 from accel_pipeline.gates import GateResult
-from accel_pipeline.session import run_in_session
+from accel_pipeline.agent import run_in_session
 from accel_pipeline.engine_backend import stage as eb
 from accel_pipeline.engine_backend.progress import Progress
 

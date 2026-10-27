@@ -17,7 +17,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from accel_pipeline.codex import ensure_codex_config
+from accel_pipeline.agent import ensure_codex_config
 from accel_pipeline.config import PipelineConfig
 
 
