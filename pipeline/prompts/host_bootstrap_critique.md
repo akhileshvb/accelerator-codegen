@@ -38,6 +38,9 @@ write the two files (heredoc `cat > …`) and **stop**.
 Fail if later per-query accelerators cannot be validated or measured with these
 harnesses even though everything built. Typical holes:
 
+- The differential ignores the frozen suite (`ACCEL_SUITE_DIR`: its tuples and `txns/`) or the `ACCEL_ADV_*`
+  limits; a harness fails when a write leaves the answer unchanged instead of taking invalidating writes; a
+  harness opens a dataset or test fixture for writing instead of its own copy
 - A harness is a stub: `--help` and an empty `main`, a comparison that cannot
   fail, no writes in the differential, readers and the writer on one connection
 - The differential compares the accelerator with itself or with pinned results
