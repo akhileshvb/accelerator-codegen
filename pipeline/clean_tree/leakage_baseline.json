@@ -713,5 +713,14 @@
  },
  "workloads/tpch/test_db_subset.sql": {
   "engine": 2
+ },
+ "eval/tests/make_test_db.cpp": {
+  "engine": 7
+ },
+ "pipeline/config/workloads/kestrel_q1_aux.yaml": {
+  "engine": 1
+ },
+ "scripts/make_kestrel_dataset.py": {
+  "engine": 5
  }
 }
