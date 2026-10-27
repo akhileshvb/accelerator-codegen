@@ -421,6 +421,16 @@ def test_a_recorded_harness_defect_goes_to_host_bootstrap_before_the_next_check(
     assert repair_mod.revise_upstream(ctx) and bootstraps == ["toyengine"]
 
 
+def test_a_harness_defect_a_gate_finds_goes_to_host_bootstrap_without_an_agent_round(world, monkeypatch):
+    reported, revisions = [], [True]
+    monkeypatch.setattr(repair_mod, "report_harness_defect", lambda ctx, failure: reported.append(failure.source))
+    monkeypatch.setattr(repair_mod, "revise_upstream", lambda ctx: revisions.pop(0) if revisions else False)
+    failed = GateResult("test_suite_validate", "fail", {"reason": "wrote no suite report", "owner": "harness"})
+    world.gate_script = [([failed], failed)]
+    run_with_repair(world.ctx(), lambda: None, gates=["test_suite_validate"])
+    assert reported == ["gate:test_suite_validate"] and revisions == [] and world.agent_messages == []
+
+
 def test_test_data_that_does_not_load_stops_the_stage_without_a_repair_round(world):
     load = "[host.sh up] rc=0\n[host.sh load workloads/toybench/schema.sql] rc=1\nConstraint Error: violates foreign key"
     world.gate_script = [gate_fail(text=load)]

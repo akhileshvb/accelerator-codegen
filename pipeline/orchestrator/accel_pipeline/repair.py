@@ -36,6 +36,7 @@ from accel_pipeline.config import (
     query_artifacts_dir,
     benchmark_of,
     read_json,
+    sanitize_engine_name,
 )
 from accel_pipeline.data import pending_change_request
 from accel_pipeline.layout import query_dir, tree_snapshot
@@ -147,6 +148,13 @@ def run_with_repair(ctx: RepairCtx, attempt: Callable[[], T], *, gates: list[str
             failure = replace(failure, kind="code", infra_reason=None)  # nothing left to check: the agent adapts
         if failure.infra_reason == PROVIDER_CREDITS:
             raise stop_stage(ctx, failure, failure.summary)
+        if failure.infra_reason == HARNESS_DEFECT:
+            if ctx.stage != "host_bootstrap":
+                report_harness_defect(ctx, failure)
+            if upstream_left > 0 and revise_upstream(ctx):
+                upstream_left -= 1
+                continue
+            raise stop_stage(ctx, failure, "the workload harness is wrong and host_bootstrap did not fix it")
         if failure.infra_reason == TEST_DATA_LOAD:
             raise stop_stage(ctx, failure, "the workload's test data does not load into the engine: fix the dataset, "
                              "the schema or the test cut, then `--resume`")
@@ -420,6 +428,16 @@ def repair_turn(ctx: RepairCtx, failure: Failure, *, must_change: bool | None = 
             ctx.log(f"the repair turn raised {type(exc).__name__}: {exc}; the next check judges the tree")
         return None
     return None
+
+
+def report_harness_defect(ctx: RepairCtx, failure: Failure) -> None:
+    """Record a gate's finding against the workload harness as a request to host_bootstrap."""
+    from accel_pipeline.engine_backend import record
+
+    if engine := str(ctx.workload.get("engine_name") or ""):
+        record(ctx.pipeline_config.repo_root, sanitize_engine_name(engine), {
+            "benchmark": str(ctx.workload.get("benchmark_name") or ""), "query": ctx.query, "scope": "harness",
+            "helper": failure.source, "reason": render_failure(failure)})
 
 
 def revise_upstream(ctx: RepairCtx) -> bool:
@@ -698,6 +716,7 @@ PROVIDER_FLAKE = "provider_flake"  # the infra_reason of a network or provider e
 AGENT_BLOCKER = "agent_reported_blocker"  # the infra_reason of a blocker the agent handed to the operator
 TEST_DATA_LOAD = "test_data_load"  # the engine rejected the workload's data before any build: no agent can fix it
 PROVIDER_CREDITS = "provider_out_of_credits"  # the infra_reason of a 402 from the provider: retrying cannot help
+HARNESS_DEFECT = "harness_defect"  # a gate found the workload harness wrong: host_bootstrap fixes it
 HARNESS_MISSING = "harness_missing"  # a harness target host_bootstrap should have made is not there: its stage, not this one
 FailureKind = Literal["code", "infra", "timeout", "measurement", "orchestrator"]
 
@@ -940,6 +959,8 @@ def classify(
     """(kind, infra_reason) of a failed gate: kind is "infra" or "code"."""
     from accel_pipeline import pack
 
+    if data.get("owner") == "harness":  # the gate itself found the workload harness wrong
+        return "infra", HARNESS_DEFECT
     text = failure_text(data)
     if query is None and workload.get("query_number") is not None:
         query = int(workload["query_number"])

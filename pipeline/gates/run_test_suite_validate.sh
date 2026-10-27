@@ -23,6 +23,10 @@ suite_prepare validate "${JSON}" test_suite_validate
 engine_ready "${DIFF_BINARY}" || fail "${ENGINE_FAIL}" "${ENGINE_LOG}"
 engine_run "${DIFF_BINARY}" "${QUERY}"
 suite_extras run_test_suite_validate.sh
+if [[ ! -s "${ACCEL_SUITE_REPORT}" && ${RC} -eq 0 ]]; then  # the harness ran and ignored the suite: host_bootstrap's
+	emit_result "${JSON}" test_suite_validate fail "the differential harness passed but wrote no suite report: it does not \
+consume ACCEL_SUITE_* (the harness contract)" "${ENGINE_LOG}${LOG}" "owner=harness" "${SUITE_EXTRAS[@]}"
+fi
 [[ -s "${ACCEL_SUITE_REPORT}" ]] || fail "the suite does not run on plain SQL (exit ${RC})" "${ENGINE_LOG}${LOG}"
 PROBLEMS="$(python3 "${SUITE_GATE}" "${ROOT}" validate "${ACCEL_SUITE_REPORT}")" ||
 	fail "the suite does not pass validation:"$'\n'"${PROBLEMS}" "${ENGINE_LOG}${LOG}"
