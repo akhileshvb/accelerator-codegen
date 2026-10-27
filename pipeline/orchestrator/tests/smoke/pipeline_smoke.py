@@ -107,12 +107,20 @@ def check_tools() -> None:
 # ---------------------------------------------------------------- the clean tree
 
 def make_base(rev: str, engine: str, workload: dict, env: dict[str, str], dest: Path) -> None:
-    """The clean tree of `rev` plus the engine's reference backend and the harness sources it builds with (the
-    fixtures list them; the build names any that are still missing), committed as the one baseline commit."""
+    """The clean tree of `rev` plus the engine's reference backend without its workload harnesses, which host_bootstrap
+    writes as it does on a clean tree (the build names any other source the backend still needs), committed as the
+    one baseline commit."""
+    from accel_pipeline import layout
+
     run(["bash", str(SOURCE_ROOT / "pipeline/clean_tree/make_clean_tree.sh"), str(SOURCE_ROOT), str(dest), rev])
     sources = [p.format(engine=engine) for p in read_fixture("engines", f"{engine}.json")["base_sources"]
                + workload.get("base_sources", [])]
     git_archive(rev, sources, dest)
+    for harness in (dest / glob.removesuffix("/**") for glob in layout.harness_globs(engine)):
+        if harness.is_dir():
+            shutil.rmtree(harness)
+        else:
+            harness.unlink(missing_ok=True)
     probe = dest / workload["registration_probe"].format(engine=engine)  # a registration makes the build ask for the per-query sources
     probe.parent.mkdir(parents=True)
     probe.touch()
