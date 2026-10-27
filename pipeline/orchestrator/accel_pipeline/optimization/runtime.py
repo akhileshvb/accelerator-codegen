@@ -17,8 +17,8 @@ from accel_pipeline.workload import (
     resolve_workload_paths,
     load_query_analysis,
     query_artifacts_dir,
+    read_json,
 )
-from accel_pipeline.jsonio import read_json
 from accel_pipeline.optimization.kernel_hot_path_review import (
     analyze_kernel_source,
     format_kernel_review_for_prompt,

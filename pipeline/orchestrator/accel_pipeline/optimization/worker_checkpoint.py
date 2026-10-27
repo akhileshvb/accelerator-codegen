@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from accel_pipeline.jsonio import read_json
+from accel_pipeline.workload import read_json
 from accel_pipeline.optimization.checkpoint import load_experimental_branch
 from accel_pipeline.optimization.pending import PendingFeedback
 

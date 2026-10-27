@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from accel_pipeline.jsonio import read_json
+from accel_pipeline.workload import read_json
 
 SCOREBOARD_FILE = "optimization_scoreboard.json"
 

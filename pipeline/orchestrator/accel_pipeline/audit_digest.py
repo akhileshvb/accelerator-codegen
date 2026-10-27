@@ -14,8 +14,7 @@ from typing import Any
 from accel_pipeline.analysis_context import analysis_for_audit
 from accel_pipeline.gates.build_stamp import git, is_relevant
 from accel_pipeline.config import PipelineConfig
-from accel_pipeline.workload import analysis_artifact_path, gates_dir_for_query, query_artifacts_dir
-from accel_pipeline.jsonio import read_json
+from accel_pipeline.workload import analysis_artifact_path, gates_dir_for_query, query_artifacts_dir, read_json
 from accel_pipeline.layout import query_dir as query_dir_of
 
 IMPLEMENTATION_BASE_FILE = "implementation_base.txt"

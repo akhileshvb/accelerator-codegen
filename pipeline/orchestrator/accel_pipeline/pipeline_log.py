@@ -9,7 +9,6 @@ from pathlib import Path
 from typing import Any
 
 from accel_pipeline.workload import query_artifacts_dir
-from accel_pipeline.textutil import squeeze_truncate
 
 
 def events_path(repo_root: Path, query: int, workload: dict[str, Any] | None) -> Path:
@@ -833,3 +832,10 @@ def _format_line(payload: dict[str, Any]) -> str:
         )
     parts = [f"{k}={v}" for k, v in payload.items() if k not in {"ts", "event"}]
     return f"[pipeline] {event}: " + " ".join(parts)
+
+
+def squeeze_truncate(text: str, max_chars: int) -> str:
+    compact = " ".join(str(text).split())
+    if len(compact) <= max_chars:
+        return compact
+    return compact[: max_chars - 3] + "..."

@@ -21,9 +21,9 @@ from accel_pipeline.workload import (
     analysis_artifact_path,
     load_query_analysis,
     query_artifacts_dir,
+    read_json,
 )
 from accel_pipeline.failure import Failure, StageFailure, is_transient_provider_failure
-from accel_pipeline.jsonio import read_json
 from accel_pipeline.optimization.kernel_hot_path_review import analyze_kernel_source
 from accel_pipeline.optimization.bootstrap import build_optimization_bootstrap, save_optimization_bootstrap
 from accel_pipeline.optimization.checkpoint import (

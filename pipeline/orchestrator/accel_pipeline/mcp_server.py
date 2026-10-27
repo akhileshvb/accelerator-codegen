@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any, Callable, Literal
 
 from accel_pipeline.gates.run import tool_call_limit
-from accel_pipeline.jsonio import read_json
+from accel_pipeline.workload import read_json
 from accel_pipeline.no_progress import record_check
 from accel_pipeline.quick import profile_hot_spots
 from accel_pipeline.session import keep_alive

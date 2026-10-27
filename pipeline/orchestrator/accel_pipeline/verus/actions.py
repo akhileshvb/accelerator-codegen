@@ -20,9 +20,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
 
-from accel_pipeline.gates.run import build_jobs
+from accel_pipeline.gates.run import build_jobs, tail_marked
 from accel_pipeline.layout import PROOFLIB
-from accel_pipeline.textutil import tail_marked
 from accel_pipeline.verus import params as qparams
 from accel_pipeline.verus.context import VerusContext
 

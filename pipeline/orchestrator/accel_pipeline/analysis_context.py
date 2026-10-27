@@ -6,7 +6,7 @@ import copy
 import json
 from typing import Any
 
-from accel_pipeline.textutil import squeeze_truncate
+from accel_pipeline.pipeline_log import squeeze_truncate
 
 _STAGE_SHARED_DOCS: dict[str, list[tuple[str, str]]] = {
     "analysis": [

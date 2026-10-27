@@ -26,10 +26,10 @@ from accel_pipeline.workload import (
     query_artifacts_dir,
     FACTS_FILE,
     workload_facts,
+    read_json,
 )
 from accel_pipeline.engine_host import host_script, inject_host_runtime_into_gate_env, instance_tag
 from accel_pipeline.gates.stamps import current_stamp, record_pass
-from accel_pipeline.jsonio import read_json
 from accel_pipeline.layout import workload_schema_sql
 from accel_pipeline.session import HEARTBEAT_FILE
 from accel_pipeline.test_suite import gate_settings
@@ -585,6 +585,10 @@ def log_tail_for_agent(data: Mapping[str, Any], *, max_chars: int = 8000) -> str
     if notes:
         bits.append(notes)
     return "\n".join(bits)[-max_chars:]
+
+
+def tail_marked(text: str, n: int = 6000) -> str:
+    return text if len(text) <= n else "... [truncated]\n" + text[-n:]
 
 
 def enrich_failed_gate_data(
