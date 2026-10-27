@@ -1245,6 +1245,9 @@ def _measure(pipeline_config: PipelineConfig, workload: dict[str, Any], query: i
         row = bench.row()
     except (RuntimeError, OSError, subprocess.SubprocessError) as exc:
         return {"read": f"unavailable ({str(exc)[-300:]})"}
+    missing = [c for c in READ_COLUMNS if c not in row]
+    if missing:  # the bench harness breaks its contract: host_bootstrap's gate refuses it
+        return {"read": f"unavailable (the bench printed no {', '.join(missing)}: bench_sweep_contract.md)"}
     return {"read": read_line(row), "counters": counters_line(bench.counters(row))}
 
 
@@ -1612,6 +1615,9 @@ def build_report(reports: list[dict], *, scale: float, threads: int, budget_s: f
             "Cut the work per row (bulk-load a sorted run instead of one insert per row, size containers up front, "
             "avoid per-row allocation) and split it over threads; `run_profile` shows the build's hot spots.")
     return line, ""
+
+
+READ_COLUMNS = ("engine_ref_query_median_us", "accel_hit_median_us", "accel_hit_rate")
 
 
 def read_line(row: dict[str, Any]) -> str:

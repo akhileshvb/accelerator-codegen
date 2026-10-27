@@ -38,8 +38,9 @@ case "${verb}" in
         echo "lineitem_only,${pct},3.0,2.0,4.0,$((400 / t)),$((500 / t)),$((800 / t)),1.0,0"
       done
     elif [[ "$1" == benchmark* && "$2" == --query ]]; then  # a bench that counts hits (or, FAKE_BENCH_CONSTANT, one that assumes them)
-      echo "suite,accel_hit_rate"
-      if [[ -n "${FAKE_BENCH_CONSTANT:-}" || -z "${ACCEL_AUX_FORCE_FALLBACK:-}" ]]; then echo "lineitem_only,1.0"; else echo "lineitem_only,0.0"; fi
+      rate=0.0; [[ -z "${FAKE_BENCH_CONSTANT:-}" && -n "${ACCEL_AUX_FORCE_FALLBACK:-}" ]] || rate=1.0
+      echo "suite,write_frequency_pct,workload_speedup,query_only_speedup,num_queries,accel_fallback_reads,state_builds,engine_ref_query_median_us,${FAKE_BENCH_NO_HIT_MEDIAN:-accel_hit_median_us,}accel_hit_rate"
+      echo "read_only,0,2.0,2.0,5,0,1,800,${FAKE_BENCH_NO_HIT_MEDIAN:-400,}${rate}"
     else
       echo "${FAKE_RUN_OUT:-ran $*}"
     fi
@@ -348,6 +349,17 @@ def test_host_bootstrap_fails_a_bench_that_reports_the_same_hit_rate_when_forced
                                      env_extra={"FAKE_BENCH_CONSTANT": "1"})
     assert proc.returncode == 1
     assert "does not count hits" in result(gj, "host_bootstrap")["reason"]
+
+
+def test_host_bootstrap_fails_a_bench_that_omits_a_required_column(repo):
+    host_bootstrap_repo(repo)
+    register = repo / "accelerators" / "tpch" / "q6" / "fake" / "aux"
+    register.mkdir(parents=True)
+    (register / "register.cpp").write_text("// q6\n")
+    proc, _, _, gj, _ = run_gate(repo, "run_host_bootstrap.sh", "0", ctx_extra={"engine_host": HARNESS_HOST},
+                                 env_extra={"FAKE_BENCH_NO_HIT_MEDIAN": "other,"})
+    assert proc.returncode == 1
+    assert "lacks the required columns accel_hit_median_us" in result(gj, "host_bootstrap")["reason"]
 
 
 def test_host_bootstrap_fails_without_the_harness_sources(repo):
