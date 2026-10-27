@@ -44,7 +44,7 @@ def test_the_rendered_notes_of_any_workload_come_from_its_own_settings():
     now two workloads' notes differ only in their own values."""
     from accel_pipeline.config import load_pipeline_config
     from accel_pipeline.workload import load_workload, resolve_workload_paths, workload_supported_engines
-    from accel_pipeline.context import build_prompt_context
+    from accel_pipeline.prompts import build_prompt_context
 
     repo = Path(__file__).resolve().parents[3]
     cfg = load_pipeline_config(repo_root=repo)
