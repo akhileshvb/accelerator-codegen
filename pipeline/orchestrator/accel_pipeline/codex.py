@@ -1,28 +1,113 @@
-"""Codex CLI backend (`codex exec`) with OpenRouter model provider + MCP tools."""
+"""The agent backend: one `codex exec` step with the pipeline's MCP tools, and what it is asked and answers.
+
+A stage builds a `StageRunRequest`, `create_agent_backend` returns the backend for the stage, and its `run_stage`
+runs codex (with an OpenRouter model provider and the MCP server), supervises it (wall deadline, idle and
+no-progress watchdog, exit gate, report_blocker) and checks what it wrote against the stage's ownership.
+"""
 
 from __future__ import annotations
 
 import json
 import os
-import signal
-import sys
+import re
 import shlex
 import shutil
+import signal
 import subprocess
-import re
+import sys
 import tempfile
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from accel_pipeline import advisor, session as session_mod
-from accel_pipeline.backends.base import StageRunRequest, StageRunResult
-from accel_pipeline.config import ModelConfig, PipelineConfig
-from accel_pipeline.gates.run import TOOL_CALL_LIMIT_S
 from accel_pipeline.advisor import READ_ONLY_TOOLS
+from accel_pipeline.config import ModelConfig, PipelineConfig, resolve_stage_provider
+from accel_pipeline.gates.run import TOOL_CALL_LIMIT_S
+from accel_pipeline.layout import StageWriteCheck, violation_message
 from accel_pipeline.session import HEARTBEAT_FILE
+from accel_pipeline.workload import load_run_workload, query_artifacts_dir
+
+@dataclass
+class StageRunRequest:
+    stage: str
+    instructions: str
+    user_message: str
+    agent_name: str
+    model_id: str
+    agent_model: str | Any | None = None
+    max_turns: int = 15
+    # resume_session_id / phase_change: continue a codex session (the stage's instructions only on a phase change)
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class StageRunResult:
+    backend: str
+    stage: str
+    status: str
+    final_text: str = ""
+    raw: Any = None
+    run_id: str = ""
+    error: str = ""
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+# Stages that work on one query's artifacts: they get its artifact directory (the progress clock, deadline and
+# blocker files, tool footers). Engine-level stages (host_bootstrap, validation, architecture_audit) have none.
+_ARTIFACT_STAGES = frozenset(
+    {
+        "analysis",
+        "analysis_critic",
+        "test_suite",
+        "implementation",
+        "optimization_unified",
+        "optimization_unified_hypothesis",
+        "optimization_unified_patch",
+        "optimization_worker",
+        "optimization_fix",
+        "crash_debug",
+        "audit",
+    }
+)
+
+
+def create_agent_backend(
+    *,
+    provider: str | None = None,
+    pipeline_config: PipelineConfig,
+    query: int,
+    stage: str,
+    model_config: ModelConfig,
+    workload_name: str = "",
+    optimization_iter: int = 0,
+) -> CodexExecBackend:
+    resolved = provider or resolve_stage_provider(stage, model_config)
+    if resolved != "codex_exec":
+        raise ValueError(f"unsupported provider: {resolved!r}")
+
+    art_dir = None
+    if stage in _ARTIFACT_STAGES and workload_name:
+        workload = load_run_workload(pipeline_config, workload_name)
+        art_dir = query_artifacts_dir(pipeline_config.repo_root, query, workload=workload)
+
+    backend = CodexExecBackend(
+        pipeline_config=pipeline_config,
+        model_config=model_config,
+        query=query,
+        stage=stage,
+        workload_name=workload_name,
+        optimization_iter=optimization_iter,
+        art_dir=art_dir,
+    )
+    if getattr(pipeline_config, "sandbox", "none") == "bwrap":
+        from accel_pipeline import sandbox
+
+        backend.command_prefix = sandbox.cpp_prefix(pipeline_config)
+        backend.prompt_via_stdin = True  # the sandbox has its own /tmp: no task file to read back
+    return backend
 
 
 def _forwarded_to_mcp(key: str) -> bool:
@@ -35,7 +120,7 @@ def sidecar_env_line(key: str, value: Any) -> str:
     return f"{key}={shlex.quote(str(value))}"
 
 
-_CODEX_DIR = Path(__file__).resolve().parents[3] / "codex"
+_CODEX_DIR = Path(__file__).resolve().parents[2] / "codex"
 BLOCKER_STOP = "the agent reported a blocker (report_blocker)"
 
 
@@ -183,8 +268,6 @@ class CodexExecBackend:
         policy = str(getattr(cfg, "write_policy", "enforce"))
         if policy == "off" or self._stage.startswith("verus_"):  # Verus steps work in a sandboxed workspace
             return self._run_codex(request)
-        from accel_pipeline.layout import StageWriteCheck, violation_message
-
         check = StageWriteCheck(cfg.repo_root, query=self._query, stage=self._stage, pipeline_config=cfg)
         result = self._run_codex(request)
         bad = check.violations()
@@ -200,7 +283,6 @@ class CodexExecBackend:
         return result
 
     def _log_violations(self, policy: str, bad: list[tuple[str, str]]) -> None:
-        from accel_pipeline.workload import load_run_workload
         from accel_pipeline.pipeline_log import log_event
 
         try:

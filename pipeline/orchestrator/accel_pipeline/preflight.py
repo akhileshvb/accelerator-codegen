@@ -93,8 +93,7 @@ def perf_counters(probe: Probe) -> list[str]:
 
 def _capture_argv(probe: Probe, stage: str) -> tuple[object, list[str]]:
     """(the backend, the `codex exec` command line it builds for `stage`), without starting codex."""
-    from accel_pipeline.backends import StageRunRequest, create_agent_backend
-    from accel_pipeline.backends.codex_exec import _Outcome
+    from accel_pipeline.codex import StageRunRequest, create_agent_backend, _Outcome
     from accel_pipeline.config import make_model_id
 
     backend = create_agent_backend(pipeline_config=probe.cfg, query=probe.query, stage=stage, model_config=probe.models,
@@ -207,7 +206,7 @@ def _rollout_calls(backend, result, tool: str) -> bool:
 
 def live_models(probe: Probe) -> list[str]:
     """One tiny codex turn per model the run uses, calling one MCP tool: the model speaks Codex's tool-call format."""
-    from accel_pipeline.backends import StageRunRequest, create_agent_backend
+    from accel_pipeline.codex import StageRunRequest, create_agent_backend
     from accel_pipeline.config import make_model_id
     from accel_pipeline.state import STAGES
 

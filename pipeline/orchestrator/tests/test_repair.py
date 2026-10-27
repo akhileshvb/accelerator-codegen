@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 from accel_pipeline import repair as repair_mod
-from accel_pipeline.backends.codex_exec import CodexExecBackend
+from accel_pipeline.codex import CodexExecBackend
 from accel_pipeline.config import ModelConfig, PipelineConfig, RepairConfig, SessionConfig
 from accel_pipeline.failure import Failure, StageFailure
 from accel_pipeline.gates.run import GateResult

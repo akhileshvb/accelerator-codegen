@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from accel_pipeline.backends import StageRunRequest, create_agent_backend
+from accel_pipeline.codex import StageRunRequest, create_agent_backend
 from accel_pipeline.optimization.base_bench import build_optimization_diagnosis, load_base_optimization_state
 from accel_pipeline.config import ModelConfig, PipelineConfig, make_model_id
 from accel_pipeline.workload import (

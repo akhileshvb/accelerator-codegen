@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 
-from accel_pipeline.backends.codex_exec import CodexExecBackend
+from accel_pipeline.codex import CodexExecBackend
 from accel_pipeline.config import ModelConfig, load_model_config
 from accel_pipeline.config import PipelineConfig
 
@@ -23,7 +23,7 @@ def _pipeline_config(**overrides) -> PipelineConfig:
 
 
 def test_ensure_codex_config_materializes_template_once(tmp_path):
-    from accel_pipeline.backends.codex_exec import ensure_codex_config
+    from accel_pipeline.codex import ensure_codex_config
 
     config = tmp_path / "home" / "config.toml"
     assert ensure_codex_config(config) == config
@@ -36,7 +36,7 @@ def test_ensure_codex_config_materializes_template_once(tmp_path):
 
 
 def test_mcp_env_sidecar_quotes_values_with_spaces(monkeypatch, tmp_path):
-    from accel_pipeline.backends.codex_exec import sidecar_env_line
+    from accel_pipeline.codex import sidecar_env_line
     from accel_pipeline.config import load_pipeline_config
 
     discovery = (
@@ -99,7 +99,7 @@ def _fake_backend(tmp_path, monkeypatch, *, mode="ok", idle=0, hard=60, art=True
 
 
 def _request(message="do it", **metadata):
-    from accel_pipeline.backends.base import StageRunRequest
+    from accel_pipeline.codex import StageRunRequest
 
     return StageRunRequest(stage="implementation", instructions="INSTRUCTIONS", user_message=message,
                            agent_name="a", model_id="m", metadata=metadata)
@@ -193,16 +193,16 @@ def test_query_stages_get_the_artifact_dir_so_their_progress_clock_runs(monkeypa
     """analysis and test_suite are watched like the implementation stages: the backend knows the query's artifact dir."""
     from types import SimpleNamespace
 
-    from accel_pipeline import backends
+    from accel_pipeline import codex
 
-    monkeypatch.setattr(backends, "load_run_workload", lambda cfg, name: "wl")
-    monkeypatch.setattr(backends, "query_artifacts_dir", lambda root, q, workload=None: tmp_path / f"q{q}")
+    monkeypatch.setattr(codex, "load_run_workload", lambda cfg, name: "wl")
+    monkeypatch.setattr(codex, "query_artifacts_dir", lambda root, q, workload=None: tmp_path / f"q{q}")
     cfg = SimpleNamespace(repo_root=tmp_path, sandbox="none")
     for stage in ("analysis", "test_suite", "implementation", "audit"):
-        b = backends.create_agent_backend(provider="codex_exec", pipeline_config=cfg, query=3, stage=stage,
-                                          model_config=SimpleNamespace(), workload_name="w")
+        b = codex.create_agent_backend(provider="codex_exec", pipeline_config=cfg, query=3, stage=stage,
+                                       model_config=SimpleNamespace(), workload_name="w")
         assert b._art_dir == tmp_path / "q3", stage
     for stage in ("host_bootstrap", "validation", "architecture_audit"):
-        b = backends.create_agent_backend(provider="codex_exec", pipeline_config=cfg, query=3, stage=stage,
-                                          model_config=SimpleNamespace(), workload_name="w")
+        b = codex.create_agent_backend(provider="codex_exec", pipeline_config=cfg, query=3, stage=stage,
+                                       model_config=SimpleNamespace(), workload_name="w")
         assert b._art_dir is None, stage

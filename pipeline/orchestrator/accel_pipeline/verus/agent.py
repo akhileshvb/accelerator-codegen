@@ -173,8 +173,7 @@ def run_agent(
     if replay:
         return _replay(ctx, Path(replay), stage, n)
 
-    from accel_pipeline.backends.base import StageRunRequest
-    from accel_pipeline.backends.codex_exec import CodexExecBackend
+    from accel_pipeline.codex import StageRunRequest, CodexExecBackend
     from accel_pipeline.config import make_model_id, resolve_stage_provider
     from accel_pipeline.pipeline_log import log_stage_complete, log_stage_start, usage_from_metadata
 

@@ -5,7 +5,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any, Callable
 
-from accel_pipeline.backends import StageRunRequest, create_agent_backend
+from accel_pipeline.codex import StageRunRequest, create_agent_backend
 from accel_pipeline.config import ModelConfig, PipelineConfig, make_model_id
 from accel_pipeline.workload import load_run_workload, apply_workload_overrides, query_artifacts_dir
 from accel_pipeline.failure import (

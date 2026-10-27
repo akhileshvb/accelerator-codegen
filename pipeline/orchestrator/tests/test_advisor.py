@@ -9,8 +9,7 @@ import pytest
 
 from accel_pipeline import advisor
 from accel_pipeline import repair as repair_mod
-from accel_pipeline.backends.base import StageRunResult
-from accel_pipeline.backends.codex_exec import CodexExecBackend
+from accel_pipeline.codex import StageRunResult, CodexExecBackend
 from accel_pipeline.config import AdvisorConfig, ModelConfig, PipelineConfig, RepairConfig
 from accel_pipeline.failure import Failure
 from accel_pipeline.repair import RepairCtx, run_with_repair
@@ -63,7 +62,7 @@ class World:
         monkeypatch.setattr("accel_pipeline.workload.load_run_workload", lambda cfg, name: workload)
         monkeypatch.setattr("accel_pipeline.config.make_model_id", lambda *a, **k: "advisor/model")
         monkeypatch.setattr("accel_pipeline.prompts.render_prompt", lambda *a, **k: "ADVISOR INSTRUCTIONS")
-        monkeypatch.setattr("accel_pipeline.backends.create_agent_backend", lambda **k: self.backend(**k))
+        monkeypatch.setattr("accel_pipeline.codex.create_agent_backend", lambda **k: self.backend(**k))
         self.created = []
 
     def backend(self, **kwargs):
@@ -100,7 +99,7 @@ def fork_backend(tmp_path, monkeypatch, art=True):
 
 
 def test_the_fork_command_forks_the_session_on_the_advisor_model(tmp_path, monkeypatch):
-    from accel_pipeline.backends.base import StageRunRequest
+    from accel_pipeline.codex import StageRunRequest
 
     request = StageRunRequest(stage="advisor", instructions="INSTR", user_message="why?", agent_name="a",
                               model_id="adv/model", agent_model="adv/model", metadata={"fork_session_id": SID})
@@ -118,7 +117,7 @@ def test_the_fork_command_forks_the_session_on_the_advisor_model(tmp_path, monke
 
 def test_a_fork_never_serves_advisor_requests_or_marks_the_agent_run(tmp_path, monkeypatch):
     backend = fork_backend(tmp_path, monkeypatch)
-    from accel_pipeline.backends.base import StageRunRequest
+    from accel_pipeline.codex import StageRunRequest
 
     (tmp_path / "art").mkdir()
     (tmp_path / "art" / "agent_run.json").write_text("{}")

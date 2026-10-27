@@ -213,8 +213,7 @@ def test_ownership_shared_tree_pack_skips_other_queries(tmp_path: Path, monkeypa
 
 
 def _backend(root: Path, policy: str, monkeypatch: pytest.MonkeyPatch):
-    from accel_pipeline.backends.base import StageRunRequest, StageRunResult
-    from accel_pipeline.backends.codex_exec import CodexExecBackend
+    from accel_pipeline.codex import StageRunRequest, StageRunResult, CodexExecBackend
 
     cfg = _cfg(root, write_policy=policy, repo_root=root)
     backend = CodexExecBackend(pipeline_config=cfg, model_config=SimpleNamespace(), query=6, stage="implementation")
