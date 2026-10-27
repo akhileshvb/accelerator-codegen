@@ -23,9 +23,10 @@ from accel_pipeline.digests import (
     compact_json,
     stage_analysis_json,
 )
-from accel_pipeline.config import PipelineConfig, is_critique_stage, is_implementation_stage
-from accel_pipeline.engine_host import format_host_block
-from accel_pipeline.workload import (
+from accel_pipeline.config import (
+    PipelineConfig,
+    is_critique_stage,
+    is_implementation_stage,
     engine_host_conventions,
     load_query_analysis,
     query_artifacts_dir,
@@ -35,6 +36,7 @@ from accel_pipeline.workload import (
     sanitize_engine_name,
     with_facts,
 )
+from accel_pipeline.engine_host import format_host_block
 
 ANALYSIS_STAGES = ("analysis", "analysis_critic")  # both see the query, its parameters and the data
 OPTIMIZATION_STAGES = (

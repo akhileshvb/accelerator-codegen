@@ -30,7 +30,7 @@ def test_prompts_and_shared_docs_name_no_benchmark_specifics():
 
 def test_rendered_analysis_prompt_of_the_non_tpch_workload_has_no_tpch_text():
     from accel_pipeline.config import load_pipeline_config
-    from accel_pipeline.workload import load_workload
+    from accel_pipeline.config import load_workload
     from accel_pipeline.prompts import render_prompt
 
     repo = Path(__file__).resolve().parents[3]
@@ -43,7 +43,7 @@ def test_the_rendered_notes_of_any_workload_come_from_its_own_settings():
     """benchmark_notes once carried SEC-EDGAR facts (a scale, write suites, a partition scheme) for its runs only:
     now two workloads' notes differ only in their own values."""
     from accel_pipeline.config import load_pipeline_config
-    from accel_pipeline.workload import load_workload, resolve_workload_paths, workload_supported_engines
+    from accel_pipeline.config import load_workload, resolve_workload_paths, workload_supported_engines
     from accel_pipeline.prompts import build_prompt_context
 
     repo = Path(__file__).resolve().parents[3]

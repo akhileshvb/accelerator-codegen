@@ -12,8 +12,7 @@ import pytest
 
 from accel_pipeline import repair as repair_mod, session as session_mod
 from accel_pipeline.codex import StageRunRequest, StageRunResult
-from accel_pipeline.config import load_model_config, load_pipeline_config
-from accel_pipeline.workload import load_workload
+from accel_pipeline.config import load_model_config, load_pipeline_config, load_workload
 from accel_pipeline.failure import StageFailure, Failure
 from accel_pipeline.gates.run import GateResult
 from accel_pipeline.repair import StageStopped

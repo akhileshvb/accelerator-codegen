@@ -8,8 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from accel_pipeline.config import PipelineConfig
-from accel_pipeline.workload import query_artifacts_dir
+from accel_pipeline.config import PipelineConfig, query_artifacts_dir
 from accel_pipeline.optimization.kernel_snapshot import resolve_snapshot_paths
 
 CHECKPOINT_DIRNAME = "attempt_checkpoint"

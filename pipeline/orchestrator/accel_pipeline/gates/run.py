@@ -17,8 +17,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
-from accel_pipeline.config import PipelineConfig
-from accel_pipeline.workload import (
+from accel_pipeline.config import (
+    PipelineConfig,
     engine_host_conventions,
     resolve_workload_paths,
     sanitize_engine_name,

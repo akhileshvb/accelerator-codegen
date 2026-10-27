@@ -12,8 +12,8 @@ from accel_pipeline.digests import (
     compact_base_analysis_for_optimization,
 )
 from accel_pipeline.optimization.base_bench import compact_summary_for_prompt
-from accel_pipeline.config import PipelineConfig
-from accel_pipeline.workload import (
+from accel_pipeline.config import (
+    PipelineConfig,
     resolve_optimization_edit_paths,
     resolve_workload_paths,
     load_query_analysis,

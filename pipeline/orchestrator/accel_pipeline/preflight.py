@@ -164,7 +164,7 @@ async def _mcp_probe(probe: Probe) -> tuple[dict[str, set[str]], list[str]]:
 @contextlib.contextmanager
 def _unlogged(probe: Probe):
     """The data tools log every query to the run's artifacts, which analysis cites: the probe leaves that log as it was."""
-    from accel_pipeline.workload import query_artifacts_dir
+    from accel_pipeline.config import query_artifacts_dir
     from accel_pipeline.tools.data_tools import LOG_FILE
 
     log = query_artifacts_dir(probe.cfg.repo_root, probe.query, workload=probe.workload) / LOG_FILE
@@ -351,7 +351,7 @@ def require(probe: Probe, **kwargs) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    from accel_pipeline.workload import apply_workload_overrides, load_workload
+    from accel_pipeline.config import apply_workload_overrides, load_workload
     from accel_pipeline.config import load_model_config, load_pipeline_config, load_repo_dotenv, find_repo_root
 
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])

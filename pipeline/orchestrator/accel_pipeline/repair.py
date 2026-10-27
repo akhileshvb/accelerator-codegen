@@ -29,8 +29,13 @@ from pathlib import Path
 from typing import Any, Callable, TypeVar
 
 from accel_pipeline import session as session_mod
-from accel_pipeline.config import ModelConfig, PipelineConfig, make_model_id
-from accel_pipeline.workload import load_run_workload, query_artifacts_dir
+from accel_pipeline.config import (
+    ModelConfig,
+    PipelineConfig,
+    make_model_id,
+    load_run_workload,
+    query_artifacts_dir,
+)
 from accel_pipeline.failure import (
     AGENT_BLOCKER,
     HARNESS_MISSING,
@@ -46,8 +51,7 @@ from accel_pipeline.failure import (
 from accel_pipeline.gates.parallel import first_failure, run_gates_parallel
 from accel_pipeline.gates.run import GateFailure, GateResult
 from accel_pipeline.layout import query_dir, tree_snapshot
-from accel_pipeline.runlog import log_event
-from accel_pipeline.runlog import append_experiment_log
+from accel_pipeline.runlog import log_event, append_experiment_log
 from accel_pipeline.prompts import render_prompt
 from accel_pipeline.session import MAIN, SessionStore
 
@@ -517,7 +521,7 @@ def _replan(ctx: RepairCtx, failure: Failure) -> bool:
 
 
 def _selected_candidate(ctx: RepairCtx) -> str:
-    from accel_pipeline.workload import analysis_artifact_path
+    from accel_pipeline.config import analysis_artifact_path
 
     try:
         analysis = json.loads(analysis_artifact_path(ctx.pipeline_config.repo_root, ctx.query,

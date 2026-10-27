@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from accel_pipeline.workload import read_json
+from accel_pipeline.config import read_json
 from accel_pipeline.optimization.scoreboard import (
     aggregate_custom_profile_events,
     build_scoreboard,

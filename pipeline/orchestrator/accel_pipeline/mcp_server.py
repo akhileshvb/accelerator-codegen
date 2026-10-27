@@ -14,10 +14,9 @@ from pathlib import Path
 from typing import Any, Callable, Literal
 
 from accel_pipeline.gates.run import tool_call_limit
-from accel_pipeline.workload import read_json
-from accel_pipeline.session import record_check
+from accel_pipeline.config import read_json
+from accel_pipeline.session import record_check, keep_alive
 from accel_pipeline.quick import profile_hot_spots
-from accel_pipeline.session import keep_alive
 from accel_pipeline.tools import mode_tools
 
 _ENGINE_BACKEND_STAGES = ("impl_", "critique_", "layer_critique", "validation", "architecture_audit", "host_bootstrap")
@@ -66,7 +65,7 @@ def _budget_footer(pipeline_config, stage: str, query: int) -> str:
 
 def _build_context(args: argparse.Namespace):
     from accel_pipeline.config import load_pipeline_config, find_repo_root
-    from accel_pipeline.workload import load_workload, apply_workload_overrides, query_artifacts_dir
+    from accel_pipeline.config import load_workload, apply_workload_overrides, query_artifacts_dir
 
     repo_root = Path(args.repo_root or os.environ.get("ACCEL_PIPELINE_REPO_ROOT") or find_repo_root())
     pipeline_config = load_pipeline_config(repo_root=repo_root)
@@ -206,7 +205,7 @@ def build_mcp_tool_callables(
 
     def validate_analysis() -> str:
         """Check analysis.json as the analysis stage will when the turn ends."""
-        from accel_pipeline.workload import analysis_artifact_path
+        from accel_pipeline.config import analysis_artifact_path
         from accel_pipeline.validation import AuxAnalysisValidationError, validate_aux_analysis_file
 
         try:
@@ -219,7 +218,7 @@ def build_mcp_tool_callables(
     def update_analysis(operations: list[dict[str, Any]]) -> str:
         """Apply JSON Patch operations to analysis.json, write it, and validate."""
         from accel_pipeline.json_patch import PatchError, apply
-        from accel_pipeline.workload import analysis_artifact_path
+        from accel_pipeline.config import analysis_artifact_path
 
         path = analysis_artifact_path(pipeline_config.repo_root, query, workload=workload)
         try:

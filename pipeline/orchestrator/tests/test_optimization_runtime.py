@@ -3,8 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from accel_pipeline.config import load_pipeline_config
-from accel_pipeline.workload import load_workload
+from accel_pipeline.config import load_pipeline_config, load_workload
 from accel_pipeline.optimization.runtime import (
     PLAYBOOK_PROPOSAL_JSON,
     PLAYBOOK_TECHNIQUES_JSON,

@@ -5,8 +5,7 @@ from pathlib import Path
 
 
 from accel_pipeline import check_report, quick, write_cost
-from accel_pipeline.config import QuickTierConfig
-from accel_pipeline.workload import gates_dir_for_query, query_artifacts_dir
+from accel_pipeline.config import QuickTierConfig, gates_dir_for_query, query_artifacts_dir
 from accel_pipeline.datasets import CutDatasets
 from accel_pipeline.quick import render_quick_result, run_quick_check
 

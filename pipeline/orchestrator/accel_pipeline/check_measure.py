@@ -16,8 +16,7 @@ from typing import Any
 
 from accel_pipeline import perf_profile
 from accel_pipeline.sweep_csv import parse_aux_benchmark_output
-from accel_pipeline.config import PipelineConfig
-from accel_pipeline.workload import resolve_workload_paths
+from accel_pipeline.config import PipelineConfig, resolve_workload_paths
 from accel_pipeline.engine_host import host_info, host_script, instance_env
 
 BENCH_SECONDS = 120.0

@@ -4,8 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from accel_pipeline.config import load_pipeline_config
-from accel_pipeline.workload import load_workload, workload_supported_engines
+from accel_pipeline.config import load_pipeline_config, load_workload, workload_supported_engines
 from accel_pipeline.gates.parallel import DEFAULT_GROUPS
 from accel_pipeline.gates.run import GATE_SCRIPTS, SUBSET_DATASET_GATES
 from accel_pipeline.stages.base import (

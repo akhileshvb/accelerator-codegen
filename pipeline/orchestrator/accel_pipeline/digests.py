@@ -15,11 +15,16 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from accel_pipeline.config import PipelineConfig
+from accel_pipeline.config import (
+    PipelineConfig,
+    analysis_artifact_path,
+    gates_dir_for_query,
+    query_artifacts_dir,
+    read_json,
+)
 from accel_pipeline.gates.build_stamp import git, is_relevant
 from accel_pipeline.layout import query_dir as query_dir_of
 from accel_pipeline.runlog import squeeze_truncate
-from accel_pipeline.workload import analysis_artifact_path, gates_dir_for_query, query_artifacts_dir, read_json
 
 
 _STAGE_SHARED_DOCS: dict[str, list[tuple[str, str]]] = {

@@ -10,8 +10,7 @@ import json
 
 import pytest
 
-from accel_pipeline.workload import harness_targets, load_workload
-from accel_pipeline.config import load_model_config, load_pipeline_config
+from accel_pipeline.config import harness_targets, load_workload, load_model_config, load_pipeline_config
 from accel_pipeline.gates.run import GateResult
 from accel_pipeline.engine_backend.host_bootstrap import (
     host_bootstrap_passed,
@@ -295,7 +294,7 @@ def _hb_write(path, engine="postgres", stage="host_bootstrap"):
 
     pc = load_pipeline_config(repo_root=REPO_ROOT)
     w = load_workload("tpch_q1_aux", REPO_ROOT, engine=engine)
-    from accel_pipeline.workload import apply_workload_overrides
+    from accel_pipeline.config import apply_workload_overrides
 
     merged = apply_workload_overrides(pc, w)
     return write_allowed(REPO_ROOT, path, query=1, stage=stage, write_paths=merged.write_paths, pipeline_config=merged)

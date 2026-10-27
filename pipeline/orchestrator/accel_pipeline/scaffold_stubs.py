@@ -6,8 +6,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from accel_pipeline.config import PipelineConfig
-from accel_pipeline.workload import load_workload, resolve_workload_paths, with_facts
+from accel_pipeline.config import PipelineConfig, load_workload, resolve_workload_paths, with_facts
 
 
 def _substitute(template: str, values: dict[str, str]) -> str:
@@ -197,7 +196,7 @@ def materialize_registration(pipeline_config: PipelineConfig, workload: dict[str
     every call and the fallback SQL answers. Written only when missing: the implementation replaces it in place."""
     import json
 
-    from accel_pipeline.workload import analysis_artifact_path
+    from accel_pipeline.config import analysis_artifact_path
 
     repo = pipeline_config.repo_root
     if workload.get("workload_kind") != "aux_state":  # the declining module is an aux module; a stateless query has none

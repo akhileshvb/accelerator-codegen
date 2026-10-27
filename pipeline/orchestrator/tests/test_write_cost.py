@@ -7,8 +7,7 @@ import json
 import pytest
 
 from accel_pipeline import quick, write_cost
-from accel_pipeline.config import QuickTierConfig
-from accel_pipeline.workload import gates_dir_for_query, query_artifacts_dir
+from accel_pipeline.config import QuickTierConfig, gates_dir_for_query, query_artifacts_dir
 from accel_pipeline.layout import suite_dir
 from accel_pipeline.datasets import CutDatasets
 from conftest import WORKLOAD, Gate

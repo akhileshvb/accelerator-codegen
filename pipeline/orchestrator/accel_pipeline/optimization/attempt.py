@@ -12,8 +12,10 @@ from typing import Any
 
 from accel_pipeline.codex import StageRunRequest, create_agent_backend
 from accel_pipeline.optimization.base_bench import build_optimization_diagnosis, load_base_optimization_state
-from accel_pipeline.config import ModelConfig, PipelineConfig, make_model_id
-from accel_pipeline.workload import (
+from accel_pipeline.config import (
+    ModelConfig,
+    PipelineConfig,
+    make_model_id,
     apply_workload_overrides,
     load_run_workload,
     resolve_optimization_edit_paths,
@@ -84,8 +86,7 @@ from accel_pipeline.structural_reanalysis import write_request as write_structur
 from accel_pipeline.optimization.pending import format_gate_delta
 from accel_pipeline.optimization.worker import OptimizationWorker
 from accel_pipeline.optimization.worker_checkpoint import load_worker_checkpoint
-from accel_pipeline.runlog import log_event, log_stage_complete, log_stage_start
-from accel_pipeline.runlog import append_experiment_log
+from accel_pipeline.runlog import log_event, log_stage_complete, log_stage_start, append_experiment_log
 from accel_pipeline.prompts import render_prompt, save_rendered_prompt, with_codex_tooling
 from accel_pipeline.session import MAIN, run_in_session
 from accel_pipeline.stages.base import resolve_optimization_max_turns

@@ -9,8 +9,7 @@ from accel_pipeline.optimization.base_bench import (
     load_base_optimization_state,
     process_base_bench_after_gates,
 )
-from accel_pipeline.config import ModelConfig, PipelineConfig
-from accel_pipeline.workload import load_run_workload, query_artifacts_dir
+from accel_pipeline.config import ModelConfig, PipelineConfig, load_run_workload, query_artifacts_dir
 from accel_pipeline.repair import run_gates_with_repair, RepairCtx, run_with_repair
 from accel_pipeline.optimization.attempt import run_optimization_iteration
 from accel_pipeline.optimization.worker import OptimizationWorker, worker_enabled

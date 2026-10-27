@@ -275,6 +275,9 @@
  "pipeline/gates/tests/test_gate_plumbing.py": {
   "engine": 3
  },
+ "pipeline/orchestrator/accel_pipeline/config.py": {
+  "engine": 7
+ },
  "pipeline/orchestrator/accel_pipeline/mcp_server.py": {
   "path": 1
  },
@@ -343,9 +346,6 @@
  "pipeline/orchestrator/accel_pipeline/verus/workspace.py": {
   "engine": 1
  },
- "pipeline/orchestrator/accel_pipeline/workload.py": {
-  "engine": 7
- },
  "pipeline/orchestrator/pyproject.toml": {
   "engine": 1
  },
@@ -377,9 +377,6 @@
   "engine": 10,
   "path": 7
  },
- "pipeline/orchestrator/tests/test_base_bench.py": {
-  "engine": 3
- },
  "pipeline/orchestrator/tests/test_benchmark_pack.py": {
   "engine": 9,
   "path": 4,
@@ -391,6 +388,10 @@
  "pipeline/orchestrator/tests/test_codex.py": {
   "engine": 10,
   "target": 1
+ },
+ "pipeline/orchestrator/tests/test_config.py": {
+  "engine": 26,
+  "symbol": 2
  },
  "pipeline/orchestrator/tests/test_digests.py": {
   "engine": 1,
@@ -413,13 +414,6 @@
   "path": 10,
   "target": 10
  },
- "pipeline/orchestrator/tests/test_implementation_bootstrap.py": {
-  "engine": 4,
-  "path": 2
- },
- "pipeline/orchestrator/tests/test_kernel_hot_path_review.py": {
-  "engine": 1
- },
  "pipeline/orchestrator/tests/test_kernel_snapshot.py": {
   "engine": 11,
   "path": 13
@@ -436,14 +430,6 @@
  "pipeline/orchestrator/tests/test_new_engine.py": {
   "engine": 2,
   "path": 2
- },
- "pipeline/orchestrator/tests/test_optimization_bootstrap.py": {
-  "engine": 5,
-  "path": 2
- },
- "pipeline/orchestrator/tests/test_optimization_edit_paths.py": {
-  "engine": 4,
-  "path": 4
  },
  "pipeline/orchestrator/tests/test_optimization_runtime.py": {
   "engine": 2,
@@ -481,18 +467,8 @@
   "engine": 1,
   "engine_branch": 1
  },
- "pipeline/orchestrator/tests/test_tsan_gate.py": {
-  "engine": 2
- },
  "pipeline/orchestrator/tests/test_verus_pipeline.py": {
   "engine": 2
- },
- "pipeline/orchestrator/tests/test_worker_resume.py": {
-  "engine": 1
- },
- "pipeline/orchestrator/tests/test_workload.py": {
-  "engine": 26,
-  "symbol": 2
  },
  "pipeline/prompts/aux_state/03_optimization_unified.md": {
   "path": 2
@@ -526,9 +502,6 @@
  },
  "pipeline/prompts/engine_backend/native_scan_contract.md": {
   "symbol": 1
- },
- "pipeline/prompts/sec_edgar/aux_state_notes.md": {
-  "path": 1
  },
  "pipeline/prompts/shared/codex_tooling.md": {
   "path": 1

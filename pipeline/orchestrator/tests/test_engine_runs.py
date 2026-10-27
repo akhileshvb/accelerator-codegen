@@ -4,8 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from accel_pipeline.workload import apply_workload_overrides, load_workload
-from accel_pipeline.config import load_pipeline_config
+from accel_pipeline.config import apply_workload_overrides, load_workload, load_pipeline_config
 from accel_pipeline.pack.engine_quarantine import (
     apply_foreign_engine_quarantine,
     foreign_trees_for_workload,

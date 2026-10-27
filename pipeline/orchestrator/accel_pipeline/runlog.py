@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Any
 
 from accel_pipeline.verus.usage import cost_usd, session_usage
-from accel_pipeline.workload import load_workload, query_artifacts_dir
+from accel_pipeline.config import load_workload, query_artifacts_dir
 
 STAGES = ("analysis", "test_suite", "implementation", "optimization", "audit")
 

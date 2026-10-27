@@ -12,10 +12,9 @@ from pathlib import Path
 import pytest
 import yaml
 
-from accel_pipeline import repair as repair_mod
-from accel_pipeline import test_suite as ts
+from accel_pipeline import repair as repair_mod, test_suite as ts
 from accel_pipeline.optimization.aux_bench import aggregate_sweep_repeats
-from accel_pipeline.config import PipelineConfig, RepairConfig
+from accel_pipeline.config import PipelineConfig, RepairConfig, SuiteConfig
 from accel_pipeline.failure import Failure, failure_from_gate
 from accel_pipeline.gates.run import GateResult
 from accel_pipeline.layout import layer_write_verdict
@@ -210,7 +209,7 @@ def test_derived_parameters_follow_their_source():
 
 def test_a_run_environment_is_its_seed_and_tier(tmp_path):
     suite = write_suite(tmp_path)
-    cfg = ts.SuiteConfig(acceptance_random_tuples=7, differential_every=4)
+    cfg = SuiteConfig(acceptance_random_tuples=7, differential_every=4)
     full = ts.run_environment(suite, tier="full", cfg=cfg, seed=5, params_file=tmp_path / "full.sql")
     again = ts.run_environment(suite, tier="full", cfg=cfg, seed=5, params_file=tmp_path / "again.sql")
     assert (tmp_path / "full.sql").read_text() == (tmp_path / "again.sql").read_text()
@@ -219,7 +218,7 @@ def test_a_run_environment_is_its_seed_and_tier(tmp_path):
     quick = ts.run_environment(suite, tier="quick", cfg=cfg, seed=5, params_file=tmp_path / "quick.sql")
     assert len((tmp_path / "quick.sql").read_text().splitlines()) == 7 and quick["ACCEL_SUITE_EVERY"] == "4"  # as many as the full tier
     assert "ACCEL_SUITE_TXNS" not in quick  # every transaction of the suite
-    iterate = ts.run_environment(suite, tier="iterate", cfg=ts.SuiteConfig(acceptance_random_tuples=7, iterate_random_tuples=3, iterate_every=10),
+    iterate = ts.run_environment(suite, tier="iterate", cfg=SuiteConfig(acceptance_random_tuples=7, iterate_random_tuples=3, iterate_every=10),
                                  seed=5, params_file=tmp_path / "iterate.sql")
     assert len((tmp_path / "iterate.sql").read_text().splitlines()) == 3 and iterate["ACCEL_SUITE_EVERY"] == "10"
     assert "ACCEL_SUITE_TXNS" not in iterate
@@ -352,7 +351,7 @@ def gate_world(tmp_path, *, frozen=True) -> dict:
     if frozen:
         ts.freeze(art, suite, query=3)
     settings = {"dir": str(suite), "query_sql": str(tmp_path / "q.sql"), "function": "accel_toy_q3_aux", "arity": 2,
-                "param_names": ["seg", "d"], "aux": True, "schema_sql": "", "config": asdict(ts.SuiteConfig())}
+                "param_names": ["seg", "d"], "aux": True, "schema_sql": "", "config": asdict(SuiteConfig())}
     ctx = {"test_suite": settings, "artifacts_dir": str(art), "query_number": 3}
     (tmp_path / "ctx.json").write_text(json.dumps(ctx))
     return ctx

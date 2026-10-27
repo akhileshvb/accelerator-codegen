@@ -3,8 +3,7 @@ import json
 import pytest
 
 from accel_pipeline import cli, run_pipeline, runlog
-from accel_pipeline.workload import workload_supported_engines
-from accel_pipeline.config import find_repo_root
+from accel_pipeline.config import workload_supported_engines, find_repo_root
 from accel_pipeline.runlog import STAGES, PipelineState
 
 ENGINE = workload_supported_engines("tpch_q14_aux", find_repo_root())[0]

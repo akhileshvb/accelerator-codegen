@@ -13,14 +13,14 @@ DEFAULT_SMOKE_WORKLOAD = "tpch_q14_aux"
 
 
 def _engine_of(workload: str, engine: str | None) -> str:
-    from accel_pipeline.workload import workload_supported_engines
+    from accel_pipeline.config import workload_supported_engines
     from accel_pipeline.config import find_repo_root
 
     return engine or workload_supported_engines(workload, find_repo_root())[0]
 
 
 def _query_of(workload: str, engine: str) -> int:
-    from accel_pipeline.workload import load_workload
+    from accel_pipeline.config import load_workload
     from accel_pipeline.config import find_repo_root
 
     return int(load_workload(workload, find_repo_root(), engine=engine).get("query_number") or 0)

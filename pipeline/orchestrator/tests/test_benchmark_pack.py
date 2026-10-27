@@ -4,8 +4,13 @@ from pathlib import Path
 
 import pytest
 
-from accel_pipeline.workload import load_benchmark_pack, load_workload, query_artifacts_dir
-from accel_pipeline.config import load_pipeline_config, find_repo_root
+from accel_pipeline.config import (
+    load_benchmark_pack,
+    load_workload,
+    query_artifacts_dir,
+    load_pipeline_config,
+    find_repo_root,
+)
 
 
 REPO_ROOT = find_repo_root()
@@ -52,14 +57,14 @@ def test_artifact_namespace() -> None:
 def test_apply_workload_overrides_merges_write_paths() -> None:
     pipeline_config = load_pipeline_config(repo_root=REPO_ROOT)
     workload = load_workload("sec_edgar_q1", REPO_ROOT)
-    from accel_pipeline.workload import apply_workload_overrides
+    from accel_pipeline.config import apply_workload_overrides
 
     merged = apply_workload_overrides(pipeline_config, workload)
     assert any("sec_edgar" in p for p in merged.write_paths)
 
 
 def test_apply_workload_overrides_merges_aux_stage_max_turns() -> None:
-    from accel_pipeline.workload import apply_workload_overrides
+    from accel_pipeline.config import apply_workload_overrides
 
     pipeline_config = load_pipeline_config(repo_root=REPO_ROOT)
     workload = load_workload("tpch_q18_aux", REPO_ROOT, engine="duckdb")
@@ -75,7 +80,7 @@ def test_apply_workload_overrides_merges_aux_stage_max_turns() -> None:
 
 
 def test_aux_workload_never_edits_root_cmake() -> None:
-    from accel_pipeline.workload import apply_workload_overrides
+    from accel_pipeline.config import apply_workload_overrides
 
     pipeline_config = load_pipeline_config(repo_root=REPO_ROOT)
     workload = load_workload("tpch_q9_aux", REPO_ROOT, engine="duckdb")
@@ -89,7 +94,7 @@ def test_aux_workload_never_edits_root_cmake() -> None:
 def test_aux_write_paths_register_from_query_dir_not_backend() -> None:
     """The query registers its table function from its own directory; the DuckDB
     backend's table-function file (backends/duckdb/**) is the engine_backend run's."""
-    from accel_pipeline.workload import apply_workload_overrides
+    from accel_pipeline.config import apply_workload_overrides
     from accel_pipeline.layout import write_allowed
 
     pipeline_config = load_pipeline_config(repo_root=REPO_ROOT)

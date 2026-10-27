@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from accel_pipeline.config import PipelineConfig
+from accel_pipeline.config import PipelineConfig, load_run_workload, query_artifacts_dir
 from accel_pipeline.runlog import (
     STAGES,
     append_experiment_log,
@@ -21,7 +21,6 @@ from accel_pipeline.runlog import (
     log_structural_reanalysis_skipped,
     log_structural_reanalysis_triggered,
 )
-from accel_pipeline.workload import load_run_workload, query_artifacts_dir
 
 REQUEST_FILENAME = "structural_reanalysis_request.json"
 HISTORY_FILENAME = "structural_reanalysis_history.jsonl"

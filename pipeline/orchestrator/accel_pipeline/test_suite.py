@@ -24,12 +24,13 @@ import os
 import random
 import re
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
 import yaml
 
+from accel_pipeline.config import SuiteConfig
 from accel_pipeline.layout import suite_dir
 
 PARAMS, DOMAIN, WRITE_MIX, MANIFEST, TXNS = "params.sql", "domain.yaml", "write_mix.yaml", "suite.yaml", "txns"
@@ -44,25 +45,6 @@ VERBS = ("INSERT", "UPDATE", "DELETE")
 DOMAIN_TYPES = ("choice", "int", "decimal", "date", "pattern", "derived")
 
 
-@dataclass(frozen=True)
-class SuiteConfig:
-    """``test_suite:`` of config/default.yaml."""
-
-    acceptance_random_tuples: int = 20
-    differential_every: int = 5
-    iterate_random_tuples: int = 10
-    iterate_every: int = 10
-    validation_random_tuples: int = 12
-    bench_repeats: int = 3
-    write_mix: dict[str, Any] | None = None
-
-    @classmethod
-    def from_dict(cls, raw: dict[str, Any] | None) -> SuiteConfig:
-        raw = dict(raw or {})
-        known = {k: int(raw[k]) for k in cls.__dataclass_fields__ if k != "write_mix" and k in raw}
-        return cls(**known, write_mix=dict(raw.get("write_mix") or {}) or None)
-
-
 def suite_path(repo_root: Path, benchmark: str, query: int) -> Path:
     return repo_root / suite_dir(benchmark, query)
 
@@ -70,7 +52,7 @@ def suite_path(repo_root: Path, benchmark: str, query: int) -> Path:
 def gate_settings(pipeline_config: Any, workload: dict[str, Any], query: int) -> dict[str, Any]:
     """What the gates need to run the query's suite (the gate context's `test_suite`)."""
     from accel_pipeline.layout import workload_query_sql, workload_schema_constraints
-    from accel_pipeline.workload import aux_function_name, base_function_name
+    from accel_pipeline.config import aux_function_name, base_function_name
 
     root, bench = pipeline_config.repo_root, str(workload.get("benchmark_name", "tpch"))
     aux = workload.get("workload_kind") == "aux_state"

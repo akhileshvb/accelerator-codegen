@@ -8,24 +8,29 @@ from pathlib import Path
 from typing import Any, Callable
 
 from accel_pipeline.codex import StageRunRequest, create_agent_backend
-from accel_pipeline.config import ModelConfig, PipelineConfig, make_model_id
-from accel_pipeline.workload import load_run_workload, apply_workload_overrides, query_artifacts_dir
+from accel_pipeline.config import (
+    ModelConfig,
+    PipelineConfig,
+    make_model_id,
+    load_run_workload,
+    apply_workload_overrides,
+    query_artifacts_dir,
+)
 from accel_pipeline.gates.run import GateResult, run_gate
 from accel_pipeline.gates.stamps import reusable_gate_result
 from accel_pipeline.failure import (
     AGENT_BLOCKER, PROVIDER_CREDITS, PROVIDER_FLAKE, Failure, StageFailure, is_out_of_credits, is_transient_provider_failure,
 )
-from accel_pipeline.session import REDIRECT
-from accel_pipeline.session import run_in_session
+from accel_pipeline.session import REDIRECT, run_in_session
 from accel_pipeline.runlog import (
     log_gate_batch_start,
     log_stage_complete,
     log_stage_start,
     usage_from_metadata,
+    append_experiment_log,
 )
 from accel_pipeline.prompts import render_prompt, save_rendered_prompt, with_codex_tooling
 from accel_pipeline.layout import frozen_restore, frozen_snapshot
-from accel_pipeline.runlog import append_experiment_log
 
 _UNLIMITED_STAGE_TURNS = 10_000
 

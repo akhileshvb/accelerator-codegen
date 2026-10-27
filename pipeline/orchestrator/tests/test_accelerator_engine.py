@@ -6,13 +6,13 @@ from pathlib import Path
 
 import pytest
 
-from accel_pipeline.workload import (
+from accel_pipeline.config import (
     apply_workload_overrides,
     load_workload,
     resolve_workload_paths,
     workload_supported_engines,
+    load_pipeline_config,
 )
-from accel_pipeline.config import load_pipeline_config
 from accel_pipeline.gates.run import build_gate_context
 from accel_pipeline.prompts import render_prompt
 
@@ -138,7 +138,7 @@ def test_engine_targets_follow_the_engines_harness_convention():
 
 def test_registration_is_per_query():
     """Queries register from their own directory; the backend names no query."""
-    from accel_pipeline.workload import engine_host_conventions
+    from accel_pipeline.config import engine_host_conventions
 
     for engine in ("duckdb", "postgres", "mysql"):
         host = engine_host_conventions(engine, "tpch", 7)
@@ -182,7 +182,7 @@ def test_every_workload_loads_for_each_engine_it_lists():
 
 
 def test_every_engine_follows_one_harness_naming_convention():
-    from accel_pipeline.workload import engine_host_conventions
+    from accel_pipeline.config import engine_host_conventions
 
     for engine in ("duckdb", "postgres", "mysql"):
         host = engine_host_conventions(engine, "tpch", 7)

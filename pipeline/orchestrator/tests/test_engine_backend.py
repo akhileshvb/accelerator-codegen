@@ -5,8 +5,12 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from accel_pipeline.workload import apply_workload_overrides, load_workload
-from accel_pipeline.config import load_pipeline_config, load_model_config
+from accel_pipeline.config import (
+    apply_workload_overrides,
+    load_workload,
+    load_pipeline_config,
+    load_model_config,
+)
 from accel_pipeline.engine_backend.stage import (
     implementation_layers,
     run_engine_pipeline,

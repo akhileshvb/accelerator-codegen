@@ -3,9 +3,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from accel_pipeline.config import PipelineConfig, QuickTierConfig, RepairConfig
-from accel_pipeline.repair import run_gates_with_repair
+from accel_pipeline.repair import run_gates_with_repair, StageStopped
 from accel_pipeline.gates.run import GateResult
-from accel_pipeline.repair import StageStopped
 
 
 def _config(tmp_path, *, parallel, **repair) -> PipelineConfig:
@@ -22,7 +21,7 @@ PASSED = GateResult(name="correctness", status="pass", data={})
 
 @pytest.fixture(autouse=True)
 def stubs(monkeypatch):
-    for module in ("accel_pipeline.repair", "accel_pipeline.stages.base", "accel_pipeline.workload"):
+    for module in ("accel_pipeline.repair", "accel_pipeline.stages.base", "accel_pipeline.config"):
         monkeypatch.setattr(f"{module}.load_run_workload", lambda cfg, name: {"benchmark_name": "tpch"})
 
 

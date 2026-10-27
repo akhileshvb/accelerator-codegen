@@ -10,8 +10,12 @@ from pathlib import Path
 import pytest
 
 from accel_pipeline import preflight
-from accel_pipeline.workload import apply_workload_overrides, load_workload, workload_supported_engines
-from accel_pipeline.config import load_pipeline_config
+from accel_pipeline.config import (
+    apply_workload_overrides,
+    load_workload,
+    workload_supported_engines,
+    load_pipeline_config,
+)
 from accel_pipeline.prompts import (
     ContractRole,
     extract_predicate_checklist,

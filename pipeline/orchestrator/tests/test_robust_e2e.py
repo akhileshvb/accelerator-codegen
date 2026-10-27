@@ -12,11 +12,10 @@ from test_repair import _implement, _stage_world
 
 from accel_pipeline.optimization import attempt as attempt_mod
 from accel_pipeline import repair as repair_mod
-from accel_pipeline.repair import run_gates_with_repair
+from accel_pipeline.repair import run_gates_with_repair, RepairCtx, run_with_repair
 from accel_pipeline.gates.stamps import current_stamp, record_pass
 from accel_pipeline.gates.run import GateResult
 from accel_pipeline.optimization.eval import BenchmarkSample, MultiSampleBenchmark
-from accel_pipeline.repair import RepairCtx, run_with_repair
 
 WORKLOAD = {"benchmark_name": "toybench", "workload_kind": "aux_state", "query_number": 3}
 GATES = ["aux_unit", "aux_correctness", "aux_bench_sweep"]
@@ -36,7 +35,7 @@ def world(tmp_path, monkeypatch):
     world = _stage_world(tmp_path, monkeypatch)
     monkeypatch.setattr(repair_mod, "_run_gates", real_run_gates)
     monkeypatch.setattr(repair_mod, "load_run_workload", lambda cfg, name: WORKLOAD)
-    monkeypatch.setattr("accel_pipeline.workload.load_run_workload", lambda cfg, name: WORKLOAD)
+    monkeypatch.setattr("accel_pipeline.config.load_run_workload", lambda cfg, name: WORKLOAD)
     (tmp_path / ".gitignore").write_text("pipeline/artifacts/\nbuild/\nart/\n*.log\n")
     (tmp_path / "accelerators/toybench/q3/aux.cpp").write_text("// v0\n")
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)

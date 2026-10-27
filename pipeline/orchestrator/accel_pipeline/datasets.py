@@ -42,10 +42,9 @@ from sqlglot import exp
 from sqlglot.optimizer.qualify import qualify
 from sqlglot.optimizer.scope import traverse_scope
 
-from accel_pipeline.config import PipelineConfig
+from accel_pipeline.config import PipelineConfig, query_artifacts_dir
 from accel_pipeline.engine_host import ensure_dataset_loaded
 from accel_pipeline.layout import workload_schema_sql
-from accel_pipeline.workload import query_artifacts_dir
 
 if TYPE_CHECKING:
     from accel_pipeline.tools.data_tools import HostSql

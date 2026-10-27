@@ -16,7 +16,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
-from accel_pipeline.workload import read_json
+from accel_pipeline.config import read_json
 
 
 OPTIMIZATION_SATURATED = "OPTIMIZATION_SATURATED"

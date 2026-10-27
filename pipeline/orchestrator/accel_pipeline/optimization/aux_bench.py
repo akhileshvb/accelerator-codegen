@@ -8,7 +8,7 @@ import statistics
 from pathlib import Path
 from typing import Any
 
-from accel_pipeline.workload import query_artifacts_dir
+from accel_pipeline.config import query_artifacts_dir
 from accel_pipeline.sweep_csv import MEASUREMENT_COUNTERS, MEASUREMENT_TIMES, STORE_DIAGNOSTIC_FIELDS, coerce_diagnostic_field, parse_sweep_csv
 
 def bench_summary_path(repo_root: Path, query: int, workload: dict[str, Any] | None = None) -> Path:
