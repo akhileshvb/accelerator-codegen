@@ -322,3 +322,11 @@ def test_a_failing_build_stops_the_quick_check_before_any_run(repo):
                                      env_extra={"ACCEL_GATE_NAME": "quick_check", "FAKE_RC_build": "1"})
     assert proc.returncode == 1 and not any(call.startswith("run") for call in calls)
     assert result(gj, "quick_check")["step"] == "build"
+
+
+def test_quick_check_makes_the_benchmarks_test_database_when_the_build_dir_has_none(repo):
+    (repo / "build-release" / "test_dbs" / "tpch_test.duckdb").unlink()
+    proc, calls, _, _, _ = run_gate(repo, "run_aux_quick_check.sh", "5")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    runs = [c for c in calls if c.startswith("run ")]
+    assert "-R ^tpch_test_db_fixture$" in runs[0] and runs[1] == "run aux_unit_bin"

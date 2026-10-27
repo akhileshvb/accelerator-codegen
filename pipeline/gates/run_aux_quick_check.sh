@@ -100,6 +100,11 @@ engine_ready "${TARGETS[@]}" "${CTEST_TARGET_LIST[@]}" "${EXTRA_TARGETS[@]}" ||
   fail_step "${ENGINE_STEP}" "${ENGINE_HOST} build ${TARGETS[*]} ${CTEST_TARGETS} ${ACCEL_QUICK_TARGETS:-}" "${ENGINE_FAIL}"
 
 if [[ -z "${SANITIZER}" ]]; then
+  # the smoke reads the benchmark's test database, which a ctest fixture makes: make it when this build dir has none
+  if ! compgen -G "${ACCEL_BUILD_DIR}/test_dbs/${BENCHMARK_NAME}_test.*" >/dev/null; then
+    engine_run ctest --test-dir "${ACCEL_BUILD_DIR}" --no-tests=ignore -R "^${BENCHMARK_NAME}_test_db_fixture$" --output-on-failure
+    [[ ${RC} -eq 0 ]] || fail_step test_db "${HOST_RUN} ctest --test-dir ${ACCEL_BUILD_DIR} -R ^${BENCHMARK_NAME}_test_db_fixture$ --output-on-failure"
+  fi
   engine_run "${AUX_TEST_TARGET}"
   [[ ${RC} -eq 0 ]] || fail_step smoke "${HOST_RUN} ${AUX_TEST_TARGET}"
 fi

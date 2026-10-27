@@ -71,7 +71,8 @@ def repo(tmp_path):
     host.chmod(0o755)
     (root / "scripts").mkdir()
     (root / "scripts" / "check_backend_query_free.py").write_text("import sys; sys.exit(0)\n")
-    (root / "build-release").mkdir()
+    (root / "build-release" / "test_dbs").mkdir(parents=True)
+    (root / "build-release" / "test_dbs" / "tpch_test.duckdb").write_text("")  # the benchmark's test DB fixture ran
     return root
 
 
