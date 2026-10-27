@@ -7,7 +7,7 @@ import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 import pytest
-from accel_pipeline import frozen_paths
+from accel_pipeline import layout
 from accel_pipeline.optimization import attempt as optimization_attempt
 from accel_pipeline.optimization import structural
 from accel_pipeline.optimization.eval import EvalConfig, evaluate_attempt_outcome
@@ -171,7 +171,7 @@ def test_frozen_edit_notice_names_the_edited_pipeline_file(tmp_path):
     git("-c", "user.email=a@b", "-c", "user.name=t", "add", "-A")
     git("-c", "user.email=a@b", "-c", "user.name=t", "commit", "-qm", "init")
     cfg = SimpleNamespace(repo_root=tmp_path)
-    assert frozen_paths.edited(tmp_path) == [] and _frozen_edit_notice(cfg) == ""
+    assert layout.frozen_edited(tmp_path) == [] and _frozen_edit_notice(cfg) == ""
     gate.write_text("echo changed\n")
     notice = _frozen_edit_notice(cfg)
     assert "pipeline/gates/run_x.sh" in notice and "report_blocker" in notice and "not yours" in notice
@@ -192,7 +192,7 @@ def test_agent_sources_get_a_build_target_automatically(tmp_path):
     assert targets == ["agent_b_q7_bench_reads", "agent_b_q7_stress"]  # module tests and benches keep their own wiring
 def test_agent_scratch_is_writable_and_invisible_to_gates_and_audit(tmp_path):
     from accel_pipeline.gates.build_stamp import is_relevant
-    from accel_pipeline.write_ownership import is_owned_path
+    from accel_pipeline.layout import is_owned_path
 
     assert is_owned_path(tmp_path, "accelerators/toybench/q3/scratch/bench.cpp", query=3, benchmark="toybench")
     assert is_owned_path(tmp_path, "accelerators/toybench/q3/tests/agent_stress.cpp", query=3, benchmark="toybench")

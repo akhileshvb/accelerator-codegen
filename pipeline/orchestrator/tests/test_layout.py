@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from accel_pipeline import frozen_paths
+from accel_pipeline import layout
 
 
 def test_edits_to_frozen_paths_are_reverted(tmp_path):
@@ -12,14 +12,14 @@ def test_edits_to_frozen_paths_are_reverted(tmp_path):
     backend = tmp_path / "backends/anyengine/engine.cpp"
     backend.parent.mkdir(parents=True)
     backend.write_text("v1\n")
-    before = frozen_paths.snapshot(tmp_path)
+    before = layout.frozen_snapshot(tmp_path)
 
     gate.write_text("weakened\n")
     (tmp_path / "substrate").mkdir()
     (tmp_path / "substrate/new.hpp").write_text("x\n")
     backend.write_text("v2\n")
 
-    changed = frozen_paths.restore(tmp_path, before)
+    changed = layout.frozen_restore(tmp_path, before)
     assert gate.read_text() == "original\n"
     assert not (tmp_path / "substrate/new.hpp").exists()
     assert backend.read_text() == "v2\n"
@@ -36,10 +36,10 @@ def test_a_committed_change_is_kept(tmp_path):
     subprocess.run([*git, "init", "-q"], check=True)
     subprocess.run([*git, "add", "-A"], check=True)
     subprocess.run([*git, "commit", "-qm", "v1"], check=True)
-    before = frozen_paths.snapshot(tmp_path)
+    before = layout.frozen_snapshot(tmp_path)
 
     gate.write_text("v2 fix\n")
     subprocess.run([*git, "commit", "-qam", "fix"], check=True)
 
-    assert frozen_paths.restore(tmp_path, before) == []
+    assert layout.frozen_restore(tmp_path, before) == []
     assert gate.read_text() == "v2 fix\n"

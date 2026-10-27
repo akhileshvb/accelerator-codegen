@@ -423,7 +423,7 @@ def _pin_engine(data: dict[str, Any], engine: str, repo_root: Path) -> dict[str,
     bench = str(data.get("benchmark_name") or data.get("benchmark") or "tpch")
     qnum = data.get("query_number")
     data["engine_host"] = engine_host_conventions(engine, bench, qnum if qnum is not None else "<N>", repo_root)
-    # backends/<engine>/** belongs to the engine_backend run and substrate/** to nobody (write_ownership enforces both).
+    # backends/<engine>/** belongs to the engine_backend run and substrate/** to nobody (layout enforces both).
     own_dir = [query_glob(bench, qnum)] if qnum is not None else []
     data["write_paths"] = _dedupe([*(data.get("write_paths") or []), *own_dir])
     return data

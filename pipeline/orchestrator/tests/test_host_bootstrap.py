@@ -291,7 +291,7 @@ def test_host_bootstrap_critique_fail_reinvokes(tmp_path, monkeypatch):
 
 
 def _hb_write(path, engine="postgres", stage="host_bootstrap"):
-    from accel_pipeline.write_ownership import write_allowed
+    from accel_pipeline.layout import write_allowed
 
     pc = load_pipeline_config(repo_root=REPO_ROOT)
     w = load_workload("tpch_q1_aux", REPO_ROOT, engine=engine)

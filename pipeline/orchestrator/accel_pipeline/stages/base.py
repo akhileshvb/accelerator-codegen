@@ -19,7 +19,7 @@ from accel_pipeline.pipeline_log import (
     usage_from_metadata,
 )
 from accel_pipeline.prompts import render_prompt, save_rendered_prompt, with_codex_tooling
-from accel_pipeline.frozen_paths import restore as restore_frozen, snapshot as snapshot_frozen
+from accel_pipeline.layout import frozen_restore, frozen_snapshot
 from accel_pipeline.playbook import append_experiment_log
 
 _UNLIMITED_STAGE_TURNS = 10_000
@@ -156,7 +156,7 @@ def run_agent_stage(
         agent_model=agent_model,
         max_turns=max_turns,
     )
-    frozen = snapshot_frozen(pipeline_config.repo_root)
+    frozen = frozen_snapshot(pipeline_config.repo_root)
     before = _tree_state(must_change) if must_change else None
     art = query_artifacts_dir(pipeline_config.repo_root, query, workload=workload)
 
@@ -173,7 +173,7 @@ def run_agent_stage(
         print(f"[pipeline] {stage}: no file under {must_change} changed; re-invoking", flush=True)
         request = replace(request, user_message=request.user_message + "\n\n" + _no_change_nudge(must_change))
         result = run(request)
-    reverted = restore_frozen(pipeline_config.repo_root, frozen)
+    reverted = frozen_restore(pipeline_config.repo_root, frozen)
     if reverted:
         print(f"[pipeline] {stage}: reverted agent edits to frozen paths: {', '.join(reverted)}", flush=True)
         append_experiment_log(

@@ -55,7 +55,7 @@ def _claim(art: Path, stage: str, cap: int) -> int:
 
 def snapshot_tree(repo_root: Path, dest: Path) -> dict[str, str]:
     """The changed files (git status) and their signatures, copied into `dest`."""
-    from accel_pipeline.write_ownership import tree_snapshot
+    from accel_pipeline.layout import tree_snapshot
 
     before = tree_snapshot(repo_root) or {}
     for rel in before:
@@ -68,7 +68,7 @@ def snapshot_tree(repo_root: Path, dest: Path) -> dict[str, str]:
 
 def restore_tree(repo_root: Path, before: dict[str, str], saved: Path) -> list[str]:
     """Undo every change since `snapshot_tree`; returns the paths put back."""
-    from accel_pipeline.write_ownership import tree_snapshot
+    from accel_pipeline.layout import tree_snapshot
 
     now = tree_snapshot(repo_root) or {}
     undone = []

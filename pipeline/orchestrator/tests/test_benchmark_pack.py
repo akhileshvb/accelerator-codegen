@@ -90,7 +90,7 @@ def test_aux_write_paths_register_from_query_dir_not_backend() -> None:
     """The query registers its table function from its own directory; the DuckDB
     backend's table-function file (backends/duckdb/**) is the engine_backend run's."""
     from accel_pipeline.workload import apply_workload_overrides
-    from accel_pipeline.write_ownership import write_allowed
+    from accel_pipeline.layout import write_allowed
 
     pipeline_config = load_pipeline_config(repo_root=REPO_ROOT)
     workload = load_workload("tpch_q2_aux", REPO_ROOT, engine="duckdb")

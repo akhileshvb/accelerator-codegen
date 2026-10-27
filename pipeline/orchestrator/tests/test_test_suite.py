@@ -18,7 +18,7 @@ from accel_pipeline.optimization.aux_bench import aggregate_sweep_repeats
 from accel_pipeline.config import PipelineConfig, RepairConfig
 from accel_pipeline.failure import Failure, failure_from_gate
 from accel_pipeline.gates.run import GateResult
-from accel_pipeline.write_ownership import layer_write_verdict
+from accel_pipeline.layout import layer_write_verdict
 
 QUERY_SQL = "SELECT k, SUM(v) FROM t WHERE seg = $1 AND d < $2 GROUP BY k ORDER BY 2 DESC LIMIT 10\n"
 GATES = Path(__file__).resolve().parents[2] / "gates"

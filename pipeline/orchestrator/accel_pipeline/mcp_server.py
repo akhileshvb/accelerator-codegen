@@ -83,7 +83,7 @@ def _build_context(args: argparse.Namespace):
 def _session_write_check(pipeline_config, query: int, stage: str):
     """The ownership check of this agent session (it starts with the session, as the orchestrator's does), or None
     where the write policy does not apply."""
-    from accel_pipeline.write_ownership import StageWriteCheck
+    from accel_pipeline.layout import StageWriteCheck
 
     if pipeline_config.write_policy != "enforce" or not stage or stage.startswith("verus_"):
         return None

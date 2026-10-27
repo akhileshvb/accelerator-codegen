@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from accel_pipeline import prims_library as pl
-from accel_pipeline.write_ownership import write_allowed
+from accel_pipeline.layout import write_allowed
 
 REAL_ROOT = Path(__file__).resolve().parents[3]
 P = pl.PRIMS_REL

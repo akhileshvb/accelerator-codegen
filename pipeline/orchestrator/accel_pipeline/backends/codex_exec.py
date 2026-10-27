@@ -183,7 +183,7 @@ class CodexExecBackend:
         policy = str(getattr(cfg, "write_policy", "enforce"))
         if policy == "off" or self._stage.startswith("verus_"):  # Verus steps work in a sandboxed workspace
             return self._run_codex(request)
-        from accel_pipeline.write_ownership import StageWriteCheck, violation_message
+        from accel_pipeline.layout import StageWriteCheck, violation_message
 
         check = StageWriteCheck(cfg.repo_root, query=self._query, stage=self._stage, pipeline_config=cfg)
         result = self._run_codex(request)

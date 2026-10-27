@@ -113,7 +113,7 @@ def test_ensure_build_dir_retargets_source(tmp_path: Path, monkeypatch):
 
 
 def test_write_ownership_blocks_cross_query_and_shared_during_opt(tmp_path: Path):
-    from accel_pipeline.write_ownership import write_allowed
+    from accel_pipeline.layout import write_allowed
 
     owned = tmp_path / "accelerators/tpch/q7/duckdb/aux/module.cpp"
     foreign = tmp_path / "accelerators/tpch/q8/duckdb/aux/module.cpp"
@@ -149,7 +149,7 @@ def test_write_ownership_blocks_cross_query_and_shared_during_opt(tmp_path: Path
 
 
 def test_shell_blocks_python_foreign_rewrite():
-    from accel_pipeline.write_ownership import shell_command_cross_query_write
+    from accel_pipeline.layout import shell_command_cross_query_write
 
     assert shell_command_cross_query_write(
         "sed -n '1,20p' accelerators/tpch/q22/duckdb/aux/module.cpp", query=4

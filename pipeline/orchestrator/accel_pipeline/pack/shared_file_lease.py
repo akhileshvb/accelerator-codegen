@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from accel_pipeline.pack.host_lock import FairLock, LockTimeout
-from accel_pipeline.write_ownership import is_shared_path
+from accel_pipeline.layout import is_shared_path
 
 _LOCK_DIRNAME = ".locks"
 _LOCK_NAME = "shared_tree"

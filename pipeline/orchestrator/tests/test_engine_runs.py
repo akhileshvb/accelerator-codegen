@@ -11,7 +11,7 @@ from accel_pipeline.pack.engine_quarantine import (
     foreign_trees_for_workload,
     restore_quarantine,
 )
-from accel_pipeline.write_ownership import owned_path_globs, write_allowed
+from accel_pipeline.layout import owned_path_globs, write_allowed
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 

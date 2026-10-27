@@ -7,7 +7,7 @@ library is shared by every worker, so it only changes through `primitive_publish
 
 * the agent stages candidate files under ``pipeline/prims_staging/<repo-relative
   path>`` (direct writes anywhere under accelerators/prims/ -- the headers, README.md
-  and tests/test_prims.cpp -- are denied by ``write_ownership``);
+  and tests/test_prims.cpp -- are denied by ``layout``);
 * publish takes an exclusive lock, checks the candidates are additions only,
   structurally complete (header comment, tests), not a duplicate of a published
   primitive, and workload-agnostic; appends the catalogue row to README.md itself

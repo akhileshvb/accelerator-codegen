@@ -10,7 +10,7 @@ from types import SimpleNamespace
 import pytest
 
 from accel_pipeline import layout, sandbox
-from accel_pipeline.write_ownership import StageWriteCheck, violation_message
+from accel_pipeline.layout import StageWriteCheck, violation_message
 
 PRIM_A, PRIM_B = f"{layout.PRIMS}/toy_a.h", f"{layout.PRIMS}/toy_b.h"
 PROOF = f"{layout.PROOFLIB}/toy_lib.rs"

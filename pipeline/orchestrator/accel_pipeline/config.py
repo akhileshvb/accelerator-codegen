@@ -14,23 +14,13 @@ from typing import Any
 
 import yaml
 
+from accel_pipeline.layout import DEFAULT_SHARED_PATH_GLOBS
 from accel_pipeline.test_suite import SuiteConfig
 
 DEFAULT_BUILD_DIR = "build-release"
 DEFAULT_GATES_DIR = "pipeline/gates"
 SANDBOXES = ("bwrap", "none")
 WRITE_POLICIES = ("enforce", "warn", "off")
-
-# Paths that need the shared-file lease under concurrent pack workers.
-DEFAULT_SHARED_PATH_GLOBS = (
-    "backends/*/api/**",  # engine backends: generic only, queries register from their own directories
-    "backends/*/engine/**",
-    "backends/*/state/**",
-    "eval/tests/test_support/**",
-    "eval/bench/**/*_arg_variants.*",
-    "accelerators/prims/**",  # changed only through primitive_publish
-    "accelerators/*/common/**",  # helpers shared by one benchmark's queries
-)
 
 
 # ---- settings ---------------------------------------------------------------------------------
@@ -229,7 +219,7 @@ class PipelineConfig:
     worker_id: str = ""  # one of the concurrent pack workers
     codex_home: Path | None = None
     shared_paths: list[str] = field(default_factory=lambda: list(DEFAULT_SHARED_PATH_GLOBS))
-    # The run's identity (set by apply_workload_overrides); write_ownership applies the per-layer
+    # The run's identity (set by apply_workload_overrides); layout applies the per-layer
     # write rules by it: backends/<engine>/** for engine_backend runs, accelerators/<bench>/q<N>/** for query runs.
     workload_kind: str = ""
     engine_name: str = ""
@@ -238,7 +228,7 @@ class PipelineConfig:
     sandbox: str = "bwrap"
     sandbox_extra_ro: list[str] = field(default_factory=list)  # more host paths for the sandbox, absolute
     sandbox_extra_rw: list[str] = field(default_factory=list)
-    # The ownership check of an agent stage (write_ownership.StageWriteCheck): enforce refuses gates while the session
+    # The ownership check of an agent stage (layout.StageWriteCheck): enforce refuses gates while the session
     # has out-of-bounds edits, then reverts them and fails the stage; warn only logs them to the run's events.
     write_policy: str = "enforce"
     measurement: MeasurementConfig = field(default_factory=MeasurementConfig)

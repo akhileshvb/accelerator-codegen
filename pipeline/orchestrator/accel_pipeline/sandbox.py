@@ -6,7 +6,7 @@ codex and the binds a mode asks for.  A bind is ``(mode, src, dst)``, mode ``rw`
 read-only.  The Verus mounts live in ``verus.sandbox``; the C++ ones (``cpp_mounts``) are here.
 
 The sandbox cuts what an agent can write (substrate/, workloads/) and see; ownership between
-queries and backends is checked after the stage (``write_ownership.check_stage``).
+queries and backends is checked after the stage (``layout.StageWriteCheck``).
 """
 
 from __future__ import annotations

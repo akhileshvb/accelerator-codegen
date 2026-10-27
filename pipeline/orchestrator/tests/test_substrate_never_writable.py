@@ -22,7 +22,7 @@ from accel_pipeline.workload import (
     workload_supported_engines,
 )
 from accel_pipeline.config import load_pipeline_config
-from accel_pipeline.write_ownership import shell_command_layer_write, write_allowed
+from accel_pipeline.layout import shell_command_layer_write, write_allowed
 
 REPO = Path(__file__).resolve().parents[3]
 

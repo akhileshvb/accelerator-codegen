@@ -63,7 +63,7 @@ def admission_refusal_payload(ctx: ToolContext, gate_name: str) -> str:
     """The refusal (JSON) when `gate_name` may not run yet, "" when it may: the session edited paths its stage may
     not write, or a heavy gate has no passing quick_check on this code."""
     from accel_pipeline.quick import admission_refusal
-    from accel_pipeline.write_ownership import violation_message
+    from accel_pipeline.layout import violation_message
 
     if ctx.writes is not None and (bad := ctx.writes.violations()):
         reason = f"{gate_name} refused: {violation_message(ctx.stage, bad)}"

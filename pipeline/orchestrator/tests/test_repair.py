@@ -281,8 +281,8 @@ def _stage_world(tmp_path, monkeypatch, mode="ok"):
         "create_agent_backend": lambda **k: backend,
         "log_stage_start": lambda *a, **k: None,
         "log_stage_complete": lambda *a, **k: None,
-        "snapshot_frozen": lambda root: {},
-        "restore_frozen": lambda root, snap: [],
+        "frozen_snapshot": lambda root: {},
+        "frozen_restore": lambda root, snap: [],
     }.items():
         monkeypatch.setattr(base, name, value)
     monkeypatch.setattr(config_mod, "resolve_stage_provider", lambda stage, cfg: "codex_exec")

@@ -229,10 +229,10 @@ def budget_footer(pipeline_config: Any, stage: str, query: int) -> str:
 
 
 def _frozen_edit_notice(pipeline_config: Any) -> str:
-    from accel_pipeline.frozen_paths import edited
+    from accel_pipeline.layout import frozen_edited
 
     repo_root = getattr(pipeline_config, "repo_root", None)
-    paths = edited(Path(repo_root)) if repo_root else []
+    paths = frozen_edited(Path(repo_root)) if repo_root else []
     if not paths:
         return ""
     shown = ", ".join(paths[:5]) + (f" (+{len(paths) - 5} more)" if len(paths) > 5 else "")

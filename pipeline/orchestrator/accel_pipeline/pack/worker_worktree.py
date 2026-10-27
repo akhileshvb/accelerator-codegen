@@ -15,7 +15,7 @@ import sys
 from pathlib import Path
 
 from accel_pipeline.prims_library import is_prims_path, refresh_prims
-from accel_pipeline.write_ownership import owned_path_globs, query_id_from_rel
+from accel_pipeline.layout import owned_path_globs, query_id_from_rel
 
 
 def primary_repo_root(repo_root: Path | None = None) -> Path:

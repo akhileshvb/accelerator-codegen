@@ -11,7 +11,7 @@ from accel_pipeline.engine_backend.stage import (
     implementation_layers,
     run_engine_pipeline,
 )
-from accel_pipeline.write_ownership import write_allowed
+from accel_pipeline.layout import write_allowed
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]

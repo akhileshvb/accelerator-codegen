@@ -187,12 +187,12 @@ class ProgressClock:
 
     def _owned_state(self) -> dict[str, str]:
         """{path: content signature} of the changed files this stage may write."""
-        from accel_pipeline.write_ownership import layer_write_verdict, tree_snapshot
+        from accel_pipeline.layout import layer_write_verdict, tree_snapshot
 
         cfg = self.cfg
         identity = dict(workload_kind=str(getattr(cfg, "workload_kind", "") or ""),
                         engine_name=str(getattr(cfg, "engine_name", "") or ""))
-        if getattr(cfg, "benchmark_name", ""):  # else write_ownership's own default applies
+        if getattr(cfg, "benchmark_name", ""):  # else the layout's own default applies
             identity["benchmark"] = str(cfg.benchmark_name)
         snapshot = tree_snapshot(self.repo_root) or {}
         return {rel: sig for rel, sig in snapshot.items()
