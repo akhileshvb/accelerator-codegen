@@ -118,5 +118,5 @@ def test_a_harness_that_fails_on_the_declining_module_is_named_as_the_harness(re
                                             "FAKE_RC_run": "1"})
     assert proc.returncode == 1
     data = result(gj, "harness_acceptance")
-    assert data["reason"].startswith("diff_bin exited 1 on query 5 with the declining module") and "harness is wrong" in data["reason"]
+    assert data["reason"].startswith("diff_bin exited 1 on query 5 with every read answered by the reference SQL") and "harness is wrong" in data["reason"]
     assert data["owner"] == "harness"

@@ -1338,12 +1338,12 @@ def _bootstrap_under_repair(pipeline_config, model_config, engine, representativ
 
 def accept_harness(pipeline_config: PipelineConfig, model_config: ModelConfig, workload_name: str,
                    workload: dict[str, Any], query: int, model_overrides: dict[str, str] | None = None) -> None:
-    """The harnesses pass on this query, with the declining module the test_suite stage registered (every answer is
-    the reference SQL's), before any accelerator depends on them: the bootstrap gate can only smoke them, no query
-    being registered yet. A failure is the harness's: it is recorded as a harness request, host_bootstrap re-runs
-    with it as a required fix, and the check repeats."""
+    """The harnesses pass on this query with every read answered by the reference SQL (the gate forces the fallback),
+    when the suite freezes and after host_bootstrap revises them: the bootstrap gate can only smoke them. A failure is
+    the harness's: it is recorded as a harness request, host_bootstrap re-runs with it as a required fix, and the
+    check repeats."""
     if workload.get("workload_kind") != "aux_state" or not workload.get("engine_name"):
-        return  # no declining module, or no engine harnesses to run
+        return  # no engine harnesses to run
     engine = sanitize_engine_name(str(workload["engine_name"]))
     for repairs in range(_ACCEPTANCE_REPAIRS + 1):
         result = gate_runner.run_gate(pipeline_config, "harness_acceptance", query, workload,
@@ -1364,7 +1364,7 @@ def accept_harness(pipeline_config: PipelineConfig, model_config: ModelConfig, w
     report = host_bootstrap_dir(pipeline_config.repo_root, engine) / "stop_report.md"
     report.write_text(f"# Stopped: the {engine} harnesses fail on Q{query} after {_ACCEPTANCE_REPAIRS} repairs\n\n"
                       f"{render_failure(failure)}\n", encoding="utf-8")
-    raise StageStopped(f"the {engine} harnesses fail on Q{query} with the declining module", report)
+    raise StageStopped(f"the {engine} harnesses fail on Q{query} with every read answered by the reference SQL", report)
 
 
 def ensure_host_bootstrap_for_workload(pipeline_config: PipelineConfig, model_config: ModelConfig, workload_name: str,

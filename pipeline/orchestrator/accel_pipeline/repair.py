@@ -445,7 +445,7 @@ def report_harness_defect(ctx: RepairCtx, failure: Failure) -> None:
 def revise_upstream(ctx: RepairCtx) -> bool:
     """Requests against what the stage does not own go to their owners before its own work is touched again: a
     change request against the frozen test suite to the tester, a harness defect to host_bootstrap."""
-    from accel_pipeline.engine_backend import pending_harness_requests, run_host_bootstrap  # both import this module
+    from accel_pipeline.engine_backend import accept_harness, pending_harness_requests, run_host_bootstrap  # both import this module
     from accel_pipeline.stages import revise_test_suite
 
     revised = False
@@ -457,6 +457,8 @@ def revise_upstream(ctx: RepairCtx) -> bool:
     if ctx.stage != "host_bootstrap" and engine and pending_harness_requests(ctx.pipeline_config.repo_root, engine):
         run_host_bootstrap(ctx.pipeline_config, ctx.model_config, engine_name=engine,
                            representative_workload=ctx.workload_name, model_overrides=ctx.model_overrides)
+        accept_harness(ctx.pipeline_config, ctx.model_config, ctx.workload_name, ctx.workload, ctx.query,
+                       ctx.model_overrides)  # the revised harnesses on this query, as at the suite's freeze
         ctx.log("host_bootstrap fixed the recorded harness defects; the next check runs on the revised harnesses")
         revised = True
     return revised

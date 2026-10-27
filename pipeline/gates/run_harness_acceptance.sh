@@ -1,15 +1,18 @@
 #!/usr/bin/env bash
-# The workload harnesses on a real query before any accelerator depends on them: the differential (with the query's
-# frozen suite), the multi-connection stress and the cross-accelerator test, on the subset dataset, against the module
-# the test_suite stage registered, which declines every call so the reference SQL answers. Every answer is correct by
-# construction, so a harness that fails here is wrong (it ignores the suite, throws on a write that leaves the answer
-# unchanged, writes a read-only fixture, ...): the failure goes to host_bootstrap, not to the query.
+# The workload harnesses on a real query: the differential (with the query's frozen suite), the multi-connection
+# stress and the cross-accelerator test, at once on the subset dataset, with every read forced to the fallback so the
+# reference SQL answers. Every answer is correct by construction, so a harness that fails here is wrong (it ignores
+# the suite, throws on a write that leaves the answer unchanged, holds the shared database, ...): the failure goes to
+# host_bootstrap, not to the query. It runs when the suite freezes and after host_bootstrap revises a harness.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 QUERY="${1:-}"
 [[ -n "${QUERY}" ]] || { echo "usage: run_harness_acceptance.sh <query_number>" >&2; exit 1; }
 export ACCEL_GATE_TIER=quick
+# Every read to the fallback SQL: the answers are the reference's whatever module is registered, so the check holds
+# after the implementation too (host_bootstrap revising a harness mid-run).
+export ACCEL_AUX_FORCE_FALLBACK=1
 
 # shellcheck source=aux_gate_common.sh
 source "$(dirname "${BASH_SOURCE[0]}")/aux_gate_common.sh"
@@ -55,7 +58,7 @@ for target in "${HARNESSES[@]}"; do
   [[ ! -f "${RUNS}/${target}.run.json" ]] || mv "${RUNS}/${target}.run.json" "${JSON%.json}.run.json"
   reason="$(cat "${RUNS}/${target}.reason" 2>/dev/null)"
   emit_result "${JSON}" harness_acceptance fail \
-    "${reason:-${target} exited ${RC}} on query ${QUERY} with the declining module, whose answers are the reference SQL's, run beside the other harnesses as aux_exit runs them: the harness is wrong" \
+    "${reason:-${target} exited ${RC}} on query ${QUERY} with every read answered by the reference SQL, run beside the other harnesses as aux_exit runs them: the harness is wrong" \
     "${LOGS}" "target=${target}" "exit_code:=${RC}" "owner=harness"
 done
 emit_result "${JSON}" harness_acceptance pass "the differential, multi-connection and cross-accelerator harnesses pass on query ${QUERY}" "${LOGS}"
