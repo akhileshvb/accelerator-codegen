@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from accel_pipeline.digests import (
+from accel_pipeline.prompts import (
     AUDIT_FINDINGS_FILE,
     IMPLEMENTATION_BASE_FILE,
     audit_context,

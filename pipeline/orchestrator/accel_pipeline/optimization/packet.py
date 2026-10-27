@@ -7,7 +7,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from accel_pipeline.digests import (
+from accel_pipeline.prompts import (
     analysis_for_optimization,
     compact_base_analysis_for_optimization,
 )

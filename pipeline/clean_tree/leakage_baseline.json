@@ -393,10 +393,6 @@
   "engine": 26,
   "symbol": 2
  },
- "pipeline/orchestrator/tests/test_digests.py": {
-  "engine": 1,
-  "path": 2
- },
  "pipeline/orchestrator/tests/test_engine_backend.py": {
   "engine": 93,
   "path": 16,
@@ -440,7 +436,8 @@
   "path": 3
  },
  "pipeline/orchestrator/tests/test_prompts.py": {
-  "engine": 1
+  "engine": 2,
+  "path": 2
  },
  "pipeline/orchestrator/tests/test_runlog.py": {
   "engine": 1
