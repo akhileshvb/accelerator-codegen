@@ -4,14 +4,14 @@ import json
 from dataclasses import dataclass
 
 from accel_pipeline.config import PipelineConfig
-from accel_pipeline.pipeline_log import log_structural_reanalysis_request
+from accel_pipeline.runlog import log_structural_reanalysis_request
 from accel_pipeline.structural_reanalysis import (
     BOTTLENECK_TYPES,
     max_structural_reanalysis_count,
     write_request,
 )
 from accel_pipeline.workload import load_run_workload
-from accel_pipeline.state import load_or_create
+from accel_pipeline.runlog import load_or_create
 
 
 @dataclass

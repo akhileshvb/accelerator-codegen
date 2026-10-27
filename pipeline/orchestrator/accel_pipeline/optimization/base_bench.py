@@ -14,7 +14,7 @@ from accel_pipeline.optimization.kernel_snapshot import (
     maybe_restore_best_kernel,
     snapshot_best_kernel,
 )
-from accel_pipeline.playbook import append_experiment_log
+from accel_pipeline.runlog import append_experiment_log
 from accel_pipeline.optimization.profile_investigation import build_profile_investigation
 
 
@@ -520,7 +520,7 @@ def process_base_bench_after_gates(
         workload=workload,
     )
 
-    from accel_pipeline.pipeline_log import log_base_bench_summary
+    from accel_pipeline.runlog import log_base_bench_summary
 
     log_base_bench_summary(
         repo_root,

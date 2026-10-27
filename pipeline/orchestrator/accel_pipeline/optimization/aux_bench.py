@@ -397,7 +397,7 @@ def record_aux_bench_sweep_outcome(
     workload: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Update optimization_state and append experiment_log.md after a bench sweep."""
-    from accel_pipeline.playbook import append_experiment_log
+    from accel_pipeline.runlog import append_experiment_log
 
     normalized_kind = _normalize_bench_change_kind(change_kind)
     state = load_optimization_state(repo_root, query, workload) or {

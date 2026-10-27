@@ -175,7 +175,7 @@ def run_agent(
 
     from accel_pipeline.codex import StageRunRequest, CodexExecBackend
     from accel_pipeline.config import make_model_id, resolve_stage_provider
-    from accel_pipeline.pipeline_log import log_stage_complete, log_stage_start, usage_from_metadata
+    from accel_pipeline.runlog import log_stage_complete, log_stage_start, usage_from_metadata
 
     provider = resolve_stage_provider(stage, model_config)
     if provider != "codex_exec":

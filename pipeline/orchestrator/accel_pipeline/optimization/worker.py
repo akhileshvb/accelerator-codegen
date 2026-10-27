@@ -23,7 +23,7 @@ from accel_pipeline.optimization.worker_checkpoint import (
     load_worker_checkpoint,
 )
 from accel_pipeline.optimization.worker_metrics import WorkerMetrics, save_worker_metrics
-from accel_pipeline.pipeline_log import log_event
+from accel_pipeline.runlog import log_event
 from accel_pipeline.session import MAIN, run_in_session
 from accel_pipeline.prompts import render_prompt, save_rendered_prompt, with_codex_tooling
 

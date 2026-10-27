@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 
 
-from accel_pipeline.pipeline_log import (
+from accel_pipeline.runlog import (
     events_path,
     log_event,
     log_gate_batch_start,

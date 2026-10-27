@@ -9,7 +9,7 @@ from accel_pipeline.config import PipelineConfig
 from accel_pipeline.workload import query_artifacts_dir
 from accel_pipeline.failure import extract_crash_highlights
 from accel_pipeline.optimization.smoke import SmokeResult
-from accel_pipeline.playbook import append_experiment_log
+from accel_pipeline.runlog import append_experiment_log
 
 
 def _tail(text: str, max_chars: int) -> str:

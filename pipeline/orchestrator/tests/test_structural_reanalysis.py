@@ -135,7 +135,7 @@ class TestStructuralReanalysisFlow:
 class TestReanalysisToolPolicy:
     def test_request_tool_rejects_exhausted_budget(self, tmp_path, monkeypatch):
         from accel_pipeline.config import load_pipeline_config
-        from accel_pipeline.state import PipelineState, state_path
+        from accel_pipeline.runlog import PipelineState, state_path
         from accel_pipeline.tools.reanalysis_tools import ToolContext, make_reanalysis_tools
 
         monkeypatch.setenv("ACCEL_PIPELINE_PRIMARY_REPO", str(REPO_ROOT))

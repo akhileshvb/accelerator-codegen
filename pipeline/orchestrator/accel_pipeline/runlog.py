@@ -1,14 +1,81 @@
-"""Orchestrator logging to stderr and pipeline_events.jsonl."""
+"""The run's record: where it is, what happened, and where the time and money went.
+
+The state of a run (`PipelineState`: the stage it is in, resumable), its events (`pipeline_events.jsonl` and the
+stderr log lines), the experiment log the agents and the repair loop write, the timeline of wall time and cost
+(`accel timeline <run dir>` -> `<run dir>/TIMELINE.md`) and the status of a run (`accel status <run dir>`).
+
+The timeline's stages come from pipeline_events.jsonl; model and tool time from the codex rollouts (model time: from
+a turn start or a tool result to the model's next item; tool time per tool: call to output); gate durations from the
+pipeline log, attributed to the stage running when they were logged; cost from each session's token usage at the
+model's price (accel_pipeline.verus.usage).
+"""
 
 from __future__ import annotations
 
+import collections
+import datetime as dt
+import glob
 import json
+import re
 import sys
+import time
+from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from accel_pipeline.workload import query_artifacts_dir
+from accel_pipeline.verus.usage import cost_usd, session_usage
+from accel_pipeline.workload import load_workload, query_artifacts_dir
+
+STAGES = ("analysis", "test_suite", "implementation", "optimization", "audit")
+# stage names of older pipeline_state.json files
+STAGE_ALIASES = {"adversarial_tests": "test_suite"}
+
+
+@dataclass
+class PipelineState:
+    query: int
+    workload: str
+    engine: str
+    stage: str = "analysis"
+    optimization_iter: int = 0
+    session_id: str = ""
+    # "" while running or finished; "stopped:<reason>" after a clean stop (--resume continues)
+    status: str = ""
+    structural_reanalysis_count: int = 0
+    last_gate: dict[str, str] = field(default_factory=dict)
+
+    @classmethod
+    def load(cls, path: Path) -> PipelineState:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        known = {f.name for f in cls.__dataclass_fields__.values()}
+        filtered = {k: v for k, v in data.items() if k in known}
+        filtered["stage"] = STAGE_ALIASES.get(filtered.get("stage", ""), filtered.get("stage", "analysis"))
+        return cls(**filtered)
+
+    def save(self, path: Path) -> None:
+        path.write_text(json.dumps(asdict(self), indent=2), encoding="utf-8")
+
+
+def state_path(repo_root: Path, query: int, workload_name: str, engine: str) -> Path:
+    workload = load_workload(workload_name, repo_root, engine=engine)
+    return query_artifacts_dir(repo_root, query, workload=workload) / "pipeline_state.json"
+
+
+def load_or_create(repo_root: Path, query: int, workload: str, engine: str, resume: bool) -> PipelineState:
+    path = state_path(repo_root, query, workload, engine)
+    if resume and path.is_file():
+        return PipelineState.load(path)
+    state = PipelineState(query=query, workload=workload, engine=engine, session_id=f"q{query}-{engine}")
+    state.save(path)
+    return state
+
+
+def advance_stage(state: PipelineState, repo_root: Path) -> None:
+    idx = STAGES.index(state.stage)
+    if idx + 1 < len(STAGES):
+        state.stage = STAGES[idx + 1]
+    state.save(state_path(repo_root, state.query, state.workload, state.engine))
 
 
 def events_path(repo_root: Path, query: int, workload: dict[str, Any] | None) -> Path:
@@ -839,3 +906,186 @@ def squeeze_truncate(text: str, max_chars: int) -> str:
     if len(compact) <= max_chars:
         return compact
     return compact[: max_chars - 3] + "..."
+
+
+def append_experiment_log(
+    repo_root: Path, query: int, line: str, *, workload: dict | None = None
+) -> Path:
+    path = query_artifacts_dir(repo_root, query, workload=workload) / "experiment_log.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as f:
+        f.write(line.rstrip() + "\n")
+    return path
+
+
+@dataclass
+class Stage:
+    name: str
+    model: str
+    start: dt.datetime
+    end: dt.datetime | None = None
+
+
+def _ts(text: str) -> dt.datetime:
+    return dt.datetime.fromisoformat(text.replace("Z", "+00:00"))
+
+
+def _minutes(seconds: float) -> str:
+    return f"{seconds / 60:.1f}"
+
+
+def read_stages(path: str) -> list[Stage]:
+    stages: list[Stage] = []
+    open_stage: dict[str, Stage] = {}
+    for line in open(path):
+        event = json.loads(line)
+        if event.get("event") == "stage_start":
+            open_stage[event["stage"]] = Stage(event["stage"], event.get("model", ""), _ts(event["ts"]))
+            stages.append(open_stage[event["stage"]])
+        elif event.get("event") == "stage_complete" and event.get("stage") in open_stage:
+            open_stage.pop(event["stage"]).end = _ts(event["ts"])
+    return stages
+
+
+def read_rollouts(sessions: list[str]) -> tuple[list[tuple[dt.datetime, dt.datetime, str, str]], dict[str, str]]:
+    """((start, end, "model" | "tool", tool name) intervals, {rollout file: model})."""
+    intervals, models = [], {}
+    for path in sessions:
+        pending: dict[str, tuple[dt.datetime, str]] = {}
+        ready = None
+        for line in open(path):
+            event = json.loads(line)
+            when, payload = _ts(event["timestamp"]), event.get("payload") or {}
+            if event.get("type") == "turn_context":
+                models[path] = str(payload.get("model", ""))
+            kind = payload.get("type") if event.get("type") in ("response_item", "event_msg") else None
+            if kind == "task_started":
+                ready = when
+            elif kind in ("reasoning", "message", "function_call") and ready is not None:
+                intervals.append((ready, when, "model", ""))
+                ready = None
+            if kind == "function_call":
+                pending[payload.get("call_id")] = (when, payload.get("name", "?"))
+            elif kind == "function_call_output" and payload.get("call_id") in pending:
+                started, name = pending.pop(payload["call_id"])
+                intervals.append((started, when, "tool", name))
+                ready = when
+            elif kind == "task_complete":
+                ready = None
+    return intervals, models
+
+
+def read_gates(log_path: Path) -> dict[str, list[tuple[str, str, float]]]:
+    gates: dict[str, list[tuple[str, str, float]]] = collections.defaultdict(list)
+    stage = "before the stages"
+    for line in log_path.read_text(errors="replace").splitlines():
+        if m := re.search(r"stage start: (\w+)", line):
+            stage = m.group(1)
+        if m := re.search(r"gate complete: (?:\[\d+/\d+\] )?(\w+) .*status=(\w+) duration=(\d+)ms", line):
+            gates[stage].append((m.group(1), m.group(2), int(m.group(3)) / 1000))
+    return gates
+
+
+def read_costs(sessions: list[str], models: dict[str, str]) -> list[tuple[str, str, int, float | None]]:
+    """(model, session id, total tokens, USD or None when the model has no price) per session."""
+    rows = []
+    for path in sessions:
+        session_id = Path(path).stem[-36:]
+        usage = session_usage(Path(path).parents[4], session_id, 0.0)
+        rows.append((models.get(path, "?"), session_id, usage.get("total_tokens", 0), cost_usd(models.get(path, ""), usage)))
+    return rows
+
+
+def run_files(run: Path) -> tuple[Path, list[str], list[str]]:
+    """The tree of a run directory (or `run` itself when it is a tree), its event logs and its codex rollouts."""
+    tree = run / "tree" if (run / "tree").is_dir() else run
+    events = glob.glob(f"{tree}/pipeline/artifacts/**/pipeline_events.jsonl", recursive=True)
+    sessions = sorted(glob.glob(f"{tree}/pipeline/.codex/sessions/*/*/*/*.jsonl"))
+    return tree, events, sessions
+
+
+def run_log(run: Path) -> Path | None:
+    return next((p for p in (run / "pipeline.log", run / "logs" / "pipeline.log") if p.is_file()), None)
+
+
+def render_timeline(run: Path) -> str:
+    _, events, sessions = run_files(run)
+    now = dt.datetime.now(dt.timezone.utc)
+    stages = read_stages(events[0]) if events else []
+    intervals, models = read_rollouts(sessions)
+    for stage, following in zip(stages, stages[1:] + [None]):
+        # a stage killed by an operator never logs completion: it ends at its last agent activity
+        if stage.end is None and following is not None:
+            stage.end = max((end for _, end, _, _ in intervals if stage.start <= end <= following.start), default=stage.start)
+    running = {id(s) for s in stages if s.end is None}
+    for stage in stages:
+        stage.end = stage.end or now
+
+    out = [f"# Timeline: {run.name} (generated {now:%H:%M}Z)", "",
+           "| # | stage | model | start | wall min | model min | tool min | top tools (min, calls) |", "|---|---|---|---|---|---|---|---|"]
+    wall_by_stage: collections.Counter = collections.Counter()
+    for i, stage in enumerate(stages, 1):
+        mine = [iv for iv in intervals if stage.start <= iv[0] < stage.end]
+        wall = (stage.end - stage.start).total_seconds()
+        model_s = sum((e - b).total_seconds() for b, e, kind, _ in mine if kind == "model")
+        tool_s, tool_calls = collections.Counter(), collections.Counter()
+        for b, e, kind, name in mine:
+            if kind == "tool":
+                tool_s[name] += (e - b).total_seconds()
+                tool_calls[name] += 1
+        top = ", ".join(f"{n} {_minutes(s)} ({tool_calls[n]})" for n, s in tool_s.most_common(4))
+        out.append(f"| {i} | {stage.name}{' (running)' if id(stage) in running else ''} | {stage.model.split('/')[-1]} | "
+                   f"{stage.start:%H:%M} | {_minutes(wall)} | {_minutes(model_s)} | {_minutes(sum(tool_s.values()))} | {top} |")
+        wall_by_stage[stage.name] += wall
+    between = sum(max(0.0, (b.start - a.end).total_seconds()) for a, b in zip(stages, stages[1:]))
+    span = (stages[-1].end - stages[0].start).total_seconds() if stages else 0
+    out += ["", f"Span {_minutes(span)} min; in stages {_minutes(sum(wall_by_stage.values()))}; between stages (orchestrator, "
+            f"gates outside agents, operator pauses) {_minutes(between)}.", "",
+            "By stage (wall min): " + ", ".join(f"{k} {_minutes(v)}" for k, v in wall_by_stage.most_common()), "", "## Gates (orchestrator-run)", ""]
+    log = run_log(run)
+    for stage, rows in (read_gates(log) if log else {}).items():
+        out += [f"- {stage}: {name} {status} {_minutes(seconds)} min" for name, status, seconds in rows]
+    costs = read_costs(sessions, models)
+    priced = [usd for *_, usd in costs if usd is not None]
+    out += ["", "## Cost", "", f"Total ${sum(priced):.2f}" + ("" if len(priced) == len(costs) else f" (+{len(costs) - len(priced)} unpriced sessions)"), ""]
+    out += [f"- {model} {session[:8]}: {tokens:,} tokens, " + (f"${usd:.2f}" if usd is not None else "unpriced") for model, session, tokens, usd in costs]
+    return "\n".join(out) + "\n"
+
+
+def write_timeline(run: Path) -> str:
+    text = render_timeline(run)
+    (run / "TIMELINE.md").write_text(text)
+    return text
+
+
+LAST_EVENTS = 6
+
+
+def _phase(state: PipelineState, events: list[dict]) -> str:
+    if state.status:
+        return state.status
+    finished = any(e.get("event") == "stage_complete" and e.get("stage") == "audit" for e in events)
+    return "finished" if finished else f"in {state.stage}"
+
+
+def _read_events(paths: list[str]) -> list[dict]:
+    return [json.loads(line) for path in paths for line in Path(path).read_text().splitlines() if line.strip()]
+
+
+def render_status(run: Path) -> str:
+    tree, event_paths, sessions = run_files(run)
+    states = sorted(tree.glob("pipeline/artifacts/**/pipeline_state.json"), key=lambda p: p.stat().st_mtime)
+    if not states:
+        return f"{run}: no pipeline state yet (the run has not reached its first stage)\n"
+    state = PipelineState.load(states[-1])
+    events = _read_events(event_paths)
+    lines = [f"run:    {run}", f"query:  {state.workload} q{state.query} on {state.engine or '-'}", f"stage:  {_phase(state, events)}"]
+    if log := run_log(run):
+        lines.append(f"log:    {log} (last written {(time.time() - log.stat().st_mtime) / 60:.0f} min ago)")
+    _, models = read_rollouts(sessions)
+    costs = read_costs(sessions, models)
+    priced = [usd for *_, usd in costs if usd is not None]
+    unpriced = f", {len(costs) - len(priced)} unpriced" if len(priced) < len(costs) else ""
+    lines += [f"cost:   ${sum(priced):.2f} ({len(costs)} sessions{unpriced})", "last events:"]
+    lines += [f"  {e.get('ts', '')[:19]}  {e.get('event', '?')}  {e.get('stage', '')}" for e in events[-LAST_EVENTS:]]
+    return "\n".join(lines) + "\n"

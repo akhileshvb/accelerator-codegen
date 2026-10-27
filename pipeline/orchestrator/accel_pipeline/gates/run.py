@@ -336,7 +336,7 @@ def run_gate(
     has_host = bool(engine) and host_script(Path(pipeline_config.repo_root), engine).is_file()
     ensure_build_dir(pipeline_config, configure=not has_host)
 
-    from accel_pipeline.pipeline_log import log_gate_complete, log_gate_start
+    from accel_pipeline.runlog import log_gate_complete, log_gate_start
 
     log_gate_start(
         gate_name,
@@ -402,7 +402,7 @@ def run_gate(
     if status == "pass" and unchanged and out_dir is None:
         record_pass(pipeline_config, workload, query, gate_name, stamp_before, change_kind=change_kind, result=out_json)
     if gate_name in ("aux_bench_sweep", "aux_exit"):
-        from accel_pipeline.pipeline_log import log_bench_sweep_results
+        from accel_pipeline.runlog import log_bench_sweep_results
 
         bench = data if gate_name == "aux_bench_sweep" else read_json(Path(data.get("phases", {}).get("bench", {}).get("result", "")))
         if bench:
@@ -414,7 +414,7 @@ def run_gate(
                 gate_data=bench,
             )
     if gate_name in {"correctness", "baseline", "profile"}:
-        from accel_pipeline.pipeline_log import log_base_bench_gate
+        from accel_pipeline.runlog import log_base_bench_gate
 
         log_base_bench_gate(
             pipeline_config.repo_root,

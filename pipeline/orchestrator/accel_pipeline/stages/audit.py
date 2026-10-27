@@ -15,7 +15,7 @@ from accel_pipeline.config import ModelConfig, PipelineConfig
 from accel_pipeline.workload import load_run_workload, read_json
 from accel_pipeline.failure import Failure
 from accel_pipeline.layout import query_dir
-from accel_pipeline.playbook import append_experiment_log
+from accel_pipeline.runlog import append_experiment_log
 from accel_pipeline.repair import RepairCtx, _revise_test_suite, repair_turn, run_with_repair, stop_stage
 from accel_pipeline.session import READONLY
 from accel_pipeline.stages.base import run_agent_stage

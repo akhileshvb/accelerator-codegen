@@ -64,7 +64,7 @@ def run_post_stage_gates_collect(
     from accel_pipeline.gates.stamps import reusable_gate_result
 
     workload = load_run_workload(pipeline_config, workload_name)
-    from accel_pipeline.pipeline_log import log_gate_batch_start
+    from accel_pipeline.runlog import log_gate_batch_start
 
     log_gate_batch_start(
         query,

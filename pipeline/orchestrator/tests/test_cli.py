@@ -2,10 +2,10 @@ import json
 
 import pytest
 
-from accel_pipeline import cli, run_pipeline, run_status
+from accel_pipeline import cli, run_pipeline, runlog
 from accel_pipeline.workload import workload_supported_engines
 from accel_pipeline.config import find_repo_root
-from accel_pipeline.state import STAGES, PipelineState
+from accel_pipeline.runlog import STAGES, PipelineState
 
 ENGINE = workload_supported_engines("tpch_q14_aux", find_repo_root())[0]
 
@@ -27,19 +27,19 @@ def make_run(tmp_path, state, events):
 def test_status_names_the_stage_of_a_running_run(tmp_path):
     run = make_run(tmp_path, PipelineState(query=3, workload="tpch_q3_aux", engine="toydb", stage="test_suite"),
                    stage_events("analysis"))
-    text = run_status.render(run)
+    text = runlog.render_status(run)
     assert "stage:  in test_suite" in text and "stage_complete  analysis" in text and "cost:" in text
 
 
 def test_status_shows_a_pause_and_a_finished_run(tmp_path):
     paused = PipelineState(query=3, workload="w", engine="toydb", stage="optimization", status="paused:until implementation")
-    assert "stage:  paused:until implementation" in run_status.render(make_run(tmp_path / "a", paused, stage_events("analysis")))
+    assert "stage:  paused:until implementation" in runlog.render_status(make_run(tmp_path / "a", paused, stage_events("analysis")))
     done = PipelineState(query=3, workload="w", engine="toydb", stage="audit")
-    assert "stage:  finished" in run_status.render(make_run(tmp_path / "b", done, stage_events(*STAGES)))
+    assert "stage:  finished" in runlog.render_status(make_run(tmp_path / "b", done, stage_events(*STAGES)))
 
 
 def test_status_of_an_empty_directory_says_so(tmp_path):
-    assert "no pipeline state yet" in run_status.render(tmp_path)
+    assert "no pipeline state yet" in runlog.render_status(tmp_path)
 
 
 def stages_run(argv, capsys):
@@ -50,7 +50,7 @@ def stages_run(argv, capsys):
 def test_until_stops_after_that_stage_and_resume_continues_with_the_next(tmp_path, monkeypatch, capsys):
     path = tmp_path / "pipeline_state.json"
     monkeypatch.setattr(run_pipeline, "state_path", lambda *a: path)
-    monkeypatch.setattr("accel_pipeline.state.state_path", lambda *a: path)
+    monkeypatch.setattr("accel_pipeline.runlog.state_path", lambda *a: path)
     ran = []
     monkeypatch.setattr(run_pipeline, "_run_stage", lambda stage, *a, **k: ran.append(stage))
     for patched in ("_sandbox_preflight",):

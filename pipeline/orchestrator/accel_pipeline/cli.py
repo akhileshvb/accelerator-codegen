@@ -6,7 +6,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from accel_pipeline.state import STAGES
+from accel_pipeline.runlog import STAGES
 
 SMOKE_DIR = Path(__file__).resolve().parents[1] / "tests" / "smoke"
 DEFAULT_SMOKE_WORKLOAD = "tpch_q14_aux"
@@ -83,16 +83,16 @@ def cmd_smoke(args) -> int:
 
 
 def cmd_status(args) -> int:
-    from accel_pipeline import run_status
+    from accel_pipeline import runlog
 
-    print(run_status.render(args.run_dir.resolve()), end="")
+    print(runlog.render_status(args.run_dir.resolve()), end="")
     return 0
 
 
 def cmd_timeline(args) -> int:
-    from accel_pipeline import timeline
+    from accel_pipeline import runlog
 
-    print(timeline.write(args.run_dir.resolve()))
+    print(runlog.write_timeline(args.run_dir.resolve()))
     return 0
 
 

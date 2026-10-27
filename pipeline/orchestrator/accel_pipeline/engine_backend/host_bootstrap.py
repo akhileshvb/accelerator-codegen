@@ -240,7 +240,7 @@ def _bootstrap_under_repair(
     from accel_pipeline.failure import Failure, render_failure
     from accel_pipeline.gates.run import run_gate
     from accel_pipeline.workload import query_artifacts_dir
-    from accel_pipeline.playbook import append_experiment_log
+    from accel_pipeline.runlog import append_experiment_log
     from accel_pipeline.repair import RepairCtx, run_with_repair
     from accel_pipeline.engine_backend.host_bootstrap_critique import (
         format_host_bootstrap_critique_feedback,

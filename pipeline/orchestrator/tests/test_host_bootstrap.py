@@ -79,7 +79,7 @@ def _patch_bootstrap_dirs(tmp_path, monkeypatch):
 
     monkeypatch.setattr("accel_pipeline.engine_backend.host_bootstrap.host_bootstrap_dir", _fake_dir)
     monkeypatch.setattr(
-        "accel_pipeline.playbook.append_experiment_log", lambda *a, **k: tmp_path
+        "accel_pipeline.runlog.append_experiment_log", lambda *a, **k: tmp_path
     )
     return _fake_dir
 

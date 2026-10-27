@@ -208,7 +208,7 @@ def live_models(probe: Probe) -> list[str]:
     """One tiny codex turn per model the run uses, calling one MCP tool: the model speaks Codex's tool-call format."""
     from accel_pipeline.codex import StageRunRequest, create_agent_backend
     from accel_pipeline.config import make_model_id
-    from accel_pipeline.state import STAGES
+    from accel_pipeline.runlog import STAGES
 
     models = {make_model_id(stage, probe.cfg, probe.models, None) for stage in (*STAGES, "analysis_critic", "advisor")}
     problems = []

@@ -6,9 +6,12 @@ from pathlib import Path
 from accel_pipeline.config import load_pipeline_config
 from accel_pipeline.workload import load_workload
 from accel_pipeline.optimization.runtime import (
+    PLAYBOOK_PROPOSAL_JSON,
+    PLAYBOOK_TECHNIQUES_JSON,
     build_runtime_state,
     format_runtime_markdown,
     load_episode_log,
+    merge_playbook_proposal,
     refresh_optimization_runtime,
 )
 
@@ -109,3 +112,35 @@ def test_runtime_markdown_includes_structured_sections(tmp_path: Path):
     assert "Optimization workflow" in md
     assert "Bottleneck evidence" in md
     assert "Investigate" in md
+
+
+def test_merge_playbook_proposal_json(tmp_path: Path):
+    repo = tmp_path / "repo"
+    art = repo / "pipeline" / "artifacts" / "sec_edgar" / "q1"
+    art.mkdir(parents=True)
+    workload = {"artifact_namespace": "sec_edgar"}
+
+    proposal = {
+        "iteration": 2,
+        "summary": "Dict-index adsh helped consume.",
+        "techniques": [
+            {
+                "technique_id": "dict_index_adsh",
+                "hypothesis": "track adsh by dictionary child index",
+                "kept": True,
+                "speedup_delta": 0.15,
+                "profile_deltas": {"pre_consume_us": -12000},
+            }
+        ],
+    }
+    (art / PLAYBOOK_PROPOSAL_JSON).write_text(json.dumps(proposal), encoding="utf-8")
+
+    assert merge_playbook_proposal(repo, 1, workload=workload) is True
+
+    store = json.loads((art / PLAYBOOK_TECHNIQUES_JSON).read_text(encoding="utf-8"))
+    assert store["techniques"][0]["technique_id"] == "dict_index_adsh"
+
+    shared = repo / "pipeline" / "artifacts" / "shared" / "optimization_playbook.md"
+    text = shared.read_text(encoding="utf-8")
+    assert "dict_index_adsh" in text
+    assert "Dict-index adsh helped consume." in text

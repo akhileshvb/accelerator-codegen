@@ -13,11 +13,11 @@ from accel_pipeline.workload import workload_facts, apply_workload_overrides, lo
 from accel_pipeline.config import load_model_config, load_pipeline_config, load_repo_dotenv, find_repo_root
 from accel_pipeline.failure import Failure
 from accel_pipeline.repair import EXIT_STOPPED, REPAIR_STATE_FILE, RepairCtx, StageStopped, stop_stage
-from accel_pipeline.state import STAGE_ALIASES, STAGES, PipelineState, advance_stage, load_or_create, state_path
+from accel_pipeline.runlog import STAGE_ALIASES, STAGES, PipelineState, advance_stage, load_or_create, state_path
 from accel_pipeline.stages import run_stage, stage_module
 from accel_pipeline.verus import STAGES as VERUS_STAGES
 from accel_pipeline.structural_reanalysis import process_after_stage
-from accel_pipeline.pipeline_log import log_event, log_pipeline_summary
+from accel_pipeline.runlog import log_event, log_pipeline_summary
 
 
 def _parse_model_overrides(values: list[str] | None) -> dict[str, str]:

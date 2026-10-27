@@ -13,14 +13,14 @@ from accel_pipeline.failure import (
 )
 from accel_pipeline.session import REDIRECT
 from accel_pipeline.session import run_in_session
-from accel_pipeline.pipeline_log import (
+from accel_pipeline.runlog import (
     log_stage_complete,
     log_stage_start,
     usage_from_metadata,
 )
 from accel_pipeline.prompts import render_prompt, save_rendered_prompt, with_codex_tooling
 from accel_pipeline.layout import frozen_restore, frozen_snapshot
-from accel_pipeline.playbook import append_experiment_log
+from accel_pipeline.runlog import append_experiment_log
 
 _UNLIMITED_STAGE_TURNS = 10_000
 

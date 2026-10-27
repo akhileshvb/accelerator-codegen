@@ -46,8 +46,8 @@ from accel_pipeline.failure import (
 from accel_pipeline.gates.parallel import first_failure, run_gates_parallel
 from accel_pipeline.gates.run import GateFailure, GateResult
 from accel_pipeline.layout import query_dir, tree_snapshot
-from accel_pipeline.pipeline_log import log_event
-from accel_pipeline.playbook import append_experiment_log
+from accel_pipeline.runlog import log_event
+from accel_pipeline.runlog import append_experiment_log
 from accel_pipeline.prompts import render_prompt
 from accel_pipeline.session import MAIN, SessionStore
 from accel_pipeline.stages.gate_plan import run_post_stage_gates_collect
@@ -483,7 +483,7 @@ def _replan(ctx: RepairCtx, failure: Failure) -> bool:
     if ctx.stage not in _REPLANNABLE or _replan_budget(ctx) <= 0:
         return False
     from accel_pipeline import run_pipeline, structural_reanalysis
-    from accel_pipeline.state import PipelineState, state_path
+    from accel_pipeline.runlog import PipelineState, state_path
 
     path = ctx.art / REPAIR_STATE_FILE
     used = ctx.pipeline_config.repair.max_replans - _replan_budget(ctx)

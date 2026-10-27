@@ -283,7 +283,7 @@ class CodexExecBackend:
         return result
 
     def _log_violations(self, policy: str, bad: list[tuple[str, str]]) -> None:
-        from accel_pipeline.pipeline_log import log_event
+        from accel_pipeline.runlog import log_event
 
         try:
             workload = load_run_workload(self._pipeline_config, self._workload_name) if self._workload_name else None

@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from accel_pipeline.workload import query_artifacts_dir
-from accel_pipeline.pipeline_log import (
+from accel_pipeline.runlog import (
     log_structural_reanalysis_skipped,
     log_structural_reanalysis_triggered,
 )
@@ -196,7 +196,7 @@ def process_after_stage(
 
     errors = validate_request(request)
     if errors:
-        from accel_pipeline.playbook import append_experiment_log
+        from accel_pipeline.runlog import append_experiment_log
 
         reason = "; ".join(errors)
         log_structural_reanalysis_skipped(
@@ -213,7 +213,7 @@ def process_after_stage(
         return None
 
     if not can_rerun_analysis(structural_reanalysis_count, workload):
-        from accel_pipeline.playbook import append_experiment_log
+        from accel_pipeline.runlog import append_experiment_log
 
         reason = (
             f"budget exhausted ({structural_reanalysis_count}/"
@@ -256,7 +256,7 @@ def process_after_stage(
             "request": request,
         },
     )
-    from accel_pipeline.playbook import append_experiment_log
+    from accel_pipeline.runlog import append_experiment_log
 
     append_experiment_log(
         repo_root,
@@ -283,7 +283,7 @@ def process_after_stage(
     if triggered_after == "optimization":
         run_optimization()
 
-    from accel_pipeline.state import STAGES
+    from accel_pipeline.runlog import STAGES
 
     next_stage = STAGES.index("audit") if triggered_after == "optimization" else STAGES.index("optimization")
     return new_count, next_stage

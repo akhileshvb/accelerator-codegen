@@ -5,7 +5,7 @@ import pytest
 from accel_pipeline import run_pipeline
 from accel_pipeline.config import PipelineConfig, RepairConfig
 from accel_pipeline.repair import EXIT_STOPPED, StageStopped
-from accel_pipeline.state import PipelineState
+from accel_pipeline.runlog import PipelineState
 
 
 @pytest.fixture

@@ -26,7 +26,7 @@ from accel_pipeline.engine_host import prepare_host_sdk_payload
 from accel_pipeline.pack.engine_quarantine import apply_foreign_engine_quarantine, restore_quarantine
 from accel_pipeline.failure import Failure, render_failure
 from accel_pipeline.gates.run import format_reloop_failure_sections, GateResult
-from accel_pipeline.playbook import append_experiment_log
+from accel_pipeline.runlog import append_experiment_log
 from accel_pipeline.repair import RepairCtx, run_with_repair
 from accel_pipeline.session import SessionStore
 from accel_pipeline.stages.base import run_agent_stage

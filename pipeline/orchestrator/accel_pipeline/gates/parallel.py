@@ -34,7 +34,7 @@ from accel_pipeline.workload import gates_dir_for_query, query_artifacts_dir
 from accel_pipeline.engine_host import instance_tag
 from accel_pipeline.gates.run import GATES_ALLOW_SKIP, GateResult, jobs_per_gate, run_gate
 from accel_pipeline.gates.stamps import check_version, current_stamp, reusable_gate_result
-from accel_pipeline.pipeline_log import log_gate_batch_start
+from accel_pipeline.runlog import log_gate_batch_start
 
 
 @dataclass(frozen=True)
