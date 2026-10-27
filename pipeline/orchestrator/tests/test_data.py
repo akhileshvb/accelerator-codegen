@@ -21,6 +21,7 @@ from accel_pipeline.data import (
     CutDatasets,
     Dataset,
     ensure_cut_datasets,
+    foreign_key_links,
     key_links,
 )
 from accel_pipeline.gates import GateResult
@@ -715,3 +716,17 @@ def test_fixed_tuples_must_follow_a_derived_parameter():
     assert _check_derived(domain, [good, "NULL, NULL"]) == []
     bad = _check_derived(domain, ["DATE '1995-01-01', DATE '1995-01-01'"])
     assert len(bad) == 1 and "DATE '1995-02-01'" in bad[0]
+
+
+def test_a_declared_foreign_key_links_a_child_to_the_rows_of_its_parent():
+    # SEC-EDGAR's pre references sub by a text key: cut on its own, its first rows named filings absent from the sampled
+    # sub and the subset failed to load (foreign key violation)
+    schema_sql = """CREATE TABLE sub (adsh VARCHAR PRIMARY KEY, cik INTEGER);
+    CREATE TABLE num (adsh VARCHAR, value DOUBLE, FOREIGN KEY (adsh) REFERENCES sub(adsh));
+    CREATE TABLE pre (adsh VARCHAR REFERENCES sub (adsh), report INTEGER, line INTEGER);"""
+    links = foreign_key_links(schema_sql)
+    assert links == [(("num", "adsh"), ("sub", "adsh")), (("pre", "adsh"), ("sub", "adsh"))]
+    out = cut_selects(["num", "sub", "pre"], links, {"num": 1000, "sub": 50, "pre": 900},
+                      {"num": [], "sub": ["cik"], "pre": ["report", "line"]}, 100)
+    assert out["sub"].startswith("SELECT * FROM sub WHERE adsh IN (SELECT adsh FROM (")
+    assert out["pre"].startswith("SELECT * FROM pre WHERE adsh IN (SELECT adsh FROM (")

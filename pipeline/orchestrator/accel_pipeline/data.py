@@ -644,7 +644,7 @@ def build_data_shape_markdown(sql: str, runner: Any, schema: dict[str, dict[str,
 SUBSET_ROOT_ROWS = 40_000  # rows of the largest table in the quick cut
 TINY_ROOT_ROWS = 1_500  # the adversarial phase needs a few rows the point-write probes can invalidate
 CUT_STATEMENT_SECONDS = 900.0
-FORMAT_VERSION = 6
+FORMAT_VERSION = 7
 _IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
@@ -660,6 +660,24 @@ class CutDatasets:
         full = sum(n for t, n in self.manifest["source_rows"].items() if t.lower() in names)
         cut = sum(n for t, n in self.manifest["subset_rows"].items() if t.lower() in names)
         return max(1.0, full / cut) if full and cut else 1.0
+
+
+def foreign_key_links(schema_sql: str) -> list[tuple[tuple[str, str], tuple[str, str]]]:
+    """The foreign keys a schema declares, column-level REFERENCES and table-level FOREIGN KEY alike, as
+    ((table, column), (referenced table, column)): a cut keeps the rows a child references, whatever the key's type."""
+    links = []
+    for create in sqlglot.parse(schema_sql, read="duckdb"):
+        if not isinstance(create, exp.Create) or not isinstance(create.this, exp.Schema):
+            continue
+        table = create.this.this.name
+        for item in create.this.expressions:
+            if isinstance(item, exp.ColumnDef):
+                links += [((table, item.name), (c.kind.this.this.name, c.kind.this.expressions[0].name))
+                          for c in item.constraints if isinstance(c.kind, exp.Reference)]
+            elif isinstance(item, exp.ForeignKey):
+                ref = item.args["reference"].this
+                links += [((table, col.name), (ref.this.name, rcol.name)) for col, rcol in zip(item.expressions, ref.expressions)]
+    return links
 
 
 def key_links(schema: dict[str, dict[str, str]]) -> list[tuple[tuple[str, str], tuple[str, str]]]:
@@ -760,7 +778,9 @@ def _cut(cfg: PipelineConfig, workload: dict[str, Any], query: int, source: Path
         if not _IDENTIFIER.match(name):
             raise ValueError(f"{name!r} is not a plain identifier")
     rows = {t: int(runner.rows(f"SELECT COUNT(*) FROM {t}", CUT_STATEMENT_SECONDS)[0][0] or 0) for t in tables}
-    joins = analyze_query(catalog_sql(workload, cfg.repo_root, query), schema, runner.dialect).joins + key_links(schema)
+    schema_sql = (cfg.repo_root / workload_schema_sql(str(workload.get("dataset_benchmark") or benchmark_of(workload)))).read_text(encoding="utf-8")
+    joins = (analyze_query(catalog_sql(workload, cfg.repo_root, query), schema, runner.dialect).joins
+             + foreign_key_links(schema_sql) + key_links(schema))
     integers = {t: [c for c, dtype in schema[t].items() if is_integer(dtype)] for t in tables}
     manifest: dict[str, Any] = {"source_rows": rows}
     for name, root_rows in (("subset", SUBSET_ROOT_ROWS), ("tiny", TINY_ROOT_ROWS)):
