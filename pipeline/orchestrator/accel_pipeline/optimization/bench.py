@@ -61,6 +61,9 @@ from accel_pipeline.repair import Failure
 # `error` the caller fails on: a broken profiler is never read as "nothing to profile".
 PERF_BIN_ENV = "ACCEL_PERF_BIN"
 SAMPLE_HZ = 10000
+# perf record ring pages per CPU: every session of a user shares one locked-memory budget (perf_event_mlock_kb +
+# ulimit -l) that the default size spends across every CPU; concurrent profiling runs then fail to map their pages
+MMAP_PAGES = 8
 TOP_N = 15
 STAT_EVENTS = (
     "task-clock",
@@ -267,7 +270,7 @@ def profile_hit_path(
         controls = [_make_fifo(tmpdir / "stat.ctl")] + ([_make_fifo(tmpdir / "record.ctl")] if record else [])
         data, stat_file = tmpdir / "perf.data", tmpdir / "window.stat"
         window = ["-D", "-1", "--control"]
-        measured = [perf, "record", "-F", str(SAMPLE_HZ), "-o", str(data), *window,
+        measured = [perf, "record", "-F", str(SAMPLE_HZ), "-m", str(MMAP_PAGES), "-o", str(data), *window,
                     f"fifo:{tmpdir / 'record.ctl'},{tmpdir / 'record.ack'}", "--", *bench_cmd] if record else bench_cmd
         cmd = [perf, "stat", "-x,", "-e", events, "-o", str(stat_file), *window,
                f"fifo:{tmpdir / 'stat.ctl'},{tmpdir / 'stat.ack'}", "--", *measured]
@@ -328,7 +331,7 @@ def profile_build(bench_cmd: list[str], env: dict[str, str], *, cwd: Path | None
     with tempfile.TemporaryDirectory(prefix="accel-perf-") as tmp:
         data = Path(tmp) / "perf.data"
         try:
-            run = _run(runner, [perf, "record", "-F", str(SAMPLE_HZ), "-o", str(data), "--", *bench_cmd],
+            run = _run(runner, [perf, "record", "-F", str(SAMPLE_HZ), "-m", str(MMAP_PAGES), "-o", str(data), "--", *bench_cmd],
                        {**env, "ACCEL_BENCH_QUERIES": "1"}, cwd)
             sampled = _sample_report(runner, perf, data, env, cwd) if data.is_file() else {"top": []}
         except subprocess.TimeoutExpired:
