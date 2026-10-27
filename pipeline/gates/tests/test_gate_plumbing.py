@@ -34,7 +34,7 @@ case "${verb}" in
     if [[ -n "${FAKE_SWEEP:-}" && "$1" == bench_aux ]]; then  # a sweep point: reads and builds scale with the thread budget
       t="${ACCEL_AUX_THREADS:-4}"
       echo "suite,write_frequency_pct,workload_speedup,cold_start_workload_speedup,query_only_speedup,accel_hit_median_us,accel_workload_us,setup_full_build_ms,accel_hit_rate,writes_executed"
-      for pct in ${ACCEL_AUX_WRITE_FREQUENCIES//,/ }; do
+      for pct in ${FAKE_BENCH_ONE_ROW:-${ACCEL_AUX_WRITE_FREQUENCIES//,/ }}; do
         echo "lineitem_only,${pct},3.0,2.0,4.0,$((400 / t)),$((500 / t)),$((800 / t)),1.0,0"
       done
     elif [[ "$1" == benchmark* && "$2" == --query ]]; then  # a bench that counts hits (or, FAKE_BENCH_CONSTANT, one that assumes them)
@@ -363,17 +363,6 @@ def test_host_bootstrap_fails_a_bench_that_omits_a_required_column(repo):
                                  env_extra={"FAKE_BENCH_NO_HIT_MEDIAN": "other,"})
     assert proc.returncode == 1
     assert "lacks the required columns accel_hit_median_us" in result(gj, "host_bootstrap")["reason"]
-
-
-def test_host_bootstrap_fails_a_bench_that_prints_one_row_for_several_write_frequencies(repo):
-    host_bootstrap_repo(repo)
-    register = repo / "accelerators" / "tpch" / "q6" / "fake" / "aux"
-    register.mkdir(parents=True)
-    (register / "register.cpp").write_text("// q6\n")
-    proc, _, _, gj, _ = run_gate(repo, "run_host_bootstrap.sh", "0", ctx_extra={"engine_host": HARNESS_HOST},
-                                 env_extra={"FAKE_BENCH_ONE_ROW": "0"})
-    assert proc.returncode == 1
-    assert "printed 1 rows for ACCEL_AUX_WRITE_FREQUENCIES=0,1" in result(gj, "host_bootstrap")["reason"]
 
 
 def test_host_bootstrap_fails_without_the_harness_sources(repo):

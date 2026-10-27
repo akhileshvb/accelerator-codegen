@@ -221,3 +221,10 @@ def test_a_race_on_a_global_of_the_query_is_the_querys_even_when_the_access_fram
         "SUMMARY: ThreadSanitizer: data race in std::thread::_State_impl::_M_run()\n")
     found = sanitizer_findings.classify(tmp_path, Q + "/")
     assert found["yours_count"] == 1 and found["infra"]["count"] == 0
+
+
+def test_a_bench_that_prints_one_row_for_several_write_frequencies_is_the_harnesss(repo, tmp_path):
+    proc, _, _, gj, _ = sweep(repo, tmp_path, FAKE_MULTI_POINT="1", FAKE_BENCH_ONE_ROW="0")
+    assert proc.returncode == 1
+    gate = result(gj, "aux_bench_sweep")
+    assert gate["owner"] == "harness" and "expected 2 sweep rows, got 1" in gate["reason"]

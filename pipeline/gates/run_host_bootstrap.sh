@@ -84,9 +84,10 @@ done
 # every read forced to the fallback SQL (the substrate's ACCEL_AUX_FORCE_FALLBACK). The hit rate it prints
 # (`accel_hit_rate`, bench_sweep_contract.md) must tell the two apart; a bench that reports the same rate
 # both times assumes it (a constant) instead of counting.
-BENCH_HIT_RATE="" BENCH_MISSING="" BENCH_ROWS=0
-bench_read_only() { # [VAR=value ...]: a short bench run; BENCH_HIT_RATE = the accel_hit_rate of its first row,
-  # BENCH_MISSING = the required columns (bench_sweep_contract.md) that row lacks, BENCH_ROWS = its data rows
+BENCH_HIT_RATE="" BENCH_MISSING=""
+bench_read_only() { # [VAR=value ...]: a short read-only bench run; BENCH_HIT_RATE = the accel_hit_rate it printed,
+  # BENCH_MISSING = the required columns (bench_sweep_contract.md) its row lacks. Its write points run in aux_exit's
+  # sweep, on the full dataset: a subset may hold no write that changes the answer, which fails a bench by contract.
   local dir rc
   dir="$(mktemp -d)"
   (
@@ -101,26 +102,20 @@ bench_read_only() { # [VAR=value ...]: a short bench run; BENCH_HIT_RATE = the a
 import csv, io, sys
 lines = sys.stdin.read().splitlines()
 start = next((i for i, l in enumerate(lines) if l.startswith('suite,')), None)
-body = lines[start:] if start is not None else []
-body = body[:1] + [l for l in body[1:] if l.count(',') == body[0].count(',')]  # the header's data rows
-rows = list(csv.DictReader(io.StringIO(chr(10).join(body))))
+rows = list(csv.DictReader(io.StringIO(chr(10).join(lines[start:start + 2])))) if start is not None else []
 required = ('suite write_frequency_pct workload_speedup query_only_speedup accel_hit_rate num_queries '
             'accel_fallback_reads state_builds engine_ref_query_median_us accel_hit_median_us').split()
 row = rows[0] if rows else {}
-print('%s|%d|%s' % (row.get('accel_hit_rate', ''), len(rows), ' '.join(c for c in required if c not in row)))" <"${dir}/log")"
-  BENCH_MISSING="${BENCH_HIT_RATE##*|}" BENCH_ROWS="$(cut -d'|' -f2 <<<"${BENCH_HIT_RATE}")" BENCH_HIT_RATE="${BENCH_HIT_RATE%%|*}"
+print(row.get('accel_hit_rate', '') + '|' + ' '.join(c for c in required if c not in row))" <"${dir}/log")"
+  BENCH_MISSING="${BENCH_HIT_RATE#*|}" BENCH_HIT_RATE="${BENCH_HIT_RATE%%|*}"
   rm -rf "${dir}"
   [[ "${rc}" -eq 0 ]]
 }
 if [[ -n "${REGISTERED_QUERY}" ]]; then
-  # a read-only point and a write point: one row per write frequency
-  bench_read_only ACCEL_AUX_WRITE_FREQUENCIES=0,1 ||
-    finish fail "the bench failed: ACCEL_AUX_WRITE_FREQUENCIES=0,1 ${HARNESS_BENCH_TARGET} --query ${REGISTERED_QUERY}" "${ENGINE_LOG}${SMOKE_LOG}"
+  bench_read_only || finish fail "the bench failed on a read-only run: ${HARNESS_BENCH_TARGET} --query ${REGISTERED_QUERY}" "${ENGINE_LOG}${SMOKE_LOG}"
   HIT_RATE="${BENCH_HIT_RATE}"
   [[ -z "${BENCH_MISSING}" ]] ||
     finish fail "the bench row lacks the required columns ${BENCH_MISSING} (bench_sweep_contract.md)" "${ENGINE_LOG}${SMOKE_LOG}"
-  [[ "${BENCH_ROWS}" -eq 2 ]] || finish fail "the bench printed ${BENCH_ROWS} rows for ACCEL_AUX_WRITE_FREQUENCIES=0,1: one row per \
-write frequency (bench_sweep_contract.md)" "${ENGINE_LOG}${SMOKE_LOG}"
   bench_read_only ACCEL_AUX_FORCE_FALLBACK=1 || finish fail "the bench failed with every read forced to the fallback (ACCEL_AUX_FORCE_FALLBACK=1)" "${ENGINE_LOG}${SMOKE_LOG}"
   FORCED_RATE="${BENCH_HIT_RATE}"
   verdict="$(python3 -c "

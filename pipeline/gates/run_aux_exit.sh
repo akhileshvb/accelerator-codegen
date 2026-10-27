@@ -103,6 +103,8 @@ payload = {
     "stacks": "\n".join(f"=== {name} ===\n{data['stacks']}" for name, _, data, _ in failed if data.get("stacks")),
     "reproduce": "; ".join(f'request_gate("{gate}")' for _, gate, _, _ in failed),
 }
+if failed and all(data.get("owner") == "harness" for _, _, data, _ in failed):  # only the harness is at fault
+    payload["owner"] = "harness"
 pathlib.Path(out).write_text(json.dumps(payload, indent=2))
 print(json.dumps(payload, indent=2))
 sys.exit(1 if failed else 0)

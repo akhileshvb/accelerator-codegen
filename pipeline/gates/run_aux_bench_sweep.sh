@@ -210,6 +210,7 @@ summary = aggregate_sweep_repeats(summaries, draws) if len(summaries) > 1 else s
 
 status = "pass"
 notes = []
+owner = ""
 expected_rows = [int(n) for n in "${FREQ_COUNTS[*]}".split()]
 if int("${SWEEP_RC}") != 0:
     status = "fail"
@@ -217,11 +218,11 @@ if int("${SWEEP_RC}") != 0:
 printed = next((line for line in log_tail.splitlines() if line.startswith("suite,")), "")
 for one, expected in zip(summaries, expected_rows):
     if one.get("row_count", 0) < expected:
-        status = "fail"
+        status, owner = "fail", "harness"
         notes.append(
             f"expected {expected} sweep rows, got {one.get('row_count', 0)}: the bench must print one row per write "
             "frequency of ACCEL_AUX_WRITE_FREQUENCIES, at least 10 columns under the header of bench_sweep_contract.md"
-            + (f" (it printed the header `{printed}`)" if printed else " (it printed no `suite,` header)"))
+            + (f" (it printed the header '{printed}')" if printed else " (it printed no 'suite,' header)"))
 
 threads1_csv, threadsn_csv = pathlib.Path("${THREADS1_CSV}"), pathlib.Path("${THREADSN_CSV}")
 scaling = {}
@@ -231,6 +232,7 @@ if threads1_csv.stat().st_size and threadsn_csv.stat().st_size:
 
 gate = {
     "gate": "aux_bench_sweep",
+    **({"owner": owner} if owner and int("${SWEEP_RC}") == 0 else {}),  # the bench's output breaks its contract
     "query": int("${QUERY}"),
     "benchmark": "${BENCHMARK_NAME}",
     "status": status,
