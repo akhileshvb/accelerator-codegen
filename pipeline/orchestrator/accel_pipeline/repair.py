@@ -452,7 +452,7 @@ def _crash_debug_turn(ctx: RepairCtx, must_change: bool) -> Callable[[Failure], 
 
 
 def _rollback(ctx: RepairCtx) -> None:
-    from accel_pipeline.optimization.kernel_snapshot import has_best_kernel_snapshot, rebuild_workload_targets, restore_best_kernel
+    from accel_pipeline.optimization.loop import has_best_kernel_snapshot, rebuild_workload_targets, restore_best_kernel
 
     if not has_best_kernel_snapshot(ctx.art):
         ctx.log("no best snapshot to roll back to")

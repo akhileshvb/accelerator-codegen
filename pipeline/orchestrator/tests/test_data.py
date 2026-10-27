@@ -25,7 +25,7 @@ from accel_pipeline.data import (
 )
 from accel_pipeline.gates import GateResult
 from accel_pipeline.layout import layer_write_verdict
-from accel_pipeline.optimization.aux_bench import aggregate_sweep_repeats
+from accel_pipeline.optimization.bench import aggregate_sweep_repeats
 from accel_pipeline.repair import Failure, failure_from_gate
 
 
@@ -660,7 +660,7 @@ def test_repeated_sweeps_report_the_median_with_its_spread():
 
 
 def test_the_optimization_bench_samples_the_suites_distribution_up_to_its_cap(tmp_path, monkeypatch):
-    from accel_pipeline.optimization import aux_write_freqs as freqs
+    from accel_pipeline.optimization import bench as freqs
 
     (tmp_path / "pipeline").mkdir()
     (tmp_path / "CMakeLists.txt").write_text("")

@@ -56,7 +56,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterator, Literal, Mapping, Sequence
 
-from accel_pipeline import perf_profile
 from accel_pipeline.config import (
     apply_workload_overrides,
     benchmark_of,
@@ -96,7 +95,6 @@ from accel_pipeline.data import (
     workload_dataset_dir,
 )
 from accel_pipeline.layout import code_stamp, query_dir, workload_schema_sql
-from accel_pipeline.perf_profile import render_for_agent
 from accel_pipeline.repair import Failure, render_evidence, render_failure
 from accel_pipeline.runlog import (
     log_base_bench_gate,
@@ -1390,8 +1388,10 @@ def profile_hot_spots(pipeline_config: PipelineConfig, workload: dict[str, Any],
             diagnosis=["profiling failed because of the host or the harness, not because there is nothing to profile: fix what "
                        "the message names, or report it (report_blocker) if it is outside the query's files"])
         return json.dumps({"status": "fail", "failure": render_failure(failure)}, indent=2)
+    from accel_pipeline.optimization import bench as perf_bench
+
     return json.dumps({"status": "pass", "scale": scale,
-                       **{f"{path}_path": render_for_agent(p).splitlines() for path, p in profiles.items()}}, indent=2)
+                       **{f"{path}_path": perf_bench.render_for_agent(p).splitlines() for path, p in profiles.items()}}, indent=2)
 
 
 def _full_instance(workload: dict[str, Any], quick_instance: dict[str, str]) -> dict[str, str]:
@@ -1498,41 +1498,47 @@ class Bench:
     def counters(self, row: dict[str, Any]) -> dict[str, Any]:
         """perf stat counters: {"read": per query of the read loop, "build": the whole run of a one-query bench},
         or {"unavailable": why}. `row`: this bench's read-only row."""
+        from accel_pipeline.optimization import bench as perf_bench
+
         if gap := self.profile_gap():
             return {"unavailable": gap}
         with tempfile.TemporaryDirectory(prefix="accel-bench-") as work:
-            read = perf_profile.profile_hit_path(self.command(), self.env(work, 1), cwd=self.cfg.repo_root,
-                                                 runner=self.perf_runner(), hit_us=row["accel_hit_median_us"],
-                                                 loop_seconds=COUNTER_LOOP_SECONDS, record=False)
+            read = perf_bench.profile_hit_path(self.command(), self.env(work, 1), cwd=self.cfg.repo_root,
+                                               runner=self.perf_runner(), hit_us=row["accel_hit_median_us"],
+                                               loop_seconds=COUNTER_LOOP_SECONDS, record=False)
             build = self.run(["perf", "stat", "-x,", "-e", "instructions,cycles,cache-misses", "-o", f"{work}/build.stat",
                               "--", *self.command()], self.env(work, 1))
             stat = Path(work) / "build.stat"
-            built = perf_profile.parse_stat(stat.read_text(encoding="utf-8")) if stat.is_file() else {}
+            built = perf_bench.parse_stat(stat.read_text(encoding="utf-8")) if stat.is_file() else {}
         if read["status"] != "ok" or build.returncode != 0:
             return {"unavailable": read.get("reason") or f"perf stat of the build exited {build.returncode}"}
         return {"read": read["counters_per_query"], "build": built}
 
     def profile(self, seconds: float) -> dict[str, dict[str, Any]]:
         """Samples of the read path (read-only point), the write path (a WRITE_MIX_PCT% write mix) and the build (a
-        one-query run), the read and write loops about `seconds` long: {path: perf_profile result}."""
+        one-query run), the read and write loops about `seconds` long: {path: perf profile result}."""
+        from accel_pipeline.optimization import bench as perf_bench
+
         if gap := self.profile_gap():
-            return {path: perf_profile.not_applicable(gap) for path in ("read", "write", "build")}
+            return {path: perf_bench.not_applicable(gap) for path in ("read", "write", "build")}
         out = {}
         for path, pct in (("read", 0), ("write", WRITE_MIX_PCT)):
             row = self.row(pct)
             op_us = (float(row["accel_hit_median_us"]) * (100 - pct) + float(row.get("accel_write_median_us") or 0) * pct) / 100.0
             with tempfile.TemporaryDirectory(prefix="accel-bench-") as work:
-                out[path] = perf_profile.profile_hit_path(
+                out[path] = perf_bench.profile_hit_path(
                     self.command(pct), self.env(work, 1, pct), cwd=self.cfg.repo_root, runner=self.perf_runner(), hit_us=op_us,
                     loop_seconds=seconds, diagnostics=row if pct == 0 else None)
         with tempfile.TemporaryDirectory(prefix="accel-bench-") as work:
-            out["build"] = perf_profile.profile_build(self.command(), self.env(work, 1), cwd=self.cfg.repo_root,
-                                                      runner=self.perf_runner())
+            out["build"] = perf_bench.profile_build(self.command(), self.env(work, 1), cwd=self.cfg.repo_root,
+                                                    runner=self.perf_runner())
         return out
 
     def profile_gap(self) -> str:
         """Why the bench cannot be profiled with perf on this engine ("" when it can)."""
-        return perf_profile.engine_profile_gap(host_info(self.cfg.repo_root, self.engine, self.cfg.build_dir))
+        from accel_pipeline.optimization import bench as perf_bench
+
+        return perf_bench.engine_profile_gap(host_info(self.cfg.repo_root, self.engine, self.cfg.build_dir))
 
     def perf_runner(self):
         """subprocess.run that sends the outermost `perf` command (the bench inside it) through host.sh."""

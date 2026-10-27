@@ -15,7 +15,7 @@ from types import SimpleNamespace
 import pytest
 from conftest import Gate, GIT, WORKLOAD
 
-from accel_pipeline import gates, perf_profile
+from accel_pipeline import gates
 from accel_pipeline.config import (
     apply_workload_overrides,
     gates_dir_for_query,
@@ -47,7 +47,7 @@ from accel_pipeline.gates import (
     start_background_gate,
 )
 from accel_pipeline.layout import BACKENDS, code_stamp, PRIMS, suite_dir
-from accel_pipeline.optimization import smoke as optimization_smoke
+from accel_pipeline.optimization import bench as perf_bench, loop as optimization_loop
 from accel_pipeline.mcp import _compact_gate_payload
 
 
@@ -689,7 +689,7 @@ def test_the_outermost_perf_command_goes_through_the_host(bench, monkeypatch):
     b, log = bench
     seen = []
     monkeypatch.setattr(gates.subprocess, "run", lambda command, **kw: seen.append(command))
-    monkeypatch.setattr(perf_profile, "perf_binary", lambda: "/usr/bin/perf")
+    monkeypatch.setattr(perf_bench, "perf_binary", lambda: "/usr/bin/perf")
     run = b.perf_runner()
     run(["/usr/bin/perf", "stat", "--", "bench"], env={})
     run(["/usr/bin/perf", "report", "-i", "x"], env={})
@@ -700,8 +700,8 @@ def test_the_outermost_perf_command_goes_through_the_host(bench, monkeypatch):
 def test_the_profile_samples_read_write_and_build(bench, monkeypatch):
     b, _ = bench
     calls = []
-    monkeypatch.setattr(perf_profile, "profile_hit_path", lambda cmd, env, **kw: calls.append(("hit", cmd[-1], env["ACCEL_AUX_WRITE_FREQUENCIES"], kw["hit_us"])) or {"status": "ok"})
-    monkeypatch.setattr(perf_profile, "profile_build", lambda cmd, env, **kw: calls.append(("build",)) or {"status": "ok"})
+    monkeypatch.setattr(perf_bench, "profile_hit_path", lambda cmd, env, **kw: calls.append(("hit", cmd[-1], env["ACCEL_AUX_WRITE_FREQUENCIES"], kw["hit_us"])) or {"status": "ok"})
+    monkeypatch.setattr(perf_bench, "profile_build", lambda cmd, env, **kw: calls.append(("build",)) or {"status": "ok"})
     assert set(b.profile(5.0)) == {"read", "write", "build"}
     assert calls[0][:3] == ("hit", "0", "0") and calls[0][3] == 250.0
     assert calls[1][:3] == ("hit", "50", "50") and calls[1][3] == pytest.approx(575.0)  # half reads (250 us), half writes (900 us)
@@ -1276,51 +1276,51 @@ def setup(tmp_path, monkeypatch):
         builds.append(cmd)
         return SimpleNamespace(returncode=0, stdout="ok", stderr="")
 
-    monkeypatch.setattr(optimization_smoke, "subprocess", SimpleNamespace(run=fake_run))
-    monkeypatch.setattr("accel_pipeline.gates.ensure_build_dir", lambda *a, **k: None)
-    monkeypatch.setattr(optimization_smoke, "resolve_workload_paths",
+    monkeypatch.setattr(optimization_loop, "subprocess", SimpleNamespace(run=fake_run))
+    monkeypatch.setattr(optimization_loop, "ensure_build_dir", lambda *a, **k: None)
+    monkeypatch.setattr(optimization_loop, "resolve_workload_paths",
                         lambda *a: {"aux_bench_target": "bench_t", "aux_test_target": "test_t"})
     return config, builds
 
 
 def test_the_second_build_of_unchanged_code_is_a_no_op(setup):
     config, builds = setup
-    assert optimization_smoke.run_build(config, BUILD_WORKLOAD, 4)[0]
+    assert optimization_loop.run_build(config, BUILD_WORKLOAD, 4)[0]
     assert len(builds) == 2
-    ok, out = optimization_smoke.run_build(config, BUILD_WORKLOAD, 4)
+    ok, out = optimization_loop.run_build(config, BUILD_WORKLOAD, 4)
     assert ok and "skipped" in out and len(builds) == 2
 
 
 def test_an_edit_builds_again(setup):
     config, builds = setup
-    optimization_smoke.run_build(config, BUILD_WORKLOAD, 4)
+    optimization_loop.run_build(config, BUILD_WORKLOAD, 4)
     (config.repo_root / "accelerators" / "demo" / "q4" / "module.cpp").write_text("// v2\n")
-    optimization_smoke.run_build(config, BUILD_WORKLOAD, 4)
+    optimization_loop.run_build(config, BUILD_WORKLOAD, 4)
     assert len(builds) == 4
 
 
 def test_a_failed_build_is_not_remembered(setup, monkeypatch):
     config, builds = setup
     monkeypatch.setattr(
-        optimization_smoke, "subprocess",
+        optimization_loop, "subprocess",
         SimpleNamespace(run=lambda cmd, **k: builds.append(cmd) or SimpleNamespace(returncode=1, stdout="", stderr="boom")),
     )
-    assert not optimization_smoke.run_build(config, BUILD_WORKLOAD, 4)[0]
-    assert not optimization_smoke.run_build(config, BUILD_WORKLOAD, 4)[0]
+    assert not optimization_loop.run_build(config, BUILD_WORKLOAD, 4)[0]
+    assert not optimization_loop.run_build(config, BUILD_WORKLOAD, 4)[0]
     assert len(builds) == 2
 
 
 def test_an_unconfigured_build_dir_always_builds(setup):
     config, builds = setup
-    optimization_smoke.run_build(config, BUILD_WORKLOAD, 4)
+    optimization_loop.run_build(config, BUILD_WORKLOAD, 4)
     (config.build_dir / "CMakeCache.txt").unlink()
-    optimization_smoke.run_build(config, BUILD_WORKLOAD, 4)
+    optimization_loop.run_build(config, BUILD_WORKLOAD, 4)
     assert len(builds) == 4
 
 
 def test_the_cache_can_be_turned_off(setup):
     config, builds = setup
     config.quick_tier = QuickTierConfig(build_stamp_cache=False)
-    optimization_smoke.run_build(config, BUILD_WORKLOAD, 4)
-    optimization_smoke.run_build(config, BUILD_WORKLOAD, 4)
+    optimization_loop.run_build(config, BUILD_WORKLOAD, 4)
+    optimization_loop.run_build(config, BUILD_WORKLOAD, 4)
     assert len(builds) == 4

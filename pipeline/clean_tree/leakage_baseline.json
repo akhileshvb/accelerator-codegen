@@ -284,27 +284,12 @@
  "pipeline/orchestrator/accel_pipeline/mcp.py": {
   "path": 1
  },
- "pipeline/orchestrator/accel_pipeline/optimization/ab_tools.py": {
-  "engine": 1
+ "pipeline/orchestrator/accel_pipeline/optimization/bench.py": {
+  "engine": 4
  },
- "pipeline/orchestrator/accel_pipeline/optimization/aux_bench.py": {
-  "engine": 1
- },
- "pipeline/orchestrator/accel_pipeline/optimization/base_bench.py": {
-  "engine": 7
- },
- "pipeline/orchestrator/accel_pipeline/optimization/eval.py": {
-  "engine": 3
- },
- "pipeline/orchestrator/accel_pipeline/optimization/kernel_hot_path_review.py": {
-  "engine": 1,
-  "symbol": 4
- },
- "pipeline/orchestrator/accel_pipeline/optimization/profile_investigation.py": {
-  "symbol": 4
- },
- "pipeline/orchestrator/accel_pipeline/optimization/runtime.py": {
-  "engine": 2
+ "pipeline/orchestrator/accel_pipeline/optimization/memory.py": {
+  "engine": 6,
+  "symbol": 7
  },
  "pipeline/orchestrator/accel_pipeline/pack.py": {
   "engine": 1,
@@ -357,9 +342,6 @@
   "engine": 2,
   "path": 4
  },
- "pipeline/orchestrator/tests/test_ab_tools.py": {
-  "engine": 2
- },
  "pipeline/orchestrator/tests/test_accelerator_engine.py": {
   "engine": 67,
   "engine_branch": 4,
@@ -373,9 +355,6 @@
  "pipeline/orchestrator/tests/test_api_contract.py": {
   "engine": 3,
   "engine_branch": 1
- },
- "pipeline/orchestrator/tests/test_aux_bench.py": {
-  "engine": 6
  },
  "pipeline/orchestrator/tests/test_aux_pipeline.py": {
   "engine": 1,
@@ -405,26 +384,25 @@
  "pipeline/orchestrator/tests/test_gates.py": {
   "engine": 5
  },
- "pipeline/orchestrator/tests/test_kernel_snapshot.py": {
-  "engine": 9,
-  "path": 13
- },
  "pipeline/orchestrator/tests/test_layer_checks.py": {
   "engine": 11,
   "include": 5,
   "path": 9,
   "symbol": 1
  },
- "pipeline/orchestrator/tests/test_negative_memory.py": {
-  "engine": 10
- },
  "pipeline/orchestrator/tests/test_new_engine.py": {
   "engine": 2,
   "path": 2
  },
- "pipeline/orchestrator/tests/test_optimization_runtime.py": {
-  "engine": 1,
-  "path": 1
+ "pipeline/orchestrator/tests/test_optimization_bench.py": {
+  "engine": 6
+ },
+ "pipeline/orchestrator/tests/test_optimization_loop.py": {
+  "engine": 11,
+  "path": 13
+ },
+ "pipeline/orchestrator/tests/test_optimization_memory.py": {
+  "engine": 11
  },
  "pipeline/orchestrator/tests/test_pack.py": {
   "engine": 14,

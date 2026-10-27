@@ -10,11 +10,11 @@ import subprocess
 import pytest
 from test_repair import _implement, _stage_world
 
-from accel_pipeline.optimization import attempt as attempt_mod
+from accel_pipeline.optimization import loop as attempt_mod
 from accel_pipeline import repair as repair_mod
 from accel_pipeline.repair import run_gates_with_repair, RepairCtx, run_with_repair
 from accel_pipeline.gates import current_stamp, record_pass, GateResult
-from accel_pipeline.optimization.eval import BenchmarkSample, MultiSampleBenchmark
+from accel_pipeline.optimization.bench import BenchmarkSample, MultiSampleBenchmark
 
 WORKLOAD = {"benchmark_name": "toybench", "workload_kind": "aux_state", "query_number": 3}
 GATES = ["aux_unit", "aux_correctness", "aux_bench_sweep"]
@@ -88,7 +88,10 @@ def test_implementation_repair_exit_reuse_and_a_measurement_repair_run_in_one_se
     monkeypatch.setattr(attempt_mod, "run_multi_sample_benchmark", run_sweep)
     eval_config = type("Eval", (), {"quick_benchmark_samples": 2})()
     opt = RepairCtx(world.config, world.models, "w", 3, stage="optimization", change_kind="optimization", iteration=1)
-    baseline = run_with_repair(opt, lambda: attempt_mod._measure_baseline(world.config, WORKLOAD, 3, eval_config))
+    iteration = attempt_mod._Iteration.__new__(attempt_mod._Iteration)
+    iteration.__dict__.update(cfg=world.config, workload=WORKLOAD, query=3, eval_config=eval_config, art=world.art, iteration=1)
+    run_with_repair(opt, iteration.measure_baseline)
+    baseline = iteration.baseline
     assert baseline.median_metrics["by_write_frequency_pct"]["0"]["accel_hit_rate"] == 1.0
 
     # one main session id throughout: the first run starts it, every later turn resumes it

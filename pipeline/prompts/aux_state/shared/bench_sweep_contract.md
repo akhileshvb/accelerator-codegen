@@ -75,7 +75,7 @@ Optional `speedup_gate ...` and `#` lines may follow; the sweep parser ignores l
 
 ## Composite score (optimization)
 
-Parsed by `pipeline/orchestrator/accel_pipeline/optimization/aux_bench.py`:
+Parsed by `pipeline/orchestrator/accel_pipeline/optimization/bench.py`:
 
 - `composite_workload_speedup` = **min** steady-state workload speedup across 0/1/10/50%
 - `read_only_query_speedup` = query-only speedup at 0% (engine reference SQL vs aux hit)

@@ -162,7 +162,6 @@ def _run_stage(
     dry_run: bool,
     *,
     skip_gates: bool = False,
-    resume: bool = False,
 ) -> None:
     """One stage, with a last-resort catch: an exception nothing below handled is retried
     (max_orchestrator_retries), then recorded as a clean stop."""
@@ -170,7 +169,7 @@ def _run_stage(
     for attempt in range(retries + 1):
         try:
             return run_stage(stage, pipeline_config, model_config, workload_name, query, model_overrides,
-                             dry_run, skip_gates=skip_gates, resume=resume or attempt > 0)
+                             dry_run, skip_gates=skip_gates)
         except StageStopped as stopped:
             _mark_stopped(pipeline_config, workload_name, query, stage, stopped.reason)
             raise
@@ -429,7 +428,6 @@ def _run_main(argv: list[str] | None = None) -> int:
             model_overrides,
             args.dry_run,
             skip_gates=args.skip_gates,
-            resume=args.resume,
         )
         state.stage = args.stage
         state.save(state_path(repo_root, query, args.workload, pipeline_config.engine_name))
@@ -445,7 +443,7 @@ def _run_main(argv: list[str] | None = None) -> int:
         if not args.dry_run:
             state.stage = stage
             state.save(state_path(repo_root, query, args.workload, pipeline_config.engine_name))
-        _run_stage(stage, pipeline_config, model_config, args.workload, query, model_overrides, args.dry_run, skip_gates=args.skip_gates, resume=args.resume)
+        _run_stage(stage, pipeline_config, model_config, args.workload, query, model_overrides, args.dry_run, skip_gates=args.skip_gates)
         if not args.dry_run:  # a repair re-plan inside the stage counts against the same budget
             on_disk = PipelineState.load(state_path(repo_root, query, args.workload, pipeline_config.engine_name))
             state.structural_reanalysis_count = max(state.structural_reanalysis_count, on_disk.structural_reanalysis_count)

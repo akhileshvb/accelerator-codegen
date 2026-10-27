@@ -247,7 +247,6 @@ class PipelineConfig:
     optimization_worker_safety_cap_turns: int = 80
     optimization_hot_path_digest_max_chars: int = 25_000
     optimization_turn_delta_max_chars: int = 4_000
-    optimization_checkpoint_file: str = "optimization_worker_checkpoint.json"
     # When the agent may declare OPTIMIZATION_SATURATED.
     optimization_early_stop: dict[str, Any] = field(default_factory=dict)
     # Redesigns of the state inside optimization: the full-tier gates they must pass, and the

@@ -425,7 +425,7 @@ def log_base_bench_gate(
     workload: dict[str, Any] | None = None,
 ) -> None:
     """Log correctness / baseline speedup / profile phase breakdown after each gate."""
-    from accel_pipeline.optimization.base_bench import parse_benchmark_log
+    from accel_pipeline.optimization.bench import parse_benchmark_log
 
     label = _gate_context_label(change_kind, iteration)
     lines: list[str] = []

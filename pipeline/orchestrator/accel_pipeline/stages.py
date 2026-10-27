@@ -772,7 +772,7 @@ def run_implementation(
     def implement_and_seed():
         result = implement()
         if analysis_path.is_file() and workload.get("workload_kind") == "aux_state":
-            from accel_pipeline.optimization.aux_bench import initialize_optimization_state
+            from accel_pipeline.optimization.loop import initialize_optimization_state
 
             analysis = json.loads(analysis_path.read_text(encoding="utf-8"))
             initialize_optimization_state(pipeline_config.repo_root, query, analysis, workload)
@@ -786,7 +786,7 @@ def run_implementation(
 def _record_baseline(pipeline_config, workload: dict, query: int, analysis_path, impl_gates: list[str]) -> None:
     """The implementation's bench result is the optimization stage's baseline."""
     if workload.get("workload_kind") != "aux_state":
-        from accel_pipeline.optimization.base_bench import process_base_bench_after_gates
+        from accel_pipeline.optimization.loop import process_base_bench_after_gates
 
         process_base_bench_after_gates(
             pipeline_config.repo_root,
@@ -796,7 +796,7 @@ def _record_baseline(pipeline_config, workload: dict, query: int, analysis_path,
             change_kind="implementation",
         )
     elif {"aux_bench_sweep", "aux_exit"} & set(impl_gates):
-        from accel_pipeline.optimization.aux_bench import process_aux_bench_after_gates
+        from accel_pipeline.optimization.loop import process_aux_bench_after_gates
 
         selected = ""
         if analysis_path.is_file():
@@ -1501,7 +1501,7 @@ def make_reanalysis_tools(ctx: ReanalysisToolContext):
 # ---- the stages by name -------------------------------------------------------------------------
 
 def _run_optimization(*args, **kwargs) -> None:
-    from accel_pipeline.optimization.stage import run  # the optimization package is imported only when its stage runs
+    from accel_pipeline.optimization.loop import run  # the optimization package is imported only when its stage runs
 
     run(*args, **kwargs)
 
@@ -1516,7 +1516,7 @@ STAGE_RUNNERS = {
 # what a stage's run takes besides (pipeline_config, model_config, workload_name, query, model_overrides, dry_run)
 STAGE_OPTIONS = {
     "implementation": ("skip_gates",),
-    "optimization": ("skip_gates", "resume"),
+    "optimization": ("skip_gates",),
 }
 
 

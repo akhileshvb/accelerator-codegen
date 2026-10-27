@@ -121,13 +121,13 @@ def test_a_stage_exception_is_retried_once_then_recorded_as_a_stop(config, monke
     calls = []
 
     def boom(*args, **kwargs):
-        calls.append(kwargs["resume"])
+        calls.append(1)
         raise ValueError("bug")
 
     monkeypatch.setattr(cli, "run_stage", boom)
     with pytest.raises(StageStopped, match="orchestrator exception"):
         cli._run_stage("implementation", config, None, "w", 3, {}, False)
-    assert calls == [False, True]
+    assert len(calls) == 2
     state = json.loads((tmp_path / "pipeline/artifacts/tpch/q3/pipeline_state.json").read_text())
     assert state["status"].startswith("stopped:") and state["stage"] == "implementation"
     assert "ValueError" in (tmp_path / "pipeline/artifacts/tpch/q3/stop_report.md").read_text()

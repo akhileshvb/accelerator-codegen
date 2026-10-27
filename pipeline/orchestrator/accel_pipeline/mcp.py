@@ -91,7 +91,7 @@ from accel_pipeline.layout import (
 
 
 MODE_TOOLS = {
-    "optimization": "accel_pipeline.optimization.tools",
+    "optimization": "accel_pipeline.optimization.loop",
     "engine_backend": "accel_pipeline.engine_backend",
     "pack": "accel_pipeline.pack",
     "verus": "accel_pipeline.verus.tools",
@@ -218,7 +218,7 @@ def build_mcp_tool_callables(
         """Hot spots by symbol. Aux: perf samples of the read, write and build paths. scale="subset" (default, about 20 s)
         profiles the test subset, for direction on code paths; "full" profiles the full gate dataset in an instance of its
         own and shows where time goes at scale (state build, big-write maintenance, caches); it takes minutes."""
-        from accel_pipeline.optimization.saturation import mark_profile_run
+        from accel_pipeline.optimization.memory import mark_profile_run
 
         if is_aux:
             payload = profile_hot_spots(pipeline_config, workload, query, scale)

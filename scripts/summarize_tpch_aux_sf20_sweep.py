@@ -12,7 +12,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "pipeline" / "orchestrator"))
 
-from accel_pipeline.optimization.aux_bench import summarize_sweep_csv  # noqa: E402
+from accel_pipeline.optimization.bench import summarize_sweep_csv  # noqa: E402
 
 
 def load_config(path: Path) -> dict:
