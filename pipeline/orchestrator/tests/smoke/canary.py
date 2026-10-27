@@ -28,6 +28,8 @@ sys.path.insert(0, str(HERE))
 
 import pipeline_smoke as smoke  # noqa: E402
 
+from accel_pipeline import layout  # noqa: E402
+
 CANARY_HOME = Path(os.environ.get("ACCEL_CANARY_HOME", f"/flash1/{os.environ.get('USER', 'canary')}/canary"))
 
 
@@ -58,21 +60,23 @@ def run_to_end(proc: subprocess.Popen, log: Path, timeout: float) -> int:
     return proc.returncode
 
 
-AGENT_OWNED = ":(exclude)accelerators"  # what the run's agents write; everything else in the tree is the pipeline's
+# What the run's agents write (the query trees, and host_bootstrap's workload harnesses of every engine); everything
+# else in the tree is the pipeline's, replaced by --rev's on a resume.
+AGENT_OWNED = (":(exclude)accelerators", *(f":(exclude,glob){g}" for g in layout.harness_globs("*")))
 
 
 def replace_tracked(tree: Path, source: Path) -> None:
     """The tree's pipeline-owned tracked files become those of `source` (a base tree, one commit): files the source
     dropped are removed; the agents' files, files the run itself changed and untracked artifacts stay."""
     def git_files(cwd: Path, *cmd: str) -> set[str]:
-        return set(subprocess.run(["git", "-C", str(cwd), *cmd, "--", ".", AGENT_OWNED], capture_output=True, text=True,
+        return set(subprocess.run(["git", "-C", str(cwd), *cmd, "--", ".", *AGENT_OWNED], capture_output=True, text=True,
                                   check=True).stdout.split())
 
     changed = git_files(tree, "diff", "--name-only", "HEAD")
     kept = {name: (tree / name).read_bytes() for name in changed if (tree / name).is_file()}
     for name in git_files(tree, "ls-files") - git_files(source, "ls-files") - changed:
         (tree / name).unlink()
-    archive = subprocess.Popen(["git", "-C", str(source), "archive", "HEAD", "--", ".", AGENT_OWNED], stdout=subprocess.PIPE)
+    archive = subprocess.Popen(["git", "-C", str(source), "archive", "HEAD", "--", ".", *AGENT_OWNED], stdout=subprocess.PIPE)
     subprocess.run(["tar", "-x", "-C", str(tree)], stdin=archive.stdout, check=True)
     if archive.wait():
         raise smoke.SmokeError(f"git archive of {source} failed")
@@ -106,7 +110,7 @@ def main(argv: list[str] | None = None) -> int:
             tree = work / "tree"
             replace_tracked(tree, smoke.base_tree(args.rev, args.engine, fixture, env))
             smoke.use_tree_databases(tree, fixture, env)
-            smoke.run([*smoke.GIT, "add", "-A", "--", ".", AGENT_OWNED], cwd=tree)
+            smoke.run([*smoke.GIT, "add", "-A", "--", ".", *AGENT_OWNED], cwd=tree)
             smoke.run([*smoke.GIT, "commit", "-q", "--allow-empty", "-m", f"pipeline from {args.rev}"], cwd=tree)
             (work / "pipeline.log").replace(work / f"pipeline.{time.strftime('%H%M%S')}.log")
         else:
