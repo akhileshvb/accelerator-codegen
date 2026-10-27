@@ -1024,3 +1024,17 @@ def test_harnesses_that_keep_failing_stop_the_stage(tmp_path, monkeypatch):
     with pytest.raises(StageStopped, match="harnesses fail on Q3"):
         run()
     assert len(boots) == 2 and len(requests()) == 2 and "boom" in (tmp_path / "stop_report.md").read_text()
+
+
+@pytest.mark.parametrize("skipped, frozen, accepted", [(False, True, True), (False, False, False), (True, True, False)])
+def test_a_startup_bootstrap_past_the_suites_freeze_reruns_acceptance(tmp_path, monkeypatch, skipped, frozen, accepted):
+    from accel_pipeline import engine_backend as eb
+
+    calls = []
+    workload = {"workload_kind": "aux_state", "engine_name": "toyengine", "benchmark_name": "toybench", "query_number": 3}
+    monkeypatch.setattr(eb, "load_run_workload", lambda cfg, name: workload)
+    monkeypatch.setattr(eb, "run_host_bootstrap", lambda *a, **k: {"status": "pass", "skipped": skipped})
+    monkeypatch.setattr(eb, "frozen_problem", lambda art, suite: "" if frozen else "never frozen")
+    monkeypatch.setattr(eb, "accept_harness", lambda *a: calls.append(a[4]))
+    eb.ensure_host_bootstrap_for_workload(SimpleNamespace(repo_root=tmp_path), None, "toybench_q3_aux")
+    assert calls == ([3] if accepted else [])

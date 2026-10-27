@@ -34,6 +34,7 @@ from accel_pipeline.config import (
     ModelConfig,
     PipelineConfig,
     apply_workload_overrides,
+    benchmark_of,
     engine_artifacts_dir,
     harness_targets,
     load_run_workload,
@@ -42,7 +43,7 @@ from accel_pipeline.config import (
     query_artifacts_dir,
     sanitize_engine_name,
 )
-from accel_pipeline.data import prepare_host_sdk_payload
+from accel_pipeline.data import frozen_problem, prepare_host_sdk_payload, suite_path
 from accel_pipeline.gates import GateResult, format_reloop_failure_sections
 from accel_pipeline.mcp import ToolContext, make_gate_tools
 from accel_pipeline.pack import apply_foreign_engine_quarantine, restore_quarantine
@@ -1370,14 +1371,20 @@ def accept_harness(pipeline_config: PipelineConfig, model_config: ModelConfig, w
 def ensure_host_bootstrap_for_workload(pipeline_config: PipelineConfig, model_config: ModelConfig, workload_name: str,
                                        *, model_overrides: dict[str, str] | None = None, dry_run: bool = False,
                                        skip_gates: bool = False) -> dict[str, Any] | None:
-    """Single-query entry: bootstrap the engine's harnesses if needed, else None."""
+    """Single-query entry: bootstrap the engine's harnesses if needed, else None. A query past its suite's freeze has
+    the revised harnesses accepted on it, as revise_upstream does mid-run."""
     workload = load_run_workload(pipeline_config, workload_name)
     if not needs_host_bootstrap(workload):
         return None
-    return run_host_bootstrap(pipeline_config, model_config,
-                              engine_name=sanitize_engine_name(str(workload.get("engine_name") or "")),
-                              representative_workload=workload_name, model_overrides=model_overrides,
-                              dry_run=dry_run, skip_gates=skip_gates)
+    result = run_host_bootstrap(pipeline_config, model_config,
+                                engine_name=sanitize_engine_name(str(workload.get("engine_name") or "")),
+                                representative_workload=workload_name, model_overrides=model_overrides,
+                                dry_run=dry_run, skip_gates=skip_gates)
+    root, query = pipeline_config.repo_root, int(workload.get("query_number") or 0)
+    art = query_artifacts_dir(root, query, workload=workload)
+    if not (result.get("skipped") or dry_run or skip_gates) and not frozen_problem(art, suite_path(root, benchmark_of(workload), query)):
+        accept_harness(pipeline_config, model_config, workload_name, workload, query, model_overrides)
+    return result
 
 
 def ensure_host_bootstrap_for_pack(pack: dict[str, Any], *, repo_root: Path, pipeline_config: PipelineConfig,
