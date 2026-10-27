@@ -1,4 +1,4 @@
-"""Codex CLI backend (`codex exec`) with OpenRouter model provider + MCP tools."""
+"""Codex CLI backend (`codex exec`) with a configurable model provider (OpenRouter by default) + MCP tools."""
 
 from __future__ import annotations
 
@@ -24,6 +24,15 @@ from accel_pipeline.config import ModelConfig, PipelineConfig
 from accel_pipeline.gates.run import TOOL_CALL_LIMIT_S
 from accel_pipeline.advisor import READ_ONLY_TOOLS
 from accel_pipeline.session import HEARTBEAT_FILE
+
+
+def _provider_overrides(provider: dict[str, str]) -> list[str]:
+    """`-c` overrides selecting the model provider (codex reads model_providers from -c as from CODEX_HOME)."""
+    if not provider:
+        return ["-c", 'model_provider="openrouter"']
+    name = provider["name"]
+    spec = f'{{name="{name}", base_url="{provider["base_url"]}", env_key="{provider["env_key"]}", wire_api="responses"}}'
+    return ["-c", f'model_provider="{name}"', "-c", f"model_providers.{name}={spec}"]
 
 
 def _forwarded_to_mcp(key: str) -> bool:
@@ -299,8 +308,7 @@ class CodexExecBackend:
             cmd = head + ["--skip-git-repo-check"] + ([] if resume or fork else ["-C", str(self._pipeline_config.repo_root)]) + [
                 "-m",
                 model,
-                "-c",
-                'model_provider="openrouter"',
+                *_provider_overrides(self._model_config.codex_provider),
                 "-c",
                 f"mcp_servers.accel_pipeline.env={mcp_env_toml}",
                 "-c",

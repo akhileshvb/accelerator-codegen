@@ -64,6 +64,9 @@ class ModelConfig:
     codex_auto_compact_tokens: int = 0
     # What a compaction summary keeps (repo-relative); empty leaves Codex's generic summary.
     codex_compact_prompt_file: str = ""
+    # The model provider codex calls: {name, base_url, env_key} of a Responses-API endpoint; empty: the
+    # template's `openrouter` (pipeline/codex/config.template.toml).
+    codex_provider: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
