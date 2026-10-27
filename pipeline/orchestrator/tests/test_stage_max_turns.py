@@ -17,8 +17,6 @@ def test_resolve_optimization_max_turns_unlimited_when_zero() -> None:
         repo_root=repo,
         pipeline_root=repo / "pipeline",
         build_dir=repo / "build-release",
-        tpch_db_sf1=repo.parent / "accelerator-codegen-duckdb" / "tpch_sf1.duckdb",
-        tpch_db_sf10=repo.parent / "accelerator-codegen-duckdb" / "tpch_sf10.duckdb",
         optimization_max_turns_unified=0,
     )
     assert resolve_optimization_max_turns(pc, "unified") == 10_000

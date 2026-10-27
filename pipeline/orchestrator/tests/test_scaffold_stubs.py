@@ -77,8 +77,6 @@ def test_materialize_workload_stubs_writes_missing_files(tmp_path):
         repo_root=repo,
         pipeline_root=pipe,
         build_dir=repo / "build-release",
-        tpch_db_sf1=repo / "tpch_sf1.duckdb",
-        tpch_db_sf10=repo / "tpch_sf10.duckdb",
     )
 
     result = materialize_workload_stubs(pipeline_config, workload, 1)

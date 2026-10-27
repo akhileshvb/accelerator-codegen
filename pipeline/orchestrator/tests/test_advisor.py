@@ -52,7 +52,7 @@ class World:
         (tmp_path / "accelerators/dirty.cpp").write_text("the agent's work in progress")
         self.config = PipelineConfig(
             repo_root=tmp_path, pipeline_root=tmp_path / "pipeline", build_dir=tmp_path / "build",
-            tpch_db_sf1=tmp_path, tpch_db_sf10=tmp_path, codex_home=tmp_path / "home", sandbox="none",
+            codex_home=tmp_path / "home", sandbox="none",
             write_policy="off", repair=RepairConfig(), advisor=AdvisorConfig(**advisor_cfg),
         )
         self.models = ModelConfig(api_key_env="K", presets={}, stages={}, codex_bin=str(FAKE_CODEX))
@@ -92,7 +92,7 @@ def fork_backend(tmp_path, monkeypatch, art=True):
     monkeypatch.setenv("FAKE_CODEX_MODE", "ok")
     monkeypatch.setenv("FAKE_CODEX_DIR", str(tmp_path))
     config = PipelineConfig(repo_root=tmp_path, pipeline_root=tmp_path / "pipeline", build_dir=tmp_path / "build",
-                            tpch_db_sf1=tmp_path, tpch_db_sf10=tmp_path, codex_home=tmp_path / "home",
+                            codex_home=tmp_path / "home",
                             sandbox="none", write_policy="enforce")
     models = ModelConfig(api_key_env="K", presets={}, stages={}, codex_bin=str(FAKE_CODEX))
     return CodexExecBackend(pipeline_config=config, model_config=models, query=3, stage="implementation",

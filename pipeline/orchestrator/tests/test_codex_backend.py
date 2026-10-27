@@ -18,8 +18,6 @@ def _pipeline_config(**overrides) -> PipelineConfig:
         repo_root=REPO_ROOT,
         pipeline_root=REPO_ROOT / "pipeline",
         build_dir=REPO_ROOT / "build-release",
-        tpch_db_sf1=REPO_ROOT.parent / "accelerator-codegen-duckdb" / "tpch_sf1.duckdb",
-        tpch_db_sf10=REPO_ROOT.parent / "accelerator-codegen-duckdb" / "tpch_sf10.duckdb",
         **overrides,
     )
 
@@ -92,7 +90,7 @@ def _fake_backend(tmp_path, monkeypatch, *, mode="ok", idle=0, hard=60, art=True
     monkeypatch.setenv("FAKE_CODEX_DIR", str(tmp_path))
     config = PipelineConfig(
         repo_root=tmp_path, pipeline_root=tmp_path / "pipeline", build_dir=tmp_path / "build",
-        tpch_db_sf1=tmp_path, tpch_db_sf10=tmp_path, codex_home=tmp_path / "home", sandbox="none",
+        codex_home=tmp_path / "home", sandbox="none",
         write_policy="off", session=SessionConfig(idle_timeout_sec=idle, hard_deadline_sec=hard),
     )
     models = ModelConfig(api_key_env="K", presets={}, stages={}, codex_bin=str(FAKE_CODEX))

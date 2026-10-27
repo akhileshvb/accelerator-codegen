@@ -276,7 +276,7 @@ class World:
 
         self.stage, self.tmp, self.messages, self.roles = stage, tmp_path, [], []
         self.config = PipelineConfig(repo_root=tmp_path, pipeline_root=tmp_path / "pipeline", build_dir=tmp_path / "build",
-                                     tpch_db_sf1=tmp_path, tpch_db_sf10=tmp_path, sandbox="none", write_policy="off",
+                                     sandbox="none", write_policy="off",
                                      repair=RepairConfig())
         self.workload = {"benchmark_name": "toybench", "workload_kind": "aux_state"}
         for module in (stage, repair_mod):

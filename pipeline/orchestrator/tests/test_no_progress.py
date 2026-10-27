@@ -35,7 +35,7 @@ def _git_repo(root: Path) -> None:
 
 def _config(root: Path, **session) -> PipelineConfig:
     return PipelineConfig(
-        repo_root=root, pipeline_root=root / "pipeline", build_dir=root / "build", tpch_db_sf1=root, tpch_db_sf10=root,
+        repo_root=root, pipeline_root=root / "pipeline", build_dir=root / "build",
         codex_home=root / "home", sandbox="none", write_policy="off", benchmark_name="toy",
         session=SessionConfig(idle_timeout_sec=0, hard_deadline_sec=60, **session))
 
@@ -186,8 +186,8 @@ def test_the_mcp_report_blocker_tool_writes_blocker_md(tmp_path):
 class World:
     def __init__(self, tmp_path, monkeypatch):
         self.config = PipelineConfig(
-            repo_root=tmp_path, pipeline_root=tmp_path / "pipeline", build_dir=tmp_path / "build", tpch_db_sf1=tmp_path,
-            tpch_db_sf10=tmp_path, codex_home=tmp_path / "home", sandbox="none", write_policy="off",
+            repo_root=tmp_path, pipeline_root=tmp_path / "pipeline", build_dir=tmp_path / "build",
+            codex_home=tmp_path / "home", sandbox="none", write_policy="off",
             repair=RepairConfig())
         monkeypatch.setattr(repair_mod, "load_run_workload", lambda cfg, name: {"benchmark_name": "toy"})
         self.gate_calls, self.agent_calls = [], 0

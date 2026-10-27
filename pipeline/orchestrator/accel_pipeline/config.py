@@ -169,8 +169,6 @@ class PipelineConfig:
     repo_root: Path
     pipeline_root: Path
     build_dir: Path
-    tpch_db_sf1: Path
-    tpch_db_sf10: Path
     datasets: dict[str, Path] = field(default_factory=dict)
     # Benchmarks whose bench/calibrate harness is one query-parameterised target per engine.
     shared_bench_harness: tuple[str, ...] = ()
@@ -356,8 +354,6 @@ def load_pipeline_config(config_path: Path | None = None, repo_root: Path | None
         pipeline_root=pipe,
         build_dir=root / data.get("build_dir", DEFAULT_BUILD_DIR),
         gates_dir=root / data.get("gates_dir", DEFAULT_GATES_DIR),
-        tpch_db_sf1=datasets.get("tpch_sf1", Path()),
-        tpch_db_sf10=datasets.get("tpch_sf10", Path()),
         datasets=datasets,
         worker_id=os.environ.get("ACCEL_PIPELINE_WORKER_ID") or "",
         test_suite=SuiteConfig.from_dict(data.get("test_suite")),

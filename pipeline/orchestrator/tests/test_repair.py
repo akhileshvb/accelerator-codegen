@@ -25,7 +25,7 @@ class World:
     def __init__(self, tmp_path, monkeypatch, **repair):
         self.config = PipelineConfig(
             repo_root=tmp_path, pipeline_root=tmp_path / "pipeline", build_dir=tmp_path / "build",
-            tpch_db_sf1=tmp_path, tpch_db_sf10=tmp_path, codex_home=tmp_path / "home", sandbox="none",
+            codex_home=tmp_path / "home", sandbox="none",
             write_policy="off", repair=RepairConfig(**repair),
         )
         monkeypatch.setattr(repair_mod, "load_run_workload", lambda cfg, name: {"benchmark_name": "toybench"})

@@ -16,7 +16,7 @@ def config(tmp_path, monkeypatch):
     PipelineState(query=3, workload="w", engine="e", stage="implementation").save(path)
     monkeypatch.setattr(run_pipeline, "state_path", lambda *a: path)
     return PipelineConfig(repo_root=tmp_path, pipeline_root=tmp_path / "pipeline", build_dir=tmp_path / "b",
-                          tpch_db_sf1=tmp_path, tpch_db_sf10=tmp_path, repair=RepairConfig(max_orchestrator_retries=1))
+                          repair=RepairConfig(max_orchestrator_retries=1))
 
 
 def test_a_stage_exception_is_retried_once_then_recorded_as_a_stop(config, monkeypatch, tmp_path):

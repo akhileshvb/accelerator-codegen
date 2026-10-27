@@ -37,8 +37,6 @@ def test_worker_isolation_rewrites_build_dir(tmp_path: Path, monkeypatch):
         repo_root=tmp_path,
         pipeline_root=tmp_path / "pipeline",
         build_dir=tmp_path / "build-release",
-        tpch_db_sf1=tmp_path / "a.duckdb",
-        tpch_db_sf10=tmp_path / "b.duckdb",
         allowed_commands=[r"^cmake --build build-release( .*)?$"],
     )
     isolated = apply_worker_isolation(
@@ -85,8 +83,6 @@ def test_ensure_build_dir_retargets_source(tmp_path: Path, monkeypatch):
         repo_root=new_src,
         pipeline_root=new_src / "pipeline",
         build_dir=bdir,
-        tpch_db_sf1=tmp_path / "a.duckdb",
-        tpch_db_sf10=tmp_path / "b.duckdb",
         worker_id="tpch_q4_aux",
     )
     seen: list[list[str]] = []
@@ -173,8 +169,6 @@ def test_rewrite_and_reject_shared_build_dir(tmp_path: Path):
         repo_root=tmp_path,
         pipeline_root=tmp_path / "pipeline",
         build_dir=tmp_path / "build-release-tpch_q4_aux",
-        tpch_db_sf1=tmp_path / "a.duckdb",
-        tpch_db_sf10=tmp_path / "b.duckdb",
         datasets={},
         gates_dir=tmp_path / "gates",
         worker_id="tpch_q4_aux",
