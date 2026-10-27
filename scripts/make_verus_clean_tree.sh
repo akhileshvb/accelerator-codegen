@@ -31,7 +31,7 @@ cd "${DEST}"
 shopt -s nullglob
 # a benchmark's build.cmake and Verus world name the queries removed here (the pipeline regenerates both)
 remove=(
-  accelerators/tpch/q[0-9]* accelerators/sec_edgar/q[0-9]*
+  accelerators/*/q[0-9]*
   accelerators/*/build.cmake accelerators/*/verus_world
   workloads/*/q[0-9]*.inputs
   pipeline/artifacts pipeline/verus_runs
