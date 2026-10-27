@@ -536,7 +536,7 @@ def test_report_blocker_ends_the_turn_and_becomes_an_agent_blocker_failure(tmp_p
 
 
 def test_the_mcp_report_blocker_tool_writes_blocker_md(tmp_path):
-    from accel_pipeline.mcp_server import build_mcp_tool_callables
+    from accel_pipeline.mcp import build_mcp_tool_callables
 
     tools = build_mcp_tool_callables(_repo_config(tmp_path), {}, "w", 1, "implementation", 0, tmp_path)
     assert "Stop now" in tools["report_blocker"]("the gate is broken", "traceback ...")
@@ -618,7 +618,7 @@ def test_an_exit_gate_record_older_than_the_turn_does_not_end_it(tmp_path, monke
 
 
 def test_the_mcp_validate_analysis_tool_reports_the_stage_check(tmp_path):
-    from accel_pipeline.mcp_server import build_mcp_tool_callables
+    from accel_pipeline.mcp import build_mcp_tool_callables
 
     tools = build_mcp_tool_callables(_repo_config(tmp_path), {}, "w", 1, "analysis", 0, tmp_path)
     assert tools["validate_analysis"]().startswith("invalid: analysis file not found")
@@ -627,11 +627,11 @@ def test_the_mcp_validate_analysis_tool_reports_the_stage_check(tmp_path):
 def test_the_mcp_update_analysis_tool_patches_then_validates(tmp_path, monkeypatch):
     import json
 
-    from accel_pipeline.mcp_server import build_mcp_tool_callables
+    from accel_pipeline.mcp import build_mcp_tool_callables
 
     target = tmp_path / "analysis.json"
     target.write_text(json.dumps({"x": {"y": 1}}))
-    monkeypatch.setattr("accel_pipeline.config.analysis_artifact_path", lambda *a, **k: target)
+    monkeypatch.setattr("accel_pipeline.mcp.analysis_artifact_path", lambda *a, **k: target)
     tools = build_mcp_tool_callables(_repo_config(tmp_path), {}, "w", 1, "analysis", 0, tmp_path)
     out = tools["update_analysis"]([{"op": "replace", "path": "/x/y", "value": 2}])
     assert out.startswith("applied 1 operation(s); validation: invalid") and json.loads(target.read_text()) == {"x": {"y": 2}}
@@ -670,7 +670,7 @@ NARROWED = {"run_pipeline_command"}  # the agent passes the command only, never 
 def test_every_mcp_proxy_takes_the_parameters_of_the_tool_it_forwards_to(tmp_path):
     import inspect
 
-    from accel_pipeline.mcp_server import build_mcp_tool_callables, register_core
+    from accel_pipeline.mcp import build_mcp_tool_callables, register_core
 
     proxies = {}
     register_core(lambda read_only: lambda fn: proxies.setdefault(fn.__name__, fn), lambda *args: "")
@@ -931,7 +931,7 @@ def test_a_revert_restores_each_path_as_the_stage_found_it(tmp_path: Path) -> No
 def test_no_check_runs_while_the_session_has_out_of_bounds_edits(tmp_path: Path) -> None:
     import json
 
-    from accel_pipeline.tools.gate_tools import ToolContext, admission_refusal_payload
+    from accel_pipeline.mcp import ToolContext, admission_refusal_payload
 
     root = _git_tree(tmp_path / "t")
     cfg = _cfg(root, quick_tier=SimpleNamespace(enabled=False))

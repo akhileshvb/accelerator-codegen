@@ -34,7 +34,7 @@ from accel_pipeline.optimization.scoreboard import (
     primary_score_from_metrics,
     write_scoreboard,
 )
-from accel_pipeline.tools import none_default
+from accel_pipeline.mcp import none_default
 
 CHECKPOINT_DIRNAME = "ab_checkpoint"
 ACTIVE_TRIAL_FILE = "ab_active_trial.json"

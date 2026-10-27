@@ -1,4 +1,4 @@
-"""MCP tools of the Verus pipeline (served by accel_pipeline.mcp_server).
+"""MCP tools of the Verus pipeline (served by accel_pipeline.mcp).
 
 They run the same actions the stages' gates run, on the build tree, using
 the run context the orchestrator wrote (``ACCEL_VERUS_CONTEXT``).  Each agent

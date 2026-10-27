@@ -41,7 +41,7 @@ write_paths:
   - pipeline/artifacts/**
 
 allowed_commands:
-  # pwd, ls, test -f (repo navigation) are always allowed via shell_tools built-ins
+  # pwd, ls, test -f (repo navigation) are always allowed via the mcp.py shell tool built-ins
   - "^cmake -S \\. -B build-release( .*)?$"
   - "^cmake -S \\. -B build-release && cmake --build build-release( .*)?$"
   - "^cmake --build build-release( .*)?$"

@@ -151,7 +151,7 @@ class NoProgressConfig:
 
 @dataclass(frozen=True)
 class DataToolsConfig:
-    """Limits of the agents' data exploration tools (tools/data_tools.py)."""
+    """Limits of the agents' data exploration tools (the data tools in mcp.py)."""
 
     query_seconds: float = 60.0  # time box of one statement
     default_rows: int = 200

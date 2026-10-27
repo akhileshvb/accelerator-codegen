@@ -278,7 +278,7 @@
  "pipeline/orchestrator/accel_pipeline/config.py": {
   "engine": 7
  },
- "pipeline/orchestrator/accel_pipeline/mcp_server.py": {
+ "pipeline/orchestrator/accel_pipeline/mcp.py": {
   "path": 1
  },
  "pipeline/orchestrator/accel_pipeline/optimization/ab_tools.py": {
@@ -450,9 +450,6 @@
  "pipeline/orchestrator/tests/test_shared_tree_pack.py": {
   "engine": 31,
   "path": 14
- },
- "pipeline/orchestrator/tests/test_shell_tools.py": {
-  "engine": 6
  },
  "pipeline/orchestrator/tests/test_stage_max_turns.py": {
   "engine": 3

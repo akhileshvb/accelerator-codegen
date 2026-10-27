@@ -11,7 +11,7 @@ from accel_pipeline.pack.shared_file_lease import (
     SharedFileLease,
 )
 from accel_pipeline.pack.worker_isolation import apply_worker_isolation
-from accel_pipeline.tools.shell_tools import reject_shared_build_dir_cmd, rewrite_command_build_dir
+from accel_pipeline.mcp import reject_shared_build_dir_cmd, rewrite_command_build_dir
 from accel_pipeline.config import PipelineConfig
 
 

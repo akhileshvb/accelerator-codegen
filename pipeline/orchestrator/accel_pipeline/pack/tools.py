@@ -10,7 +10,7 @@ from accel_pipeline.pack.shared_file_lease import (
     release_sticky_lease,
     worker_id_from_env,
 )
-from accel_pipeline.tools.gate_tools import ToolContext
+from accel_pipeline.mcp import ToolContext
 
 
 def callables(ctx: ToolContext) -> dict[str, Callable[..., str]]:

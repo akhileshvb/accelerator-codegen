@@ -635,7 +635,7 @@ def test_ask_gives_up_when_nobody_serves(advisor_world):
 
 
 def mcp_tools(advisor_world, stage="implementation"):
-    from accel_pipeline.mcp_server import build_mcp_tool_callables
+    from accel_pipeline.mcp import build_mcp_tool_callables
 
     return build_mcp_tool_callables(advisor_world.config, {"benchmark_name": "toybench"}, "w", 3, stage, 0, advisor_world.art)
 

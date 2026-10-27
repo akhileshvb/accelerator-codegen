@@ -286,7 +286,7 @@ class CodexExecBackend:
     @staticmethod
     def _enabled_mcp_tools(stage: str) -> list[str] | None:
         """The MCP tools codex may call in `stage` (engine_backend layer and Verus steps restrict them), or None for all."""
-        from accel_pipeline.tools import mode_tools
+        from accel_pipeline.mcp import mode_tools
 
         mode = "verus" if stage.startswith("verus_") else "engine_backend" if stage.startswith("impl_") else None
         return mode_tools(mode).enabled_tools(stage) if mode else None
@@ -652,7 +652,7 @@ TESTER = "tester"  # the test_suite stage: its own session, never the implemente
 
 CHECKS_FILE = "check_signatures.json"  # written by the MCP server: {check: signature of its last result}
 BLOCKER_FILE = "blocker.md"
-DATA_LOG = "data_queries.jsonl"  # tools/data_tools.py
+DATA_LOG = "data_queries.jsonl"  # the data tools in mcp.py
 
 CHECK_TOOLS = frozenset({"quick_check", "quick_layer", "request_gate", "run_engine_build", "run_layer_gate"})
 STAGE_ARTIFACTS = ("analysis*.json", "experiment_log.md", "layer_critique_*", "test_suite_change_request*")

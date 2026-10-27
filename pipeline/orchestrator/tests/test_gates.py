@@ -48,7 +48,7 @@ from accel_pipeline.gates import (
 )
 from accel_pipeline.layout import BACKENDS, code_stamp, PRIMS, suite_dir
 from accel_pipeline.optimization import smoke as optimization_smoke
-from accel_pipeline.tools.gate_tools import _compact_gate_payload
+from accel_pipeline.mcp import _compact_gate_payload
 
 
 CONFIG = SimpleNamespace(quick_tier=SimpleNamespace(gate_jobs=0), worker_id="w3", repo_root=None, build_dir=Path("/builds/b3"))
@@ -418,7 +418,7 @@ def test_a_running_background_gate_says_what_it_is_doing_and_how_long(stamp_conf
     assert status["status"] == "running" and status["elapsed_sec"] >= 42
     assert status["phase"] == "running: correctness bench"
     assert status["progress"] == {"aux_correctness": "phase suite: 70.5 s"}
-    from accel_pipeline.tools.gate_tools import _compact_background_state
+    from accel_pipeline.mcp import _compact_background_state
 
     assert {"elapsed_sec", "phase", "progress"} <= set(_compact_background_state(status))
 

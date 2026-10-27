@@ -34,4 +34,4 @@ fi
 
 export PYTHONPATH="${ORCH}${PYTHONPATH:+:$PYTHONPATH}"
 cd "$ORCH"
-exec "$PY" -m accel_pipeline.mcp_server
+exec "$PY" -m accel_pipeline.mcp

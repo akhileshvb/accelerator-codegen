@@ -165,7 +165,7 @@ async def _mcp_probe(probe: Probe) -> tuple[dict[str, set[str]], list[str]]:
 def _unlogged(probe: Probe):
     """The data tools log every query to the run's artifacts, which analysis cites: the probe leaves that log as it was."""
     from accel_pipeline.config import query_artifacts_dir
-    from accel_pipeline.tools.data_tools import LOG_FILE
+    from accel_pipeline.mcp import LOG_FILE
 
     log = query_artifacts_dir(probe.cfg.repo_root, probe.query, workload=probe.workload) / LOG_FILE
     before = log.read_bytes() if log.is_file() else None

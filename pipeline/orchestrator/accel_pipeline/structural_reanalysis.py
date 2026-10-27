@@ -309,14 +309,7 @@ def make_reanalysis_tools(ctx: ReanalysisToolContext):
         alternate_candidate_ids: list[str] | None = None,
         cost_model_insufficient_reason: str | None = "",
     ) -> str:
-        """Request a bounded structural re-analysis (max 2 per pipeline run).
-
-        Use only when a structural bottleneck is confirmed — e.g. residual O(n) state scan,
-        scan-for-scan swap, wrong partition grain, or maintenance semantics that cannot be fixed
-        by cost-model tuning or switching among viable alternates already in analysis.json.
-
-        Do NOT use for coefficient tweaks, EWMA tuning, or minor threshold changes.
-        """
+        """The tool as the agent sees it is declared in mcp.register_core."""
         cost_model_insufficient_reason = str(cost_model_insufficient_reason or "")
         workload = load_run_workload(ctx.pipeline_config, ctx.workload_name)
         state = load_or_create(

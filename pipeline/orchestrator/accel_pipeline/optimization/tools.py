@@ -14,7 +14,7 @@ from accel_pipeline.optimization.scoreboard import (
     profile_freshness,
     write_scoreboard,
 )
-from accel_pipeline.tools.gate_tools import ToolContext
+from accel_pipeline.mcp import ToolContext
 
 _FEEDBACK_TAIL_CHARS = 4000
 _DIGEST_MAX_CHARS = 50_000
