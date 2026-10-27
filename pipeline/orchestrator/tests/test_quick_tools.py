@@ -14,7 +14,7 @@ from accel_pipeline.failure import Failure
 from accel_pipeline.tools import gate_tools, quick_tools
 from accel_pipeline.tools.gate_tools import ToolContext
 
-CONFIG = SimpleNamespace(quick_tier=QuickTierConfig(background_gates=("aux_unit", "aux_correctness")))
+CONFIG = SimpleNamespace(quick_tier=QuickTierConfig())
 WORKLOAD = {"workload_kind": "aux_state"}
 
 

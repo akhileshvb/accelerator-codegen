@@ -21,6 +21,7 @@ from accel_pipeline import advisor, no_progress
 from accel_pipeline import session as session_mod
 from accel_pipeline.backends.base import StageRunRequest, StageRunResult
 from accel_pipeline.config import ModelConfig, PipelineConfig
+from accel_pipeline.gates.run import TOOL_CALL_LIMIT_S
 from accel_pipeline.advisor import READ_ONLY_TOOLS
 from accel_pipeline.session import HEARTBEAT_FILE
 
@@ -304,6 +305,8 @@ class CodexExecBackend:
                 f"mcp_servers.accel_pipeline.env={mcp_env_toml}",
                 "-c",
                 'mcp_servers.accel_pipeline.default_tools_approval_mode="approve"',
+                "-c",
+                f"mcp_servers.accel_pipeline.tool_timeout_sec={TOOL_CALL_LIMIT_S}",
             ]
             if self._model_config.codex_model_context_window:
                 cmd.extend(["-c", f"model_context_window={self._model_config.codex_model_context_window}"])

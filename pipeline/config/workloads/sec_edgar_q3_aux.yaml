@@ -2,8 +2,7 @@ workload_kind: aux_state
 benchmark_name: sec_edgar
 query_number: 3
 engines: [duckdb]
-reference_sql_path: workloads/sec_edgar/q3.sql
-query_sql_path: workloads/sec_edgar/parameterized/q3.sql   # $n form of the query: test suites bind tuples to it
+reference_sql_path: workloads/sec_edgar/instances/seed_1/03.sql
 parameters:   # spec: eval/bench/sec_edgar/params/q3.json (zero-arg function = defaults)
   - {name: fy, type: BIGINT, default: 2022, domain: [2021, 2022, 2023, 2024]}
   - {name: uom, type: VARCHAR, default: "USD", domain: ["USD", "shares", "pure", "CAD", "CNY", "EUR"]}

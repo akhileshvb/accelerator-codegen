@@ -1,5 +1,5 @@
 // Template for SEC-EDGAR base accelerator tests.
-// Copy to accelerators/sec_edgar/q{{query_number}}/tests/test_sec_edgar_q{{query_number}}.cpp and customize.
+// Copy to accelerators/sec_edgar/q{{query_number}}/tests/test_sec_edgar_q{{query_number}}.cpp and customize ({{query_number_2d}}: the query number in two digits).
 
 #include "eval/tests/test_support/db_paths.hpp"
 #include "backends/duckdb/api/register.hpp"
@@ -12,7 +12,7 @@
 
 namespace {
 
-constexpr const char *kReferenceSqlPath = "workloads/sec_edgar/q{{query_number}}.sql";
+constexpr const char *kReferenceSqlPath = "workloads/sec_edgar/instances/seed_1/{{query_number_2d}}.sql";
 
 } // namespace
 

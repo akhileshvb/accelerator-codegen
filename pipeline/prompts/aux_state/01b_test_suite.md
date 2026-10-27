@@ -19,7 +19,7 @@ Write the acceptance test suite of **{{display_name}}** **Q{{query_number}}**. Y
 ## Inputs
 
 - Analysis: `{{full_analysis_path}}` · compact facts: `{{analysis_json}}`
-- Query (`$n` parameters): `{{query_sql_path}}` · schema: `workloads/{{benchmark_name}}/schema.sql` (its NOT NULL columns are enforced on the test database: a write that breaks the schema is outside what the accelerator is specified for)
+- Query (`$n` parameters): `workloads/{{benchmark_name}}/q{{query_number}}.sql` · schema: `workloads/{{benchmark_name}}/schema.sql` (its NOT NULL columns are enforced on the test database: a write that breaks the schema is outside what the accelerator is specified for)
 - Explore the data with the MCP tools (`query_data`, `query_shape`, `rows_qualifying`, ...): read-only and time-boxed. Do not start engine processes yourself (the host script, the engine's CLI on its database).
 - **Everything you need is in `pipeline/prompts/shared/test_suite.md`: every file's format with a complete worked example, the validation rules and how to run them.** Read it once, write the whole suite, then `request_gate test_suite_validate` and fix what it lists. Pipeline, gate and harness sources tell you nothing more: do not read them; no suite of another query exists to copy.
 

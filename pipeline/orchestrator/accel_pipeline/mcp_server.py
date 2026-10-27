@@ -349,8 +349,7 @@ def register_core(tool, call) -> None:
         Keep calling until status=pass. Do not substitute host cmake or docker
         exec of the harness for this tool.
         Aux gates are for acceptance and take minutes; use quick_check in the edit loop.
-        background=True starts aux_exit, aux_correctness, aux_unit, prims_tests, aux_multi_connection or
-        aux_cross_accel in its own process and returns at once; read it once with gate_status.
+        background=True starts the gate in its own process and returns at once; read it once with gate_status.
         """
         return call("request_gate", gate_name, background)
 

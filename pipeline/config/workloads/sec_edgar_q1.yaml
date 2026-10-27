@@ -1,5 +1,5 @@
 benchmark_name: sec_edgar
 query_number: 1
 engines: [duckdb]
-reference_sql_path: workloads/sec_edgar/q1.sql
+reference_sql_path: workloads/sec_edgar/instances/seed_1/01.sql
 parameters: []

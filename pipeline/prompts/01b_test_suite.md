@@ -17,7 +17,7 @@ Write the acceptance test suite of **{{display_name}}** **Q{{query_number}}**. Y
 
 ## Inputs
 
-- Query (`$n` parameters): `{{query_sql_path}}` · schema: `workloads/{{benchmark_name}}/schema.sql`
+- Query (`$n` parameters): `workloads/{{benchmark_name}}/q{{query_number}}.sql` · schema: `workloads/{{benchmark_name}}/schema.sql`
 - Explore the test database with `backends/{{engine_name}}/host.sh sql`.
 - Format and validation rules: `pipeline/prompts/shared/test_suite.md` (the write-related files and keys do not apply).
 

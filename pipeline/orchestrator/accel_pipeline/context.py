@@ -25,7 +25,6 @@ from accel_pipeline.config import (
 )
 from accel_pipeline.engine_host import format_host_block
 from accel_pipeline.implementation_bootstrap import build_implementation_bootstrap
-from accel_pipeline.layout import query_sql_path
 from accel_pipeline.models import is_critique_stage, is_implementation_stage
 from accel_pipeline.paths import load_query_analysis, query_artifacts_dir
 from accel_pipeline.workload_facts import with_facts
@@ -128,7 +127,6 @@ def _shared_keys(cfg: PipelineConfig, workload: dict[str, Any], query: int, stag
         "build_dir": cfg.build_dir.name,
         "reference_sql": reference_sql,
         "reference_sql_path": reference_sql_path,
-        "query_sql_path": query_sql_path(workload, query),
         "parameters_yaml": yaml.safe_dump(workload.get("parameters", [])) if stage == "analysis" else "",
         "output_schema_yaml": yaml.safe_dump(workload.get("output_schema", [])) if stage == "analysis" else "",
         "accelerator_id": str(workload.get("accelerator_id", "")),

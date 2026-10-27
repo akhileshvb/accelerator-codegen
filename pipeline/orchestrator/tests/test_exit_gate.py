@@ -29,7 +29,7 @@ def test_every_stage_exit_runs_it_after_the_unit_checks():
         assert not {"aux_correctness", "aux_multi_connection", "aux_bench_sweep", "aux_tsan"} & set(gates)
 
 
-def test_it_is_admitted_only_after_quick_check_and_can_run_in_the_background():
+def test_it_is_admitted_only_after_quick_check():
     quick = load_pipeline_config(repo_root=REPO_ROOT).quick_tier
-    assert "aux_exit" in quick.admission_gates and "aux_exit" in quick.background_gates
+    assert "aux_exit" in quick.admission_gates
     assert any(group.names == ("aux_exit",) for group in DEFAULT_GROUPS)

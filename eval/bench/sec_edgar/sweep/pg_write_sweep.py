@@ -289,7 +289,7 @@ def canon(rows):
 def run_mode(port, query, batches, base_mode, pool, reads, qps, check,
              read_draws=None, check_draws=None):
     conn, cur = connect(port, base_mode)
-    base_sql = open(os.path.join(REPO, f"workloads/sec_edgar/q{query}.sql")).read()
+    base_sql = open(os.path.join(REPO, f"workloads/sec_edgar/instances/seed_1/{int(query):02d}.sql")).read()
     read_sql = base_sql if base_mode else f"SELECT * FROM accel_sec_edgar_q{query}_aux()"
     build_us = 0.0
     if not base_mode:
@@ -359,7 +359,7 @@ def main():
     if total > 0:
         conn, cur = connect(a.port, True)
         pool = BatchPool(cur, a.query, total, max_batch)
-        base_sql = open(os.path.join(REPO, f"workloads/sec_edgar/q{a.query}.sql")).read()
+        base_sql = open(os.path.join(REPO, f"workloads/sec_edgar/instances/seed_1/{int(a.query):02d}.sql")).read()
         if not pool.first_batch_changes(cur, base_sql, max_batch):
             raise SystemExit(f"q{a.query}: a {max_batch}-row batch does not change the base result")
         print(f"q{a.query} batch pool: first {max_batch}-row batch changes the base result", flush=True)

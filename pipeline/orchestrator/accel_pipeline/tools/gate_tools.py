@@ -79,8 +79,7 @@ def make_gate_tools(ctx: ToolContext):
         ``aux_correctness`` / ``aux_multi_connection``. Gates are for acceptance; for the
         edit-test loop use ``quick_check``.
 
-        ``background=True`` starts the gate in its own process and returns at once (only
-        aux_exit, aux_correctness, aux_unit, prims_tests, aux_multi_connection and aux_cross_accel);
+        ``background=True`` starts the gate in its own process and returns at once;
         keep working and read the result once with ``gate_status``. Never poll it in a loop.
         """
         if refusal := admission_refusal_payload(ctx, gate_name):

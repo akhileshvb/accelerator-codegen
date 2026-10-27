@@ -171,7 +171,7 @@ def jobs_per_gate(parallel_gates: int) -> int:
 
 GATE_TIMEOUT_S = float(os.environ.get("ACCEL_GATE_TIMEOUT", 7200))
 CANCEL_POLL_S = 1.0
-TOOL_CALL_LIMIT_S = float(os.environ.get("ACCEL_TOOL_CALL_LIMIT", 600))  # the agent client's limit on one tool call
+TOOL_CALL_LIMIT_S = float(os.environ.get("ACCEL_TOOL_CALL_LIMIT", 1800))  # the agent client's limit on one tool call
 TOOL_CALL_MARGIN_S = 20.0  # the gate is killed this long before the client gives up on the call
 _tool_deadline: contextvars.ContextVar[float | None] = contextvars.ContextVar("tool_deadline", default=None)
 _live_groups: set[int] = set()  # process groups of running gates, killed if this process exits first

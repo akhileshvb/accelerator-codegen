@@ -103,7 +103,7 @@ class AdvisorConfig:
 
     max_consults_per_stage: int = 4  # 0 disables the advisor
     stall_rounds: int = 2  # the same failure this many repair rounds in a row triggers an orchestrator consult
-    timeout_sec: float = 480  # under the client's 600 s limit on the agent's ask_advisor call
+    timeout_sec: float = 480  # under the client's limit on the agent's ask_advisor call (gates.run.TOOL_CALL_LIMIT_S)
 
 
 @dataclass(frozen=True)
@@ -154,15 +154,12 @@ class SessionConfig:
 
 @dataclass(frozen=True)
 class QuickTierConfig:
-    """The fast inner loop: quick_check, the quick bench tier, parallel and background gates."""
+    """The fast inner loop: quick_check, the quick bench tier, parallel gates."""
 
     enabled: bool = True
     timeout_sec: float = 120.0
     build_stamp_cache: bool = True
     differential_probes: int = 3
-    background_gates: tuple[str, ...] = (
-        "aux_exit", "aux_correctness", "aux_unit", "prims_tests", "aux_multi_connection", "aux_cross_accel",
-    )
     parallel_gates: bool = True
     gate_jobs: int = 0  # concurrent gates in a parallel group; 0 = one per gate
     build_budget_sec: float = 15.0  # quick_check fails when the state build, projected to the full dataset, takes longer

@@ -62,11 +62,6 @@ def workload_query_sql(bench: str, query: int | str) -> str:
     return f"{WORKLOADS}/{bench}/q{query}.sql"
 
 
-def query_sql_path(workload: dict, query: int | str) -> str:
-    """The query with its parameters as $n: the workload's `query_sql_path`, else workloads/<bench>/q<N>.sql."""
-    return str(workload.get("query_sql_path") or workload_query_sql(str(workload.get("benchmark_name", "tpch")), query))
-
-
 def workload_schema_sql(bench: str) -> str:
     return f"{WORKLOADS}/{bench}/schema.sql"
 

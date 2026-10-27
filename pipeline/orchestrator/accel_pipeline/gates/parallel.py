@@ -175,11 +175,7 @@ def _alive(pid: int) -> bool:
 
 def start_background_gate(pipeline_config: PipelineConfig, workload: dict[str, Any], query: int, gate: str,
                           *, workload_name: str) -> dict[str, Any]:
-    """Start `gate` in a detached process and return its state; a gate already running is left alone.
-    Only quick_tier.background_gates may run this way."""
-    if gate not in pipeline_config.quick_tier.background_gates:
-        return {"gate": gate, "status": "refused",
-                "reason": f"only {list(pipeline_config.quick_tier.background_gates)} can run in the background"}
+    """Start `gate` in a detached process and return its state; a gate already running is left alone."""
     path = _state_path(pipeline_config, workload, query, gate)
     state = _read_state(path)
     if state.get("status") == "running" and _alive(int(state.get("pid", 0))):
