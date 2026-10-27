@@ -36,6 +36,12 @@
 //         concatenated bytes `x__<f>` plus n + 1 offsets `x__<f>__off`;
 //       - a (row, sign) pair: the row as above under `x__row`, and
 //         `int64_t *x__sign`;
+//   * rescan keys written out by <p>_rescan_<n>_keys: an integer-like key as
+//     `T *out, size_t cap` (up to cap keys written; returns the count, call
+//     again with more room); a text key as a text column `uint8_t *out,
+//     size_t out_cap, size_t *off, size_t off_cap, size_t *out_len`: returns
+//     the count, sets *out_len to the bytes needed, and writes bytes and
+//     count + 1 offsets only if both fit.  apply takes the keys back as rows;
 //   * text parameter `p`: `const uint8_t *p, size_t p__len`; scalars by value;
 //   * results: <p>_result_len, and per column k <p>_result_c<k>(r, i, out..)
 //     returning 0 for NULL, else 1 and the value in out: text as
@@ -462,19 +468,34 @@ impl<'m> Ffi<'m> {
             let ps: Vec<&P> = r.params.iter().collect();
             let (pre, args) = self.marshal(&ps, &mut rp, &mut cp);
             let key = r.ret.trim_start_matches("(r: Vec<").trim_end_matches(">)").to_string();
-            let pre = pre + &self.rec_block(&ps, "rescan_keys", &format!("{{\n            let ks = rec_keys();\n            for (i, k) in ks.iter().take(cap).enumerate() {{\n                *out.add(i) = *k as {key};\n            }}\n            ks.len()\n        }}"));
-            rp.push(format!("out: *mut {key}"));
-            rp.push("cap: usize".into());
-            cp.push(format!("{} *out", c_prim(&key)));
-            cp.push("size_t cap".into());
-            out.push(f(
-                &["The keys to rescan for apply: writes up to cap of them into out and", "returns how many there are (call again with more room if that is more)."],
-                format!("{p}_{}", r.name),
-                rp,
-                cp,
-                ("usize", "size_t".into()),
-                format!("{pre}    let keys = ob_{}({});\n    for (i, k) in keys.iter().take(cap).enumerate() {{\n        *out.add(i) = *k;\n    }}\n    keys.len()\n", r.name, args.join(", ")),
-            ));
+            let text = key == "Vec<u8>";
+            let ret = if text {
+                "put_text_keys(&rec_text_keys(), out, out_cap, off, off_cap, out_len)".to_string()
+            } else {
+                format!("{{\n            let ks = rec_keys();\n            for (i, k) in ks.iter().take(cap).enumerate() {{\n                *out.add(i) = *k as {key};\n            }}\n            ks.len()\n        }}")
+            };
+            let pre = pre + &self.rec_block(&ps, "rescan_keys", &ret);
+            let call = format!("ob_{}({})", r.name, args.join(", "));
+            let (doc, body): (&[&str], String) = if text {
+                for (rx, cx) in [("out: *mut u8", "uint8_t *out"), ("out_cap: usize", "size_t out_cap"), ("off: *mut usize", "size_t *off"), ("off_cap: usize", "size_t off_cap"), ("out_len: *mut usize", "size_t *out_len")] {
+                    rp.push(rx.into());
+                    cp.push(cx.into());
+                }
+                (
+                    &["The keys to rescan for apply, as a text column: returns how many there are, sets *out_len to", "their total bytes, and writes the bytes into out and count + 1 offsets into off only if", "both fit (count + 1 <= off_cap, *out_len <= out_cap); else call again with more room."],
+                    format!("{pre}    put_text_keys(&{call}, out, out_cap, off, off_cap, out_len)\n"),
+                )
+            } else {
+                rp.push(format!("out: *mut {key}"));
+                rp.push("cap: usize".into());
+                cp.push(format!("{} *out", c_prim(&key)));
+                cp.push("size_t cap".into());
+                (
+                    &["The keys to rescan for apply: writes up to cap of them into out and", "returns how many there are (call again with more room if that is more)."],
+                    format!("{pre}    let keys = {call};\n    for (i, k) in keys.iter().take(cap).enumerate() {{\n        *out.add(i) = *k;\n    }}\n    keys.len()\n"),
+                )
+            };
+            out.push(f(doc, format!("{p}_{}", r.name), rp, cp, ("usize", "size_t".into()), body));
         }
         {
             let (mut rp, mut cp) = (vec![], vec![]);
@@ -727,6 +748,15 @@ pub(crate) fn ffi(m: &Model, prefix: &str, header_name: &str) -> Res<(String, St
     writeln!(r, "fn rec_keys() -> Vec<i64> {{").unwrap();
     writeln!(r, "    let Some(p) = std::env::var_os(\"ACCEL_VERUS_RECORD_KEYS\") else {{ return vec![] }};").unwrap();
     writeln!(r, "    std::fs::read_to_string(p).unwrap_or_default().split(|c: char| c == ',' || c.is_whitespace()).filter_map(|x| x.trim().parse().ok()).collect()\n}}\n").unwrap();
+    if m.fns.iter().any(|f| f.name.starts_with("rescan_") && f.ret.contains("Vec<Vec<u8>>")) {
+        writeln!(r, "// Text keys as a text column: the count, *out_len = their bytes; written only if both fit.").unwrap();
+        writeln!(r, "unsafe fn put_text_keys(keys: &[Vec<u8>], out: *mut u8, out_cap: usize, off: *mut usize, off_cap: usize, out_len: *mut usize) -> usize {{").unwrap();
+        writeln!(r, "    let need: usize = keys.iter().map(|k| k.len()).sum();\n    *out_len = need;\n    if keys.len() + 1 <= off_cap && need <= out_cap {{\n        let mut at = 0;\n        for (i, k) in keys.iter().enumerate() {{\n            *off.add(i) = at;\n            if !k.is_empty() {{\n                ptr::copy_nonoverlapping(k.as_ptr(), out.add(at), k.len());\n            }}\n            at += k.len();\n        }}\n        *off.add(keys.len()) = at;\n    }}\n    keys.len()\n}}\n").unwrap();
+        writeln!(r, "// Text rescan keys: the lines of ACCEL_VERUS_RECORD_KEYS, bytes as written.").unwrap();
+        writeln!(r, "fn rec_text_keys() -> Vec<Vec<u8>> {{").unwrap();
+        writeln!(r, "    let Some(p) = std::env::var_os(\"ACCEL_VERUS_RECORD_KEYS\") else {{ return vec![] }};").unwrap();
+        writeln!(r, "    let b = std::fs::read(p).unwrap_or_default();\n    let mut ks: Vec<Vec<u8>> = b.split(|c| *c == b'\\n').map(|k| k.to_vec()).collect();\n    if ks.last().is_some_and(|k| k.is_empty()) {{\n        ks.pop();\n    }}\n    ks\n}}\n").unwrap();
+    }
     writeln!(r, "/// An answer handed to the host (read through the result accessors).").unwrap();
     writeln!(r, "pub struct FfiResult {{\n    rows: Vec<{out_ty}>,\n}}\n").unwrap();
     for f in &fns {
@@ -1102,19 +1132,24 @@ pub(crate) fn kit(m: &Model, prefix: &str, header: &str, accel_id: &str, workloa
     let mut apply_pre = String::new();
     let mut rescan_args: Vec<String> = vec![];
     for rf in &rescans {
-        let n = rf.name.trim_start_matches("rescan_").trim_end_matches("_keys").to_string();
+        let n = rf.name["rescan_".len()..rf.name.len() - "_keys".len()].to_string();
         let sd = scan_of(&n, true).ok_or_else(|| format!("host glue: no rescan {n}"))?;
         let key = rf.ret.trim_start_matches("(r: Vec<").trim_end_matches(">)").to_string();
-        let kc = c_prim(&key);
+        let text = key == "Vec<u8>";
         let rows_p = apply.params.iter().find(|x| x.name == format!("{n}_rows")).ok_or_else(|| format!("host glue: apply has no {n}_rows"))?;
         let slots = g.rows_slots(rows_p);
         let (mem, push) = g.kit_rows(&slots, &g.scan_leaf(sd))?;
-        writeln!(w, "// Rescan {n}: the rows of the given keys, on the database after the transaction.\nstruct Rescan_{n} {{\n  std::vector<{kc}> keys;").unwrap();
+        let keys_mem = if text { "std::vector<uint8_t> key_bytes;\n  std::vector<size_t> key_off;\n  size_t key_n = 0;".to_string() } else { format!("std::vector<{}> keys;", c_prim(&key)) };
+        writeln!(w, "// Rescan {n}: the rows of the given keys, on the database after the transaction.\nstruct Rescan_{n} {{\n  {keys_mem}").unwrap();
         for x in mem {
             writeln!(w, "  {x}").unwrap();
         }
         writeln!(w, "  void Fill(kit::Host &h) {{").unwrap();
-        writeln!(w, "    std::vector<int64_t> ks(keys.begin(), keys.end());").unwrap();
+        if text {
+            writeln!(w, "    std::vector<std::string> ks;\n    for (size_t i = 0; i < key_n; ++i)\n      ks.emplace_back(reinterpret_cast<const char *>(key_bytes.data()) + key_off[i], key_off[i + 1] - key_off[i]);").unwrap();
+        } else {
+            writeln!(w, "    std::vector<int64_t> ks(keys.begin(), keys.end());").unwrap();
+        }
         writeln!(w, "    kit::QueryKeys(h, kRescanSql_{n}, \"{}\", ks, [&](const core::AuxRow &r) {{", sd.key_out.as_ref().unwrap()).unwrap();
         for x in push {
             writeln!(w, "      {x}").unwrap();
@@ -1127,12 +1162,23 @@ pub(crate) fn kit(m: &Model, prefix: &str, header: &str, accel_id: &str, workloa
             a.join(", ")
         };
         writeln!(apply_pre, "  Rescan_{n} r_{n};").unwrap();
-        writeln!(apply_pre, "  r_{n}.keys.resize(1024);").unwrap();
-        writeln!(apply_pre, "  {{\n    const size_t k = {p}_{}({kargs}, r_{n}.keys.data(), r_{n}.keys.size());", rf.name).unwrap();
-        writeln!(apply_pre, "    if (k > r_{n}.keys.size()) {{\n      r_{n}.keys.resize(k);\n      {p}_{}({kargs}, r_{n}.keys.data(), r_{n}.keys.size());\n    }}", rf.name).unwrap();
-        writeln!(apply_pre, "    r_{n}.keys.resize(k);\n  }}\n  r_{n}.Fill(h);").unwrap();
-        rescan_args.push(format!("r_{n}.keys.size()"));
-        rescan_args.push(format!("r_{n}.keys.data()"));
+        if text {
+            let t = format!("r_{n}.key_bytes.data(), r_{n}.key_bytes.size(), r_{n}.key_off.data(), r_{n}.key_off.size(), &need");
+            writeln!(apply_pre, "  r_{n}.key_bytes.resize(4096);\n  r_{n}.key_off.resize(1025);").unwrap();
+            writeln!(apply_pre, "  {{\n    size_t need = 0;\n    const size_t k = {p}_{}({kargs}, {t});", rf.name).unwrap();
+            writeln!(apply_pre, "    if (k + 1 > r_{n}.key_off.size() || need > r_{n}.key_bytes.size()) {{\n      r_{n}.key_bytes.resize(need);\n      r_{n}.key_off.resize(k + 1);\n      {p}_{}({kargs}, {t});\n    }}", rf.name).unwrap();
+            writeln!(apply_pre, "    r_{n}.key_n = k;\n  }}\n  r_{n}.Fill(h);").unwrap();
+            rescan_args.push(format!("r_{n}.key_n"));
+            rescan_args.push(format!("r_{n}.key_bytes.data()"));
+            rescan_args.push(format!("r_{n}.key_off.data()"));
+        } else {
+            writeln!(apply_pre, "  r_{n}.keys.resize(1024);").unwrap();
+            writeln!(apply_pre, "  {{\n    const size_t k = {p}_{}({kargs}, r_{n}.keys.data(), r_{n}.keys.size());", rf.name).unwrap();
+            writeln!(apply_pre, "    if (k > r_{n}.keys.size()) {{\n      r_{n}.keys.resize(k);\n      {p}_{}({kargs}, r_{n}.keys.data(), r_{n}.keys.size());\n    }}", rf.name).unwrap();
+            writeln!(apply_pre, "    r_{n}.keys.resize(k);\n  }}\n  r_{n}.Fill(h);").unwrap();
+            rescan_args.push(format!("r_{n}.keys.size()"));
+            rescan_args.push(format!("r_{n}.keys.data()"));
+        }
         rescan_args.extend(Ffi::kit_args(&slots, &format!("r_{n}")));
     }
     // apply's arguments in order: state, deltas, then per rescan (keys, rows)
@@ -1144,11 +1190,6 @@ pub(crate) fn kit(m: &Model, prefix: &str, header: &str, accel_id: &str, workloa
                 Arg::State => a.push(state.to_string()),
                 Arg::Ghost => {}
                 Arg::Rows(_) if prm.name.ends_with("_delta") => a.extend(Ffi::kit_args(&g.rows_slots(prm), "d")),
-                Arg::Rows(_) if prm.name.ends_with("_keys") => {
-                    a.push(rescan_args[ri].clone());
-                    a.push(rescan_args[ri + 1].clone());
-                    ri += 2;
-                }
                 Arg::Rows(_) => {
                     let k = g.rows_slots(prm).len();
                     a.extend(rescan_args[ri..ri + k].iter().cloned());

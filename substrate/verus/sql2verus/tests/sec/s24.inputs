@@ -1,0 +1,6 @@
+-- A filtered text-key rescan over a NULL-able column, and one more key column (tag).
+scan pre AS PreRt: SELECT adsh AS adsh, tag AS tag, version AS version FROM pre;
+rescan nums AS NumRt KEYS adsh: SELECT adsh AS adsh, tag AS tag, version AS version, ddate AS ddate, uom AS uom, value AS value FROM num WHERE value IS NOT NULL;
+rescan tagnums AS NumRt KEYS tag: SELECT adsh AS adsh, tag AS tag, version AS version, ddate AS ddate, uom AS uom, value AS value FROM num;
+delta num AS NumDelta OF NumRt: SELECT adsh AS adsh, tag AS tag, version AS version, ddate AS ddate, uom AS uom, value AS value FROM num;
+delta pre AS PreDelta OF PreRt: SELECT adsh AS adsh, tag AS tag, version AS version FROM pre;

@@ -126,11 +126,16 @@ public:
                                        const std::vector<std::string> &columns) = 0;
   // A quoted identifier.
   virtual std::string Quote(const std::string &identifier) const;
+  // A text literal (standard SQL: quotes doubled).
+  virtual std::string QuoteText(const std::string &text) const;
 };
 
 // Rows of `sql` whose output column `key_column` is one of `keys`, in chunks.
 void QueryKeys(Host &host, const std::string &sql, const std::string &key_column,
                const std::vector<int64_t> &keys, const RowFn &row);
+// The same for text keys (compared as bytes; a NULL key matches none).
+void QueryKeys(Host &host, const std::string &sql, const std::string &key_column,
+               const std::vector<std::string> &keys, const RowFn &row);
 
 // ---- one query's glue ----
 struct Change {

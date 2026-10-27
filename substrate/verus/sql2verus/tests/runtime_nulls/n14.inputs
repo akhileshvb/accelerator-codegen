@@ -1,0 +1,2 @@
+rescan t_keys AS TRt KEYS b: SELECT b FROM t;
+delta t AS TDelta OF TRt: SELECT b FROM t;

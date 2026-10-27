@@ -1131,12 +1131,27 @@ std::string Host::Quote(const std::string &identifier) const {
   return out + "\"";
 }
 
-void QueryKeys(Host &host, const std::string &sql_text, const std::string &key_column,
-               const std::vector<int64_t> &keys, const RowFn &row) {
-  // the glue's statement becomes a subquery: no trailing `;` (or whitespace)
+std::string Host::QuoteText(const std::string &text) const {
+  std::string out = "'";
+  for (char c : text) {
+    if (c == '\'')
+      out.push_back('\'');
+    out.push_back(c);
+  }
+  return out + "'";
+}
+
+// the glue's statement becomes a subquery: no trailing `;` (or whitespace)
+static std::string AsSubquery(const std::string &sql_text) {
   std::string sql = sql_text;
   while (!sql.empty() && (sql.back() == ';' || std::isspace(static_cast<unsigned char>(sql.back()))))
     sql.pop_back();
+  return sql;
+}
+
+void QueryKeys(Host &host, const std::string &sql_text, const std::string &key_column,
+               const std::vector<int64_t> &keys, const RowFn &row) {
+  const std::string sql = AsSubquery(sql_text);
   if (keys.empty())
     return;
   // Engines with a parameter path bind the list as one BIGINT[] value instead
@@ -1157,6 +1172,23 @@ void QueryKeys(Host &host, const std::string &sql_text, const std::string &key_c
   }
   list += "]::BIGINT[]";
   host.Query("SELECT verus_kit_rescan.* FROM (" + sql + ") AS verus_kit_rescan WHERE verus_kit_rescan." +
+                 host.Quote(key_column) + " IN (SELECT unnest(" + list + "))",
+             row);
+}
+
+void QueryKeys(Host &host, const std::string &sql_text, const std::string &key_column,
+               const std::vector<std::string> &keys, const RowFn &row) {
+  if (keys.empty())
+    return;
+  // one query, semi-joined like the BIGINT keys; a NULL key column never matches
+  std::string list = "[";
+  for (std::size_t i = 0; i < keys.size(); ++i) {
+    if (i)
+      list += ',';
+    list += host.QuoteText(keys[i]);
+  }
+  list += "]::VARCHAR[]";
+  host.Query("SELECT verus_kit_rescan.* FROM (" + AsSubquery(sql_text) + ") AS verus_kit_rescan WHERE verus_kit_rescan." +
                  host.Quote(key_column) + " IN (SELECT unnest(" + list + "))",
              row);
 }
