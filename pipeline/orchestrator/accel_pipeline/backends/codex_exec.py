@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from accel_pipeline import advisor, no_progress, session as session_mod
+from accel_pipeline import advisor, session as session_mod
 from accel_pipeline.backends.base import StageRunRequest, StageRunResult
 from accel_pipeline.config import ModelConfig, PipelineConfig
 from accel_pipeline.gates.run import TOOL_CALL_LIMIT_S
@@ -476,12 +476,12 @@ class CodexExecBackend:
         return advisor.Servicer(self._pipeline_config, self._model_config, self._workload_name, self._query, self._stage,
                                 self._optimization_iter, self._art_dir)
 
-    def _progress_clock(self, since: float) -> no_progress.ProgressClock | None:
+    def _progress_clock(self, since: float) -> session_mod.ProgressClock | None:
         """The turn's progress clock, when the stage is watched (a stage with no art dir or a Verus step is not)."""
         nudge, redirect = self._pipeline_config.session.no_progress.for_stage(self._stage)
         if self._art_dir is None or self._stage.startswith("verus_") or not (nudge or redirect):
             return None
-        return no_progress.ProgressClock(
+        return session_mod.ProgressClock(
             self._art_dir, self._pipeline_config.repo_root, query=self._query, stage=self._stage,
             pipeline_config=self._pipeline_config, nudge_sec=nudge, redirect_sec=redirect, started_wall=since,
             sample_sec=max(0.05, min(15.0, (nudge or redirect) / 4)))
@@ -500,7 +500,7 @@ class CodexExecBackend:
 
     def _blocker_since(self, since: float) -> str:
         """The report_blocker file written during this turn, else ''."""
-        path = self._art_dir / no_progress.BLOCKER_FILE if self._art_dir is not None else None
+        path = self._art_dir / session_mod.BLOCKER_FILE if self._art_dir is not None else None
         try:
             return path.read_text(encoding="utf-8") if path is not None and path.stat().st_mtime >= since else ""
         except OSError:

@@ -11,7 +11,7 @@ from accel_pipeline.workload import load_run_workload, apply_workload_overrides,
 from accel_pipeline.failure import (
     AGENT_BLOCKER, PROVIDER_CREDITS, PROVIDER_FLAKE, Failure, StageFailure, is_out_of_credits, is_transient_provider_failure,
 )
-from accel_pipeline.no_progress import REDIRECT
+from accel_pipeline.session import REDIRECT
 from accel_pipeline.session import run_in_session
 from accel_pipeline.pipeline_log import (
     log_stage_complete,

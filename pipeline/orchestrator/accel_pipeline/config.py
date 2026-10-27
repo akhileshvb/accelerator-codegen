@@ -88,7 +88,7 @@ class AdvisorConfig:
 
 @dataclass(frozen=True)
 class NoProgressConfig:
-    """Seconds an agent may go without real progress (accel_pipeline.no_progress) before the
+    """Seconds an agent may go without real progress (accel_pipeline.session) before the
     footer asks it to state its blocker (nudge) and before its turn is ended with a directed
     resume (redirect); 0 disables. `stages` maps a stage to its own nudge_sec / redirect_sec."""
 

@@ -15,7 +15,7 @@ from typing import Any, Callable, Literal
 
 from accel_pipeline.gates.run import tool_call_limit
 from accel_pipeline.workload import read_json
-from accel_pipeline.no_progress import record_check
+from accel_pipeline.session import record_check
 from accel_pipeline.quick import profile_hot_spots
 from accel_pipeline.session import keep_alive
 from accel_pipeline.tools import mode_tools
@@ -186,7 +186,7 @@ def build_mcp_tool_callables(
 
     def report_blocker(summary: str, evidence: str) -> str:
         """The obstacle is outside your files: write blocker.md and end the turn."""
-        from accel_pipeline.no_progress import write_blocker
+        from accel_pipeline.session import write_blocker
 
         write_blocker(art, summary, evidence)
         return "Blocker recorded. Stop now; the orchestrator takes over. Do not continue working."
