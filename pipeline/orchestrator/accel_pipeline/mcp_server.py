@@ -80,6 +80,16 @@ def _build_context(args: argparse.Namespace):
     return pipeline_config, workload, workload_name, query, stage, optimization_iter, art
 
 
+def _session_write_check(pipeline_config, query: int, stage: str):
+    """The ownership check of this agent session (it starts with the session, as the orchestrator's does), or None
+    where the write policy does not apply."""
+    from accel_pipeline.write_ownership import StageWriteCheck
+
+    if pipeline_config.write_policy != "enforce" or not stage or stage.startswith("verus_"):
+        return None
+    return StageWriteCheck(pipeline_config.repo_root, query=query, stage=stage, pipeline_config=pipeline_config)
+
+
 def build_mcp_tool_callables(
     pipeline_config,
     workload: dict[str, Any],
@@ -102,7 +112,7 @@ def build_mcp_tool_callables(
 
     is_aux = workload.get("workload_kind") == "aux_state"
     gate_ctx = GateCtx(pipeline_config, query, workload=workload, stage=stage, workload_name=workload_name,
-                       optimization_iter=optimization_iter)
+                       optimization_iter=optimization_iter, writes=_session_write_check(pipeline_config, query, stage))
     request_gate, gate_status = make_gate_tools(gate_ctx)
     run_pipeline_command = make_shell_tools(ShellCtx(pipeline_config, query))
 

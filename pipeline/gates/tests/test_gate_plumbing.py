@@ -362,3 +362,15 @@ def test_host_bootstrap_fails_when_a_smoke_fails(repo):
                                  env_extra={"FAKE_RC_run": "1"})
     assert proc.returncode == 1
     assert "smoke failed" in result(gj, "host_bootstrap")["reason"]
+
+
+def test_a_harness_that_names_a_benchmark_fails_with_the_files_that_do(repo):
+    host_bootstrap_repo(repo)
+    (repo / "scripts" / "check_backend_query_free.py").write_text(
+        "import sys\nprint('backends/fake/bench/sweep.cpp:5: benchmark: tpch: a')\n"
+        "print('backends/fake/bench/sweep.cpp:9: benchmark: tpch: b')\n"
+        "print('backends/fake/tests/harness.cmake:4: benchmark: tpch: c')\nsys.exit(1)\n")
+    proc, _, _, gj, _ = run_gate(repo, "run_host_bootstrap.sh", "0", ctx_extra={"engine_host": HARNESS_HOST})
+    assert proc.returncode == 1
+    assert result(gj, "host_bootstrap")["reason"].endswith(
+        "still naming one: backends/fake/bench/sweep.cpp (2), backends/fake/tests/harness.cmake (1)")

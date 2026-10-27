@@ -17,6 +17,7 @@ class ToolContext:
     stage: str = ""
     workload_name: str = ""
     optimization_iter: int = 0
+    writes: Any = None  # the session's StageWriteCheck: no check runs on a tree with out-of-bounds edits
 
 
 def _compact_gate_payload(gate_name: str, data: dict) -> dict:
@@ -59,10 +60,15 @@ def _compact_background_state(state: dict) -> dict:
 
 
 def admission_refusal_payload(ctx: ToolContext, gate_name: str) -> str:
-    """The refusal (JSON) when `gate_name` may not run before a passing quick_check on this code; "" when it may."""
+    """The refusal (JSON) when `gate_name` may not run yet, "" when it may: the session edited paths its stage may
+    not write, or a heavy gate has no passing quick_check on this code."""
     from accel_pipeline.quick import admission_refusal
+    from accel_pipeline.write_ownership import violation_message
 
-    reason = admission_refusal(ctx.pipeline_config, ctx.workload or {}, ctx.query, gate_name)
+    if ctx.writes is not None and (bad := ctx.writes.violations()):
+        reason = f"{gate_name} refused: {violation_message(ctx.stage, bad)}"
+    else:
+        reason = admission_refusal(ctx.pipeline_config, ctx.workload or {}, ctx.query, gate_name)
     return json.dumps({"gate": gate_name, "status": "refused", "reason": reason}, indent=2) if reason else ""
 
 

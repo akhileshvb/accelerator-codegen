@@ -422,3 +422,14 @@ if(BUILD_TESTING)
 		add_test(NAME sec_edgar_aux_parallel_test COMMAND test_sec_edgar_aux_parallel)
 	endif()
 endif()
+
+# The workload bench and calibrate harnesses (host_bootstrap's, as every target of this file).
+# Shared TPC-H aux bench and cost-model calibrator: one binary each, `--query N`.
+accel_add_backend_exe(duckdb benchmark_duckdb_tpch_aux
+    backends/duckdb/bench/benchmark_duckdb_tpch_aux.cpp
+    backends/duckdb/bench/aux_benchmark_sweep_session.cpp
+    eval/bench/tpch/single-threaded/tpch_arg_variants.cpp)
+accel_add_backend_exe(duckdb calibrate_duckdb_tpch_aux_cost_model
+    backends/duckdb/bench/calibrate_duckdb_tpch_aux_cost_model.cpp
+    eval/tests/test_support/cross_accel_helpers.cpp
+    eval/tests/test_support/multi_connection_stress.cpp)

@@ -39,7 +39,10 @@ while IFS= read -r file; do HARNESS_FILES+=("${file}"); done < <(cd "${ROOT}" &&
 FILE_ARGS=()
 for file in "${HARNESS_FILES[@]}"; do FILE_ARGS+=(--file "${file}"); done
 if ! QUERY_FREE_LOG="$(cd "${ROOT}" && python3 scripts/check_backend_query_free.py "${FILE_ARGS[@]}" --bench-free 2>&1)"; then
-  finish fail "the harnesses must be workload-generic: no query or benchmark names, no query-number dispatch (the benchmark and query are inputs)" "${QUERY_FREE_LOG}"
+  # which files still name one, with counts: a log tail shows only the last of them
+  OFFENDERS="$(grep -oE '^[^: ]+:[0-9]+:' <<<"${QUERY_FREE_LOG}" | cut -d: -f1 | sort | uniq -c | sort -rn |
+    awk '{printf "%s%s (%d)", (NR > 1 ? ", " : ""), $2, $1}')"
+  finish fail "the harnesses must be workload-generic: no query or benchmark names, no query-number dispatch (the benchmark and query are inputs); still naming one: ${OFFENDERS}" "${QUERY_FREE_LOG}"
 fi
 
 REGISTERED_QUERY=""

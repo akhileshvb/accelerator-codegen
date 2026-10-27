@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from accel_pipeline.quick import render_quick_result, run_quick_check
-from accel_pipeline.tools.gate_tools import ToolContext
+from accel_pipeline.tools.gate_tools import ToolContext, admission_refusal_payload
 
 
 def make_quick_tools(ctx: ToolContext):
@@ -23,6 +23,8 @@ def make_quick_tools(ctx: ToolContext):
         Reports with a frame in the query's own directory fail; engine and substrate reports are counted as
         infrastructure.
         """
+        if refusal := admission_refusal_payload(ctx, "quick_check"):
+            return refusal
         result = run_quick_check(ctx.pipeline_config, ctx.workload or {}, ctx.query, targets=targets,
                                  differential=differential, sanitizer=sanitizer, threads=threads)
         return render_quick_result(result)

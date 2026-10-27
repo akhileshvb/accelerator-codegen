@@ -59,13 +59,13 @@ def test_the_exit_run_reports_every_failed_phase_and_how_to_rerun_each(repo, tmp
 
 
 def test_a_benchmark_build_cmake_that_names_a_harness_target_fails_the_build(repo):
-    (repo / "accelerators" / "tpch").mkdir(parents=True)
-    (repo / "accelerators" / "tpch" / "build.cmake").write_text(
+    (repo / "accelerators" / "toybench").mkdir(parents=True)
+    (repo / "accelerators" / "toybench" / "build.cmake").write_text(
         "set_property(TARGET aux_unit_bin PROPERTY SOURCES q3/tests/mine.cpp)\n")
     proc, calls, _, gj, _ = gate(repo, "run_aux_correctness.sh", "aux_correctness")
     assert proc.returncode == 1 and not any(c.startswith("build") for c in calls)
     data = result(gj, "aux_correctness")
-    assert "accelerators/tpch/build.cmake names the harness target aux_unit_bin" in data["reason"]
+    assert "accelerators/toybench/build.cmake names the harness target aux_unit_bin" in data["reason"]
 
 
 def test_a_multi_point_bench_gets_the_list_and_no_percent_argument(repo, tmp_path):

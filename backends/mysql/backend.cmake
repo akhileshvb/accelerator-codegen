@@ -158,6 +158,3 @@ foreach(_src IN LISTS _mysql_layer_tests)
     endif()
 endforeach()
 
-# Shared TPC-H aux bench and cost-model calibrator: one binary each, `--query N`.
-accel_add_backend_exe(mysql benchmark_mysql_tpch_aux backends/mysql/bench/benchmark_mysql_tpch_aux.cpp)
-accel_add_backend_exe(mysql calibrate_mysql_tpch_aux_cost_model backends/mysql/bench/calibrate_mysql_tpch_aux_cost_model.cpp)

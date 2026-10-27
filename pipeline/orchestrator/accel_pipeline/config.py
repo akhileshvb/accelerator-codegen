@@ -248,8 +248,9 @@ class PipelineConfig:
     sandbox: str = "bwrap"
     sandbox_extra_ro: list[str] = field(default_factory=list)  # more host paths for the sandbox, absolute
     sandbox_extra_rw: list[str] = field(default_factory=list)
-    # The post-stage ownership check (write_ownership.check_stage): enforce fails the stage, warn logs it to the run's events.
-    write_policy: str = "warn"
+    # The ownership check of an agent stage (write_ownership.StageWriteCheck): enforce refuses gates while the session
+    # has out-of-bounds edits, then reverts them and fails the stage; warn only logs them to the run's events.
+    write_policy: str = "enforce"
     measurement: MeasurementConfig = field(default_factory=MeasurementConfig)
     quick_tier: QuickTierConfig = field(default_factory=QuickTierConfig)
     concurrency: ConcurrencyConfig = field(default_factory=ConcurrencyConfig)

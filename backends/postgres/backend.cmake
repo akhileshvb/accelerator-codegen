@@ -143,17 +143,3 @@ add_executable(test_postgres_writer backends/postgres/tests/test_postgres_writer
 target_link_libraries(test_postgres_writer PRIVATE ${ACCEL_PG_LIBPQ} Threads::Threads)
 target_include_directories(test_postgres_writer PRIVATE ${ACCEL_PG_INCLUDEDIR})
 
-# Shared SQL-vs-accel TPC-H aux bench (`--query N`), with per-query aliases expected
-# by run_baseline.sh (benchmark_postgres_tpch_q<N>), and the cost-model calibrator
-# (wall-clock via psql \timing).
-accel_add_backend_exe(postgres benchmark_postgres_tpch_aux backends/postgres/bench/benchmark_postgres_tpch_aux.cpp)
-foreach(q RANGE 1 22)
-    add_custom_target(benchmark_postgres_tpch_q${q}
-        DEPENDS benchmark_postgres_tpch_aux
-        COMMAND ${CMAKE_COMMAND} -E create_symlink
-            $<TARGET_FILE:benchmark_postgres_tpch_aux>
-            ${CMAKE_BINARY_DIR}/benchmark_postgres_tpch_q${q}
-    )
-endforeach()
-accel_add_backend_exe(postgres calibrate_postgres_tpch_aux_cost_model
-    backends/postgres/bench/calibrate_postgres_tpch_aux_cost_model.cpp)

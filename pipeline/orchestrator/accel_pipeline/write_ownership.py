@@ -431,6 +431,9 @@ class StageWriteCheck:
         self.query, self.stage, self.cfg, self.benchmark = int(query), stage, pipeline_config, benchmark
         self.started_at = time.time()
         self.before = tree_snapshot(self.repo_root)
+        # what revert() restores: the content of every file already changed when the stage began
+        self.saved = {rel: (self.repo_root / rel).read_bytes() for rel, sig in (self.before or {}).items()
+                      if sig not in ("absent", "unreadable") and not sig.startswith(("link:", "big:"))}
 
     def _runtime_prefixes(self) -> tuple[str, ...]:
         """Engine state and build dirs inside the tree: written by builds and gates, not by the agent."""
@@ -472,8 +475,21 @@ class StageWriteCheck:
         return out
 
 
-def violation_message(stage: str, violations: list[tuple[str, str]]) -> str:
+    def revert(self, violations: list[tuple[str, str]]) -> None:
+        """Put each violating path back as it was when the stage began."""
+        for rel, _ in violations:
+            path = self.repo_root / rel
+            if rel in self.saved:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(self.saved[rel])
+            elif (self.before or {}).get(rel) == "absent" or subprocess.run(
+                    ["git", "-C", str(self.repo_root), "checkout", "-q", "HEAD", "--", rel], capture_output=True).returncode:
+                path.unlink(missing_ok=True)  # new in this stage (or deleted before it): it goes
+
+
+def violation_message(stage: str, violations: list[tuple[str, str]], *, reverted: bool = False) -> str:
     lines = "\n".join(f"  - {rel}: {why}" for rel, why in violations[:40])
     more = f"\n  ... and {len(violations) - 40} more" if len(violations) > 40 else ""
-    return (f"stage {stage} wrote paths the write policy forbids; undo them (restore the files with git, "
-            f"delete new ones) and keep to the files you own:\n{lines}{more}")
+    undo = ("they were put back as they were when the stage began; do the work within the files you own"
+            if reverted else "undo them (restore the files with git, delete new ones) and keep to the files you own")
+    return f"stage {stage} wrote paths the write policy forbids; {undo}:\n{lines}{more}"

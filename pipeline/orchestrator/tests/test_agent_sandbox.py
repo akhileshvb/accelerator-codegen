@@ -237,7 +237,43 @@ def test_write_policy_enforce_warn_off(tmp_path: Path, monkeypatch: pytest.Monke
     assert result.status == status
     if policy == "enforce":
         assert "accelerators/toybench/q3/k.cpp" in result.error and "cross-query" in result.error
+        assert "put back" in result.error
     assert bool(result.metadata.get("write_violations")) == (policy != "off")
+    # enforce reverts the out-of-bounds edit; warn and off leave it
+    assert ((root / "accelerators/toybench/q3/k.cpp").read_text() == "x\n") == (policy == "enforce")
+
+
+def test_a_revert_restores_each_path_as_the_stage_found_it(tmp_path: Path) -> None:
+    root = _git_tree(tmp_path / "t")
+    (root / "backends/toydb/e.cpp").write_text("dirty before the stage\n")  # an earlier stage's change stays
+    check = StageWriteCheck(root, query=6, stage="implementation", pipeline_config=_cfg(root))
+    (root / "backends/toydb/e.cpp").write_text("this stage's edit\n")
+    (root / "substrate/s.h").write_text("this stage's edit\n")
+    (root / "eval").mkdir()
+    (root / "eval/moved.cpp").write_text("relocated code\n")
+    (root / "accelerators/toybench/q6/k.cpp").write_text("mine\n")
+    bad = check.violations()
+    assert {rel for rel, _ in bad} == {"backends/toydb/e.cpp", "substrate/s.h", "eval/moved.cpp"}
+    check.revert(bad)
+    assert (root / "backends/toydb/e.cpp").read_text() == "dirty before the stage\n"
+    assert (root / "substrate/s.h").read_text() == "x\n" and not (root / "eval/moved.cpp").exists()
+    assert (root / "accelerators/toybench/q6/k.cpp").read_text() == "mine\n" and check.violations() == []
+
+
+def test_no_check_runs_while_the_session_has_out_of_bounds_edits(tmp_path: Path) -> None:
+    import json
+
+    from accel_pipeline.tools.gate_tools import ToolContext, admission_refusal_payload
+
+    root = _git_tree(tmp_path / "t")
+    cfg = _cfg(root, quick_tier=SimpleNamespace(enabled=False))
+    ctx = ToolContext(cfg, 6, workload={}, stage="host_bootstrap",
+                      writes=StageWriteCheck(root, query=6, stage="host_bootstrap", pipeline_config=cfg))
+    assert admission_refusal_payload(ctx, "quick_check") == ""
+    (root / "eval").mkdir()
+    (root / "eval/sweep_session.cpp").write_text("moved out of the scanned harness dir\n")
+    refusal = json.loads(admission_refusal_payload(ctx, "host_bootstrap"))
+    assert refusal["status"] == "refused" and "eval/sweep_session.cpp" in refusal["reason"]
 
 
 def test_engine_state_and_build_dirs_in_the_tree_are_not_agent_writes(tmp_path: Path, monkeypatch) -> None:

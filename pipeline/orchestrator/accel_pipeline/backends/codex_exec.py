@@ -194,9 +194,10 @@ class CodexExecBackend:
         result.metadata["write_violations"] = [{"path": rel, "rule": why} for rel, why in bad]
         self._log_violations(policy, bad)
         if policy == "enforce":
+            check.revert(bad)
             result.metadata.pop("timed_out", None)
             result.status = "error"
-            result.error = "\n\n".join(filter(None, [violation_message(self._stage, bad), result.error]))
+            result.error = "\n\n".join(filter(None, [violation_message(self._stage, bad, reverted=True), result.error]))
         return result
 
     def _log_violations(self, policy: str, bad: list[tuple[str, str]]) -> None:
