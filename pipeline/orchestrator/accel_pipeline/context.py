@@ -274,6 +274,7 @@ def _analysis_reference(cfg: PipelineConfig, workload: dict[str, Any], query: in
     data_section = build_data_section(
         str(workload.get("engine_name") or ""),
         dataset_row_counts(DataToolContext(cfg, workload, query, art), dependent_table_names(workload)),
+        workload.get("production"),
     )
     section = "\n".join(
         [

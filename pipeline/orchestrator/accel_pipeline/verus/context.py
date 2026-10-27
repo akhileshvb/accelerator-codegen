@@ -128,9 +128,12 @@ def build_context(pipeline_config: Any, workload: dict[str, Any], workload_name:
     # The query SQL and schema are workload inputs: workloads/<bench>/q<N>.sql, workloads/<bench>/schema.sql.
     sql_rel = settings.get("query_sql") or workload_query_sql(bench, query)
     schema_rel = settings.get("schema_sql") or workload_schema_sql(bench)
+    # The benchmark pack names its datasets (default.yaml keys) and its parameter generator.
     datasets = dict(getattr(pipeline_config, "datasets", {}) or {})
-    test_db = settings.get("test_db") or str(datasets.get(f"{bench}_test") or "")
-    bench_db = settings.get("bench_db") or str(datasets.get(f"{bench}_sf1") or "")
+    test_db = settings.get("test_db") or str(datasets.get(str(workload.get("test_dataset_key"))) or "")
+    bench_db = settings.get("bench_db") or str(datasets.get(str(workload.get("dataset_key"))) or "")
+    params = settings.setdefault("params", {})
+    params.setdefault("generator", workload.get("params_generator") or "")
     build_dir = settings.get("build_dir") or str(pipeline_config.build_dir)
     lib_dir = settings.get("lib_dir") or str(root / "build-verus")
     # the Verus binary (kept in settings: the MCP server loads the context)

@@ -2,10 +2,11 @@
 
 Every substitution parameter of a query is a runtime parameter of its kit, so
 every benchmark, profile and correctness run draws fresh values from the
-parameter domain (TPC-H spec 2.4 / qgen ranges): a kernel specialized to fixed
-parameter values gains nothing.  The domain lives in
-``eval/compare/gen_tpch_params.py`` (all 22 queries; its ``verus`` field
-is the kit's argument list in $n order); this module only calls it with a seed.
+parameter domain: a kernel specialized to fixed parameter values gains nothing.
+The domain is the benchmark's generator (its pack's ``params_generator``, e.g.
+``eval/compare/gen_tpch_params.py``): a script run as ``<script> <sets> <seed>``
+that prints ``{"queries": {"<N>": {"sets": [{"verus": "<SQL literals in $n order>"}]}}}``.
+This module only calls it with a seed.
 
 A *draw* is one seed and the parameter tuples it gives, written to the run's
 artifacts (``<art>/param_draws/<tag>_<seed>.json``).  Nothing is written before a
@@ -26,9 +27,6 @@ from typing import Any
 from accel_pipeline.sql_tuples import fresh_seed, n_params, split_tuple
 from accel_pipeline.verus.context import VerusContext
 
-GENERATOR = "eval/compare/gen_tpch_params.py"
-
-
 @dataclass
 class Draw:
     tag: str
@@ -40,9 +38,10 @@ class Draw:
 
 
 def _generate(ctx: VerusContext, sets: int, seed: int) -> list[str]:
-    """The domain's tuples for this query from the shared generator (run as a script, seeded)."""
-    script = Path(str(ctx.setting("params.generator") or ctx.root / GENERATOR))
-    if ctx.benchmark != "tpch" or not script.is_file():
+    """The domain's tuples for this query from the benchmark's generator (run as a script, seeded)."""
+    rel = str(ctx.setting("params.generator") or "")
+    script = ctx.root / rel
+    if not rel or not script.is_file():
         return []
     proc = subprocess.run([sys.executable, str(script), str(sets), str(seed)], capture_output=True, text=True,
                           timeout=120, check=False)
@@ -103,21 +102,20 @@ def summary(draw: Draw | None) -> dict[str, Any]:
 
 
 def check_query(ctx: VerusContext) -> str:
-    """'' if every substitution parameter of the query is a $n parameter; else what is wrong (preflight).
+    """'' if the query's $n parameters and its domain agree (preflight); else what is wrong.
     A substitution parameter left as a literal (a LIKE pattern, a factor) would let a kernel specialize to
     one value: the query then takes fewer $n than its domain has.  Literals the benchmark itself fixes
     (TPC-H Q16's '%Customer%Complaints%') are not substitution parameters and are fine."""
     if not ctx.query_sql or not Path(ctx.query_sql).is_file():
         return ""
-    sql = Path(ctx.query_sql).read_text(encoding="utf-8")
-    if ctx.benchmark != "tpch":
-        return ""
-    want = n_params(sql)
-    gen = _generate(ctx, 1, 1)
-    if want and not gen:
-        return (f"no parameter domain for tpch q{ctx.query} in {GENERATOR} (its `verus` argument list is empty): "
-                "every substitution parameter must be drawn from its domain")
-    if len(split_tuple(gen[0])) != want:
-        return (f"{ctx.query_sql} takes {want} $n parameters but the TPC-H domain of q{ctx.query} has "
-                f"{len(split_tuple(gen[0]))} ({gen[0]}): a substitution parameter is a literal (or an extra one is declared)")
+    want = n_params(Path(ctx.query_sql).read_text(encoding="utf-8"))
+    gen = _generate(ctx, 8, 1)
+    if not gen:
+        return "" if not want else (
+            f"no parameter domain for {ctx.benchmark} q{ctx.query} ({want} $n parameters): the benchmark pack's "
+            f"params_generator ({ctx.setting('params.generator') or 'unset'}) gives no tuples for it")
+    bad = [t for t in gen if len(split_tuple(t)) != want]
+    if bad:
+        return (f"{ctx.query_sql} takes {want} $n parameters but its domain's tuples have {len(split_tuple(bad[0]))} "
+                f"({bad[0]}): a substitution parameter is a literal (or an extra one is declared)")
     return ""

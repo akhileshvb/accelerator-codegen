@@ -31,17 +31,24 @@ def _quant(q: Any) -> list[Any]:
     return list(q) if q else [None, None, None]
 
 
-def render_shape_tables(facts: dict[str, Any], source: str) -> list[str]:
-    from accel_pipeline.data_shape_stats import SAMPLE_ROWS
+def growth_note(production: dict[str, Any] | None) -> str:
+    """How iteration-scale facts carry over to production (the benchmark pack's `production`)."""
+    p = production or {}
+    to = f"{p['scale']:,}-fold in production" if p.get("scale") else "with the data in production"
+    fixed = f" ({', '.join(p['fixed'])} stay fixed)" if p.get("fixed") else ""
+    return (f"Row counts grow {to}{fixed}. NDV grows only for keys that grow with the data (ids); rows per "
+            "key grow for the others (codes, categories, dates of a fixed range). Value ranges, quantiles, NULL "
+            "fractions, join-key match rates and spreads between columns do not grow.")
 
+
+def render_shape_tables(facts: dict[str, Any], source: str, production: dict[str, Any] | None = None) -> list[str]:
     rows, stats, schema = facts["rows"], facts["stats"], facts["schema"]
     roles = facts["shape"].roles
     lines = [
-        f"- Source: {source} (iteration scale). Row counts and fan-outs scale roughly linearly with the "
-        "scale factor to SF3000; value ranges, quantiles, NULL fractions, join-key matches and cross-column "
-        "spreads (differences) do not scale, and NDV scales only for keys that grow with the data.",
-        f"- Statistics are exact below {SAMPLE_ROWS:,} rows per table and sampled above (counts rescaled); "
-        f"each statement is time-boxed ({facts['timeouts']} timed out or skipped).",
+        f"- Source: {source} (iteration scale). {growth_note(production)}",
+        ("- Statistics are exact" if max(rows.values(), default=0) <= facts["sample_rows"] else
+         f"- Statistics are exact below {facts['sample_rows']:,} rows per table and sampled above (counts rescaled)")
+        + f"; each statement is time-boxed ({facts['timeouts']} timed out or skipped).",
         "",
         "### Tables and columns the query uses",
         "",
@@ -110,9 +117,7 @@ DATA_SECTION = """## Data
 Measure the data; do not guess it. The iteration dataset is loaded in the target engine (`{engine}`); the tools
 below query it there.
 {counts}
-Row counts and fan-outs scale roughly linearly with the scale factor to SF3000; value ranges, quantiles, NULL
-fractions, join-key match rates and spreads between columns (differences) do not, and NDV scales only for keys
-that grow with the data.
+{growth}
 
 Tools (time-boxed, capped, logged to `data_queries.jsonl`):
 `query_data(sql)` one read-only statement in the engine's SQL; `column_stats(["table.column"])`;
@@ -128,10 +133,11 @@ contradicts the design, revise the design. Record each figure you rely on in `ev
 produced it, so a reviewer can re-run it. Do not hardcode iteration-scale capacities into the implementation."""
 
 
-def build_data_section(engine: str, counts: dict[str, int]) -> str:
+def build_data_section(engine: str, counts: dict[str, int], production: dict[str, Any] | None = None) -> str:
     """The analysis prompt's Data section: the engine holding the dataset, its tables' row counts, and the tools."""
     table = "\n".join(md_table(["table", "rows"], [[t, f"{n:,}"] for t, n in counts.items()])) if counts else ""
-    return DATA_SECTION.format(engine=engine or "unset", counts=f"\n{table}" if table else "")
+    return DATA_SECTION.format(engine=engine or "unset", counts=f"\n{table}" if table else "",
+                               growth=growth_note(production))
 
 
 def catalog_sql(workload: dict[str, Any], repo: Path | None, query: int | None) -> str:
@@ -143,7 +149,8 @@ def catalog_sql(workload: dict[str, Any], repo: Path | None, query: int | None) 
 
 
 def build_data_shape_markdown(sql: str, runner: Any, schema: dict[str, dict[str, str]], source: str,
-                              statement_seconds: float, total_seconds: float) -> str:
+                              statement_seconds: float, total_seconds: float,
+                              production: dict[str, Any] | None = None) -> str:
     """The statistics `sql` (the parameterised query) implies, computed on the engine behind `runner`."""
     from accel_pipeline.data_shape_stats import compute
 
@@ -151,5 +158,5 @@ def build_data_shape_markdown(sql: str, runner: Any, schema: dict[str, dict[str,
     return "\n".join(
         ["## Data shape (iteration scale)", "",
          "Facts to bound read work over all parameter bindings and to narrow candidate ranges from column "
-         "spreads and correlations.", ""] + render_shape_tables(facts, source)
+         "spreads and correlations.", ""] + render_shape_tables(facts, source, production)
     )

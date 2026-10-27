@@ -7,6 +7,7 @@ import time
 from pathlib import Path
 
 import pytest
+import yaml
 
 from accel_pipeline.verus import actions
 from accel_pipeline.verus.agent import json_block, render
@@ -272,10 +273,13 @@ def test_stalled_fix_rounds_get_a_second_opinion(monkeypatch: pytest.MonkeyPatch
 # ───────────────────────────── random parameters ─────────────────────────────
 
 
-def _pctx(tmp: Path, query: int = 21, sql: str = "SELECT 1 WHERE x = $1") -> VerusContext:
+def _pctx(tmp: Path, query: int = 21, sql: str = "SELECT 1 WHERE x = $1", benchmark: str = "tpch") -> VerusContext:
     ctx = _ctx(tmp)
     ctx.query = query
+    ctx.benchmark = benchmark
     ctx.repo_root = str(REPO)
+    pack = yaml.safe_load((REPO / "pipeline" / "config" / "benchmark_packs" / f"{benchmark}.yaml").read_text())
+    ctx.settings = {"params": {"generator": pack["params_generator"]}}
     q = tmp / "q.sql"
     q.write_text(sql)
     ctx.query_sql = str(q)
@@ -338,6 +342,20 @@ def test_check_query_rejects_literal_like(tmp_path):
     ctx = _pctx(tmp_path / "b", query=21, sql="SELECT 1 WHERE n = $1 AND p LIKE $2")
     assert "parameters" in qp.check_query(ctx)  # q21's domain has one parameter
     assert qp.check_query(_pctx(tmp_path / "c", query=21)) == ""
+
+
+def test_any_benchmark_draws_from_its_packs_generator(tmp_path):
+    from accel_pipeline.verus import params as qp
+
+    sql = (REPO / "workloads" / "sec_edgar" / "q4.sql").read_text()
+    ctx = _pctx(tmp_path / "a", query=4, sql=sql, benchmark="sec_edgar")
+    assert qp.check_query(ctx) == ""
+    for t in qp.new_draw(ctx, "bench").sets:
+        lo, hi, stmt, uom = qp.split_tuple(t)
+        assert int(lo) <= int(hi) and stmt.strip("'") in {"BS", "IS", "CF", "EQ", "CI"} and uom.startswith("'")
+    # a query with parameters and no domain stops at preflight, not at its first benchmark
+    ctx = _pctx(tmp_path / "b", query=99, sql="SELECT 1 WHERE x = $1", benchmark="sec_edgar")
+    assert "no parameter domain" in qp.check_query(ctx)
 
 
 def test_paired_bench_shares_one_draw_and_new_decisions_differ(tmp_path, monkeypatch):

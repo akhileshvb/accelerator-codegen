@@ -2,7 +2,7 @@
 
 Only these are copied in (read-only unless noted):
 
-    query/        query.sql (with $n parameters), schema.sql, workload.json
+    query/        query.sql (with $n parameters), schema.sql, workload.json, data_shape.md
     spec/         gen_spec.rs (frozen A)
     frozen/       q.inputs, <crate>_verus.h (the C ABI), gen_obligations.rs, kernel_stub.rs (frozen B)
     inputs/       q.inputs                       (analysis writes; frozen at B)
@@ -40,7 +40,8 @@ tests in its own tree through the MCP tools (accel_pipeline server, `verus_*`).
 |---|---|---|
 | query/query.sql | the query ($1, $2, ... are parameters) | read |
 | query/schema.sql | the schema | read |
-| query/workload.json | parameters, engine, scale notes | read |
+| query/workload.json | parameters, engine, production scale and the application's writes | read |
+| query/data_shape.md | the iteration dataset as the query sees it: rows, NDVs, fan-outs, parameter selectivity | read |
 | spec/gen_spec.rs | the spec generated from the SQL (frozen, trusted) | read |
 | inputs/q.inputs | the kernel's declared inputs (scans, rescans, deltas) | analysis |
 | analysis/ | analysis.json and notes | analysis |
@@ -78,8 +79,8 @@ def contracts_dir(ctx: VerusContext) -> Path:
     return Path(ctx.pipeline_root) / "prompts" / "verus" / "contracts"
 
 
-def create(ctx: VerusContext, workload: dict[str, Any]) -> Path:
-    """Create (or refresh the read-only parts of) the workspace."""
+def create(ctx: VerusContext, workload: dict[str, Any], *, measure: bool = True) -> Path:
+    """Create (or refresh the read-only parts of) the workspace (measure: the data shape, on the iteration dataset)."""
     ws = ctx.ws
     ws.mkdir(parents=True, exist_ok=True)
     for d in ("query", "spec", "frozen", "inputs", "analysis", "tests/txns", "crate/src", "glue", "playbook", "ref"):
@@ -94,9 +95,13 @@ def create(ctx: VerusContext, workload: dict[str, Any]) -> Path:
         "parameters": workload.get("parameters") or [],
         "output_schema": workload.get("output_schema") or [],
         "dependent_tables": [t.get("name") for t in workload.get("dependent_tables") or [] if isinstance(t, dict)],
-        "scale": "iteration at SF1; production up to SF3000 (see contracts/scale_principles.md)",
+        "production": workload.get("production") or {},  # the benchmark pack's: scale, fixed tables, writes
     }
     (ws / "query" / "workload.json").write_text(json.dumps(info, indent=2), encoding="utf-8")
+    if measure:
+        from accel_pipeline.verus.actions import data_shape
+
+        (ws / "query" / "data_shape.md").write_text(data_shape(ctx, workload.get("production")), encoding="utf-8")
     sub = ctx.root / "substrate"
     _copy(sub / "verus" / "common" / "src", ws / "ref" / "verus_common")
     _copy(sub / "verus" / "store" / "src", ws / "ref" / "verus_substrate")  # crate verus_substrate

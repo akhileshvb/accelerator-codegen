@@ -58,14 +58,16 @@ def verus_check_inputs() -> str:
     return _json(actions.check_inputs(_ctx()))
 
 
-def verus_sql(query: str, max_rows: int = 50) -> str:
-    """Run a read-only SQL query on the test database (explore the data; DuckDB SQL)."""
-    return _json(actions.sql(_ctx(), query, max_rows))
+def verus_sql(query: str, max_rows: int = 50, iteration: bool = False) -> str:
+    """Run a read-only SQL query (DuckDB SQL) on the test database, or with iteration=true on the iteration
+    dataset (the benchmarks' data: measure sizes, fan-outs and distributions there)."""
+    return _json(actions.sql(_ctx(), query, max_rows, iteration))
 
 
 def verus_validate_tests() -> str:
-    """Check tests/ under the schema's NOT NULL constraints: setup.sql runs, every params.sql tuple runs the query,
-    and the txns apply in sequence (committed, as the tests run them)."""
+    """Check tests/ under the schema's constraints: setup.sql runs, every params.sql tuple runs the query, the txns
+    apply in sequence (committed, as the tests run them), and the bench writes (bench_txns/, else txns/) apply
+    repeatedly on the iteration dataset, as the benchmarks replay them."""
     return _json(actions.validate_tests(_ctx()))
 
 
@@ -100,7 +102,7 @@ def verus_test(snapshots: bool = False, proofs: bool = True) -> str:
 
 
 def verus_bench(write_mixes: str = "0.01,0.05") -> str:
-    """Build and benchmark on the SF1 database (Verus global store): read speedup per parameter tuple, write mixes."""
+    """Build and benchmark on the iteration dataset (Verus global store): read speedup per parameter tuple, write mixes."""
     ctx = _ctx()
     b = actions.build_runner(ctx)
     if not b["ok"]:
@@ -112,7 +114,7 @@ def verus_bench(write_mixes: str = "0.01,0.05") -> str:
 
 
 def verus_profile() -> str:
-    """Steady-state perf profiles on SF1 (build excluded), one per axis: `reads` and `maintenance` (writes); hotspots by symbol and area (kernel, glue, store, engine)."""
+    """Steady-state perf profiles on the iteration dataset (build excluded), one per axis: `reads` and `maintenance` (writes); hotspots by symbol and area (kernel, glue, store, engine)."""
     ctx = _ctx()
     b = actions.build_runner(ctx)
     if not b["ok"]:
@@ -164,9 +166,9 @@ def register(tool, call) -> None:
         return call("verus_check_inputs")
 
     @tool(read_only=True)
-    def verus_sql(query: str, max_rows: int = 50) -> str:
-        """Read-only SQL on the test dataset database, to explore the data."""
-        return call("verus_sql", query, max_rows)
+    def verus_sql(query: str, max_rows: int = 50, iteration: bool = False) -> str:
+        """Read-only SQL on the test database; iteration=true: on the iteration dataset (the benchmarks' data)."""
+        return call("verus_sql", query, max_rows, iteration)
 
     @tool(read_only=False)
     def verus_validate_tests() -> str:
@@ -191,12 +193,12 @@ def register(tool, call) -> None:
 
     @tool(read_only=False)
     def verus_bench(write_mixes: str = "0.01,0.05") -> str:
-        """Build and benchmark on SF1 (Verus store): read speedups, write mixes, score."""
+        """Build and benchmark on the iteration dataset (Verus store): read speedups, write mixes, score."""
         return call("verus_bench", write_mixes)
 
     @tool(read_only=False)
     def verus_profile() -> str:
-        """perf profile of a short SF1 bench: hotspots by symbol and area."""
+        """perf profile of a short bench on the iteration dataset: hotspots by symbol and area."""
         return call("verus_profile")
 
     @tool(read_only=True)

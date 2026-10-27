@@ -38,6 +38,8 @@ class Runner(Protocol):
     """Runs one statement on the target engine: rows as strings (NULL as None); raises on an error or the time box."""
 
     dialect: str
+    # optional `sample_rows`: tables above it are sampled (default SAMPLE_ROWS; an engine that scans
+    # the iteration dataset fast enough sets it higher, so its statistics are exact)
 
     def rows(self, sql: str, seconds: float) -> list[list[str | None]]: ...
 
@@ -235,6 +237,7 @@ class Probe:
 
     def __init__(self, runner: Runner, statement_seconds: float = STATEMENT_SECONDS, total_seconds: float = TOTAL_SECONDS) -> None:
         self.runner = runner
+        self.sample_rows = int(getattr(runner, "sample_rows", SAMPLE_ROWS))
         self.statement_seconds = statement_seconds
         self.deadline = time.monotonic() + total_seconds
         self.timeouts = 0
@@ -274,18 +277,18 @@ def literal(value: Any) -> str:
     return text if _NUMBER.match(text.strip()) else "'" + text.replace("'", "''") + "'"
 
 
-def sample_of(table: str, rows: int, types: dict[str, str]) -> tuple[str, float]:
+def sample_of(table: str, rows: int, types: dict[str, str], limit: int = SAMPLE_ROWS) -> tuple[str, float]:
     """(a FROM item over `table`, factor that rescales counts over it): the table itself, or above
-    SAMPLE_ROWS a sample by key modulo on its first integer column (a prefix of the table when it has none).
+    `limit` rows a sample by key modulo on its first integer column (a prefix of the table when it has none).
     Key-modulo samples keep every row of a sampled key, so per-key counts stay exact; a sample over a
     non-key column is approximate."""
-    if rows <= SAMPLE_ROWS:
+    if rows <= limit:
         return _q(table), 1.0
     key = next((c for c, t in types.items() if is_integer(t)), None)
     if key:
-        step = -(-rows // SAMPLE_ROWS)
+        step = -(-rows // limit)
         return f"(SELECT * FROM {_q(table)} WHERE {_q(key)} % {step} = 0)", float(step)
-    return f"(SELECT * FROM {_q(table)} LIMIT {SAMPLE_ROWS})", rows / SAMPLE_ROWS
+    return f"(SELECT * FROM {_q(table)} LIMIT {limit})", rows / limit
 
 
 def _ranked(values_sql: str) -> str:
@@ -309,7 +312,7 @@ def distribution(probe: Probe, values_sql: str) -> tuple[int, Any, list[Any], An
 
 def column_stats(probe, table, columns, types, rows):
     """{column: dict(null_frac, ndv, min, max, q)}: one pass for the counts, one ordered pass per numeric or date column."""
-    src, _ = sample_of(table, rows, types)
+    src, _ = sample_of(table, rows, types, probe.sample_rows)
     parts = [f"COUNT({_q(c)}), COUNT(DISTINCT {_q(c)}), MIN({_q(c)}), MAX({_q(c)})" for c in columns]
     res = probe.run(f"SELECT COUNT(*), {', '.join(parts)} FROM {src} AS t")
     if not res:
@@ -327,7 +330,7 @@ def column_stats(probe, table, columns, types, rows):
 
 
 def fanout(probe, table, column, other, other_col, rows, types):
-    src, _ = sample_of(table, rows, types)
+    src, _ = sample_of(table, rows, types, probe.sample_rows)
     per_key = f"SELECT COUNT(*) AS v FROM {src} AS t WHERE {_q(column)} IS NOT NULL GROUP BY {_q(column)}"
     dist = probe.run(
         f"SELECT COUNT(*), AVG(v), MIN(CASE WHEN rn >= n * 0.99 THEN v END), MAX(v) FROM ({_ranked(per_key)}) AS w"
@@ -346,7 +349,7 @@ def fanout(probe, table, column, other, other_col, rows, types):
 def param_effect(probe, pred: ParamPredicate, rows: dict[str, int], stats: dict, types: dict) -> dict[str, Any]:
     """Rows (or groups) qualifying at the extremes of the column's range, or by value frequency."""
     t, c, op = pred.table, pred.column, pred.op
-    src, scale = sample_of(t, rows[t], types[t])
+    src, scale = sample_of(t, rows[t], types[t], probe.sample_rows)
     st = stats.get(t, {}).get(c, {})
     fam = type_family(types[t][c])
     if op.startswith("agg"):
@@ -381,21 +384,21 @@ def diff_sql(a: str, b: str, family: str) -> str:
 def spread(probe, a, b, shape: QueryShape, rows, types):
     (ta, ca), (tb, cb) = a, b
     family = type_family(types[ta][ca])
-    sa, scale_a = sample_of(ta, rows[ta], types[ta])
+    sa, scale_a = sample_of(ta, rows[ta], types[ta], probe.sample_rows)
     if ta == tb:
         res = distribution(probe, f"SELECT {diff_sql(_q(ca), _q(cb), family)} AS v FROM {sa} AS a")
-        return res, rows[ta] > SAMPLE_ROWS
+        return res, rows[ta] > probe.sample_rows
     link = next(((x, y) for x, y in shape.joins if {x[0], y[0]} == {ta, tb}), None)
     if not link:
         return None, False
     ka, kb = (link[0][1], link[1][1]) if link[0][0] == ta else (link[1][1], link[0][1])
-    sb, _ = sample_of(tb, rows[tb], types[tb])
+    sb, _ = sample_of(tb, rows[tb], types[tb], probe.sample_rows)
     res = distribution(
         probe,
         f"SELECT {diff_sql(f'a.{_q(ca)}', f'b.{_q(cb)}', family)} AS v FROM {sa} AS a JOIN {sb} AS b "
         f"ON a.{_q(ka)} = b.{_q(kb)}",
     )
-    return res, max(rows[ta], rows[tb]) > SAMPLE_ROWS
+    return res, max(rows[ta], rows[tb]) > probe.sample_rows
 
 
 DEFAULT_CATALOG_SQL = (
@@ -433,4 +436,5 @@ def compute(sql: str, runner: Runner, schema: dict[str, dict[str, str]], stateme
         "effects": [(p, param_effect(probe, p, rows, stats, schema)) for p in shape.params],
         "spreads": [(a, b, why, *spread(probe, a, b, shape, rows, schema)) for a, b, why in shape.spread_pairs],
         "timeouts": probe.timeouts,
+        "sample_rows": probe.sample_rows,
     }

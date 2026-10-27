@@ -10,6 +10,7 @@ datasets:
   tpch_sf10: ACCEL_TPCH_SF10_DB
   tpch_test: ACCEL_TPCH_TEST_DB
   sec_edgar_sf3: ACCEL_SEC_EDGAR_DB
+  sec_edgar_test: ACCEL_SEC_EDGAR_TEST_DB
 
 # backends/<engine>/bench/: benchmark_<engine>_<bench>_aux, calibrate_<engine>_<bench>_aux_cost_model
 shared_bench_harness: [tpch]

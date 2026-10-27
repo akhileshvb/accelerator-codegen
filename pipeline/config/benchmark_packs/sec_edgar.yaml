@@ -3,6 +3,21 @@ display_name: SEC-EDGAR
 artifact_namespace: sec_edgar
 dataset_key: sec_edgar_sf3
 db_env_var: ACCEL_SEC_EDGAR_DB
+test_dataset_key: sec_edgar_test
+params_generator: eval/bench/sec_edgar/gen_params.py
+
+# The data the accelerator must serve in production, relative to the iteration dataset (dataset_key):
+# tables grow `scale`-fold except the `fixed` ones; `writes` is what the application writes.
+# sec_edgar_sf3 holds three years of filings (2022-2024); the full archive since 2009 is ~6x that.
+# The target is SF3000-class (num ~40 billion rows), so designs keep working well past it.
+production:
+  scale: 1000
+  fixed: []
+  writes: >-
+    New filings arrive in batches: each is one sub row with its num and pre rows (same adsh), plus tag
+    rows for the filer's custom tags; a batch is about a day of filings (~0.1% of sub). An amendment is
+    a new filing (its own adsh) and marks the one it amends (sub.prevrpt = 1); a withdrawn filing is
+    deleted with its num and pre rows. Other updates and deletes are rare.
 ctest_resource_lock: sec_edgar_db
 schema_reference_path: eval/bench/sec_edgar/schema_reference.md
 test_template_path: pipeline/templates/sec_edgar/test_template.cpp

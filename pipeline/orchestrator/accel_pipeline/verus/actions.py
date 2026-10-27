@@ -459,7 +459,7 @@ def machine_slot(ctx: VerusContext, kind: str, slots: int, note=None) -> Iterato
 
 
 def drop_db(db: Path) -> None:
-    """Remove a scratch database copy (an SF1 copy is ~300 MB; benches make many)."""
+    """Remove a scratch database copy (an iteration-dataset copy is GBs; benches make many)."""
     for p in (db, Path(str(db) + ".wal")):
         p.unlink(missing_ok=True)
 
@@ -473,18 +473,42 @@ def db_copy(ctx: VerusContext, which: str, tag: str) -> Path:
         if p.exists():
             p.unlink()
     shutil.copy2(src, dst)
+    if which == "test":
+        align_keys(ctx, dst)
     return dst
 
 
-_NOT_NULL = re.compile(r"^\s*(\w+)\s+.*\bNOT\s+NULL\b", re.I)
+_KEYS_SQL = "SELECT table_name, constraint_text FROM duckdb_constraints() WHERE constraint_type = 'PRIMARY KEY' ORDER BY ALL"
+
+
+def _primary_keys(ctx: VerusContext, db: str) -> list[str]:
+    res = _runner(ctx, ["sql", db, _KEYS_SQL, "10000"], timeout=120)
+    if "rows" not in res:
+        raise RuntimeError(f"reading the keys of {db}: {str(res.get('error'))[:500]}")
+    return [f"ALTER TABLE {table} ADD {text}" for table, text in res["rows"]]
+
+
+def align_keys(ctx: VerusContext, db: Path) -> None:
+    """Give a test-database copy the primary keys the iteration dataset declares and it lacks, so a write the
+    benchmarks' database refuses (a second filing under one key) fails in the tests too."""
+    missing = [k for k in _primary_keys(ctx, ctx.bench_db) if k not in _primary_keys(ctx, str(db))]
+    if missing:
+        res = _runner(ctx, ["exec", str(db), "; ".join(missing)], timeout=600)
+        if not res.get("ok"):
+            raise RuntimeError(f"the test database violates a key of the iteration dataset ({'; '.join(missing)}): "
+                               f"{str(res.get('error'))[:500]}")
+
+
+_NOT_NULL = re.compile(r"^\s*(\w+)\s+.*\b(?:NOT\s+NULL|PRIMARY\s+KEY)\b", re.I)
+_PRIMARY_KEY = re.compile(r"^\s*(?:CONSTRAINT\s+\w+\s+)?PRIMARY\s+KEY\s*\(([^)]*)\)", re.I)
 
 
 def schema_constraints(ctx: VerusContext) -> Path:
-    """The declared schema's NOT NULL columns as ALTER statements, for every database the
-    runner opens: the test data then stays in the world the spec describes (the generated
-    TPC-H databases do not declare these constraints themselves)."""
+    """The declared schema's NOT NULL columns (primary key columns included, as sql2verus reads them) as
+    ALTER statements, for every database the runner opens: the test data then stays in the world the spec
+    describes (dataset databases need not declare these constraints themselves)."""
     out = Path(ctx.run_dir) / "schema_constraints.sql"
-    stmts = []
+    columns: list[tuple[str, str]] = []
     table = None
     for line in Path(ctx.schema_sql).read_text(encoding="utf-8").splitlines():
         m = re.match(r"\s*CREATE\s+TABLE\s+(\w+)", line, re.I)
@@ -494,9 +518,13 @@ def schema_constraints(ctx: VerusContext) -> Path:
         if table and line.strip().startswith(")"):
             table = None
             continue
-        c = _NOT_NULL.match(line)
-        if table and c and c.group(1).upper() not in ("PRIMARY", "CONSTRAINT", "UNIQUE", "FOREIGN", "CHECK"):
-            stmts.append(f"ALTER TABLE {table} ALTER COLUMN {c.group(1)} SET NOT NULL;")
+        if not table:
+            continue
+        if pk := _PRIMARY_KEY.match(line):
+            columns += [(table, c.strip()) for c in pk.group(1).split(",") if c.strip()]
+        elif (c := _NOT_NULL.match(line)) and c.group(1).upper() not in ("CONSTRAINT", "UNIQUE", "FOREIGN", "CHECK"):
+            columns.append((table, c.group(1)))
+    stmts = [f"ALTER TABLE {t} ALTER COLUMN {c} SET NOT NULL;" for t, c in dict.fromkeys(columns)]
     text = "\n".join(stmts) + ("\n" if stmts else "")
     out.parent.mkdir(parents=True, exist_ok=True)
     if not out.is_file() or out.read_text(encoding="utf-8") != text:
@@ -575,6 +603,20 @@ def validate_tests(ctx: VerusContext) -> dict[str, Any]:
     r["ok"] = r.get("exit") == 0 and r.get("txns", 0) > 0
     if r.get("txns", 0) == 0:
         r.setdefault("errors", []).append("tests/txns/ has no transactions")
+    drop_db(db)
+    # the benchmarks replay bench_txns/ (else txns/) many times on the iteration dataset: they must apply there
+    db = Path(ctx.run_dir) / "dbs" / "validate_bench_writes.duckdb"
+    try:  # not timed: no bench lock
+        db = db_copy(ctx, "bench", "validate_bench_writes")
+        w = _runner(ctx, ["bench_writes", str(db), str(tests_dir(ctx)), "3"], timeout=1200)
+    finally:
+        drop_db(db)
+    r["bench_writes"] = {k: w.get(k) for k in ("writes", "failed")}
+    if w.get("exit") != 0:
+        r["ok"] = False
+        r.setdefault("errors", []).extend(
+            [f"on the iteration dataset (the benchmarks' database; each bench write is applied 3 times, committed): {e}"
+             for e in w.get("errors") or [w.get("error") or "bench_writes failed"]])
     return r
 
 
@@ -692,11 +734,47 @@ def explain_fault(f: str) -> str:
     }.get(f, f"the changes to table {f.split(':', 1)[-1]} are dropped" if f.startswith("drop_delta:") else f)
 
 
-def sql(ctx: VerusContext, query: str, max_rows: int = 50) -> dict[str, Any]:
+def sql(ctx: VerusContext, query: str, max_rows: int = 50, iteration: bool = False) -> dict[str, Any]:
+    """`query` on the test database, or (iteration) on the iteration dataset, read-only."""
     built = ensure_runner(ctx)
     if not built["ok"]:
         return {"error": "could not build verus_kit_runner for SQL", "detail": built["error"]}
-    return _runner(ctx, ["sql", ctx.test_db, query, str(max_rows)], timeout=300)
+    return _runner(ctx, ["sql", ctx.bench_db if iteration else ctx.test_db, query, str(max_rows)], timeout=300)
+
+
+class _IterationSql:
+    """data_shape_stats.Runner over the iteration dataset (in-process DuckDB scans it fast: exact statistics)."""
+
+    dialect = "duckdb"
+    sample_rows = 10**12
+
+    def __init__(self, ctx: VerusContext) -> None:
+        self.ctx = ctx
+
+    def rows(self, sql: str, seconds: float) -> list[list[str | None]]:
+        res = _runner(self.ctx, ["sql", self.ctx.bench_db, sql, str(10**9)], timeout=seconds)
+        if "rows" not in res:
+            raise RuntimeError(str(res.get("error"))[:500])
+        return [[None if c == "NULL" else c for c in r] for r in res["rows"]]
+
+
+def data_shape(ctx: VerusContext, production: dict[str, Any] | None) -> str:
+    """The statistics the query's SQL implies, measured on the iteration dataset (cached per query and dataset)."""
+    from accel_pipeline.data_shape import build_data_shape_markdown
+    from accel_pipeline.data_shape_stats import read_schema
+
+    db = Path(ctx.bench_db)
+    sql_text = Path(ctx.query_sql).read_text(encoding="utf-8")
+    key = hashlib.sha256(json.dumps([sql_text, str(db), db.stat().st_size, db.stat().st_mtime,
+                                     production]).encode()).hexdigest()[:16]
+    cache = Path(ctx.run_dir) / f"data_shape_{key}.md"
+    if not cache.is_file():
+        runner = _IterationSql(ctx)
+        text = build_data_shape_markdown(sql_text, runner, read_schema(runner, 60), f"the iteration dataset `{db.name}`",
+                                         60, 300, production)
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        cache.write_text(text + "\n", encoding="utf-8")
+    return cache.read_text(encoding="utf-8")
 
 
 def glue_contract(ctx: VerusContext) -> dict[str, Any]:
@@ -760,9 +838,10 @@ def bench_size(ctx: VerusContext, mixes: list[float]) -> tuple[int, int]:
 
 
 def cost_check(ctx: VerusContext) -> dict[str, Any]:
-    """A quick SF1 measurement of a kernel that passes its tests: correct is not enough, it must also be
-    fast at scale.  The tests' database is tiny, where per-write copies of the whole state or whole-state
-    scans per read are invisible; on SF1 they make the accelerator slower than the plain query."""
+    """A quick measurement on the iteration dataset of a kernel that passes its tests: correct is not enough,
+    it must also be fast at scale.  The tests' database is tiny, where per-write copies of the whole state or
+    whole-state scans per read are invisible; on the iteration dataset they make the accelerator slower than
+    the plain query."""
     cfg = ctx.setting("cost_check", {}) or {}
     if not cfg.get("enabled", True):
         return {"ok": True, "skipped": True}
@@ -785,8 +864,8 @@ def cost_check(ctx: VerusContext) -> dict[str, Any]:
                 r = r2
     if not r["ok"]:
         return {"ok": False, "error": (
-            f"the SF1 cost check did not finish ({tail_marked(str(r.get('error', '')), 600)}): {cfg.get('ops', 20)} reads/"
-            f"writes on SF1 took longer than {cfg.get('timeout_sec', 420)} s, so some read or write does work in "
+            f"the cost check did not finish ({tail_marked(str(r.get('error', '')), 600)}): {cfg.get('ops', 20)} reads/"
+            f"writes on the iteration dataset took longer than {cfg.get('timeout_sec', 420)} s, so some read or write does work in "
             "proportion to the whole state or a whole table")}
     read = float(r.get("read_speedup") or 0.0)
     mixed = float((r.get("mixes") or [{}])[0].get("speedup") or 0.0)
@@ -800,7 +879,7 @@ def cost_check(ctx: VerusContext) -> dict[str, Any]:
            "plain_write_us": round(plain_w), "accel_write_us": round(accel_w), "build_ms": r.get("build_ms")}
     if not ok:
         res["error"] = (
-            f"correct but too slow at SF1: reads {read:.2f}x the plain query (need >= {min_read}), a "
+            f"correct but too slow on the iteration dataset: reads {read:.2f}x the plain query (need >= {min_read}), a "
             f"{mix:.0%}-write mix {mixed:.2f}x (need >= {min_mix}). "
             + ("Reads do too much work: they should touch only what the query needs (the analysis's read path), "
                "not scan a structure or table. " if read < min_read else "")
@@ -836,6 +915,9 @@ def bench(ctx: VerusContext, mixes: list[float], *, store: str = "verus_global",
         drop_db(db)
     r["ok"] = r.get("exit") == 0 and "error" not in r
     r["size"] = {"reps": reps, "ops": ops}
+    if r.get("write_errors"):
+        r["write_errors_note"] = (f"{r['write_errors']} of {r.get('writes')} writes failed on the benchmark's database: "
+                                  "the mixes timed fewer writes than they ran")
     return r
 
 

@@ -95,7 +95,7 @@ def completed_kernels(ctx: VerusContext) -> str:
                 try:
                     b = json.loads(rep.read_text()).get("bench_verus") or {}
                     mixes = ", ".join(f"{m['write_fraction']:g}: {m['speedup']:.1f}x" for m in b.get("mixes", []))
-                    speed = f"; audited at SF1: reads {b.get('read_speedup', 0):.1f}x, write mixes {mixes}"
+                    speed = f"; audited on the iteration dataset: reads {b.get('read_speedup', 0):.1f}x, write mixes {mixes}"
                 except (ValueError, KeyError, TypeError):
                     pass
         note = f"\n  review: {notes[name]}" if name in notes else ""
