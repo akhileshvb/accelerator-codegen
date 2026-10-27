@@ -62,7 +62,7 @@ from accel_pipeline.data import (
     validate_aux_analysis_file,
 )
 from accel_pipeline.gates import GateResult, reusable_gate_result, run_gate
-from accel_pipeline.prims_library import refresh_for_stage
+from accel_pipeline.prims import refresh_for_stage
 from accel_pipeline.layout import frozen_restore, frozen_snapshot, query_dir
 from accel_pipeline.prompts import (
     audit_context,

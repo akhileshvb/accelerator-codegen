@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from accel_pipeline import layout, prims_library as pl
+from accel_pipeline import layout, prims as pl
 from accel_pipeline.config import (
     apply_workload_overrides,
     load_aux_state_defaults,

@@ -244,7 +244,7 @@ def build_mcp_tool_callables(
 
     def primitive_publish(files: list[str], rationale: str) -> str:
         """Publish staged primitives to the shared accelerators/prims/ library (additions only)."""
-        from accel_pipeline.prims_library import publish_tool
+        from accel_pipeline.prims import publish_tool
 
         return publish_tool(pipeline_config, query, files, rationale)
 

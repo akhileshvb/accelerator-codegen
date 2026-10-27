@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from accel_pipeline import layout, prims_library as pl
+from accel_pipeline import layout, prims as pl
 from accel_pipeline.layout import write_allowed
 
 REAL_ROOT = Path(__file__).resolve().parents[3]
@@ -387,7 +387,7 @@ def test_real_prims_are_workload_agnostic():
 
 
 def test_rebuilding_dependents_keeps_going_with_a_numeric_k(tmp_path, monkeypatch):
-    from accel_pipeline import prims_library as lib
+    from accel_pipeline import prims as lib
 
     (tmp_path / "build").mkdir()
     (tmp_path / "build" / "compile_commands.json").write_text("[]")
