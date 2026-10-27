@@ -40,7 +40,9 @@ case "${verb}" in
     elif [[ "$1" == benchmark* && "$2" == --query ]]; then  # a bench that counts hits (or, FAKE_BENCH_CONSTANT, one that assumes them)
       rate=0.0; [[ -z "${FAKE_BENCH_CONSTANT:-}" && -n "${ACCEL_AUX_FORCE_FALLBACK:-}" ]] || rate=1.0
       echo "suite,write_frequency_pct,workload_speedup,query_only_speedup,num_queries,accel_fallback_reads,state_builds,engine_ref_query_median_us,${FAKE_BENCH_NO_HIT_MEDIAN:-accel_hit_median_us,}accel_hit_rate"
-      echo "read_only,0,2.0,2.0,5,0,1,800,${FAKE_BENCH_NO_HIT_MEDIAN:-400,}${rate}"
+      for pct in ${FAKE_BENCH_ONE_ROW:-${ACCEL_AUX_WRITE_FREQUENCIES//,/ }}; do
+        echo "mix,${pct},2.0,2.0,5,0,1,800,${FAKE_BENCH_NO_HIT_MEDIAN:-400,}${rate}"
+      done
     else
       echo "${FAKE_RUN_OUT:-ran $*}"
     fi
@@ -361,6 +363,17 @@ def test_host_bootstrap_fails_a_bench_that_omits_a_required_column(repo):
                                  env_extra={"FAKE_BENCH_NO_HIT_MEDIAN": "other,"})
     assert proc.returncode == 1
     assert "lacks the required columns accel_hit_median_us" in result(gj, "host_bootstrap")["reason"]
+
+
+def test_host_bootstrap_fails_a_bench_that_prints_one_row_for_several_write_frequencies(repo):
+    host_bootstrap_repo(repo)
+    register = repo / "accelerators" / "tpch" / "q6" / "fake" / "aux"
+    register.mkdir(parents=True)
+    (register / "register.cpp").write_text("// q6\n")
+    proc, _, _, gj, _ = run_gate(repo, "run_host_bootstrap.sh", "0", ctx_extra={"engine_host": HARNESS_HOST},
+                                 env_extra={"FAKE_BENCH_ONE_ROW": "0"})
+    assert proc.returncode == 1
+    assert "printed 1 rows for ACCEL_AUX_WRITE_FREQUENCIES=0,1" in result(gj, "host_bootstrap")["reason"]
 
 
 def test_host_bootstrap_fails_without_the_harness_sources(repo):
