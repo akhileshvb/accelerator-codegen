@@ -1,0 +1,1 @@
+SELECT b, SUM(e) AS total FROM t WHERE a = 7 AND b IS NOT NULL GROUP BY b

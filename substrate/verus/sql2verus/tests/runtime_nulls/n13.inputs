@@ -1,0 +1,3 @@
+-- a scan filtered on NULL-able columns: SQL WHERE keeps a row only when its predicate is true
+scan t_rows AS TRt: SELECT a, b, e FROM t WHERE a = 7 AND b IS NOT NULL;
+delta t AS TDelta OF TRt: SELECT a, b, e FROM t;

@@ -40,9 +40,10 @@
 //     for some choice within the bounds, e.g. the exact value rounded.
 //   * A NULL-able column is a row field plus a u8 flag `<field>__null`
 //     (nonzero: NULL, the value is then unspecified); its spec view is an
-//     Option and NULL is inside the envelope.  A scan of one NULL-able
-//     column, a NULL-able KEYS column, and a lossy delta over NULL-able
-//     values are refused.
+//     Option and NULL is inside the envelope.  A scan's WHERE keeps a row
+//     only where its predicate is true (a comparison with NULL is false, as
+//     in the spec).  A scan of one NULL-able column, a NULL-able KEYS column,
+//     and a lossy delta over NULL-able values are refused.
 //   * A row type without text is #[repr(C)] + Copy and passed as a slice;
 //     one with text is passed as an owned Vec (build) or &Vec (apply).
 //   * The kernel provides crate::kernel::{State, build, execute, apply,
@@ -420,7 +421,8 @@ impl<'t, 'a> Ob<'t, 'a> {
             let mut conds = vec![];
             for e in &preds {
                 let v = self.tr.expr(e, &Ctx::Row { tuple: None })?;
-                if v.ty != Ty::Bool || v.nonlit_div || v.guard.is_some() {
+                // a NULL-able comparison keeps the row only when it is true (SQL WHERE): `guard && value`
+                if v.ty != Ty::Bool || v.nonlit_div {
                     bail!("{what}: WHERE conjunct {e}");
                 }
                 conds.push(bool_code(&v));

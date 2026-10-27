@@ -12,3 +12,4 @@ n09 ok-spec not an exact row value
 n10 ok-spec KEYS a is NULL-able
 n11 ok
 n12 ok
+n13 ok
