@@ -110,7 +110,8 @@ engine_steps() {
 		ENGINE_LOG+="[host.sh ${step}] rc=${rc}"$'\n'
 		if [[ ${rc} -ne 0 && ${rc} -ne 77 ]]; then
 			ENGINE_LOG+="${out}"$'\n'
-			ENGINE_FAIL="host.sh ${step%% *} failed (exit ${rc})"
+			ENGINE_STEP="${step%% *}"
+			ENGINE_FAIL="host.sh ${ENGINE_STEP} failed (exit ${rc})"
 			return 1
 		fi
 	done
@@ -188,6 +189,7 @@ harness_unclaimed() {
 		[[ " ${HARNESS_TARGETS:-} " == *" ${target} "* ]] || continue
 		for file in "${GATE_ROOT}"/accelerators/*/build.cmake; do
 			[[ -f "${file}" ]] && grep -Eq "(^|[^A-Za-z0-9_])${target}([^A-Za-z0-9_]|$)" "${file}" || continue
+			ENGINE_STEP=build
 			ENGINE_FAIL="${file#"${GATE_ROOT}"/} names the harness target ${target}: the workload harnesses belong to host_bootstrap; build the query's own targets only"
 			ENGINE_LOG="$(grep -En "(^|[^A-Za-z0-9_])${target}([^A-Za-z0-9_]|$)" "${file}")"
 			return 1

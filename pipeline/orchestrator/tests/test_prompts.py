@@ -382,7 +382,8 @@ class Round:
 def stage_ctx(repo, monkeypatch):
     art = repo / "pipeline" / "artifacts" / "demo" / "q5"
     ctx = SimpleNamespace(
-        pipeline_config=SimpleNamespace(repo_root=repo), workload=WORKLOAD, query=5, art=art, log=lambda line: None)
+        pipeline_config=SimpleNamespace(repo_root=repo), workload=WORKLOAD, query=5, art=art, stage="audit",
+        log=lambda line: None)
     monkeypatch.setattr(audit_stage, "append_experiment_log", lambda *a, **k: None)
     return ctx
 
@@ -407,7 +408,7 @@ def test_a_change_request_raised_in_the_repair_round_goes_to_the_tester_before_t
     (stage_ctx.art / "audit_result.json").write_text(json.dumps(BLOCKED))
     monkeypatch.setattr(audit_stage, "repair_turn", rnd.repair)
     handled = []
-    monkeypatch.setattr(audit_stage, "revise_pending_suite", lambda ctx: handled.append(ctx) or True)
+    monkeypatch.setattr(audit_stage, "revise_upstream", lambda ctx: handled.append(ctx) or True)
     audit_stage._fix_blocking_findings(stage_ctx, rnd.audit_turn)
     assert handled == [stage_ctx, stage_ctx] and "tester revised the frozen test suite" in rnd.audit_messages[0]
 

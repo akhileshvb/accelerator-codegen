@@ -405,9 +405,28 @@ def test_a_blocker_stops_the_stage_only_once_the_repair_budget_is_spent(tmp_path
 
 def test_a_blocker_on_the_frozen_suite_goes_to_the_tester_then_the_gates_rerun(world, monkeypatch):
     revisions = [True, False]
-    monkeypatch.setattr(repair_mod, "revise_pending_suite", lambda ctx: revisions.pop(0))
+    monkeypatch.setattr(repair_mod, "revise_upstream", lambda ctx: revisions.pop(0))
     run_with_repair(world.ctx(), _blocked, gates=["aux_correctness"])
     assert world.gate_calls == [["aux_correctness"]] and revisions == [False] and world.agent_messages == []
+
+
+def test_a_recorded_harness_defect_goes_to_host_bootstrap_before_the_next_check(world, monkeypatch):
+    from accel_pipeline import engine_backend
+
+    bootstraps = []
+    monkeypatch.setattr(engine_backend, "pending_harness_requests", lambda root, engine: "- **ties**")
+    monkeypatch.setattr(engine_backend, "run_host_bootstrap", lambda *a, **kw: bootstraps.append(kw["engine_name"]))
+    ctx = world.ctx()
+    ctx.workload = {**ctx.workload, "engine_name": "toyengine"}
+    assert repair_mod.revise_upstream(ctx) and bootstraps == ["toyengine"]
+
+
+def test_test_data_that_does_not_load_stops_the_stage_without_a_repair_round(world):
+    load = "[host.sh up] rc=0\n[host.sh load workloads/toybench/schema.sql] rc=1\nConstraint Error: violates foreign key"
+    world.gate_script = [gate_fail(text=load)]
+    with pytest.raises(StageStopped) as stopped:
+        run_with_repair(world.ctx(), lambda: None, gates=["aux_correctness"])
+    assert "test data does not load" in stopped.value.reason and world.agent_messages == []
 
 
 def _out_of_credits():

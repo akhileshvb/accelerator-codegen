@@ -81,6 +81,6 @@ The registrars, registries and entry-point shims are the **registration** role o
 
 Every query ships `cost_model.hpp`: pass it to the registration (the registrar's `cost_model` field or argument); the substrate picks the engine and scale-factor variant. Never hard-code a JSON path.
 
-**Backend additions.** Backend files belong to the engine_backend run; the write is denied. When a query needs an engine-level helper the backend lacks, log a request and do not rely on the helper in this run: Verus pipeline, the `backend_addition_record` tool; C++ pipeline, one JSON line `{"benchmark", "query", "scope", "helper", "reason"}` appended to `pipeline/artifacts/backend_additions/{engine}.jsonl` (`scope` is `"backend"` or `"harness"`; no query names in `helper`; see Ownership in `query_host_bootstrap.md`). The helper must be generic; never put per-query code in the backend.
+**Backend additions.** Backend files belong to the engine_backend run; the write is denied. When a query needs an engine-level helper the backend lacks, log a request and do not rely on the helper in this run: Verus pipeline, the `backend_addition_record` tool; C++ pipeline, `report_blocker` with `owner="backend"` (or `"harness"` for the workload harnesses; no query names in the summary; see Ownership in `query_host_bootstrap.md`). The helper must be generic; never put per-query code in the backend.
 
 Related: `engine_interfaces.md`; process-boundary encoding only for a shipped-worker placement: `substrate/aux/runtime/wire.hpp`.

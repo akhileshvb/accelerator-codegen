@@ -56,6 +56,7 @@ from accel_pipeline.config import (
     apply_workload_overrides,
     query_artifacts_dir,
     analysis_artifact_path,
+    sanitize_engine_name,
 )
 from accel_pipeline.data import (
     build_data_shape_markdown,
@@ -252,9 +253,16 @@ def build_mcp_tool_callables(
         """Describe this engine's host.sh verbs and how to connect."""
         return discover_host_sdk_json(workload, pipeline_config.repo_root, pipeline_config.build_dir)
 
-    def report_blocker(summary: str, evidence: str) -> str:
-        """The obstacle is outside your files: write blocker.md and end the turn."""
+    def report_blocker(summary: str, evidence: str, owner: str = "") -> str:
+        """The obstacle is outside your files: write blocker.md and end the turn. A defect in the engine's workload
+        harnesses or its backend is also recorded as a request to that owner."""
+        from accel_pipeline.engine_backend import record
+
         write_blocker(art, summary, evidence)
+        if owner in ("harness", "backend") and workload.get("engine_name"):
+            record(pipeline_config.repo_root, sanitize_engine_name(str(workload["engine_name"])), {
+                "benchmark": str(workload.get("benchmark_name") or ""), "query": query, "scope": owner,
+                "helper": summary.strip()[:200], "reason": evidence.strip()})
         return "Blocker recorded. Stop now; the orchestrator takes over. Do not continue working."
 
     def ask_advisor(question: str) -> str:
@@ -484,11 +492,14 @@ def register_core(tool, call) -> None:
         )
 
     @tool(read_only=False)
-    def report_blocker(summary: str, evidence: str) -> str:
+    def report_blocker(summary: str, evidence: str, owner: str = "") -> str:
         """Call when the obstacle is outside what you own (a pipeline, gate, harness or backend bug, a
-        missing input) instead of investigating it. Writes blocker.md and ends your turn; the
-        orchestrator re-runs the failing check once and otherwise stops for an operator."""
-        return call("report_blocker", summary, evidence)
+        missing input) instead of investigating it. Writes blocker.md and ends your turn.
+
+        owner: "harness" when the engine's workload harnesses are wrong (host_bootstrap fixes them before
+        your next check), "backend" for the engine backend (recorded for its owner; you adapt meanwhile),
+        else empty. The orchestrator re-runs the failing check, then comes back to you to adapt."""
+        return call("report_blocker", summary, evidence, owner)
 
     @tool(read_only=False)
     def run_pipeline_command(command: str) -> str:

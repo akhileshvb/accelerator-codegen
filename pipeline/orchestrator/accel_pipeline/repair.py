@@ -119,6 +119,7 @@ def run_with_repair(ctx: RepairCtx, attempt: Callable[[], T], *, gates: list[str
     quarantined: set[str] = set()
     rolled_back = False
     stall = _Stall()
+    upstream_left = 2  # revisions by the suite's or harnesses' owner on a blocker, before the agent adapts instead
     blocker: Failure | None = None  # the agent said the obstacle is not in its files: the next code round adapts to it
     last_blocker: Failure | None = None  # cited in the stop report
     result: Any = None
@@ -137,7 +138,8 @@ def run_with_repair(ctx: RepairCtx, attempt: Callable[[], T], *, gates: list[str
         _record(ctx, failure)
         if failure.infra_reason == AGENT_BLOCKER:
             blocker = last_blocker = failure
-            if revise_pending_suite(ctx):  # the blocker was the frozen suite: the tester decides, then the check reruns
+            if upstream_left > 0 and revise_upstream(ctx):  # the blocker's owner fixed it: the check reruns
+                upstream_left -= 1
                 continue
             if gates and from_attempt:  # the obstacle may be a flake: the stage's own checks run once first
                 ctx.log(f"the agent reported a blocker ({failure.summary}); running the stage's gates once")
@@ -145,6 +147,9 @@ def run_with_repair(ctx: RepairCtx, attempt: Callable[[], T], *, gates: list[str
             failure = replace(failure, kind="code", infra_reason=None)  # nothing left to check: the agent adapts
         if failure.infra_reason == PROVIDER_CREDITS:
             raise stop_stage(ctx, failure, failure.summary)
+        if failure.infra_reason == TEST_DATA_LOAD:
+            raise stop_stage(ctx, failure, "the workload's test data does not load into the engine: fix the dataset, "
+                             "the schema or the test cut, then `--resume`")
         if failure.infra_reason == HARNESS_MISSING:
             raise stop_stage(ctx, failure, "a workload-harness target is missing: run `--stage host_bootstrap`, then `--resume`")
         if failure.infra_reason == PROVIDER_FLAKE:
@@ -391,7 +396,7 @@ def repair_turn(ctx: RepairCtx, failure: Failure, *, must_change: bool | None = 
     """One agent turn, in the stage's own session, on the failure report; a provider flake re-runs it.
     must_change: the turn has to edit the query's files (default: when the failure is a code failure).
     Returns the blocker when the agent ended the turn with report_blocker, else None."""
-    if ctx.stage != "test_suite" and revise_pending_suite(ctx):
+    if revise_upstream(ctx):
         return None
     turn = ctx.repair_turn or _crash_debug_turn(ctx, failure.kind == "code" if must_change is None else must_change)
     retries = ctx.pipeline_config.repair.provider_retries
@@ -417,15 +422,24 @@ def repair_turn(ctx: RepairCtx, failure: Failure, *, must_change: bool | None = 
     return None
 
 
-def revise_pending_suite(ctx: RepairCtx) -> bool:
-    """A change request against the frozen test suite goes to the tester before the implementation is touched again."""
-    from accel_pipeline.stages import revise_test_suite  # stages imports this module
+def revise_upstream(ctx: RepairCtx) -> bool:
+    """Requests against what the stage does not own go to their owners before its own work is touched again: a
+    change request against the frozen test suite to the tester, a harness defect to host_bootstrap."""
+    from accel_pipeline.engine_backend import pending_harness_requests, run_host_bootstrap  # both import this module
+    from accel_pipeline.stages import revise_test_suite
 
-    if not pending_change_request(ctx.art):
-        return False
-    revise_test_suite(ctx.pipeline_config, ctx.model_config, ctx.workload_name, ctx.query, ctx.model_overrides)
-    ctx.log("the tester handled a test-suite change request; the next check judges the suite it froze")
-    return True
+    revised = False
+    if ctx.stage != "test_suite" and pending_change_request(ctx.art):
+        revise_test_suite(ctx.pipeline_config, ctx.model_config, ctx.workload_name, ctx.query, ctx.model_overrides)
+        ctx.log("the tester handled a test-suite change request; the next check judges the suite it froze")
+        revised = True
+    engine = str(ctx.workload.get("engine_name") or "")
+    if ctx.stage != "host_bootstrap" and engine and pending_harness_requests(ctx.pipeline_config.repo_root, engine):
+        run_host_bootstrap(ctx.pipeline_config, ctx.model_config, engine_name=engine,
+                           representative_workload=ctx.workload_name, model_overrides=ctx.model_overrides)
+        ctx.log("host_bootstrap fixed the recorded harness defects; the next check runs on the revised harnesses")
+        revised = True
+    return revised
 
 
 def _crash_debug_turn(ctx: RepairCtx, must_change: bool) -> Callable[[Failure], None]:
@@ -682,6 +696,7 @@ if TYPE_CHECKING:
 
 PROVIDER_FLAKE = "provider_flake"  # the infra_reason of a network or provider error: the agent never ran
 AGENT_BLOCKER = "agent_reported_blocker"  # the infra_reason of a blocker the agent handed to the operator
+TEST_DATA_LOAD = "test_data_load"  # the engine rejected the workload's data before any build: no agent can fix it
 PROVIDER_CREDITS = "provider_out_of_credits"  # the infra_reason of a 402 from the provider: retrying cannot help
 HARNESS_MISSING = "harness_missing"  # a harness target host_bootstrap should have made is not there: its stage, not this one
 FailureKind = Literal["code", "infra", "timeout", "measurement", "orchestrator"]
@@ -934,6 +949,8 @@ def classify(
         return "infra", HARNESS_MISSING
     if _MISSING_PRODUCER.search(text):
         return "infra", "missing_producer"
+    if _TEST_DATA_LOAD.search(text):  # before any build: the workload's data, not the query's code
+        return "infra", TEST_DATA_LOAD
     if gate_name == "test_suite_validate" and _REGISTRATION_ERROR.search(text):
         return "infra", "harness_error"
     shared = classify_infra_failure(text, query=query if query is not None else -1)
@@ -948,6 +965,7 @@ def classify(
     return "code", None
 
 
+_TEST_DATA_LOAD = re.compile(r"^\[host\.sh load [^\]]*\] rc=[1-9]", re.MULTILINE)
 _UNKNOWN_TARGET = re.compile(r"unknown target '([A-Za-z0-9_]+)'|No rule to make target '([A-Za-z0-9_]+)'")
 
 

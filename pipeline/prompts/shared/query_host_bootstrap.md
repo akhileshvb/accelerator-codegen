@@ -20,7 +20,7 @@ Targets are declared in `backends/{{engine_name}}/tests/harness.cmake`. The modu
 ## Ownership
 
 - The `host_bootstrap` stage writes only `backends/{{engine_name}}/tests/harness/**`, `backends/{{engine_name}}/bench/**` and `backends/{{engine_name}}/tests/harness.cmake`. The rest of the backend belongs to the `engine_backend` run, other engines' backends to theirs, and query runs write only their own directory.
-- A query run that finds a defect or a missing helper in the backend or its harnesses **records** it and reports it; it does not edit `backends/`. One JSON line appended to `pipeline/artifacts/backend_additions/{{engine_name}}.jsonl`: `{"benchmark", "query", "scope", "helper", "reason"}`, no query names in `helper`, `scope` either `"harness"` (these workload harnesses) or `"backend"` (the engine backend). The next pack or run gives each request to its owner first, as a required fix: `"backend"` re-runs the engine backend's validation, `"harness"` re-runs `host_bootstrap`.
+- A query run that finds a defect or a missing helper in the backend or its harnesses **reports** it and does not edit `backends/`: `report_blocker` with `owner` `"harness"` (these workload harnesses) or `"backend"` (the engine backend) records it as a request to that owner, with no query names in its summary. A harness request is fixed by `host_bootstrap` before the query's next check; a backend request goes to the engine backend's validation in the next pack or run, and the query adapts meanwhile.
 
 ## Do / don't
 

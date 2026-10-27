@@ -666,7 +666,7 @@ def foreign_key_links(schema_sql: str) -> list[tuple[tuple[str, str], tuple[str,
     """The foreign keys a schema declares, column-level REFERENCES and table-level FOREIGN KEY alike, as
     ((table, column), (referenced table, column)): a cut keeps the rows a child references, whatever the key's type."""
     links = []
-    for create in sqlglot.parse(schema_sql, read="duckdb"):
+    for create in sqlglot.parse(schema_sql):
         if not isinstance(create, exp.Create) or not isinstance(create.this, exp.Schema):
             continue
         table = create.this.this.name

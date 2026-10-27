@@ -72,15 +72,15 @@ sanitizer_report() { # sets SAN_EXTRAS and SAN_YOURS (reports in the query's own
 	SAN_YOURS="$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['yours_count'])" "${findings}")"
 	SAN_EXTRAS=("sanitizer=${SANITIZER}" "threads:=${THREADS}" "sanitizer_findings:=${findings}")
 }
-fail_step() { # step reproduce-command
+fail_step() { # step reproduce-command [reason]
   sanitizer_report
-  emit_result "${JSON}" quick_check fail "$1 failed" "${ENGINE_LOG:-}${LOG:-}" "step=$1" \
+  emit_result "${JSON}" quick_check fail "${3:-$1 failed}" "${ENGINE_LOG:-}${LOG:-}" "step=$1" \
     "reproduce=ACCEL_ENGINE_INSTANCE=${ACCEL_ENGINE_INSTANCE} ACCEL_ENGINE_STATE_DIR=${ACCEL_ENGINE_STATE_DIR} ACCEL_BUILD_DIR=${ACCEL_BUILD_DIR} ${SANITIZER:+ACCEL_QUICK_SANITIZER=${SANITIZER} ACCEL_QUICK_THREADS=${THREADS} }$2" "${SAN_EXTRAS[@]}" "${SUITE_EXTRAS[@]}"
 }
 
 if [[ "${ACCEL_QUICK_PREBUILD:-0}" == 1 ]]; then
   [[ -n "${SANITIZER}" && -n "${DIFF_BINARY}" ]] || emit_result "${JSON}" quick_check skip "nothing to prebuild" ""
-  engine_ready "${DIFF_BINARY}" || fail_step build "${ENGINE_HOST} build ${DIFF_BINARY}"
+  engine_ready "${DIFF_BINARY}" || fail_step "${ENGINE_STEP}" "${ENGINE_HOST} build ${DIFF_BINARY}" "${ENGINE_FAIL}"
   emit_result "${JSON}" quick_check pass "" "${ENGINE_LOG}"
 fi
 
@@ -97,7 +97,7 @@ TARGETS=()
 read -r -a EXTRA_TARGETS <<<"${ACCEL_QUICK_TARGETS:-}"
 read -r -a CTEST_TARGET_LIST <<<"${CTEST_TARGETS}"
 engine_ready "${TARGETS[@]}" "${CTEST_TARGET_LIST[@]}" "${EXTRA_TARGETS[@]}" ||
-  fail_step build "${ENGINE_HOST} build ${TARGETS[*]} ${CTEST_TARGETS} ${ACCEL_QUICK_TARGETS:-}"
+  fail_step "${ENGINE_STEP}" "${ENGINE_HOST} build ${TARGETS[*]} ${CTEST_TARGETS} ${ACCEL_QUICK_TARGETS:-}" "${ENGINE_FAIL}"
 
 if [[ -z "${SANITIZER}" ]]; then
   engine_run "${AUX_TEST_TARGET}"

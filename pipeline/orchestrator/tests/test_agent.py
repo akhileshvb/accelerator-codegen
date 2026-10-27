@@ -543,6 +543,17 @@ def test_the_mcp_report_blocker_tool_writes_blocker_md(tmp_path):
     assert "the gate is broken" in (tmp_path / "blocker.md").read_text()
 
 
+def test_a_harness_blocker_is_recorded_as_a_request_to_host_bootstrap(tmp_path):
+    from accel_pipeline.engine_backend import pending_harness_requests
+    from accel_pipeline.mcp import build_mcp_tool_callables
+
+    cfg = _repo_config(tmp_path)
+    workload = {"engine_name": "toyengine", "benchmark_name": "toybench"}
+    tools = build_mcp_tool_callables(cfg, workload, "w", 3, "implementation", 0, tmp_path)
+    tools["report_blocker"]("ties on every ORDER BY key compare by position", "row 9 differs", "harness")
+    assert "ties on every ORDER BY key" in pending_harness_requests(cfg.repo_root, "toyengine")
+
+
 # ---- the repair loop ----
 
 class World:

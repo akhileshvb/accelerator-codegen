@@ -80,7 +80,7 @@ from accel_pipeline.prompts import (
     with_codex_tooling,
 )
 from accel_pipeline.repair import (
-    revise_pending_suite,
+    revise_upstream,
     AGENT_BLOCKER,
     Failure,
     is_out_of_credits,
@@ -644,7 +644,7 @@ def run_test_suite(
             user_message=message,
             model_overrides=model_overrides,
             dry_run=dry_run,
-            must_change=directory,
+            must_change=None if change_request else directory,  # a request may be answered by keeping the test
             session_role=TESTER,
             extra_context={"change_request": change_request},
         )
@@ -653,7 +653,8 @@ def run_test_suite(
     if change_request:
         task = (f"The implementation raised a change request against the frozen suite in {directory.relative_to(root)}. "
                 "Decide whether the test is wrong (fix it, and say what changed) or right (leave it, and say why); "
-                f"the suite must stay valid.\n\n{change_request}")
+                "a request about the harnesses or the engine rather than a test leaves the suite as it is. "
+                f"The suite must stay valid.\n\n{change_request}")
     if dry_run:
         return author(task)
 
@@ -716,7 +717,7 @@ def _implementation_user_message(
         "Validate with `quick_check` after each edit, then the gates (`request_gate`, e.g. `aux_exit`). The workload "
         "harnesses (differential, multi-connection, cross-accelerator, bench, calibrate, module test) and their "
         "targets belong to host_bootstrap: build them through the gate tools, never define or redirect them. If one "
-        "is missing or broken, call `report_blocker` with the evidence.\n"
+        "is missing or broken, call `report_blocker` with owner=\"harness\" and the evidence.\n"
         "Fix failures with minimal edits to the query's own files. Do not weaken tests or fixtures to hide bugs."
     )
 
@@ -878,7 +879,7 @@ def _fix_blocking_findings(ctx: RepairCtx, audit_turn) -> None:
     base = base_file.read_text(encoding="utf-8").strip() if base_file.is_file() else "HEAD"
     before = snapshot(repo_root, changed_files(repo_root, base, qdir))
     ctx.log(f"audit raised {len(findings)} blocking findings; one batched repair round")
-    revise_pending_suite(ctx)  # a request left pending by an earlier round goes first: repair_turn would run only the tester
+    revise_upstream(ctx)  # a request left pending by an earlier round goes first: repair_turn would run only its owner
     repair_turn(ctx, Failure(
         kind="code", stage="audit", source="audit_findings",
         summary=f"The independent audit found {len(findings)} blocking problems. Fix each in your query's files "
@@ -886,7 +887,7 @@ def _fix_blocking_findings(ctx: RepairCtx, audit_turn) -> None:
                 "edit: write it as a test_suite_change_request.md in the artifacts and the tester will handle it.",
         evidence=numbered(findings)), must_change=False)
     # a finding about the frozen suite is answered by a change request: the tester handles it before the re-check
-    revised = revise_pending_suite(ctx)
+    revised = revise_upstream(ctx)
     touched = touched_since(repo_root, before, base, qdir)
     audit_turn(
         ("The tester revised the frozen test suite on the implementer's change request (see test_suite_change_requests/).\n\n"
