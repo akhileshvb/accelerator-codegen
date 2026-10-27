@@ -25,11 +25,11 @@ from pathlib import Path
 from typing import Any, Callable, Iterator
 
 from accel_pipeline.layout import frozen_edited, layer_write_verdict, tree_snapshot
+from accel_pipeline.config import HEARTBEAT_FILE
 
 SESSIONS_FILE = "sessions.json"
 META_FILE = "session_meta.json"
 RUN_FILE = "agent_run.json"
-HEARTBEAT_FILE = "agent_heartbeat"
 PROGRESS_FILE = "agent_progress.json"  # the supervisor's progress clock
 
 MAIN = "main"

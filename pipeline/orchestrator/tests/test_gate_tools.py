@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 from accel_pipeline import mcp_server
 from accel_pipeline.config import QuickTierConfig, load_pipeline_config
-from accel_pipeline.quick import QuickResult
+from accel_pipeline.gates import QuickResult
 from accel_pipeline.repair import Failure
 from accel_pipeline.tools import gate_tools
 from accel_pipeline.tools.gate_tools import ToolContext

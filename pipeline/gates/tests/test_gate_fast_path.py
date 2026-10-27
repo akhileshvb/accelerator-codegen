@@ -101,9 +101,10 @@ def test_phase_timings_are_written_for_a_failing_gate_too(repo):
 @pytest.fixture()
 def stamped_repo(repo):
     """The fake repo as a git checkout with the stamp tool, so engine_ready can stamp builds."""
-    target = repo / "pipeline" / "orchestrator" / "accel_pipeline" / "gates"
+    target = repo / "pipeline" / "orchestrator" / "accel_pipeline"
     target.mkdir(parents=True)
-    shutil.copy(ORCHESTRATOR / "gates" / "build_stamp.py", target)
+    shutil.copy(ORCHESTRATOR / "__init__.py", target)
+    shutil.copy(ORCHESTRATOR / "layout.py", target)
     (repo / "accelerators" / "tpch" / "q5").mkdir(parents=True)
     (repo / "accelerators" / "tpch" / "q5" / "module.cpp").write_text("// v1\n")
     (repo / "accelerators" / "tpch" / "q6").mkdir()

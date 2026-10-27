@@ -48,6 +48,7 @@ DEFAULT_BUILD_DIR = "build-release"
 DEFAULT_GATES_DIR = "pipeline/gates"
 SANDBOXES = ("bwrap", "none")
 WRITE_POLICIES = ("enforce", "warn", "off")
+TOOL_CALL_LIMIT_S = float(os.environ.get("ACCEL_TOOL_CALL_LIMIT", 1800))  # the agent client's limit on one tool call
 
 
 # ---- settings ---------------------------------------------------------------------------------
@@ -129,7 +130,7 @@ class AdvisorConfig:
 
     max_consults_per_stage: int = 4  # 0 disables the advisor
     stall_rounds: int = 2  # the same failure this many repair rounds in a row triggers an orchestrator consult
-    timeout_sec: float = 480  # under the client's limit on the agent's ask_advisor call (gates.run.TOOL_CALL_LIMIT_S)
+    timeout_sec: float = 480  # under the client's limit on the agent's ask_advisor call (TOOL_CALL_LIMIT_S)
 
 
 @dataclass(frozen=True)
@@ -529,6 +530,7 @@ def make_model_id(
 SCHEMA_RELATIVE = Path("schemas") / "engine_profile.schema.json"
 ALL_SECTIONS = "all"
 FACTS_FILE = "workload_facts.json"
+HEARTBEAT_FILE = "agent_heartbeat"  # touched while an agent turn or a queued gate shows signs of life
 SCRATCH_DIALECT = "duckdb"  # the scratch SQL engine's sqlglot dialect
 
 

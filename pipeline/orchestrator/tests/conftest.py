@@ -7,9 +7,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from accel_pipeline import quick
+from accel_pipeline import gates
 from accel_pipeline.config import QuickTierConfig
-from accel_pipeline.gates.run import GateResult
+from accel_pipeline.gates import GateResult
 
 WORKLOAD = {"workload_kind": "aux_state", "benchmark_name": "tpch", "engine_name": "eng"}
 GIT = ["git", "-c", "user.name=t", "-c", "user.email=t@t"]
@@ -32,8 +32,8 @@ class Gate:
         self.calls: list[dict] = []
         self.status = status
         self.data = data or {}
-        monkeypatch.setattr(quick, "run_gate", self.run_gate)
-        monkeypatch.setattr(quick, "ensure_cut_datasets", lambda *a: None)
+        monkeypatch.setattr(gates, "run_gate", self.run_gate)
+        monkeypatch.setattr(gates, "ensure_cut_datasets", lambda *a: None)
 
     def run_gate(self, config, name, query, workload, *, env=None, timeout_s=None, **kwargs):
         self.calls.append({"name": name, "query": query, "env": env, "timeout_s": timeout_s})

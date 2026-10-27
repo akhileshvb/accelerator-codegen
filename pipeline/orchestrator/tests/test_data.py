@@ -23,7 +23,7 @@ from accel_pipeline.data import (
     ensure_cut_datasets,
     key_links,
 )
-from accel_pipeline.gates.run import GateResult
+from accel_pipeline.gates import GateResult
 from accel_pipeline.layout import layer_write_verdict
 from accel_pipeline.optimization.aux_bench import aggregate_sweep_repeats
 from accel_pipeline.repair import Failure, failure_from_gate

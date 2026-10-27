@@ -6,7 +6,7 @@ import json
 import os
 from typing import Any, Callable
 
-from accel_pipeline.gates.run import run_gate
+from accel_pipeline.gates import run_gate
 from accel_pipeline.tools.gate_tools import ToolContext, make_gate_tools
 
 _FAILURE_TAIL_CHARS = 2000

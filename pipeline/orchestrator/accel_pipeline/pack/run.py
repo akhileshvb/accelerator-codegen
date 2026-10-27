@@ -15,7 +15,7 @@ from typing import Any
 
 import yaml
 
-from accel_pipeline.engine_host import instance_tag
+from accel_pipeline.data import instance_tag
 from accel_pipeline.config import load_repo_dotenv, find_repo_root, pipeline_root
 from accel_pipeline.pack.worker_isolation import (
     apply_worker_isolation,

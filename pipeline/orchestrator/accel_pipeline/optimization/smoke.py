@@ -7,10 +7,9 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
-from accel_pipeline.gates.run import build_jobs
-from accel_pipeline.gates.build_stamp import build_lock, code_stamp
+from accel_pipeline.gates import build_jobs, build_lock
+from accel_pipeline.layout import code_stamp, query_dir
 from accel_pipeline.config import PipelineConfig, resolve_workload_paths
-from accel_pipeline.layout import query_dir
 
 
 @dataclass
@@ -112,7 +111,7 @@ def run_build(
     workload: dict,
     query: int,
 ) -> tuple[bool, str]:
-    from accel_pipeline.gates.run import ensure_build_dir
+    from accel_pipeline.gates import ensure_build_dir
 
     # Pack workers use build-release-{worker_id}; dirs may be missing after disk cleanup.
     try:

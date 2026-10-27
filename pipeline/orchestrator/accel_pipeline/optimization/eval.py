@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from accel_pipeline.gates.run import build_jobs
+from accel_pipeline.gates import build_jobs
 from accel_pipeline.pack.measurement_lease import run_measured
 from accel_pipeline.optimization.aux_bench import summarize_sweep_rows
 from accel_pipeline.data import parse_aux_benchmark_output

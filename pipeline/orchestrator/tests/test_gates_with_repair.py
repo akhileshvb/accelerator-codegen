@@ -4,7 +4,7 @@ import pytest
 
 from accel_pipeline.config import PipelineConfig, QuickTierConfig, RepairConfig
 from accel_pipeline.repair import run_gates_with_repair, StageStopped
-from accel_pipeline.gates.run import GateResult
+from accel_pipeline.gates import GateResult
 
 
 def _config(tmp_path, *, parallel, **repair) -> PipelineConfig:
@@ -37,7 +37,7 @@ class GateRuns(list):
         super().__init__()
         self.script: dict[str, list[GateResult]] = {}
         monkeypatch.setattr("accel_pipeline.stages.base.run_gate", self._run_gate)
-        monkeypatch.setattr("accel_pipeline.gates.parallel.run_gate", self._run_gate)
+        monkeypatch.setattr("accel_pipeline.gates.run_gate", self._run_gate)
 
     def _run_gate(self, config, name, query, workload, **kwargs):
         self.append(name)

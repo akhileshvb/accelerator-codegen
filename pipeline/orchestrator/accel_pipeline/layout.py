@@ -33,10 +33,11 @@ import json
 import os
 import re
 import subprocess
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 
 # ---- the layers -------------------------------------------------------------------------------
@@ -590,7 +591,7 @@ def frozen_restore(repo_root: Path, before: dict[Path, bytes]) -> list[str]:
 _HASH_LIMIT = 16 << 20
 
 
-def _signature(path: Path) -> str:
+def file_signature(path: Path) -> str:
     try:
         if path.is_symlink():
             return "link:" + os.readlink(path)
@@ -618,7 +619,7 @@ def tree_snapshot(repo_root: Path) -> dict[str, str] | None:
         if entry[0] in "RC" or entry[1] in "RC":
             paths.append(next(entries, ""))  # the rename's origin
         for rel in filter(None, paths):
-            out[rel] = _signature(Path(repo_root) / rel)
+            out[rel] = file_signature(Path(repo_root) / rel)
     return out
 
 
@@ -728,3 +729,63 @@ def violation_message(stage: str, violations: list[tuple[str, str]], *, reverted
     undo = ("they were put back as they were when the stage began; do the work within the files you own"
             if reverted else "undo them (restore the files with git, delete new ones) and keep to the files you own")
     return f"stage {stage} wrote paths the write policy forbids; {undo}:\n{lines}{more}"
+
+
+# ---- the code stamp ----------------------------------------------------------------------------
+# One digest of the source state a build or a gate result depends on: the checked-out commit and the content of
+# every uncommitted file, except what cannot change this query's build (pipeline code, scripts, docs, build output
+# and the other queries' directories). Gate scripts use it to skip a build that already succeeded
+# (`python3 -m accel_pipeline.layout stamp <repo_root> [--query-dir DIR] [EXTRA ...]`); the repair and gate-plan code
+# uses it to reuse a gate result while the stamp still matches.
+
+IRRELEVANT_TOP_DIRS = frozenset({"pipeline", "scripts", "docs"})
+_BUILD_OR_VCS = re.compile(r"^(\.git|build([-._/]|$))")  # build dirs and their lock files, at the repo root
+_QUERY_DIR = re.compile(r"^accelerators/[A-Za-z0-9_]+/q\d+/")
+
+
+def git(repo_root: Path, *args: str) -> bytes:
+    return subprocess.run(["git", *args], cwd=repo_root, capture_output=True, check=True).stdout
+
+
+def is_relevant(path: str, query_dir: str) -> bool:
+    """Whether `path` can change this query's build or behaviour: everything but pipeline code, scripts,
+    docs, build output and the other queries' directories (accelerators, prims, backends, substrate,
+    cmake and the shared accelerators/<bench>/common are all relevant)."""
+    if path.split("/", 1)[0] in IRRELEVANT_TOP_DIRS or _BUILD_OR_VCS.match(path):
+        return False
+    if _QUERY_DIR.match(path) and "/scratch/" in path:  # an agent's throwaway probes: no gate judges them
+        return False
+    return not (query_dir and _QUERY_DIR.match(path) and not path.startswith(query_dir.rstrip("/") + "/"))
+
+
+def code_stamp(repo_root: Path, *, query_dir: str = "", extra: Sequence[str] = ()) -> str:
+    """Digest of HEAD plus the relevant uncommitted files for `query_dir` (repo-relative), mixed with `extra`.
+    "" when the tree is not a git checkout: no stamp matches anything."""
+    try:
+        digest = hashlib.sha256(git(repo_root, "rev-parse", "HEAD"))
+    except (OSError, subprocess.CalledProcessError):
+        return ""
+    for path, signature in sorted((tree_snapshot(repo_root) or {}).items()):
+        if is_relevant(path, query_dir):
+            digest.update(f"\0{path}\0{signature}".encode())
+    for item in extra:
+        digest.update(f"\0{item}".encode())
+    return digest.hexdigest()
+
+
+def main(argv: list[str]) -> int:
+    """The `stamp` command the gate scripts run."""
+    if argv[:1] != ["stamp"] or len(argv) < 2:
+        print("usage: python3 -m accel_pipeline.layout stamp <repo_root> [--query-dir DIR] [EXTRA ...]", file=sys.stderr)
+        return 2
+    args, query_dir = argv[1:], ""
+    if "--query-dir" in args:
+        at = args.index("--query-dir")
+        query_dir = args[at + 1]
+        del args[at : at + 2]
+    print(code_stamp(Path(args[0]), query_dir=query_dir, extra=args[1:]))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))

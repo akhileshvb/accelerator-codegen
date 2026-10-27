@@ -12,7 +12,7 @@ from accel_pipeline.config import (
     query_artifacts_dir,
     benchmark_of,
 )
-from accel_pipeline.gates.run import run_gate
+from accel_pipeline.gates import run_gate
 from accel_pipeline.layout import query_dir
 from accel_pipeline.repair import RepairCtx, run_with_repair
 from accel_pipeline.session import MAIN

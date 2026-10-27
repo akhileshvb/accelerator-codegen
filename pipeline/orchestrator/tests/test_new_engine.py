@@ -12,8 +12,8 @@ from pathlib import Path
 import pytest
 
 from accel_pipeline.config import apply_workload_overrides, load_workload, load_pipeline_config
-from accel_pipeline.engine_host import host_info
-from accel_pipeline.gates.run import build_gate_context
+from accel_pipeline.data import host_info
+from accel_pipeline.gates import build_gate_context
 from accel_pipeline.prompts import render_prompt
 from accel_pipeline.pack.run import parse_pack_queries
 from accel_pipeline.scaffold_stubs import materialize_workload_stubs, read_api_manifest

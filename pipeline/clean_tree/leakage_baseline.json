@@ -402,8 +402,8 @@
   "engine": 16,
   "path": 5
  },
- "pipeline/orchestrator/tests/test_gate_capture.py": {
-  "engine": 8
+ "pipeline/orchestrator/tests/test_gates.py": {
+  "engine": 5
  },
  "pipeline/orchestrator/tests/test_host_bootstrap.py": {
   "engine": 35,

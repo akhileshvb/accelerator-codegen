@@ -10,7 +10,6 @@ began and the audit's blocking findings.
 from __future__ import annotations
 
 import copy
-import hashlib
 import json
 import re
 import subprocess
@@ -37,10 +36,14 @@ from accel_pipeline.config import (
     with_facts,
     benchmark_of,
 )
-from accel_pipeline.data import DataToolContext, build_data_section, dataset_row_counts, dependent_table_names
-from accel_pipeline.engine_host import format_host_block
-from accel_pipeline.gates.build_stamp import git, is_relevant
-from accel_pipeline.layout import query_dir as query_dir_of
+from accel_pipeline.data import (
+    DataToolContext,
+    build_data_section,
+    dataset_row_counts,
+    dependent_table_names,
+    format_host_block,
+)
+from accel_pipeline.layout import file_signature, git, is_relevant, query_dir as query_dir_of
 from accel_pipeline.runlog import squeeze_truncate
 
 
@@ -1045,8 +1048,7 @@ def changed_files(repo_root: Path, base: str, query_dir: str) -> list[str]:
 
 def snapshot(repo_root: Path, paths: list[str]) -> dict[str, str]:
     """path -> content hash, to tell later which files a repair round touched."""
-    return {p: hashlib.sha256((repo_root / p).read_bytes()).hexdigest() if (repo_root / p).is_file() else "deleted"
-            for p in paths}
+    return {p: file_signature(repo_root / p) for p in paths}
 
 
 def touched_since(repo_root: Path, before: dict[str, str], base: str, query_dir: str) -> list[str]:

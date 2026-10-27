@@ -6,10 +6,14 @@ import json
 from dataclasses import dataclass
 from typing import Any
 
-from accel_pipeline.gates.parallel import background_status, start_background_gate
+from accel_pipeline.gates import (
+    background_status,
+    start_background_gate,
+    run_gate,
+    render_quick_result,
+    run_quick_check,
+)
 from accel_pipeline.config import PipelineConfig
-from accel_pipeline.gates.run import run_gate
-from accel_pipeline.quick import render_quick_result, run_quick_check
 
 
 @dataclass
@@ -46,7 +50,7 @@ def _compact_gate_payload(gate_name: str, data: dict) -> dict:
     if waited := (data.get("phase_timings") or {}).get("measurement_lease_wait"):
         compact["measurement_lease"] = f"waited {waited} s for the measurement lease"
     if data.get("status") == "fail":
-        from accel_pipeline.gates.run import log_tail_for_agent
+        from accel_pipeline.gates import log_tail_for_agent
 
         compact["failure_summary"] = log_tail_for_agent(data, max_chars=4000)
     for key in ("layer", "cmake_target", "harness", "mode", "engine"):
@@ -65,7 +69,7 @@ def _compact_background_state(state: dict) -> dict:
 def admission_refusal_payload(ctx: ToolContext, gate_name: str) -> str:
     """The refusal (JSON) when `gate_name` may not run yet, "" when it may: the session edited paths its stage may
     not write, or a heavy gate has no passing quick_check on this code."""
-    from accel_pipeline.quick import admission_refusal
+    from accel_pipeline.gates import admission_refusal
     from accel_pipeline.layout import violation_message
 
     if ctx.writes is not None and (bad := ctx.writes.violations()):

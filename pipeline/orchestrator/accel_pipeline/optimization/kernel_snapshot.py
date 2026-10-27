@@ -6,7 +6,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from accel_pipeline.gates.run import build_jobs
+from accel_pipeline.gates import build_jobs
 from accel_pipeline.config import (
     PipelineConfig,
     resolve_optimization_edit_paths,

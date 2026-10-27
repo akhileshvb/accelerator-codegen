@@ -284,7 +284,7 @@ def _main(argv: list[str] | None = None) -> int:
     if pipeline_config.engine_name:
         # The host-contract environment the gates use, so the agents' own host.sh calls
         # (forwarded to their tools as ACCEL_*) configure and reach the same build and instance.
-        from accel_pipeline.engine_host import instance_env, instance_tag
+        from accel_pipeline.data import instance_env, instance_tag
 
         os.environ["ACCEL_INSTANCE_TAG"] = instance_tag(pipeline_config.worker_id, Path(pipeline_config.build_dir))
         for key, value in instance_env(repo_root, pipeline_config.engine_name, Path(pipeline_config.build_dir)).items():
@@ -396,7 +396,7 @@ def _main(argv: list[str] | None = None) -> int:
 
     if workload.get("workload_kind") == "aux_state":
         if not args.dry_run:
-            from accel_pipeline.quick import prepare_inner_loop
+            from accel_pipeline.gates import prepare_inner_loop
 
             prepare_inner_loop(pipeline_config, workload, query)
 

@@ -65,7 +65,7 @@ def test_pack_expands_queries_by_engine(tmp_path: Path):
 
 
 def test_ensure_build_dir_retargets_source(tmp_path: Path, monkeypatch):
-    from accel_pipeline.gates.run import ensure_build_dir
+    from accel_pipeline.gates import ensure_build_dir
 
     old_src = tmp_path / "primary"
     new_src = tmp_path / "worktree"

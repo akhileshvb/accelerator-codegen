@@ -24,7 +24,7 @@ from accel_pipeline.config import (
     sanitize_engine_name,
     engine_artifacts_dir,
 )
-from accel_pipeline.gates.run import format_reloop_failure_sections, GateResult
+from accel_pipeline.gates import format_reloop_failure_sections, GateResult
 from accel_pipeline.repair import StageStopped
 from accel_pipeline.stages.base import run_agent_stage
 
@@ -211,7 +211,7 @@ def run_host_bootstrap(
         return {"engine_name": engine, "status": "pass", "skipped": False, "path": str(path)}
 
     if not force and not pending_harness_requests(pipeline_config.repo_root, engine):
-        from accel_pipeline.gates.run import run_gate
+        from accel_pipeline.gates import run_gate
 
         existing = run_gate(pipeline_config, "host_bootstrap", query, workload=workload, raise_on_failure=False,
                             change_kind="host_bootstrap", iteration=0)
@@ -240,7 +240,7 @@ def _bootstrap_under_repair(
     (one batched repair round for its findings, then a re-check); a failure the loop cannot repair
     ends in a recorded stop, never a traceback."""
     from accel_pipeline.repair import Failure, render_failure
-    from accel_pipeline.gates.run import run_gate
+    from accel_pipeline.gates import run_gate
     from accel_pipeline.config import query_artifacts_dir
     from accel_pipeline.runlog import append_experiment_log
     from accel_pipeline.repair import RepairCtx, run_with_repair
@@ -335,7 +335,7 @@ def accept_harness(
     being registered yet. A failure is the harness's: it is recorded as a harness request, host_bootstrap re-runs
     with it as a required fix, and the check repeats."""
     from accel_pipeline.repair import failure_from_gate, render_failure
-    from accel_pipeline.gates.run import run_gate
+    from accel_pipeline.gates import run_gate
 
     if workload.get("workload_kind") != "aux_state" or not workload.get("engine_name"):
         return  # no declining module, or no engine harnesses to run

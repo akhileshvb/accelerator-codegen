@@ -25,15 +25,15 @@ from typing import Any
 from accel_pipeline import repair, session as session_mod
 from accel_pipeline.repair import READ_ONLY_TOOLS
 from accel_pipeline.config import (
+    HEARTBEAT_FILE,
+    TOOL_CALL_LIMIT_S,
     ModelConfig,
     PipelineConfig,
     resolve_stage_provider,
     load_run_workload,
     query_artifacts_dir,
 )
-from accel_pipeline.gates.run import TOOL_CALL_LIMIT_S
 from accel_pipeline.layout import StageWriteCheck, violation_message
-from accel_pipeline.session import HEARTBEAT_FILE
 
 @dataclass
 class StageRunRequest:

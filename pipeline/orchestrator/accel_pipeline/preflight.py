@@ -180,7 +180,7 @@ def _unlogged(probe: Probe):
 def mcp_server(probe: Probe) -> list[str]:
     """The server starts for each stage, serves its tools (and the advisor's), and answers parallel data calls (B6)."""
     from accel_pipeline.repair import READ_ONLY_TOOLS
-    from accel_pipeline.engine_host import ensure_dataset_loaded
+    from accel_pipeline.data import ensure_dataset_loaded
 
     if unreachable := ensure_dataset_loaded(probe.workload, probe.cfg.repo_root, probe.cfg.build_dir):
         return [f"the data tools cannot reach the dataset: {unreachable}"]
@@ -269,7 +269,7 @@ def test_database(probe: Probe) -> list[str]:
 
 def tsan_build(probe: Probe) -> list[str]:
     """The instrumented build can be made: the engine builds variants and its sibling build dir is writable."""
-    from accel_pipeline.engine_host import host_info
+    from accel_pipeline.data import host_info
 
     info = host_info(probe.cfg.repo_root, probe.cfg.engine_name, Path(probe.cfg.build_dir)) if probe.cfg.engine_name else None
     if info is not None and not info.get("embedded"):

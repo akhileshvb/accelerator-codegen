@@ -16,7 +16,7 @@ from accel_pipeline.data import AuxAnalysisValidationError, repair_aux_analysis,
 
 def _ensure_dataset(pipeline_config: PipelineConfig, workload_name: str) -> None:
     """The data tools query the target engine: bring its instance up with the dataset loaded before the agent starts."""
-    from accel_pipeline.engine_host import ensure_dataset_loaded
+    from accel_pipeline.data import ensure_dataset_loaded
 
     workload = load_run_workload(pipeline_config, workload_name)
     if workload.get("workload_kind") != "aux_state":

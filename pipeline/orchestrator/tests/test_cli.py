@@ -55,7 +55,7 @@ def test_until_stops_after_that_stage_and_resume_continues_with_the_next(tmp_pat
     for patched in ("_sandbox_preflight",):
         monkeypatch.setattr(run_pipeline, patched, lambda *a, **k: None)
     monkeypatch.setattr(run_pipeline.preflight, "require", lambda *a, **k: None)
-    monkeypatch.setattr("accel_pipeline.quick.prepare_inner_loop", lambda *a: None)
+    monkeypatch.setattr("accel_pipeline.gates.prepare_inner_loop", lambda *a: None)
     monkeypatch.setattr("accel_pipeline.engine_backend.host_bootstrap.ensure_host_bootstrap_for_workload", lambda *a, **k: None)
     monkeypatch.setattr("accel_pipeline.engine_backend.backend_requests.reopen_engine_backend", lambda *a, **k: None)
     monkeypatch.setattr("accel_pipeline.pack.core_budget.activate", lambda *a: type("B", (), {"cpus": (), "measure": (), "slot": 0})())

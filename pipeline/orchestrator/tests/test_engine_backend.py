@@ -22,7 +22,7 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
 def test_backend_stage_gates_are_wired():
-    from accel_pipeline.gates.run import GATE_SCRIPTS
+    from accel_pipeline.gates import GATE_SCRIPTS
 
     gates_dir = REPO_ROOT / "pipeline" / "gates"
     for engine in ("engine_mysql", "engine_postgres", "engine_duckdb"):

@@ -16,8 +16,7 @@ from accel_pipeline.config import (
     apply_workload_overrides,
     query_artifacts_dir,
 )
-from accel_pipeline.gates.run import GateResult, run_gate
-from accel_pipeline.gates.stamps import reusable_gate_result
+from accel_pipeline.gates import GateResult, run_gate, reusable_gate_result
 from accel_pipeline.repair import (
     AGENT_BLOCKER, PROVIDER_CREDITS, PROVIDER_FLAKE, Failure, StageFailure, is_out_of_credits, is_transient_provider_failure,
 )

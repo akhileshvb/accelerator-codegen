@@ -13,11 +13,10 @@ import sys
 from pathlib import Path
 from typing import Any, Callable, Literal
 
-from accel_pipeline.gates.run import tool_call_limit
+from accel_pipeline.gates import tool_call_limit, profile_hot_spots
 from accel_pipeline.config import read_json
 from accel_pipeline.data import DataToolContext
 from accel_pipeline.session import record_check, keep_alive
-from accel_pipeline.quick import profile_hot_spots
 from accel_pipeline.tools import mode_tools
 
 _ENGINE_BACKEND_STAGES = ("impl_", "critique_", "layer_critique", "validation", "architecture_audit", "host_bootstrap")
@@ -99,8 +98,8 @@ def build_mcp_tool_callables(
     optimization_iter: int,
     art: Path,
 ) -> dict[str, Callable[..., str]]:
-    from accel_pipeline.gates.run import run_gate
-    from accel_pipeline.gates.stamps import current_stamp
+    from accel_pipeline.gates import run_gate
+    from accel_pipeline.gates import current_stamp
     from accel_pipeline.tools.data_tools import make_data_tools
     from accel_pipeline.tools.gate_tools import (
         ToolContext as GateCtx,
@@ -180,7 +179,7 @@ def build_mcp_tool_callables(
 
     def discover_host_sdk() -> str:
         """Describe this engine's host.sh verbs and how to connect."""
-        from accel_pipeline.engine_host import discover_host_sdk_json
+        from accel_pipeline.data import discover_host_sdk_json
 
         return discover_host_sdk_json(workload, pipeline_config.repo_root, pipeline_config.build_dir)
 

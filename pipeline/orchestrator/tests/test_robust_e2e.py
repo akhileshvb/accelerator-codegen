@@ -13,8 +13,7 @@ from test_repair import _implement, _stage_world
 from accel_pipeline.optimization import attempt as attempt_mod
 from accel_pipeline import repair as repair_mod
 from accel_pipeline.repair import run_gates_with_repair, RepairCtx, run_with_repair
-from accel_pipeline.gates.stamps import current_stamp, record_pass
-from accel_pipeline.gates.run import GateResult
+from accel_pipeline.gates import current_stamp, record_pass, GateResult
 from accel_pipeline.optimization.eval import BenchmarkSample, MultiSampleBenchmark
 
 WORKLOAD = {"benchmark_name": "toybench", "workload_kind": "aux_state", "query_number": 3}
@@ -58,8 +57,8 @@ def world(tmp_path, monkeypatch):
                         change_kind=change_kind, result=out)
         return GateResult(name, status, data, out)
 
-    monkeypatch.setattr("accel_pipeline.gates.parallel.run_gate", run_gate)
-    monkeypatch.setattr("accel_pipeline.gates.parallel.log_gate_batch_start", lambda *a, **k: None)
+    monkeypatch.setattr("accel_pipeline.gates.run_gate", run_gate)
+    monkeypatch.setattr("accel_pipeline.gates.log_gate_batch_start", lambda *a, **k: None)
     return world
 
 

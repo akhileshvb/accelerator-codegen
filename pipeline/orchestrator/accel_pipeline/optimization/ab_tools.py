@@ -10,12 +10,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from accel_pipeline.gates.run import build_jobs
+from accel_pipeline.gates import build_jobs, build_lock
 from accel_pipeline.optimization.aux_bench import summarize_sweep_rows
 from accel_pipeline.data import parse_aux_benchmark_output
 from accel_pipeline.optimization.aux_profile import write_aux_profile_artifacts
 from accel_pipeline.optimization.base_bench import parse_benchmark_log
-from accel_pipeline.gates.build_stamp import build_lock
 from accel_pipeline.config import (
     PipelineConfig,
     resolve_optimization_edit_paths,

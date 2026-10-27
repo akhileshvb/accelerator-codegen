@@ -11,7 +11,7 @@ import pytest
 from accel_pipeline import repair as repair_mod
 from accel_pipeline.codex import CodexExecBackend, StageRunResult
 from accel_pipeline.config import AdvisorConfig, ModelConfig, PipelineConfig, RepairConfig, SessionConfig
-from accel_pipeline.gates.run import GateResult
+from accel_pipeline.gates import GateResult
 from accel_pipeline.repair import Failure, RepairCtx, run_with_repair, StageFailure, StageStopped
 from accel_pipeline.session import MAIN, SessionStore
 
@@ -351,17 +351,17 @@ def test_a_killed_agent_is_resumed_not_restarted(tmp_path, monkeypatch):
 
 
 def test_quick_first_fails_the_batch_before_the_heavy_gates(tmp_path, monkeypatch):
-    from accel_pipeline.quick import QuickResult
+    from accel_pipeline.gates import QuickResult
 
     world = World(tmp_path, monkeypatch)
     monkeypatch.undo()  # the real _run_gates, not World's scripted one
     monkeypatch.setattr(repair_mod, "load_run_workload", lambda cfg, name: {"benchmark_name": "toybench"})
     heavy = []
-    monkeypatch.setattr(repair_mod, "run_gates_parallel", lambda cfg, names, *a, **k: heavy.append(names) or [])
+    monkeypatch.setattr("accel_pipeline.gates.run_gates_parallel", lambda cfg, names, *a, **k: heavy.append(names) or [])
     monkeypatch.setattr("accel_pipeline.stages.base.run_post_stage_gates_collect", lambda cfg, w, q, names, **k: heavy.append(names) or ([], None))
     verdicts = [QuickResult(status="fail", summary="quick_check: projected full-gate write time ~900 s (budget 450 s)"),
                 QuickResult(status="pass")]
-    monkeypatch.setattr("accel_pipeline.quick.run_quick_check", lambda *a, **k: verdicts.pop(0))
+    monkeypatch.setattr("accel_pipeline.gates.run_quick_check", lambda *a, **k: verdicts.pop(0))
     ctx = world.ctx(quick_first=True)
     results, failed = repair_mod._run_gates(ctx, ["aux_correctness"])
     assert failed.name == "quick_check" and "projected" in failed.data["reason"] and heavy == []
@@ -669,7 +669,7 @@ class Loop:
         monkeypatch.setattr(repair_mod, "consult", self._consult)
 
     def _gates(self, ctx, names):
-        from accel_pipeline.gates.run import GateResult
+        from accel_pipeline.gates import GateResult
 
         if not self.texts:
             return [GateResult("g", "pass", {})], None
@@ -853,7 +853,7 @@ def test_a_harness_that_fails_a_later_repeat_is_a_race_and_code():
 
 def test_the_failure_report_of_a_racy_gate_says_it_is_a_race():
     from accel_pipeline.repair import failure_from_gate
-    from accel_pipeline.gates.run import GateResult
+    from accel_pipeline.gates import GateResult
 
     result = GateResult("engine_scan", "fail", {"reason": "t failed on run 4 after passing 3 times: a race"})
     failure = failure_from_gate(result, stage="impl_scan", workload=ENGINE_WORKLOAD)
@@ -880,7 +880,7 @@ def test_a_missing_harness_target_is_host_bootstraps_not_the_querys(repo):
 
 
 def test_the_failure_report_carries_the_reason_the_stacks_one_log_tail_and_the_gate_to_rerun():
-    from accel_pipeline.gates.run import GateResult
+    from accel_pipeline.gates import GateResult
 
     data = {"reason": "cross_accel: test_toydb_cross_accel did not finish within 900s", "exit_code": 124,
             "stacks": "== process 7 (harness) ==\n  3 threads:\n    Pool::Wait  pool.cpp:88",

@@ -23,7 +23,7 @@ from accel_pipeline.repair import (
     StageStopped,
     run_with_repair,
 )
-from accel_pipeline.gates.run import GateResult
+from accel_pipeline.gates import GateResult
 from accel_pipeline.session import (
     HEARTBEAT_FILE, MAIN, SessionStore, budget_footer, clear_stale_run, context_tokens, keep_alive, run_in_session,
 )

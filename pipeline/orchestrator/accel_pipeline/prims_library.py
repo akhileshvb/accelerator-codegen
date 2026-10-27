@@ -36,7 +36,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
 
-from accel_pipeline.gates.run import build_jobs, tail_marked
+from accel_pipeline.gates import build_jobs, tail_marked
 from accel_pipeline.layout import PRIMS, PROVENANCE_REL, STAGING_REL, primary_root
 
 README_REL = f"{PRIMS}/README.md"

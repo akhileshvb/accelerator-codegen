@@ -8,9 +8,13 @@ from pathlib import Path
 from types import SimpleNamespace
 import pytest
 from accel_pipeline import layout
-from accel_pipeline.optimization import attempt as optimization_attempt
-from accel_pipeline.optimization import structural
-from accel_pipeline.optimization.eval import EvalConfig, evaluate_attempt_outcome
+from accel_pipeline.optimization import attempt as optimization_attempt, structural
+from accel_pipeline.optimization.eval import (
+    EvalConfig,
+    evaluate_attempt_outcome,
+    improvement_ratio,
+    aux_optimization_score,
+)
 from accel_pipeline.optimization.saturation import (
     REANALYSIS_MARKER_FILE,
     Verdict,
@@ -18,20 +22,17 @@ from accel_pipeline.optimization.saturation import (
     mark_profile_run,
     profile_guidance_error,
     record_trial_protocol,
-)
-from accel_pipeline.optimization.scoreboard import build_scoreboard, read_axes
-from accel_pipeline.optimization.runtime import _read_axis_lines
-from accel_pipeline.optimization.eval import improvement_ratio
-from accel_pipeline.optimization.eval import aux_optimization_score
-from accel_pipeline.optimization.saturation import (
     evaluate_saturation_claim,
     parse_optimization_saturated,
 )
-import time
 from accel_pipeline.optimization.scoreboard import (
+    build_scoreboard,
+    read_axes,
     profile_freshness,
     write_scoreboard,
 )
+from accel_pipeline.optimization.runtime import _read_axis_lines
+import time
 
 
 EARLY_STOP = {"enabled": True, "saturation_required_attempts": 3}
@@ -127,7 +128,7 @@ def test_a_structural_attempt_without_its_design_record_fails_before_the_gates(t
     structural_, error = optimization_attempt._structural_failure(cfg, {"workload_kind": "aux_state"}, 3, tmp_path, {"strategy": "structural"}, 1)
     assert structural_ and "design_revision" in error
 def test_incorrect_redesign_is_rolled_back(monkeypatch):
-    from accel_pipeline.gates import run as gates
+    from accel_pipeline import gates
 
     def fake_run_gate(cfg, name, *a, **kw):
         return SimpleNamespace(name=name, status="fail" if name == "aux_tsan" else "pass", data={"detail": "data race in Execute"})
@@ -191,7 +192,7 @@ def test_agent_sources_get_a_build_target_automatically(tmp_path):
     targets = sorted(line.split("|")[0].removeprefix("ENTRY ") for line in out.splitlines() if line.startswith("ENTRY"))
     assert targets == ["agent_b_q7_bench_reads", "agent_b_q7_stress"]  # module tests and benches keep their own wiring
 def test_agent_scratch_is_writable_and_invisible_to_gates_and_audit(tmp_path):
-    from accel_pipeline.gates.build_stamp import is_relevant
+    from accel_pipeline.layout import is_relevant
     from accel_pipeline.layout import is_owned_path
 
     assert is_owned_path(tmp_path, "accelerators/toybench/q3/scratch/bench.cpp", query=3, benchmark="toybench")

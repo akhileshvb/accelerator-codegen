@@ -13,7 +13,7 @@ from accel_pipeline.config import (
     workload_supported_engines,
     load_pipeline_config,
 )
-from accel_pipeline.gates.run import build_gate_context
+from accel_pipeline.gates import build_gate_context
 from accel_pipeline.prompts import render_prompt
 
 

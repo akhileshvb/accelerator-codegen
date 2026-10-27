@@ -37,9 +37,10 @@ from accel_pipeline.data import (
     build_data_shape_markdown,
     catalog_sql,
     md_table,
+    host_script,
+    instance_env,
 )
 from accel_pipeline.config import PipelineConfig, pipeline_root
-from accel_pipeline.engine_host import host_script, instance_env
 
 LOG_FILE = "data_queries.jsonl"
 

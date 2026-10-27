@@ -58,3 +58,4 @@ pipeline/prims_staging/
 .home/
 .data/
 .venv/
+.venv

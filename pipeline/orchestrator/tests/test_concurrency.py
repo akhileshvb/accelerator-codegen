@@ -109,7 +109,7 @@ def test_activate_pins_the_process_and_derives_job_caps(host_dir):
         import os
         from accel_pipeline.pack import core_budget
         from accel_pipeline.config import ConcurrencyConfig
-        from accel_pipeline.gates.run import build_jobs
+        from accel_pipeline.gates import build_jobs
         core_budget.activate(ConcurrencyConfig(workers=1, measure_cores=1))
         print(sorted(os.sched_getaffinity(0)), os.environ["ACCEL_BUILD_JOBS"], os.environ["ACCEL_CTEST_JOBS"],
               os.environ["CMAKE_BUILD_PARALLEL_LEVEL"], os.environ["ACCEL_MEASURE_SET"], build_jobs())

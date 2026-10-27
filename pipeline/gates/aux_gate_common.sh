@@ -95,7 +95,7 @@ engine_trait() {
 
 # Run host.sh steps in order (each argument is one "verb args" string). On failure
 # sets ENGINE_FAIL and returns 1; ENGINE_LOG has a line per step and the failed step's output. Builds of one
-# build dir run one at a time (build_stamp.build_lock takes the same lock).
+# build dir run one at a time (gates.build_lock takes the same lock).
 engine_steps() {
 	ENGINE_LOG=""
 	local step out rc started runner
@@ -116,12 +116,12 @@ engine_steps() {
 	done
 }
 
-# Stamp of the code a build of these targets depends on (build_stamp.py): the query's files and
+# Stamp of the code a build of these targets depends on (layout.code_stamp): the query's files and
 # the shared files changed since the commit, the targets, the cmake arguments, the build dir and the instance.
 build_stamp() {
 	local scope=()
 	[[ -z "${BENCHMARK_NAME:-}" ]] || scope=(--query-dir "accelerators/${BENCHMARK_NAME}/q${GATE_QUERY}")
-	python3 "${GATE_ROOT}/pipeline/orchestrator/accel_pipeline/gates/build_stamp.py" "${GATE_ROOT}" "${scope[@]}" \
+	PYTHONPATH="${GATE_ROOT}/pipeline/orchestrator" python3 -m accel_pipeline.layout stamp "${GATE_ROOT}" "${scope[@]}" \
 		"$*" "${ACCEL_CMAKE_ARGS}" "${ACCEL_BUILD_DIR}" "${ACCEL_ENGINE_INSTANCE}" 2>/dev/null
 }
 

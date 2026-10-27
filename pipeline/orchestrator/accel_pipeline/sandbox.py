@@ -124,7 +124,7 @@ def _add_dataset(binds: list[Bind], path: Path) -> None:
 
 def backend_needs(cfg: Any) -> dict[str, Any] | None:
     """What the engine's backend says its verbs need (host.sh `info`: mounts, docker); None without a host.sh."""
-    from accel_pipeline.engine_host import host_info
+    from accel_pipeline.data import host_info
 
     if not cfg.engine_name:
         return None

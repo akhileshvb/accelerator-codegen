@@ -37,8 +37,6 @@ from accel_pipeline.config import (
     query_artifacts_dir,
     benchmark_of,
 )
-from accel_pipeline.gates.parallel import first_failure, run_gates_parallel
-from accel_pipeline.gates.run import GateFailure, GateResult
 from accel_pipeline.layout import query_dir, tree_snapshot
 from accel_pipeline.prompts import render_prompt
 from accel_pipeline.runlog import append_experiment_log, log_event
@@ -292,13 +290,14 @@ def _advised(ctx: RepairCtx, failure: Failure, why: str, *, trigger: str) -> Fai
 
 
 def _attempt(ctx: RepairCtx, attempt: Callable[[], T]) -> tuple[T | None, Failure | None]:
+    from accel_pipeline import gates as gate_mod  # gates imports Failure from this module
     try:
         return attempt(), None
     except StageStopped:
         raise
     except StageFailure as exc:
         return None, exc.failure
-    except GateFailure as exc:
+    except gate_mod.GateFailure as exc:
         return None, _failure_from_text(ctx, "gate", str(exc))
     except Exception as exc:  # noqa: BLE001 - the loop's contract: nothing else escapes
         return None, Failure(kind="orchestrator", stage=ctx.stage, source="exception",
@@ -329,13 +328,15 @@ def _run_gates(ctx: RepairCtx, names: list[str]) -> tuple[list[GateResult], Gate
     """The gates, skipping any that already passed on identical code; the results and the failing one."""
     if ctx.gate_runner is not None:
         return ctx.gate_runner(names)
+
+    from accel_pipeline import gates as gate_mod  # gates imports Failure from this module
     cfg = ctx.pipeline_config
     if ctx.quick_first and (quick := _quick_gate(ctx)) is not None:
         return [quick], quick
     kwargs = {"change_kind": ctx.change_kind, "iteration": ctx.iteration, "reuse": True}
     if cfg.quick_tier.parallel_gates:
-        results = run_gates_parallel(cfg, names, ctx.query, ctx.workload, **kwargs)
-        return results, first_failure(results)
+        results = gate_mod.run_gates_parallel(cfg, names, ctx.query, ctx.workload, **kwargs)
+        return results, gate_mod.first_failure(results)
     from accel_pipeline.stages.base import run_post_stage_gates_collect  # stages.base imports the agent backend, which imports this module
 
     return run_post_stage_gates_collect(cfg, ctx.workload_name, ctx.query, names, **kwargs)
@@ -344,13 +345,12 @@ def _run_gates(ctx: RepairCtx, names: list[str]) -> tuple[list[GateResult], Gate
 def _quick_gate(ctx: RepairCtx) -> GateResult | None:
     """quick_check as the batch's first gate: a write the projection says would rebuild at full scale fails here,
     before the heavy gates run for minutes on code that cannot pass them."""
-    from accel_pipeline.quick import run_quick_check
-
-    quick = run_quick_check(ctx.pipeline_config, ctx.workload, ctx.query)
+    from accel_pipeline import gates as gate_mod  # gates imports Failure from this module
+    quick = gate_mod.run_quick_check(ctx.pipeline_config, ctx.workload, ctx.query)
     if quick.status != "fail":
         return None
     text = render_failure(quick.failure) if quick.failure else quick.summary
-    return GateResult("quick_check", "fail", {"status": "fail", "reason": quick.summary, "log_tail": text})
+    return gate_mod.GateResult("quick_check", "fail", {"status": "fail", "reason": quick.summary, "log_tail": text})
 
 
 def _record(ctx: RepairCtx, failure: Failure) -> None:
@@ -679,7 +679,7 @@ class Servicer:
 
 
 if TYPE_CHECKING:
-    from accel_pipeline.gates.run import GateResult
+    from accel_pipeline.gates import GateResult
 
 
 PROVIDER_FLAKE = "provider_flake"  # the infra_reason of a network or provider error: the agent never ran
@@ -764,7 +764,7 @@ def failure_from_gate(
     load_factor: float = 1.5,
 ) -> Failure:
     """A failed gate as a Failure, triaged as infra or code."""
-    from accel_pipeline.gates.run import gate_failure_message
+    from accel_pipeline import gates as gate_mod  # gates imports Failure from this module
     workload = workload or {}
     kind, reason = classify(result.name, result.data, workload, repo_root, load_factor=load_factor)
     tail = gate_log_tail(result.data)
@@ -772,7 +772,7 @@ def failure_from_gate(
         kind=kind,  # type: ignore[arg-type]
         stage=stage,
         source=f"gate:{result.name}",
-        summary=gate_failure_message(result),
+        summary=gate_mod.gate_failure_message(result),
         evidence=tail,
         reproduce=str(result.data.get("reproduce") or f'request_gate("{result.name}")'),
         infra_reason=reason,
