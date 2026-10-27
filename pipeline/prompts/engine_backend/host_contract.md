@@ -34,6 +34,17 @@ A query's frozen test suite reaches the engine's differential harness through th
 | `ACCEL_DIFF_PHASES` | comma-separated phases of the differential to run (default all of `read_only`, `incremental`, `adversarial`, `suite`, `refresh`, `drift`). One run builds the module once and shares the database copy, runtime and build among them; writes are undone through the runtime, and `drift`, the run's only from-scratch rebuild, must answer as the maintained state did |
 | `ACCEL_SUITE_MODE=validate` | no accelerator: every tuple evaluates, every transaction applies, rolls back and applies again; report per transaction how many tuples' answers it changes (`txn_effects`), the row count per tuple (`tuple_rows`), `errors` |
 
+The validate report, for a suite of three tuples and two transactions:
+
+```json
+{"ok": true, "seed": 42, "tuple_rows": [3, 0, 12],
+ "txn_effects": [{"txn": "001_insert_orders.sql", "changes_answers_of": 2}, {"txn": "002_delete_items.sql", "changes_answers_of": 0}],
+ "errors": []}
+```
+
+`tuple_rows[i]` is the row count of the tuple on line i+1 of `params.sql`; `txn` is the file name in `txns/`; `errors`
+are strings (a tuple that does not evaluate, a transaction that does not apply).
+
 After the build and after each committed transaction the accelerated answer must equal the reference's at the same snapshot (ties at the order and LIMIT cut are open); a transaction starting `-- rollback` is applied then aborted. A failure exits non-zero naming the seed, tuple and transaction.
 
 ## Verbs
