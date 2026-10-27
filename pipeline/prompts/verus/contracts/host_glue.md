@@ -57,9 +57,12 @@ const kit::Registrar kRegistrar(&kGlue);
 * `Apply(state, changes, h, err)`: marshal each table's changes into its
   delta argument (lossy fields computed exactly as the delta's SELECT says),
   call `{{ffi_prefix}}_rescan_<n>_keys` for each rescan (it writes up to `cap`
-  keys and returns how many: call again with more room if needed), fetch
-  those rows with `kit::QueryKeys(h, <declared rescan SQL>, <its KEYS output
-  column>, keys, ...)`, then call `{{ffi_prefix}}_apply`.
+  keys and returns how many: call again with more room if needed; text keys
+  come as bytes `out` plus offsets `off`, written only when both fit, with the
+  bytes needed in `*out_len`), fetch those rows with `kit::QueryKeys(h,
+  <declared rescan SQL>, <its KEYS output column>, keys, ...)` (`int64_t`
+  keys, or `std::string` keys for text), pass the same keys to
+  `{{ffi_prefix}}_apply` (text keys as a text column), and call it.
 * `Execute(state, args, out)`: read the parameters (`kit::Arg*`; false: return
   false, the host answers with SQL), call `{{ffi_prefix}}_execute`, and turn
   every result row into an `AuxRow` (`kit::Out*`; columns in the query's
