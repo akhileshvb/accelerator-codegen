@@ -1,3 +1,5 @@
+"""What every agent stage shares: running one (turns, session, failure triage) and the gates that run after it."""
+
 from __future__ import annotations
 
 import sys
@@ -8,12 +10,15 @@ from typing import Any, Callable
 from accel_pipeline.codex import StageRunRequest, create_agent_backend
 from accel_pipeline.config import ModelConfig, PipelineConfig, make_model_id
 from accel_pipeline.workload import load_run_workload, apply_workload_overrides, query_artifacts_dir
+from accel_pipeline.gates.run import GateResult, run_gate
+from accel_pipeline.gates.stamps import reusable_gate_result
 from accel_pipeline.failure import (
     AGENT_BLOCKER, PROVIDER_CREDITS, PROVIDER_FLAKE, Failure, StageFailure, is_out_of_credits, is_transient_provider_failure,
 )
 from accel_pipeline.session import REDIRECT
 from accel_pipeline.session import run_in_session
 from accel_pipeline.runlog import (
+    log_gate_batch_start,
     log_stage_complete,
     log_stage_start,
     usage_from_metadata,
@@ -234,6 +239,96 @@ def stage_failure(stage: str, backend_name: str, result: Any) -> Failure:
         return Failure(kind="infra", stage=stage, source="agent", summary=summary, evidence=detail,
                        infra_reason=PROVIDER_FLAKE)
     return Failure(kind="orchestrator", stage=stage, source="agent", summary=summary, evidence=detail)
+
+
+GATES_ALLOW_SKIP = frozenset(
+    {
+        "baseline",
+        "sf10",
+        "profile",
+        "module_tsan",  # skips when the engine-free TSAN driver has no case for the query (aux_tsan covers it)
+        "aux_cost_model_calibrate",
+        "aux_speedup_verification",
+        "engine_scan_conformance",
+        "engine_aux_smoke",
+        "engine_host",
+        "engine_hit_contract",
+        "engine_canary",
+        "engine_canary_asan",
+        "engine_canary_tsan",
+        "slot_restart",
+        "slot_own_writes",
+        "slot_ddl_events",
+    }
+)
+
+
+def workload_post_implementation_gates(workload: dict) -> list[str]:
+    if workload.get("workload_kind") == "aux_state":
+        return list(workload.get("post_implementation_gates", ["aux_correctness", "aux_unit"]))
+    if "post_implementation_gates" in workload:
+        return list(workload["post_implementation_gates"])
+    return ["correctness", "baseline", "profile"]
+
+
+def workload_post_optimization_gates(workload: dict) -> list[str]:
+    if workload.get("workload_kind") == "aux_state":
+        return list(workload.get("post_optimization_gates", ["aux_correctness", "aux_unit"]))
+    if "post_optimization_gates" in workload:
+        return list(workload["post_optimization_gates"])
+    return ["correctness", "baseline", "sf10", "profile"]
+
+
+def workload_post_audit_gates(workload: dict) -> list[str]:
+    if workload.get("workload_kind") == "aux_state":
+        return list(workload.get("post_audit_gates", ["aux_correctness", "aux_unit", "aux_bench_sweep"]))
+    if "post_audit_gates" in workload:
+        return list(workload["post_audit_gates"])
+    return ["fairness", "sf10"]
+
+
+def run_post_stage_gates_collect(
+    pipeline_config,
+    workload_name: str,
+    query: int,
+    gate_names: list[str],
+    *,
+    change_kind: str = "",
+    iteration: int = 0,
+    reuse: bool = False,
+) -> tuple[list[GateResult], GateResult | None]:
+    """Run `gate_names` in order until one fails. reuse: skip a gate that already passed on identical code."""
+    workload = load_run_workload(pipeline_config, workload_name)
+    log_gate_batch_start(
+        query,
+        gate_names,
+        change_kind=change_kind,
+        iteration=iteration,
+    )
+    results: list[GateResult] = []
+    total = len(gate_names)
+    for idx, gate_name in enumerate(gate_names, start=1):
+        allow_skip = gate_name in GATES_ALLOW_SKIP
+        reused = reuse and reusable_gate_result(pipeline_config, workload, query, gate_name, change_kind=change_kind)
+        result = reused or run_gate(
+            pipeline_config,
+            gate_name,
+            query,
+            workload=workload,
+            raise_on_failure=False,
+            allow_skip=allow_skip,
+            change_kind=change_kind,
+            iteration=iteration,
+            gate_index=idx,
+            gate_count=total,
+        )
+        results.append(result)
+        if result.status == "pass":
+            continue
+        if result.status == "skip" and allow_skip:
+            continue
+        return results, result
+    return results, None
 
 
 def _tree_state(root: Path) -> dict[str, tuple[int, int]]:

@@ -22,7 +22,7 @@ PASSED = GateResult(name="correctness", status="pass", data={})
 
 @pytest.fixture(autouse=True)
 def stubs(monkeypatch):
-    for module in ("accel_pipeline.repair", "accel_pipeline.workload"):
+    for module in ("accel_pipeline.repair", "accel_pipeline.stages.base", "accel_pipeline.workload"):
         monkeypatch.setattr(f"{module}.load_run_workload", lambda cfg, name: {"benchmark_name": "tpch"})
 
 
@@ -37,7 +37,7 @@ class GateRuns(list):
     def __init__(self, monkeypatch):
         super().__init__()
         self.script: dict[str, list[GateResult]] = {}
-        monkeypatch.setattr("accel_pipeline.stages.gate_plan.run_gate", self._run_gate)
+        monkeypatch.setattr("accel_pipeline.stages.base.run_gate", self._run_gate)
         monkeypatch.setattr("accel_pipeline.gates.parallel.run_gate", self._run_gate)
 
     def _run_gate(self, config, name, query, workload, **kwargs):

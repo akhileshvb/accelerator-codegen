@@ -357,7 +357,7 @@ def test_quick_first_fails_the_batch_before_the_heavy_gates(tmp_path, monkeypatc
     monkeypatch.setattr(repair_mod, "load_run_workload", lambda cfg, name: {"benchmark_name": "toybench"})
     heavy = []
     monkeypatch.setattr(repair_mod, "run_gates_parallel", lambda cfg, names, *a, **k: heavy.append(names) or [])
-    monkeypatch.setattr(repair_mod, "run_post_stage_gates_collect", lambda cfg, w, q, names, **k: heavy.append(names) or ([], None))
+    monkeypatch.setattr("accel_pipeline.stages.base.run_post_stage_gates_collect", lambda cfg, w, q, names, **k: heavy.append(names) or ([], None))
     verdicts = [QuickResult(status="fail", summary="quick_check: projected full-gate write time ~900 s (budget 450 s)"),
                 QuickResult(status="pass")]
     monkeypatch.setattr("accel_pipeline.quick.run_quick_check", lambda *a, **k: verdicts.pop(0))

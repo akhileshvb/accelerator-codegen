@@ -18,8 +18,7 @@ from accel_pipeline.layout import query_dir
 from accel_pipeline.runlog import append_experiment_log
 from accel_pipeline.repair import RepairCtx, _revise_test_suite, repair_turn, run_with_repair, stop_stage
 from accel_pipeline.session import READONLY
-from accel_pipeline.stages.base import run_agent_stage
-from accel_pipeline.stages.gate_plan import workload_post_audit_gates
+from accel_pipeline.stages.base import run_agent_stage, workload_post_audit_gates
 
 AUDIT_TASK = (
     "Produce final_audit.md: verify correctness, cite SF1 sweep numbers, "

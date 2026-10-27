@@ -92,7 +92,7 @@ def test_gate_context_postgres():
 
 
 def test_postgres_keeps_full_post_gates():
-    from accel_pipeline.stages.gate_plan import workload_post_implementation_gates
+    from accel_pipeline.stages.base import workload_post_implementation_gates
 
     w = _postgres_workload("tpch_q3_aux")
     gates = workload_post_implementation_gates(w)

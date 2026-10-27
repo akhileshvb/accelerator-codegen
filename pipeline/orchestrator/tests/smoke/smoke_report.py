@@ -17,7 +17,7 @@ TROUBLE = re.compile(r"gate FAILED|^\[repair\]|stage \w+ raised|retrying stage|w
 SINGLE_RUN_STAGES = ("analysis", "test_suite", "implementation", "audit")
 REPAIR_STAGES = ("crash_debug", "optimization_fix")
 SCALING_MIN_THREADS, MIN_BUILD_SPEEDUP = 4, 1.5  # a build that does not speed up at 4+ threads is serial
-SKIPPABLE = {"skip"}  # a gate may skip itself when it does not apply (gate_plan.GATES_ALLOW_SKIP)
+SKIPPABLE = {"skip"}  # a gate may skip itself when it does not apply (stages.base.GATES_ALLOW_SKIP)
 
 
 def planned_gates(log: str) -> list[tuple[str, str]]:

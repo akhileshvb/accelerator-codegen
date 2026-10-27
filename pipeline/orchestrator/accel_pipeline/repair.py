@@ -50,7 +50,6 @@ from accel_pipeline.runlog import log_event
 from accel_pipeline.runlog import append_experiment_log
 from accel_pipeline.prompts import render_prompt
 from accel_pipeline.session import MAIN, SessionStore
-from accel_pipeline.stages.gate_plan import run_post_stage_gates_collect
 
 T = TypeVar("T")
 
@@ -343,6 +342,8 @@ def _run_gates(ctx: RepairCtx, names: list[str]) -> tuple[list[GateResult], Gate
     if cfg.quick_tier.parallel_gates:
         results = run_gates_parallel(cfg, names, ctx.query, ctx.workload, **kwargs)
         return results, first_failure(results)
+    from accel_pipeline.stages.base import run_post_stage_gates_collect  # stages.base imports the agent backend, which imports this module
+
     return run_post_stage_gates_collect(cfg, ctx.workload_name, ctx.query, names, **kwargs)
 
 

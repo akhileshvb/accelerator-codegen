@@ -29,7 +29,7 @@ from accel_pipeline.gates.run import format_reloop_failure_sections, GateResult
 from accel_pipeline.runlog import append_experiment_log
 from accel_pipeline.repair import RepairCtx, run_with_repair
 from accel_pipeline.session import SessionStore
-from accel_pipeline.stages.base import run_agent_stage
+from accel_pipeline.stages.base import run_agent_stage, run_post_stage_gates_collect
 from accel_pipeline.engine_backend.architecture_audit import run_architecture_audit
 from accel_pipeline.engine_backend.layer_critique import (
     canary_requests,
@@ -38,7 +38,6 @@ from accel_pipeline.engine_backend.layer_critique import (
     run_layer_critique_agent,
 )
 from accel_pipeline.engine_backend.progress import Progress
-from accel_pipeline.stages.gate_plan import run_post_stage_gates_collect
 
 MAIN_ROLE = "main"
 

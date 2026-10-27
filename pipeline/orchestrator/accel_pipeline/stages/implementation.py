@@ -14,8 +14,7 @@ from accel_pipeline.gates.run import run_gate
 from accel_pipeline.layout import query_dir
 from accel_pipeline.repair import RepairCtx, run_with_repair
 from accel_pipeline.session import MAIN
-from accel_pipeline.stages.gate_plan import workload_post_implementation_gates
-from accel_pipeline.stages.base import run_agent_stage
+from accel_pipeline.stages.base import run_agent_stage, workload_post_implementation_gates
 from accel_pipeline.stages.analysis import validate_with_repair
 
 
