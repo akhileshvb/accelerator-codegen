@@ -23,7 +23,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from accel_pipeline.sql_tuples import fresh_seed, n_params, split_tuple
+from accel_pipeline.test_suite import fresh_seed, n_params, split_tuple
 from accel_pipeline.verus.context import VerusContext
 
 GENERATOR = "eval/compare/gen_tpch_params.py"
