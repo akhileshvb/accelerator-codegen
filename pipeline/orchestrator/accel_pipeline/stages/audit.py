@@ -11,7 +11,8 @@ from accel_pipeline.audit_digest import (
     snapshot,
     touched_since,
 )
-from accel_pipeline.config import ModelConfig, PipelineConfig, load_run_workload
+from accel_pipeline.config import ModelConfig, PipelineConfig
+from accel_pipeline.workload import load_run_workload
 from accel_pipeline.failure import Failure
 from accel_pipeline.jsonio import read_json
 from accel_pipeline.layout import query_dir

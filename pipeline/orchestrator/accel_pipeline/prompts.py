@@ -4,7 +4,8 @@ import re
 from pathlib import Path
 
 from accel_pipeline.context import build_prompt_context
-from accel_pipeline.config import PipelineConfig, query_artifacts_dir
+from accel_pipeline.config import PipelineConfig
+from accel_pipeline.workload import query_artifacts_dir
 
 
 def resolve_prompt_path(pipeline_config: PipelineConfig, workload: dict, prompt_name: str) -> Path:

@@ -6,7 +6,7 @@ import importlib.util
 import sys
 from pathlib import Path
 
-from accel_pipeline.config import load_workload
+from accel_pipeline.workload import load_workload
 from accel_pipeline.engine_backend.tools import layer_gate_from_stage
 
 REPO_ROOT = Path(__file__).resolve().parents[3]

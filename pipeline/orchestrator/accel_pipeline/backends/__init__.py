@@ -3,7 +3,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from accel_pipeline.backends.base import StageRunRequest, StageRunResult
-from accel_pipeline.config import ModelConfig, PipelineConfig, load_run_workload, query_artifacts_dir
+from accel_pipeline.config import ModelConfig, PipelineConfig
+from accel_pipeline.workload import load_run_workload, query_artifacts_dir
 
 if TYPE_CHECKING:
     from accel_pipeline.backends.codex_exec import CodexExecBackend

@@ -9,7 +9,8 @@ from pathlib import Path
 import pytest
 
 from accel_pipeline import preflight
-from accel_pipeline.config import apply_workload_overrides, load_pipeline_config, load_workload, workload_supported_engines
+from accel_pipeline.workload import apply_workload_overrides, load_workload, workload_supported_engines
+from accel_pipeline.config import load_pipeline_config
 from accel_pipeline.prompts import render_prompt
 from accel_pipeline.validation import STATE_STORAGE_TEXT_FIELDS
 

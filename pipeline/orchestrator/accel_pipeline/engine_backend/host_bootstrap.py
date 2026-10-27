@@ -13,16 +13,14 @@ from pathlib import Path
 from typing import Any
 
 from accel_pipeline.engine_backend.backend_requests import as_required_fixes, mark_handled, pending, record
-from accel_pipeline.config import (
-    ModelConfig,
-    PipelineConfig,
+from accel_pipeline.config import ModelConfig, PipelineConfig, pipeline_root
+from accel_pipeline.workload import (
     apply_workload_overrides,
     harness_targets,
     load_run_workload,
     load_workload,
     sanitize_engine_name,
     engine_artifacts_dir,
-    pipeline_root,
 )
 from accel_pipeline.gates.run import format_reloop_failure_sections, GateResult
 from accel_pipeline.repair import StageStopped
@@ -241,7 +239,7 @@ def _bootstrap_under_repair(
     ends in a recorded stop, never a traceback."""
     from accel_pipeline.failure import Failure, render_failure
     from accel_pipeline.gates.run import run_gate
-    from accel_pipeline.config import query_artifacts_dir
+    from accel_pipeline.workload import query_artifacts_dir
     from accel_pipeline.playbook import append_experiment_log
     from accel_pipeline.repair import RepairCtx, run_with_repair
     from accel_pipeline.engine_backend.host_bootstrap_critique import (

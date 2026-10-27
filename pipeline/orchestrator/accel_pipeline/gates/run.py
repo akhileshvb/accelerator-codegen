@@ -17,13 +17,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
-from accel_pipeline.config import (
-    PipelineConfig,
+from accel_pipeline.config import PipelineConfig
+from accel_pipeline.workload import (
     engine_host_conventions,
     resolve_workload_paths,
     sanitize_engine_name,
     gates_dir_for_query,
     query_artifacts_dir,
+    FACTS_FILE,
+    workload_facts,
 )
 from accel_pipeline.engine_host import host_script, inject_host_runtime_into_gate_env, instance_tag
 from accel_pipeline.gates.stamps import current_stamp, record_pass
@@ -31,7 +33,6 @@ from accel_pipeline.jsonio import read_json
 from accel_pipeline.layout import workload_schema_sql
 from accel_pipeline.session import HEARTBEAT_FILE
 from accel_pipeline.test_suite import gate_settings
-from accel_pipeline.workload_facts import FACTS_FILE, workload_facts
 
 
 GATE_SCRIPTS = {

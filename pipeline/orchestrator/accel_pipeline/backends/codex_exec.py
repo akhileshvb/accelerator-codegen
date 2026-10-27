@@ -17,8 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from accel_pipeline import advisor, no_progress
-from accel_pipeline import session as session_mod
+from accel_pipeline import advisor, no_progress, session as session_mod
 from accel_pipeline.backends.base import StageRunRequest, StageRunResult
 from accel_pipeline.config import ModelConfig, PipelineConfig
 from accel_pipeline.gates.run import TOOL_CALL_LIMIT_S
@@ -201,7 +200,7 @@ class CodexExecBackend:
         return result
 
     def _log_violations(self, policy: str, bad: list[tuple[str, str]]) -> None:
-        from accel_pipeline.config import load_run_workload
+        from accel_pipeline.workload import load_run_workload
         from accel_pipeline.pipeline_log import log_event
 
         try:

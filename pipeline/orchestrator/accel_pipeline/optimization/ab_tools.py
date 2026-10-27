@@ -16,12 +16,8 @@ from accel_pipeline.sweep_csv import parse_aux_benchmark_output
 from accel_pipeline.optimization.aux_profile import write_aux_profile_artifacts
 from accel_pipeline.optimization.base_bench import parse_benchmark_log
 from accel_pipeline.gates.build_stamp import build_lock
-from accel_pipeline.config import (
-    PipelineConfig,
-    resolve_optimization_edit_paths,
-    resolve_workload_paths,
-    query_artifacts_dir,
-)
+from accel_pipeline.config import PipelineConfig
+from accel_pipeline.workload import resolve_optimization_edit_paths, resolve_workload_paths, query_artifacts_dir
 from accel_pipeline.optimization.kernel_snapshot import resolve_snapshot_paths
 from accel_pipeline.layout import query_dir
 from accel_pipeline.optimization.measurement import check_measurement

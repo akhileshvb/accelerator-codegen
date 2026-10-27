@@ -11,8 +11,8 @@ from accel_pipeline.optimization.base_bench import (
     build_optimization_diagnosis,
     load_base_optimization_state,
 )
-from accel_pipeline.config import (
-    PipelineConfig,
+from accel_pipeline.config import PipelineConfig
+from accel_pipeline.workload import (
     resolve_optimization_edit_paths,
     resolve_workload_paths,
     load_query_analysis,

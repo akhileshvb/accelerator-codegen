@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from accel_pipeline.config import query_artifacts_dir
+from accel_pipeline.workload import query_artifacts_dir
 from accel_pipeline.textutil import squeeze_truncate
 
 

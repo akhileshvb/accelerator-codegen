@@ -10,7 +10,8 @@ import pytest
 
 from accel_pipeline import preflight
 from accel_pipeline.backends.codex_exec import CodexExecBackend
-from accel_pipeline.config import load_model_config, load_pipeline_config, load_workload, workload_supported_engines
+from accel_pipeline.config import load_model_config, load_pipeline_config
+from accel_pipeline.workload import load_workload, workload_supported_engines
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 

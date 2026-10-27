@@ -14,7 +14,7 @@ from typing import Any
 
 import yaml
 
-from accel_pipeline.engine_profile import render_engine_profile
+from accel_pipeline.workload import render_engine_profile
 
 ROLES_HEADING = "## Contract roles"
 ACCELERATOR_PROFILE_SECTIONS = [

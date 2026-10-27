@@ -3,8 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 
 
-from accel_pipeline.config import load_pipeline_config, load_workload
-from accel_pipeline.workload_facts import with_facts
+from accel_pipeline.config import load_pipeline_config
+from accel_pipeline.workload import load_workload, with_facts
 from accel_pipeline.scaffold_stubs import _build_stub_values, _type_prefix, materialize_workload_stubs
 
 
@@ -107,9 +107,9 @@ def test_materialize_registration_fills_the_engines_template_once(tmp_path, monk
         (repo / rel).write_text(text)
     analysis = tmp_path / "analysis.json"
     analysis.write_text(json.dumps({"accelerator_id": "toybench_q1_aux"}))
-    monkeypatch.setattr("accel_pipeline.config.analysis_artifact_path", lambda *a, **k: analysis)
+    monkeypatch.setattr("accel_pipeline.workload.analysis_artifact_path", lambda *a, **k: analysis)
     (tmp_path / "art").mkdir()
-    monkeypatch.setattr("accel_pipeline.workload_facts.query_artifacts_dir", lambda *a, **k: tmp_path / "art")
+    monkeypatch.setattr("accel_pipeline.workload.query_artifacts_dir", lambda *a, **k: tmp_path / "art")
     register = "accelerators/toybench/q1/toyengine/aux/register.cpp"
     workload = {"workload_kind": "aux_state", "benchmark_name": "toybench", "engine_name": "toyengine", "parameters": [{"name": "c", "type": "integer"}],
                 "engine_host": {"aux_register_path": register},

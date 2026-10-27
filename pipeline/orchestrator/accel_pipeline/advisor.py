@@ -91,7 +91,8 @@ def consult(pipeline_config: Any, model_config: Any, workload_name: str, query: 
             question: str, trigger: str, optimization_iter: int = 0, session_id: str = "") -> str:
     """Fork the stage's main session on the advisor model and return its advice (raises Unavailable)."""
     from accel_pipeline.backends import StageRunRequest, create_agent_backend
-    from accel_pipeline.config import load_run_workload, make_model_id, query_artifacts_dir
+    from accel_pipeline.workload import load_run_workload, query_artifacts_dir
+    from accel_pipeline.config import make_model_id
     from accel_pipeline.pipeline_log import log_event
     from accel_pipeline.playbook import append_experiment_log
     from accel_pipeline.prompts import render_prompt

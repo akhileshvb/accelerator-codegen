@@ -6,7 +6,8 @@ import os
 import subprocess
 from dataclasses import dataclass
 
-from accel_pipeline.config import PipelineConfig, resolve_workload_paths
+from accel_pipeline.config import PipelineConfig
+from accel_pipeline.workload import resolve_workload_paths
 from accel_pipeline.optimization.smoke import _smoke_regex
 
 

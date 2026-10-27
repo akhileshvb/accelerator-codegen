@@ -6,7 +6,8 @@ import json
 from pathlib import Path
 from typing import Any
 
-from accel_pipeline.config import PipelineConfig, resolve_optimization_edit_paths
+from accel_pipeline.config import PipelineConfig
+from accel_pipeline.workload import resolve_optimization_edit_paths
 
 BOOTSTRAP_MAX_CHARS_DEFAULT = 300_000
 

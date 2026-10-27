@@ -60,7 +60,7 @@ def run_post_stage_gates_collect(
     reuse: bool = False,
 ) -> tuple[list[GateResult], GateResult | None]:
     """Run `gate_names` in order until one fails. reuse: skip a gate that already passed on identical code."""
-    from accel_pipeline.config import load_run_workload
+    from accel_pipeline.workload import load_run_workload
     from accel_pipeline.gates.stamps import reusable_gate_result
 
     workload = load_run_workload(pipeline_config, workload_name)

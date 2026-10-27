@@ -22,7 +22,7 @@ PASSED = GateResult(name="correctness", status="pass", data={})
 
 @pytest.fixture(autouse=True)
 def stubs(monkeypatch):
-    for module in ("accel_pipeline.repair", "accel_pipeline.config"):
+    for module in ("accel_pipeline.repair", "accel_pipeline.workload"):
         monkeypatch.setattr(f"{module}.load_run_workload", lambda cfg, name: {"benchmark_name": "tpch"})
 
 

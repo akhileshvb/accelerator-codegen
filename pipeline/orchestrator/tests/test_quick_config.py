@@ -2,13 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from accel_pipeline.config import (
-    QuickTierConfig,
-    apply_workload_overrides,
-    load_pipeline_config,
-    load_workload,
-    workload_supported_engines,
-)
+from accel_pipeline.config import QuickTierConfig, load_pipeline_config
+from accel_pipeline.workload import apply_workload_overrides, load_workload, workload_supported_engines
 
 REPO = Path(__file__).resolve().parents[3]
 ENGINE = workload_supported_engines("tpch_q6_aux", REPO)[0]

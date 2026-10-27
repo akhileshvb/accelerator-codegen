@@ -9,7 +9,8 @@ from pathlib import Path
 
 from accel_pipeline.gates.run import build_jobs
 from accel_pipeline.gates.build_stamp import build_lock, code_stamp
-from accel_pipeline.config import PipelineConfig, resolve_workload_paths
+from accel_pipeline.config import PipelineConfig
+from accel_pipeline.workload import resolve_workload_paths
 from accel_pipeline.layout import query_dir
 
 

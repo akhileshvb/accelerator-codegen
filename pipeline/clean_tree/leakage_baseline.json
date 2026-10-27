@@ -247,11 +247,11 @@
  "pipeline/config/workloads/sec_edgar_q6_aux.yaml": {
   "engine": 1
  },
- "pipeline/config/workloads/tpch_q21_verus_smoke.yaml": {
-  "engine": 2
- },
  "pipeline/config/workloads/tpch_q.template.yaml": {
   "engine": 1
+ },
+ "pipeline/config/workloads/tpch_q21_verus_smoke.yaml": {
+  "engine": 2
  },
  "pipeline/config/workloads/tpch_q_aux.template.yaml": {
   "engine": 1
@@ -343,8 +343,8 @@
  "pipeline/orchestrator/accel_pipeline/verus/workspace.py": {
   "engine": 1
  },
- "pipeline/orchestrator/accel_pipeline/workload_facts.py": {
-  "engine": 8
+ "pipeline/orchestrator/accel_pipeline/workload.py": {
+  "engine": 7
  },
  "pipeline/orchestrator/pyproject.toml": {
   "engine": 1
@@ -355,9 +355,6 @@
  "pipeline/orchestrator/tests/fixtures/engine_toydb.yaml": {
   "engine": 2,
   "path": 4
- },
- "pipeline/orchestrator/tests/test_canary_resume.py": {
-  "path": 3
  },
  "pipeline/orchestrator/tests/test_ab_tools.py": {
   "engine": 3
@@ -372,9 +369,6 @@
  "pipeline/orchestrator/tests/test_analysis_context.py": {
   "engine": 4,
   "path": 3
- },
- "pipeline/orchestrator/tests/test_analysis_paths.py": {
-  "engine": 3
  },
  "pipeline/orchestrator/tests/test_api_contract.py": {
   "engine": 3,
@@ -398,6 +392,9 @@
   "path": 4,
   "symbol": 1
  },
+ "pipeline/orchestrator/tests/test_canary_resume.py": {
+  "path": 3
+ },
  "pipeline/orchestrator/tests/test_codex_backend.py": {
   "engine": 17,
   "target": 1
@@ -406,9 +403,6 @@
   "engine": 93,
   "path": 16,
   "target": 2
- },
- "pipeline/orchestrator/tests/test_engine_profile.py": {
-  "engine": 19
  },
  "pipeline/orchestrator/tests/test_engine_runs.py": {
   "engine": 16,
@@ -496,8 +490,8 @@
  "pipeline/orchestrator/tests/test_worker_resume.py": {
   "engine": 1
  },
- "pipeline/orchestrator/tests/test_workload_inputs.py": {
-  "engine": 6,
+ "pipeline/orchestrator/tests/test_workload.py": {
+  "engine": 26,
   "symbol": 2
  },
  "pipeline/prompts/aux_state/03_optimization_unified.md": {

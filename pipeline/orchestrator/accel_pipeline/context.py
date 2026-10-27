@@ -17,19 +17,17 @@ from accel_pipeline.analysis_context import (
     stage_analysis_json,
 )
 from accel_pipeline.backend_api import render_accelerator_engine_profile, render_backend_api
-from accel_pipeline.config import (
-    PipelineConfig,
+from accel_pipeline.config import PipelineConfig, is_critique_stage, is_implementation_stage
+from accel_pipeline.workload import (
     engine_host_conventions,
     resolve_workload_paths,
     sanitize_engine_name,
-    is_critique_stage,
-    is_implementation_stage,
     load_query_analysis,
     query_artifacts_dir,
+    with_facts,
 )
 from accel_pipeline.engine_host import format_host_block
 from accel_pipeline.implementation_bootstrap import build_implementation_bootstrap
-from accel_pipeline.workload_facts import with_facts
 
 ANALYSIS_STAGES = ("analysis", "analysis_critic")  # both see the query, its parameters and the data
 OPTIMIZATION_STAGES = (

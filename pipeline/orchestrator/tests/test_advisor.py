@@ -60,7 +60,7 @@ class World:
         self.art.mkdir(parents=True)
         self.fork = FakeFork(tmp_path)
         workload = {"benchmark_name": "toybench"}
-        monkeypatch.setattr("accel_pipeline.config.load_run_workload", lambda cfg, name: workload)
+        monkeypatch.setattr("accel_pipeline.workload.load_run_workload", lambda cfg, name: workload)
         monkeypatch.setattr("accel_pipeline.config.make_model_id", lambda *a, **k: "advisor/model")
         monkeypatch.setattr("accel_pipeline.prompts.render_prompt", lambda *a, **k: "ADVISOR INSTRUCTIONS")
         monkeypatch.setattr("accel_pipeline.backends.create_agent_backend", lambda **k: self.backend(**k))

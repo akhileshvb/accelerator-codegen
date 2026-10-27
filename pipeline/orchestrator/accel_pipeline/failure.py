@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, Mapping
 
 from accel_pipeline.layout import query_dir
-from accel_pipeline.config import query_artifacts_dir
+from accel_pipeline.workload import query_artifacts_dir
 
 if TYPE_CHECKING:
     from accel_pipeline.gates.run import GateResult
@@ -290,8 +290,7 @@ _UNKNOWN_TARGET = re.compile(r"unknown target '([A-Za-z0-9_]+)'|No rule to make 
 
 def missing_harness_target(text: str, workload: Mapping[str, Any]) -> str:
     """The workload-harness target a build could not find (host_bootstrap makes them), if that is why it failed."""
-    from accel_pipeline.config import harness_targets, sanitize_engine_name
-    from accel_pipeline.naming import unit_test_target
+    from accel_pipeline.workload import harness_targets, sanitize_engine_name, unit_test_target
 
     engine, bench = str(workload.get("engine_name") or ""), str(workload.get("benchmark_name") or "")
     if not (engine and bench and workload.get("query_number") is not None):

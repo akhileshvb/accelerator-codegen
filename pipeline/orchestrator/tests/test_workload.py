@@ -1,27 +1,169 @@
-"""The standardized engine profile: schema validation and per-stage rendering."""
+"""A workload and what derives from it: facts, names, artifact paths and the engine profile."""
 
 from __future__ import annotations
 
 import copy
+import json
 import re
+import subprocess
 from pathlib import Path
 
 import pytest
 
-from accel_pipeline.config import load_pipeline_config, load_workload
-from accel_pipeline.engine_profile import (
+from accel_pipeline.config import load_pipeline_config
+from accel_pipeline.engine_backend.stage import _layer_extra_context, implementation_layers
+from accel_pipeline.prompts import render_prompt
+from accel_pipeline.workload import (
     EngineProfileError,
+    _read_workload_yaml,
+    analysis_artifact_name,
+    analysis_artifact_path,
+    aux_smoke_ctest_name,
+    derive_query_facts,
     host_runtime_of,
+    load_query_analysis,
+    load_workload,
+    registration_symbol,
     render_engine_profile,
     validate_engine_profile,
+    workload_supported_engines,
 )
-from accel_pipeline.prompts import render_prompt
-from accel_pipeline.engine_backend.stage import _layer_extra_context, implementation_layers
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 PIPELINE_ROOT = REPO_ROOT / "pipeline"
 ENGINES = ("postgres", "mysql", "duckdb")
 LAYERS = ("hostctl", "capture", "epochs", "scan", "runtime", "host", "api")
+WORKLOADS = REPO_ROOT / "pipeline" / "config" / "workloads"
+GOLDEN = json.loads((Path(__file__).parent / "data" / "workload_facts_golden.json").read_text())
+QUERY_WORKLOADS = sorted(
+    [p.stem for p in WORKLOADS.glob("*.yaml") if not p.stem.startswith("engine_") and not p.stem.endswith("template")
+     and p.stem != "tpch_queries"]
+    + [f"tpch_q{n}{kind}" for n in range(1, 23) for kind in ("", "_aux")]
+)
+# Keys that follow from bench + query + engine, or from the SQL and schema: never hand-written.
+DERIVED_KEYS = {
+    "query_id", "function_name", "create_fn", "aux_function_name", "accelerator_id",
+    "cmake", "reference_accelerators", "seed_manifest_root", "output_schema",
+    "dependent_tables", "tables", "engine_name",
+}
+
+
+def _facts(name: str) -> dict:
+    raw, _ = _read_workload_yaml(name, REPO_ROOT)
+    sql = (REPO_ROOT / raw["reference_sql_path"]).read_text()
+    schema = (REPO_ROOT / "workloads" / raw["benchmark_name"] / "schema.sql").read_text()
+    return derive_query_facts(sql, schema)
+
+
+@pytest.mark.parametrize("name", [n for n in QUERY_WORKLOADS if n != "tpch_q21_verus_smoke"])
+def test_derived_facts_match_golden(name):
+    assert _facts(name) == GOLDEN[name.removesuffix("_aux")]
+
+
+def test_exists_probe_star_reads_no_columns():
+    facts = derive_query_facts(
+        "SELECT a FROM t WHERE EXISTS (SELECT * FROM u WHERE u.k = t.k)",
+        "CREATE TABLE t (a INTEGER, k INTEGER, z INTEGER); CREATE TABLE u (k INTEGER, y INTEGER);",
+    )
+    assert facts["dependent_tables"] == [
+        {"name": "t", "watched_columns": ["a", "k"]},
+        {"name": "u", "watched_columns": ["k"]},
+    ]
+    assert facts["output_schema"] == [{"name": "a", "type": "INTEGER"}]
+
+
+@pytest.mark.parametrize("name", QUERY_WORKLOADS)
+def test_workload_yaml_holds_only_inputs(name):
+    raw, _ = _read_workload_yaml(name, REPO_ROOT)
+    assert not DERIVED_KEYS & set(raw)
+    assert not Path(raw["reference_sql_path"]).is_absolute()
+    assert (REPO_ROOT / raw["reference_sql_path"]).is_file()
+
+
+def test_names_follow_the_convention_and_the_engine_profile():
+    duck = load_workload("tpch_q3_aux", REPO_ROOT, engine="duckdb")
+    assert duck["function_name"] == "accel_tpch_q3"
+    assert "base_function_name" not in duck  # an aux workload has no stateless kernel to name
+    assert duck["aux_function_name"] == "accel_tpch_q3_aux"
+    assert duck["accelerator_id"] == "tpch_q3_aux"
+    assert duck["create_fn"] == "CreateTpchQ3FunctionSet"
+    assert load_workload("sec_edgar_q2", REPO_ROOT)["create_fn"] == "CreateSecEdgarQ2FunctionSet"
+    assert load_workload("tpch_q3_aux", REPO_ROOT, engine="postgres")["create_fn"] == ""
+
+
+def test_naming_functions():
+    assert registration_symbol("Create{Bench}Q{N}FunctionSet", "sec_edgar", 24) == "CreateSecEdgarQ24FunctionSet"
+    assert aux_smoke_ctest_name("tpch", 6) == "tpch_q6_aux_smoke_test"
+
+
+def test_tpch_workloads_are_a_template_and_the_query_table():
+    engine = workload_supported_engines("tpch_q18", REPO_ROOT)[0]
+    aux = load_workload("tpch_q18_aux", REPO_ROOT, engine=engine)
+    assert aux["parameters"] == [{"name": "quantity_threshold", "type": "BIGINT"}]
+    assert aux["reference_sql_path"].endswith("workloads/tpch/instances/seed_1/18.sql")
+    assert aux["optimization"]["max_attempts_per_iteration"] == 8
+    base = load_workload("tpch_q18", REPO_ROOT, engine=engine)
+    assert "optimization" not in base and "workload_kind" not in base
+    assert set(workload_supported_engines("tpch_q18", REPO_ROOT)) < set(workload_supported_engines("tpch_q18_aux", REPO_ROOT))
+    with pytest.raises(FileNotFoundError):
+        load_workload("tpch_q23", REPO_ROOT)
+
+
+def test_datasets_are_run_parameters(monkeypatch):
+    monkeypatch.delenv("ACCEL_TPCH_DB", raising=False)
+    assert "tpch_sf1" not in load_pipeline_config(repo_root=REPO_ROOT).datasets
+    monkeypatch.setenv("ACCEL_TPCH_DB", "/data/sf1.duckdb")
+    assert load_pipeline_config(repo_root=REPO_ROOT).datasets["tpch_sf1"] == Path("/data/sf1.duckdb")
+
+
+def test_pipeline_and_workloads_name_no_home_path():
+    offenders = []
+    tracked = subprocess.run(
+        ["git", "ls-files", "pipeline", "workloads"], cwd=REPO_ROOT, capture_output=True, text=True, check=True
+    ).stdout.split()
+    for path in (REPO_ROOT / rel for rel in tracked):  # local run state (.codex, artifacts) is not the tree's
+        if not path.is_file() or path.suffix in {".db", ".duckdb"} or path == Path(__file__).resolve():
+            continue
+            try:
+                text = path.read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                continue
+            if re.search(r"/home/", text):
+                offenders.append(str(path.relative_to(REPO_ROOT)))
+    assert not offenders
+
+
+def test_analysis_artifact_names_by_workload_kind():
+    assert analysis_artifact_name({"workload_kind": "aux_state"}) == "analysis.json"
+    assert analysis_artifact_name({"benchmark_name": "tpch"}) == "base_analysis.json"
+    assert analysis_artifact_name(None) == "base_analysis.json"
+
+
+def test_base_and_aux_analysis_paths_do_not_collide(tmp_path):
+    workload_aux = {"workload_kind": "aux_state", "benchmark_name": "tpch", "engine_name": "postgres"}
+    workload_base = {"benchmark_name": "tpch", "engine_name": "postgres"}
+    art = tmp_path / "pipeline" / "artifacts" / "tpch" / "q18" / "postgres"
+    art.mkdir(parents=True)
+
+    aux_path = art / "analysis.json"
+    base_path = art / "base_analysis.json"
+    aux_path.write_text(json.dumps({"fitness_assessment": {"recommended": True}}), encoding="utf-8")
+    base_path.write_text(json.dumps({"logical_plan": {"steps": []}}), encoding="utf-8")
+
+    _, aux_analysis = load_query_analysis(tmp_path, 18, workload=workload_aux)
+    _, base_analysis = load_query_analysis(tmp_path, 18, workload=workload_base)
+
+    assert "fitness_assessment" in aux_analysis
+    assert "logical_plan" in base_analysis
+    assert analysis_artifact_path(tmp_path, 18, workload=workload_aux) == aux_path
+    assert analysis_artifact_path(tmp_path, 18, workload=workload_base) == base_path
+
+
+def test_each_engine_has_its_own_artifact_tree(tmp_path):
+    workloads = {e: {"workload_kind": "aux_state", "benchmark_name": "tpch", "engine_name": e} for e in ("a", "b")}
+    paths = {e: analysis_artifact_path(tmp_path, 3, workload=w) for e, w in workloads.items()}
+    assert paths["a"].parent == tmp_path / "pipeline" / "artifacts" / "tpch" / "q3" / "a"
+    assert paths["a"].parent != paths["b"].parent
 
 
 def _profile(engine: str = "postgres") -> dict:

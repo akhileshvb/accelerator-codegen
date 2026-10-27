@@ -7,7 +7,7 @@ from typing import Any
 from accel_pipeline.config import PipelineConfig
 from accel_pipeline.context import read_text
 from accel_pipeline.engine_host import format_host_block
-from accel_pipeline.engine_profile import render_engine_profile
+from accel_pipeline.workload import render_engine_profile
 
 
 def engine_backend_keys(cfg: PipelineConfig, workload: dict[str, Any], stage: str) -> dict[str, str]:

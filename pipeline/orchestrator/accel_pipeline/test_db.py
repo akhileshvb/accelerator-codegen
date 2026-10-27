@@ -31,7 +31,8 @@ from typing import Any
 from accel_pipeline import data_shape_stats as stats
 from accel_pipeline.data_shape import catalog_sql
 from accel_pipeline.engine_host import ensure_dataset_loaded
-from accel_pipeline.config import PipelineConfig, query_artifacts_dir
+from accel_pipeline.config import PipelineConfig
+from accel_pipeline.workload import query_artifacts_dir
 from accel_pipeline.layout import workload_schema_sql
 from accel_pipeline.tools.data_tools import DataToolContext, HostSql
 

@@ -29,7 +29,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, Sequence
 
-from accel_pipeline.config import PipelineConfig, gates_dir_for_query, query_artifacts_dir
+from accel_pipeline.config import PipelineConfig
+from accel_pipeline.workload import gates_dir_for_query, query_artifacts_dir
 from accel_pipeline.engine_host import instance_tag
 from accel_pipeline.gates.run import GATES_ALLOW_SKIP, GateResult, jobs_per_gate, run_gate
 from accel_pipeline.gates.stamps import check_version, current_stamp, reusable_gate_result
@@ -252,7 +253,8 @@ def reusable_background_result(pipeline_config: PipelineConfig, workload: dict[s
 
 
 def _run(args: argparse.Namespace) -> int:
-    from accel_pipeline.config import apply_workload_overrides, load_pipeline_config, load_workload
+    from accel_pipeline.workload import apply_workload_overrides, load_workload
+    from accel_pipeline.config import load_pipeline_config
     repo_root = Path(args.repo_root)
     workload = load_workload(args.workload, repo_root, engine=args.engine)
     pipeline_config = apply_workload_overrides(load_pipeline_config(repo_root=repo_root), workload)

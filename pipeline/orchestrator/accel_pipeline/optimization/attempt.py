@@ -12,14 +12,12 @@ from typing import Any
 
 from accel_pipeline.backends import StageRunRequest, create_agent_backend
 from accel_pipeline.optimization.base_bench import build_optimization_diagnosis, load_base_optimization_state
-from accel_pipeline.config import (
-    ModelConfig,
-    PipelineConfig,
+from accel_pipeline.config import ModelConfig, PipelineConfig, make_model_id
+from accel_pipeline.workload import (
     apply_workload_overrides,
     load_run_workload,
     resolve_optimization_edit_paths,
     resolve_workload_paths,
-    make_model_id,
     analysis_artifact_path,
     load_query_analysis,
     query_artifacts_dir,

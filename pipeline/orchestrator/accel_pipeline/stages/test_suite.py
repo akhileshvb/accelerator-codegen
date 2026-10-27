@@ -12,13 +12,8 @@ import sys
 from typing import Any
 
 from accel_pipeline import test_suite as suite
-from accel_pipeline.config import (
-    ModelConfig,
-    PipelineConfig,
-    load_run_workload,
-    analysis_artifact_path,
-    query_artifacts_dir,
-)
+from accel_pipeline.config import ModelConfig, PipelineConfig
+from accel_pipeline.workload import load_run_workload, analysis_artifact_path, query_artifacts_dir
 from accel_pipeline.failure import render_failure
 from accel_pipeline.playbook import append_experiment_log
 from accel_pipeline.repair import RepairCtx, run_with_repair

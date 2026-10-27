@@ -28,7 +28,7 @@ from typing import Any
 
 from accel_pipeline.layout import PROOFLIB
 from accel_pipeline.verus.context import VerusContext
-from accel_pipeline.workload_facts import with_facts
+from accel_pipeline.workload import with_facts
 
 README = """# Verus accelerator workspace: {accel_id}
 

@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from accel_pipeline.config import PipelineConfig, resolve_optimization_edit_paths
+from accel_pipeline.config import PipelineConfig
+from accel_pipeline.workload import resolve_optimization_edit_paths
 
 DUAL_AXIS_NOTES = (
     "\n- **Dual-axis accept/reject score** (orchestrator-owned):\n"

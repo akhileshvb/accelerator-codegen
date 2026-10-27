@@ -70,7 +70,7 @@ def suite_path(repo_root: Path, benchmark: str, query: int) -> Path:
 def gate_settings(pipeline_config: Any, workload: dict[str, Any], query: int) -> dict[str, Any]:
     """What the gates need to run the query's suite (the gate context's `test_suite`)."""
     from accel_pipeline.layout import workload_query_sql, workload_schema_constraints
-    from accel_pipeline.naming import aux_function_name, base_function_name
+    from accel_pipeline.workload import aux_function_name, base_function_name
 
     root, bench = pipeline_config.repo_root, str(workload.get("benchmark_name", "tpch"))
     aux = workload.get("workload_kind") == "aux_state"

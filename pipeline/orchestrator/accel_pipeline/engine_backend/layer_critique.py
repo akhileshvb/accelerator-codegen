@@ -13,7 +13,8 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from accel_pipeline.config import ModelConfig, PipelineConfig, load_run_workload, query_artifacts_dir
+from accel_pipeline.config import ModelConfig, PipelineConfig
+from accel_pipeline.workload import load_run_workload, query_artifacts_dir
 from accel_pipeline.failure import StageFailure
 from accel_pipeline.stages.base import run_agent_stage
 

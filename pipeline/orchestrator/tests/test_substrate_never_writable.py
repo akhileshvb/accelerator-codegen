@@ -13,16 +13,15 @@ from pathlib import Path
 
 import pytest
 
-from accel_pipeline import layout
-from accel_pipeline import prims_library as pl
-from accel_pipeline.config import (
+from accel_pipeline import layout, prims_library as pl
+from accel_pipeline.workload import (
     apply_workload_overrides,
     load_aux_state_defaults,
     load_engine_backend_defaults,
-    load_pipeline_config,
     load_workload,
     workload_supported_engines,
 )
+from accel_pipeline.config import load_pipeline_config
 from accel_pipeline.write_ownership import shell_command_layer_write, write_allowed
 
 REPO = Path(__file__).resolve().parents[3]

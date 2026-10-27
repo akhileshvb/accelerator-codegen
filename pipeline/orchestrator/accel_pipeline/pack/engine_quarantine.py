@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from accel_pipeline.config import workload_engines
+from accel_pipeline.workload import workload_engines
 from accel_pipeline.layout import query_dir
 
 

@@ -5,7 +5,8 @@ from __future__ import annotations
 import sys
 from typing import Any
 
-from accel_pipeline.config import PipelineConfig, query_artifacts_dir
+from accel_pipeline.config import PipelineConfig
+from accel_pipeline.workload import query_artifacts_dir
 from accel_pipeline.failure import extract_crash_highlights
 from accel_pipeline.optimization.smoke import SmokeResult
 from accel_pipeline.playbook import append_experiment_log

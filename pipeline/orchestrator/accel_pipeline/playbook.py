@@ -4,7 +4,8 @@ import json
 from pathlib import Path
 from typing import Any
 
-from accel_pipeline.config import pipeline_root, query_artifacts_dir
+from accel_pipeline.config import pipeline_root
+from accel_pipeline.workload import query_artifacts_dir
 
 PLAYBOOK_PROPOSAL_JSON = "playbook_proposal.json"
 PLAYBOOK_TECHNIQUES_JSON = "playbook_techniques.json"

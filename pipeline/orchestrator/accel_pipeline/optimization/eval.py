@@ -15,7 +15,8 @@ from accel_pipeline.pack.measurement_lease import run_measured
 from accel_pipeline.optimization.aux_bench import summarize_sweep_rows
 from accel_pipeline.sweep_csv import parse_aux_benchmark_output
 from accel_pipeline.optimization.base_bench import parse_benchmark_log
-from accel_pipeline.config import MeasurementConfig, PipelineConfig, resolve_workload_paths
+from accel_pipeline.config import MeasurementConfig, PipelineConfig
+from accel_pipeline.workload import resolve_workload_paths
 from accel_pipeline.failure import Failure
 from accel_pipeline.optimization.measurement import check_measurement
 from accel_pipeline.optimization.signals import attach_store_diagnostics, extract_store_diagnostics
@@ -619,7 +620,7 @@ def run_single_benchmark(
     include_profile: bool = False,
 ) -> tuple[dict[str, Any] | None, str]:
     """Run one benchmark invocation; return (metrics, output_or_error)."""
-    from accel_pipeline.config import query_artifacts_dir
+    from accel_pipeline.workload import query_artifacts_dir
     from accel_pipeline.pack.worker_isolation import ensure_private_dataset_db
 
     paths = resolve_workload_paths(pipeline_config, workload, query)
@@ -726,7 +727,7 @@ def run_multi_sample_benchmark(
 def eval_config_from_pipeline(pipeline_config: PipelineConfig) -> EvalConfig:
     aux_samples = 1
     try:
-        from accel_pipeline.config import load_aux_state_defaults
+        from accel_pipeline.workload import load_aux_state_defaults
 
         raw_opt = load_aux_state_defaults(pipeline_config.repo_root).get(
             "aux_bench_sweep_optimization", {}
