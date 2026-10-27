@@ -26,7 +26,7 @@ from accel_pipeline.config import (
     query_artifacts_dir,
 )
 from accel_pipeline.engine_host import ensure_dataset_loaded, workload_dataset_dir
-from accel_pipeline.failure import Failure, render_failure
+from accel_pipeline.repair import Failure, render_failure
 from accel_pipeline.gates.stamps import check_version, current_stamp
 from accel_pipeline.gates.run import run_gate
 from accel_pipeline.layout import query_dir

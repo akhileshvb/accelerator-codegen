@@ -9,7 +9,7 @@ from typing import Any
 
 from accel_pipeline.optimization.aux_bench import summarize_sweep_rows
 from accel_pipeline.config import MeasurementConfig
-from accel_pipeline.failure import Failure
+from accel_pipeline.repair import Failure
 
 _SPEEDUP_KEYS = (
     "workload_speedup",

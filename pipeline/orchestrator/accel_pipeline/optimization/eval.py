@@ -16,7 +16,7 @@ from accel_pipeline.optimization.aux_bench import summarize_sweep_rows
 from accel_pipeline.sweep_csv import parse_aux_benchmark_output
 from accel_pipeline.optimization.base_bench import parse_benchmark_log
 from accel_pipeline.config import MeasurementConfig, PipelineConfig, resolve_workload_paths
-from accel_pipeline.failure import Failure
+from accel_pipeline.repair import Failure
 from accel_pipeline.optimization.measurement import check_measurement
 from accel_pipeline.optimization.signals import attach_store_diagnostics, extract_store_diagnostics
 

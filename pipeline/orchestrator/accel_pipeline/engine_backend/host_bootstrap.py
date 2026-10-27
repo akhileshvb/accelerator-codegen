@@ -239,7 +239,7 @@ def _bootstrap_under_repair(
     """The harness agent turn, its gate (repaired in the same session on failure) and the critic
     (one batched repair round for its findings, then a re-check); a failure the loop cannot repair
     ends in a recorded stop, never a traceback."""
-    from accel_pipeline.failure import Failure, render_failure
+    from accel_pipeline.repair import Failure, render_failure
     from accel_pipeline.gates.run import run_gate
     from accel_pipeline.config import query_artifacts_dir
     from accel_pipeline.runlog import append_experiment_log
@@ -334,7 +334,7 @@ def accept_harness(
     the reference SQL's), before any accelerator depends on them: the bootstrap gate can only smoke them, no query
     being registered yet. A failure is the harness's: it is recorded as a harness request, host_bootstrap re-runs
     with it as a required fix, and the check repeats."""
-    from accel_pipeline.failure import failure_from_gate, render_failure
+    from accel_pipeline.repair import failure_from_gate, render_failure
     from accel_pipeline.gates.run import run_gate
 
     if workload.get("workload_kind") != "aux_state" or not workload.get("engine_name"):

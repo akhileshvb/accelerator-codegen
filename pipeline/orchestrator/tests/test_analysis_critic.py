@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from accel_pipeline.failure import Failure, StageFailure
+from accel_pipeline.repair import Failure, StageFailure
 from accel_pipeline.stages import analysis as stage
 
 

@@ -18,7 +18,7 @@ from accel_pipeline.config import (
 )
 from accel_pipeline.gates.run import GateResult, run_gate
 from accel_pipeline.gates.stamps import reusable_gate_result
-from accel_pipeline.failure import (
+from accel_pipeline.repair import (
     AGENT_BLOCKER, PROVIDER_CREDITS, PROVIDER_FLAKE, Failure, StageFailure, is_out_of_credits, is_transient_provider_failure,
 )
 from accel_pipeline.session import REDIRECT, run_in_session

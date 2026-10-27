@@ -620,7 +620,7 @@ def format_reloop_failure_sections(
     max_chars: int = 8000,
 ) -> list[str]:
     """Markdown sections appended to layer/host-bootstrap gate-fail prompts."""
-    from accel_pipeline.failure import render_evidence
+    from accel_pipeline.repair import render_evidence
 
     head = " | ".join(p for p in (_reason(data), describe_returncode(_exit_code(data))) if p)
     return ["", head or "(no reason recorded)",

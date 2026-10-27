@@ -25,7 +25,7 @@ from accel_pipeline.config import (
     query_artifacts_dir,
     read_json,
 )
-from accel_pipeline.failure import Failure, StageFailure, is_transient_provider_failure
+from accel_pipeline.repair import Failure, StageFailure, is_transient_provider_failure
 from accel_pipeline.optimization.kernel_hot_path_review import analyze_kernel_source
 from accel_pipeline.optimization.bootstrap import build_optimization_bootstrap, save_optimization_bootstrap
 from accel_pipeline.optimization.checkpoint import (
@@ -359,7 +359,7 @@ def _fail_fast_infra_if_needed(
     text: str,
 ) -> dict[str, Any] | None:
     """On shared-tree infra failures, repair + release lease and stop burning agent turns."""
-    from accel_pipeline.failure import handle_infra_failure
+    from accel_pipeline.repair import handle_infra_failure
 
     info = handle_infra_failure(pipeline_config, workload, query, text=text or "")
     if not info:

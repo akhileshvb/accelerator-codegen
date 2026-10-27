@@ -19,9 +19,8 @@ from accel_pipeline.config import (
     analysis_artifact_path,
     query_artifacts_dir,
 )
-from accel_pipeline.failure import render_failure
+from accel_pipeline.repair import render_failure, RepairCtx, run_with_repair
 from accel_pipeline.runlog import append_experiment_log
-from accel_pipeline.repair import RepairCtx, run_with_repair
 from accel_pipeline.scaffold_stubs import materialize_registration
 from accel_pipeline.session import TESTER
 from accel_pipeline.stages.base import run_agent_stage

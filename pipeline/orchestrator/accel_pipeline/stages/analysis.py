@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from accel_pipeline.config import ModelConfig, PipelineConfig, load_run_workload, analysis_artifact_path
-from accel_pipeline.failure import StageFailure
+from accel_pipeline.repair import StageFailure
 from accel_pipeline.runlog import log_analysis_candidates, log_event
 from accel_pipeline.session import MAIN
 from accel_pipeline.stages.base import run_agent_stage

@@ -8,7 +8,7 @@
 #   engine_canary_tsan   the concurrency checks, our code under TSan (embedded engines)
 # ACCEL_CANARY_CHECKS ("id id ...") and ACCEL_CANARY_OWNERS ("layer ...") select a subset (quick_layer).
 # A sanitizer report fails the gate with the report in the log: whether it is in the backend's code or
-# only in the engine's decides who must fix it (failure.py), never whether it counts.
+# only in the engine's decides who must fix it (repair.py), never whether it counts.
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 export ROOT

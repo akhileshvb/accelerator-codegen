@@ -148,7 +148,7 @@ def _seed_pack_peers_from_baselines(
     that verbatim makes every worktree fail foreign compiles. When a snapshot
     exists, restore it into the worktree after the working-tree overlay.
     """
-    from accel_pipeline.failure import restore_aux_from_snapshot
+    from accel_pipeline.repair import restore_aux_from_snapshot
 
     queries = list(pack_queries) if pack_queries is not None else pack_queries_from_env()
     for q in queries:

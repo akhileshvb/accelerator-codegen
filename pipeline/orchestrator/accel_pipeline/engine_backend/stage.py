@@ -23,10 +23,9 @@ from accel_pipeline.engine_backend.backend_digest import (
 from accel_pipeline.config import ModelConfig, PipelineConfig, load_run_workload, query_artifacts_dir
 from accel_pipeline.engine_host import prepare_host_sdk_payload
 from accel_pipeline.pack.engine_quarantine import apply_foreign_engine_quarantine, restore_quarantine
-from accel_pipeline.failure import Failure, render_failure
+from accel_pipeline.repair import Failure, render_failure, RepairCtx, run_with_repair
 from accel_pipeline.gates.run import format_reloop_failure_sections, GateResult
 from accel_pipeline.runlog import append_experiment_log
-from accel_pipeline.repair import RepairCtx, run_with_repair
 from accel_pipeline.session import SessionStore
 from accel_pipeline.stages.base import run_agent_stage, run_post_stage_gates_collect
 from accel_pipeline.engine_backend.architecture_audit import run_architecture_audit

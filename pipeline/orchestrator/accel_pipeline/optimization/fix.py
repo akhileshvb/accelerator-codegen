@@ -6,7 +6,7 @@ import sys
 from typing import Any
 
 from accel_pipeline.config import PipelineConfig, query_artifacts_dir
-from accel_pipeline.failure import extract_crash_highlights
+from accel_pipeline.repair import extract_crash_highlights
 from accel_pipeline.optimization.smoke import SmokeResult
 from accel_pipeline.runlog import append_experiment_log
 

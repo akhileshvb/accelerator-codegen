@@ -15,7 +15,7 @@ import yaml
 from accel_pipeline import repair as repair_mod, test_suite as ts
 from accel_pipeline.optimization.aux_bench import aggregate_sweep_repeats
 from accel_pipeline.config import PipelineConfig, RepairConfig, SuiteConfig
-from accel_pipeline.failure import Failure, failure_from_gate
+from accel_pipeline.repair import Failure, failure_from_gate
 from accel_pipeline.gates.run import GateResult
 from accel_pipeline.layout import layer_write_verdict
 

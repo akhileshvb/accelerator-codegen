@@ -21,7 +21,7 @@ from accel_pipeline.config import (
     QuickTierConfig,
     workload_supported_engines,
 )
-from accel_pipeline.failure import Failure
+from accel_pipeline.repair import Failure, StageStopped
 from accel_pipeline.prompts import (
     analysis_for_audit,
     analysis_for_implementation,
@@ -41,7 +41,6 @@ from accel_pipeline.prompts import (
     snapshot,
     touched_since,
 )
-from accel_pipeline.repair import StageStopped
 from accel_pipeline.stages import audit as audit_stage
 from accel_pipeline.validation import STATE_STORAGE_TEXT_FIELDS
 

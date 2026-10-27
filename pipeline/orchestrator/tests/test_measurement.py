@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 from accel_pipeline.config import MeasurementConfig
-from accel_pipeline.failure import StageFailure
+from accel_pipeline.repair import StageFailure
 from accel_pipeline.optimization.measurement import check_measurement
 from accel_pipeline.optimization.eval import EvalConfig, MultiSampleBenchmark, BenchmarkSample, evaluate_attempt_outcome
 
