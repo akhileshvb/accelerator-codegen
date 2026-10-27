@@ -10,32 +10,62 @@
                   check against the declared inputs, glue audit; frozen
     kernel        the kernel and its proofs
     integration   frozen tests on the Verus global store; the tests' fault self-check
-    optimization  A/B loop on the Verus global store (stopping.py)
+    optimization  A/B loop on the Verus global store (the stop rule below)
     audit         trusted base, leaks, C++-store compatibility, report
 
 Hard gates are correctness and trust only.  Scaling is guidance in the
-prompts (contracts/scale_principles.md).  Every agent step is codex exec.
+prompts (contracts/scale_principles.md).  Every agent step is the core's codex
+exec step (``accel_pipeline.agent``) in the workspace's clean room, its usage
+logged to the run log (``accel_pipeline.runlog``).
+
+Prompts are ``prompts/verus/<name>.md``, rendered with this module's own
+context (never the C++ pipeline's ``build_prompt_context``, which carries C++
+accelerator context).  ``{{name}}`` substitutes a variable, ``{{include:path}}``
+inlines ``prompts/verus/<path>``, ``{{file:glob}}`` pastes workspace files.
+
+Testing without an LLM: ``ACCEL_VERUS_REPLAY=<dir>`` replays ``<dir>/<stage>/``
+instead: its ``files/`` tree is copied over the workspace and ``final.txt`` is
+the agent's final message (``<stage>_<n>`` for the n-th call of a stage, when
+present).
 """
 
 from __future__ import annotations
 
+import dataclasses
+import hashlib
 import json
+import math
+import os
 import random
 import re
 import shutil
 import statistics
-import time
+import sys
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
-from accel_pipeline.verus import actions, workspace
-from accel_pipeline.verus import params as qparams
-from accel_pipeline.verus.agent import json_block, render, run_agent
-from accel_pipeline.verus.context import IGNORED_WORKLOAD_FIELDS, VerusContext
-from accel_pipeline.verus.stopping import Attempt, StopConfig, StopState, should_stop, uncovered
+from accel_pipeline.agent import StageRunRequest, create_agent_backend
+from accel_pipeline.config import make_model_id, read_json
+from accel_pipeline.runlog import log_stage_complete, log_stage_start, step_usage, usage_table
+from accel_pipeline.verus import STAGES, actions
+from accel_pipeline.verus.context import (
+    Draw,
+    IGNORED_WORKLOAD_FIELDS,
+    VerusContext,
+    build_context,
+    check_query,
+    create_workspace,
+    draw_summary,
+    kernel_differs,
+    new_draw,
+    refresh_prooflib,
+    restore_kernel,
+    snapshot_kernel,
+)
 
 _STATE_LOCK = threading.RLock()
 
@@ -79,6 +109,19 @@ class VerusState:
 
 
 @dataclass
+class AgentResult:
+    ok: bool
+    final_text: str
+    seconds: float
+    error: str = ""
+    session_id: str = ""  # the codex session (resume it to continue with its context)
+    timed_out: bool = False
+
+
+_calls: dict[str, int] = {}  # per stage: the n-th call names its prompt file
+
+
+@dataclass
 class Run:
     """What every stage needs."""
 
@@ -96,9 +139,7 @@ class Run:
         the gates, and its session can be continued) instead of stopping the pipeline."""
         retries = int(self.ctx.setting("agent_retries", 2))
         for attempt in range(retries + 1):
-            res = run_agent(self.ctx, stage=stage, prompt=prompt, task=task, pipeline_config=self.pipeline_config,
-                            model_config=self.model_config, model_overrides=self.model_overrides, extra=extra,
-                            dry_run=self.dry_run, timeout_sec=timeout_sec, resume=resume)
+            res = self._turn(stage, prompt, task, extra, timeout_sec, resume)
             if res.ok or res.timed_out or attempt == retries or not _TRANSIENT.search(res.error or ""):
                 break
             # a provider hiccup (rate limit, overload, dropped stream): wait, then the same
@@ -113,6 +154,56 @@ class Run:
         if not res.ok:
             raise PipelineStop(f"{stage} agent failed: {res.error[:2000]}")
         return res
+
+    def _turn(self, stage: str, prompt: str, task: str, extra: dict[str, str] | None, timeout_sec: int | None,
+              resume: str) -> AgentResult:
+        """One codex exec step (stage name ``verus_*``) in the workspace; `resume`: continue that session with
+        `task` as the next message (the prompt file is not re-sent: pass prompt="")."""
+        ctx = self.ctx
+        _calls[stage] = n = _calls.get(stage, 0) + 1
+        if not self.dry_run:  # the workspace's proof library copy: with everything published so far
+            try:
+                refresh_prooflib(ctx)
+            except OSError:
+                pass
+        text = render(ctx, prompt, extra) if prompt else ""
+        pdir = ctx.art / "prompts"
+        pdir.mkdir(parents=True, exist_ok=True)
+        (pdir / f"{stage}_{n}.md").write_text(f"{text}\n\n## Task\n\n{task}\n", encoding="utf-8")
+        if self.dry_run:
+            return AgentResult(True, "(dry run)", 0.0)
+        if replay := os.environ.get("ACCEL_VERUS_REPLAY"):
+            return _replay(ctx, Path(replay) / f"{stage}_{n}", Path(replay) / stage)
+
+        # codex works in the workspace; its CODEX_HOME (and MCP launcher) stay the pipeline's
+        cfg = self.pipeline_config
+        codex_home = Path(getattr(cfg, "codex_home", None) or Path(ctx.pipeline_root) / ".codex")
+        mc = self.model_config
+        if timeout_sec:
+            mc = dataclasses.replace(mc, codex_timeout_sec=int(timeout_sec))
+        os.environ["ACCEL_VERUS_CONTEXT"] = str(ctx.save())
+        os.environ["ACCEL_PIPELINE_MODE"] = "verus"
+        model_id = make_model_id(stage, cfg, mc, self.model_overrides)
+        workload = {"benchmark_name": ctx.benchmark, "engine_name": "duckdb"}  # Verus kits run on DuckDB
+        log_stage_start(ctx.root, ctx.query, workload, stage=stage, model_id=model_id)
+        sandboxed = str(ctx.setting("sandbox", "bwrap")) == "bwrap"
+        backend = create_agent_backend(
+            pipeline_config=dataclasses.replace(cfg, repo_root=ctx.ws, codex_home=codex_home), model_config=mc,
+            query=ctx.query, stage=stage, workload_name=ctx.workload_name, art_dir=ctx.art,
+            command_prefix=actions.sandbox_prefix(ctx) if sandboxed else [])
+        if sandboxed:
+            backend.task_dir = Path(ctx.run_dir) / "tmp"
+        t0, started = time.monotonic(), time.time()
+        result = backend.run_stage(StageRunRequest(
+            stage=stage, instructions=text, user_message=task, agent_name=f"accel_{stage}", model_id=model_id,
+            agent_model=model_id, max_turns=10_000, metadata={"resume_session_id": resume} if resume else {}))
+        use = step_usage(codex_home, result, model_id, started, ctx.setting("pricing", {}))
+        log_stage_complete(ctx.root, ctx.query, workload, stage=stage, model_id=model_id, backend=result.backend,
+                           duration_ms=result.metadata.get("duration_ms"), usage=use)
+        (pdir / f"{stage}_{n}.out.txt").write_text(result.final_text or result.error or "", encoding="utf-8")
+        return AgentResult(result.status == "finished", result.final_text or "", round(time.monotonic() - t0, 1),
+                           result.error or "", str(result.metadata.get("session_id") or ""),
+                           bool(result.metadata.get("timed_out")))
 
     def note(self, msg: str) -> None:
         with _STATE_LOCK:
@@ -163,6 +254,125 @@ class Run:
         return data
 
 
+# ───────────────────────────── prompts ─────────────────────────────
+
+
+def render(ctx: VerusContext, prompt: str, extra: dict[str, str] | None = None) -> str:
+    base = Path(ctx.pipeline_root) / "prompts" / "verus"
+    variables = {
+        "query": str(ctx.query),
+        "benchmark": ctx.benchmark,
+        "accel_id": ctx.accel_id,
+        "crate": ctx.crate,
+        "ffi_prefix": ctx.ffi_prefix,
+        "workspace": ctx.workspace,
+        **(extra or {}),
+    }
+    if "{{completed_kernels}}" in (base / prompt).read_text(encoding="utf-8") or any(
+            "{{completed_kernels}}" in p.read_text(encoding="utf-8") for p in (base / "shared").glob("*.md")):
+        variables.setdefault("completed_kernels", completed_kernels(ctx))
+
+    def expand(text: str, depth: int = 0) -> str:
+        def inc(m: re.Match[str]) -> str:
+            path = base / m.group(1).strip()
+            return expand(path.read_text(encoding="utf-8"), depth + 1) if depth < 4 and path.is_file() else m.group(0)
+
+        text = re.sub(r"\{\{include:([^}]+)\}\}", inc, text)
+        text = re.sub(r"\{\{(\w+)\}\}", lambda m: variables.get(m.group(1), m.group(0)), text)
+        return re.sub(r"\{\{file:([^}]+)\}\}", lambda m: inline_files(ctx, m.group(1).strip()), text)
+
+    return expand((base / prompt).read_text(encoding="utf-8"))
+
+
+def completed_kernels(ctx: VerusContext) -> str:
+    """The other queries' kernels in this tree that verified fully (the shared verified-crates list),
+    with their modules and, when audited, their measured speed: proven code to learn from or lift
+    into the shared proof library."""
+    cache = actions._verified_cache(ctx)
+    data = json.loads(cache.read_text()) if cache.is_file() else {}
+    notes = read_json(Path(ctx.pipeline_root) / "verus" / "kernel_notes.json")  # reviewers' notes per crate
+    rows = []
+    for crate_dir, digest in sorted(data.items()):
+        d = Path(crate_dir)
+        if (d.resolve() == Path(ctx.crate_dir).resolve() or not d.is_dir() or actions._crate_hash(d) != digest
+                or not d.resolve().is_relative_to(Path(ctx.root).resolve())):
+            continue  # this query, gone, changed since it verified, or another tree's (the cache is shared)
+        name = d.parent.name
+        mods = [f"{p.name} ({sum(1 for _ in p.open(encoding='utf-8'))} lines)"
+                for p in sorted((d / "src").glob("*.rs")) if not p.name.startswith("gen_") and p.name != "lib.rs"]
+        speed = ""
+        q = re.search(r"q(\d+)", name)
+        if q:
+            rep = Path(ctx.pipeline_root) / "artifacts" / ctx.benchmark / f"q{q.group(1)}" / \
+                f"verus_{ctx.benchmark}_q{q.group(1)}_aux" / "audit_report.json"
+            if rep.is_file():
+                try:
+                    b = json.loads(rep.read_text()).get("bench_verus") or {}
+                    mixes = ", ".join(f"{m['write_fraction']:g}: {m['speedup']:.1f}x" for m in b.get("mixes", []))
+                    speed = f"; audited at SF1: reads {b.get('read_speedup', 0):.1f}x, write mixes {mixes}"
+                except (ValueError, KeyError, TypeError):
+                    pass
+        note = f"\n  review: {notes[name]}" if name in notes else ""
+        rows.append(f"* `{name}`: {d / 'src'}{speed}\n  modules: {', '.join(mods) or '(kernel.rs only)'}{note}")
+    return "\n".join(rows) or "(none yet)"
+
+
+INLINE_LIMIT = 60_000  # characters per inlined file
+
+
+def inline_files(ctx: VerusContext, pattern: str) -> str:
+    """`{{file:<path or glob>}}`: the workspace file(s) pasted into the prompt, so a
+    reviewer has its material in one message instead of reading it piece by piece."""
+    paths = sorted(p for p in ctx.ws.glob(pattern) if p.is_file()) if any(c in pattern for c in "*?[") \
+        else [ctx.ws / pattern]
+    out = []
+    for path in paths:
+        rel = path.relative_to(ctx.ws) if path.is_relative_to(ctx.ws) else path
+        if not path.is_file():
+            out.append(f"`{rel}`: (not present)")
+            continue
+        body = path.read_text(encoding="utf-8", errors="replace")
+        if len(body) > INLINE_LIMIT:
+            body = body[:INLINE_LIMIT] + f"\n... (truncated at {INLINE_LIMIT} characters; read the rest from the file)"
+        lang = {".rs": "rust", ".sql": "sql", ".json": "json", ".cpp": "cpp", ".hpp": "cpp", ".h": "c",
+                ".md": "markdown"}.get(path.suffix, "")
+        out.append(f"`{rel}`:\n\n```{lang}\n{body.rstrip()}\n```")
+    return "\n\n".join(out) if out else f"`{pattern}`: (no files)"
+
+
+def json_block(text: str) -> dict[str, Any] | None:
+    """The last ```json block (or bare {...} line) of an agent's final message."""
+    blocks = re.findall(r"```(?:json)?\s*(\{.*?\})\s*```", text or "", re.S)
+    for b in reversed(blocks):
+        try:
+            return json.loads(b)
+        except json.JSONDecodeError:
+            continue
+    for line in reversed((text or "").splitlines()):
+        line = line.strip()
+        if line.startswith("{") and line.endswith("}"):
+            try:
+                return json.loads(line)
+            except json.JSONDecodeError:
+                continue
+    return None
+
+
+def _replay(ctx: VerusContext, numbered: Path, plain: Path) -> AgentResult:
+    d = numbered if numbered.is_dir() else plain
+    if not d.is_dir():
+        return AgentResult(True, "", 0.0)
+    files = d / "files"
+    if files.is_dir():
+        for p in files.rglob("*"):
+            if p.is_file():
+                dst = ctx.ws / p.relative_to(files)
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(p, dst)
+    final = d / "final.txt"
+    return AgentResult(True, final.read_text(encoding="utf-8") if final.is_file() else "", 0.0)
+
+
 def _brief(d: dict[str, Any], n: int = 6000) -> str:
     return json.dumps(d, indent=2)[:n]
 
@@ -184,14 +394,13 @@ def preflight(r: Run) -> None:
             cfg = {"ok": True} if done else actions.configure_build(ctx)
         if not cfg["ok"]:
             problems.append(f"build dir {ctx.build_dir}: cmake configure (DuckDB engine) failed: {cfg['error']}")
-    if Path(ctx.query_sql or "/nonexistent").is_file() and (why := qparams.check_query(ctx)):
+    if Path(ctx.query_sql or "/nonexistent").is_file() and (why := check_query(ctx)):
         problems.append(why)
     verus_bin = Path(str(ctx.setting("verus_bin") or ""))
     if not verus_bin.is_file():
         problems.append(f"Verus binary {verus_bin} missing (set VERUS_BIN or verus.verus_bin)")
     if str(ctx.setting("sandbox", "bwrap")) == "bwrap" and not r.dry_run and not problems:
-        from accel_pipeline.verus import sandbox
-        check = sandbox.selfcheck(ctx)
+        check = actions.sandbox_selfcheck(ctx)
         r.note(f"sandbox (bwrap): {check['probed']} paths probed, visible {check['visible']}, missing {check['missing']}")
         if not check["ok"]:
             problems.append(f"agent sandbox leaks or lacks something: visible={check['visible']} "
@@ -205,7 +414,7 @@ def preflight(r: Run) -> None:
     ignored = [k for k in IGNORED_WORKLOAD_FIELDS if r.workload.get(k)]
     if ignored:
         r.note(f"ignored under --mode verus (C++ pipeline context): {', '.join(ignored)}")
-    workspace.create(ctx, r.workload)
+    create_workspace(ctx, r.workload)
     if not r.dry_run:
         actions.sql2verus_bin(ctx)
     r.note(f"workspace {ctx.workspace}; crate {ctx.crate}; accelerator {ctx.accel_id}")
@@ -237,7 +446,7 @@ def _spec_audit(r: Run, key: str) -> None:
             "Audit spec/gen_spec.rs against query/query.sql; write analysis/spec_audit.json.")
     if r.dry_run:
         return
-    audit = _read_json(r.ctx.ws / "analysis" / "spec_audit.json")
+    audit = read_json(r.ctx.ws / "analysis" / "spec_audit.json")
     if audit.get("verdict") != "ok":
         raise PipelineStop("the spec does not mean what the SQL means (sql2verus must be fixed, not the spec): "
                            + json.dumps(audit.get("issues") or audit)[:3000])
@@ -250,8 +459,6 @@ def _spec_audit_store(ctx: VerusContext) -> Path:
 
 def _spec_audit_key(ctx: VerusContext) -> str:
     """The spec audit judges exactly these: the SQL, the schema, the generated spec."""
-    import hashlib
-
     h = hashlib.sha256()
     for rel in ("query/query.sql", "query/schema.sql", "spec/gen_spec.rs"):
         h.update(rel.encode() + b"\0" + (ctx.ws / rel).read_bytes() + b"\0")
@@ -320,7 +527,7 @@ def _analysis(r: Run) -> None:
             feedback = f"sql2verus refused inputs/q.inputs:\n{check['error']}"
             continue
         r.agent("verus_critic", "02b_critic.md", "Review the analysis; write analysis/critique.json.")
-        crit = _read_json(ctx.ws / "analysis" / "critique.json")
+        crit = read_json(ctx.ws / "analysis" / "critique.json")
         failed = _failed_checks(crit)
         if (crit.get("verdict") == "accept" and not failed) or round_ == revisions:
             r.note(f"analysis accepted after {round_ + 1} round(s) (critic: {crit.get('verdict', '?')}"
@@ -377,7 +584,7 @@ def _obligations_audit(r: Run) -> str:
             "Audit frozen/gen_obligations.rs against inputs/q.inputs; write analysis/obligations_audit.json.")
     if r.dry_run:
         return ""
-    audit = _read_json(r.ctx.ws / "analysis" / "obligations_audit.json")
+    audit = read_json(r.ctx.ws / "analysis" / "obligations_audit.json")
     return "" if audit.get("verdict") == "ok" else json.dumps(audit.get("issues") or audit)[:3000]
 
 
@@ -440,7 +647,7 @@ def _write_glue(r: Run, task: str) -> tuple[bool, str]:
             feedback = "The glue contract check failed (what the glue delivered vs the declared SQL):\n" + _brief(c, 6000)
             continue
         r.agent("verus_glue_audit", "03d_glue_audit.md", "Audit glue/glue.cpp; write analysis/glue_audit.json.")
-        audit = _read_json(ctx.ws / "analysis" / "glue_audit.json")
+        audit = read_json(ctx.ws / "analysis" / "glue_audit.json")
         failed = _failed_checks(audit)
         if audit.get("verdict") == "ok" and not failed:
             return True, ""
@@ -513,15 +720,15 @@ def _advice(r: Run, gates: dict[str, Any], why: str, proofs: bool) -> str:
     diagnoses the failure and suggests an approach; it may not change the workspace (any
     change is undone)."""
     ctx = r.ctx
-    snap = workspace.snapshot_kernel(ctx, "before_advice")
+    snap = snapshot_kernel(ctx, "before_advice")
     try:
         res = r.agent("verus_kernel_advisor", "04d_kernel_advice.md", "Diagnose the failure; write analysis/kernel_advice.md.",
                       {"failure": _brief(gates, 12000), "phase": "proofs" if proofs else "code (tests)"},
                       tolerate_timeout=True)
     finally:
-        if workspace.differs(ctx, "before_advice"):
+        if kernel_differs(ctx, "before_advice"):
             r.note(f"{why}: the advisor changed files; undone")
-        workspace.restore_kernel(ctx, "before_advice")
+        restore_kernel(ctx, "before_advice")
         shutil.rmtree(snap, ignore_errors=True)
     path = ctx.ws / "analysis" / "kernel_advice.md"
     text = path.read_text(encoding="utf-8") if path.is_file() else (res.final_text or "")
@@ -719,6 +926,117 @@ def integration(r: Run) -> None:
     raise PipelineStop("the tests still miss injected bugs: " + ", ".join(sc["missed"]))
 
 
+# ───────────────────────────── when optimization stops ─────────────────────────────
+#
+# Three layers, so the loop always reaches the audit but cannot quit before it has explored:
+# * hard ceilings: the stage's wall-clock budget (each attempt also has its own timeout and bounded fix rounds);
+# * progress: ``patience`` consecutive attempts without an accepted improvement, or the last
+#   ``diminishing_window`` accepts gaining less than ``diminishing_min_gain_pct`` together;
+# * exploration: the progress stop, and an agent's OPTIMIZATION_SATURATED claim, count only once every profile
+#   hotspot at or above ``hotspot_share`` has had an attempt (or was declared infeasible with a reason), both
+#   axes (read and maintenance) were tried, a structural move was tried or reasoned about once progress stalled,
+#   and ``min_attempts`` ran.
+# Counts are in attempts, so the stop can always fire within the budget (config/verus.yaml).
+
+
+@dataclass
+class Attempt:
+    number: int
+    target: str  # the hotspot (or "structural") the attempt aimed at
+    axis: str  # "read" | "maintenance" | "both"
+    structural: bool
+    accepted: bool
+    gain_pct: float  # accepted improvement over the previous best (0 if rejected)
+    outcome: str  # "accepted" | "rejected: ..."
+
+
+@dataclass
+class StopState:
+    started_at: float = field(default_factory=time.time)
+    attempts: list[dict[str, Any]] = field(default_factory=list)
+    hotspots: list[str] = field(default_factory=list)  # names at or above the share, latest profile
+    infeasible: dict[str, str] = field(default_factory=dict)  # hotspot -> reason
+    structural_considered: bool = False
+
+    def record(self, a: Attempt) -> None:
+        self.attempts.append(asdict(a))
+
+
+@dataclass
+class StopConfig:
+    stage_budget_sec: float = 7200
+    patience: int = 4
+    diminishing_window: int = 3
+    diminishing_min_gain_pct: float = 5.0
+    min_attempts: int = 3
+
+    @classmethod
+    def from_settings(cls, opt: dict[str, Any]) -> "StopConfig":
+        return cls(
+            stage_budget_sec=float(opt.get("stage_budget_sec", 7200)),
+            patience=int(opt.get("patience", 4)),
+            diminishing_window=int(opt.get("diminishing_window", 3)),
+            diminishing_min_gain_pct=float(opt.get("diminishing_min_gain_pct", 5.0)),
+            min_attempts=int(opt.get("min_attempts", 3)),
+        )
+
+
+def uncovered(st: StopState, cfg: StopConfig) -> list[str]:
+    """What exploration is still owed before a progress stop may count."""
+    owed = []
+    tried = {a["target"] for a in st.attempts}
+    for h in st.hotspots:
+        if h not in tried and h not in st.infeasible:
+            owed.append(f"hotspot {h}: no attempt yet (or declare it infeasible with a reason)")
+    axes = {a["axis"] for a in st.attempts}
+    if not ({"read", "both"} & axes):
+        owed.append("no attempt on the read path yet")
+    if not ({"maintenance", "both"} & axes):
+        owed.append("no attempt on maintenance (writes) yet")
+    if len(st.attempts) < cfg.min_attempts:
+        owed.append(f"{cfg.min_attempts - len(st.attempts)} more attempt(s) before stopping")
+    stalled = _since_last_accept(st) >= 2
+    if stalled and not st.structural_considered and not any(a["structural"] for a in st.attempts):
+        owed.append("progress stalled: try or reason about a different aux-state design (structural move)")
+    return owed
+
+
+def _since_last_accept(st: StopState) -> int:
+    n = 0
+    for a in reversed(st.attempts):
+        if a["accepted"]:
+            break
+        n += 1
+    return n
+
+
+def should_stop(st: StopState, cfg: StopConfig, *, saturated_claim: bool = False,
+                now: float | None = None) -> tuple[bool, str]:
+    """(stop?, why).  The ceiling always stops; progress and claims need exploration."""
+    now = time.time() if now is None else now
+    if now - st.started_at >= cfg.stage_budget_sec:
+        return True, f"stage budget ({cfg.stage_budget_sec:.0f}s) spent"
+    progress = ""
+    if _since_last_accept(st) >= cfg.patience:
+        progress = f"{cfg.patience} attempts without an accepted improvement"
+    accepts = [a for a in st.attempts if a["accepted"]]
+    if not progress and len(accepts) >= cfg.diminishing_window and _since_last_accept(st) >= 1:
+        gain = 1.0
+        for a in accepts[-cfg.diminishing_window:]:
+            gain *= 1.0 + a["gain_pct"] / 100.0
+        if (gain - 1.0) * 100.0 < cfg.diminishing_min_gain_pct:
+            progress = (f"the last {cfg.diminishing_window} accepts gained {(gain - 1) * 100:.1f}% together "
+                        f"(< {cfg.diminishing_min_gain_pct}%)")
+    if saturated_claim and not progress:
+        progress = "the agent declared the optimization saturated"
+    if not progress:
+        return False, ""
+    owed = uncovered(st, cfg)
+    if owed:
+        return False, f"{progress}, but exploration is owed: " + "; ".join(owed)
+    return True, progress
+
+
 # ───────────────────────────── optimization ─────────────────────────────
 
 
@@ -738,7 +1056,7 @@ def _hotspots(ctx: VerusContext, prof: dict[str, Any]) -> list[str]:
     return sorted((n for n, s in agg.items() if s >= share), key=lambda n: -agg[n])
 
 
-def _full_bench(r: Run, tag: str, runner: Path | None = None, draw: qparams.Draw | None = None) -> tuple[float, dict[str, Any]]:
+def _full_bench(r: Run, tag: str, runner: Path | None = None, draw: Draw | None = None) -> tuple[float, dict[str, Any]]:
     """`draw`: random parameter tuples shared with other benches of one decision; None: a fresh draw."""
     mixes = [float(x) for x in r.ctx.setting("optimization.bench.write_mix_choices", [0.01, 0.05, 0.1])]
     b = actions.bench(r.ctx, mixes, tag=tag, runner=runner, draw=draw)
@@ -754,7 +1072,7 @@ def _paired_bench(r: Run, tag: str, best: Path, cand: Path) -> dict[str, Any]:
     than the gains being judged."""
     rounds = int(r.ctx.setting("optimization.bench.paired_rounds", 3))
     # one fresh random draw of parameters for this decision, the same for both sides and every round
-    draw = qparams.new_draw(r.ctx, tag)
+    draw = new_draw(r.ctx, tag)
     scores: dict[str, list[float]] = {"best": [], "cand": []}
     benches: dict[str, list[dict[str, Any]]] = {"best": [], "cand": []}
     for i in range(rounds):
@@ -769,7 +1087,7 @@ def _paired_bench(r: Run, tag: str, best: Path, cand: Path) -> dict[str, Any]:
     mid = {k: benches[k][v.index(sorted(v)[len(v) // 2])] for k, v in scores.items()}
     spread = (max(scores["best"]) - min(scores["best"])) / med["best"] * 100.0
     wins = sum(c > b for c, b in zip(scores["cand"], scores["best"]))
-    return {"ok": True, **qparams.summary(draw), "best": med["best"], "cand": med["cand"], "scores": scores, "wins": wins,
+    return {"ok": True, **draw_summary(draw), "best": med["best"], "cand": med["cand"], "scores": scores, "wins": wins,
             "rounds": rounds, "best_spread_pct": spread, "cand_bench": mid["cand"], "best_bench": mid["best"]}
 
 
@@ -784,7 +1102,7 @@ def _best_runner(r: Run) -> Path:
     """The frozen runner of the best kernel (built from its snapshot if missing)."""
     d = Path(r.ctx.run_dir) / "runners" / "best"
     if not (d / r.ctx.runner.name).is_file():
-        workspace.restore_kernel(r.ctx, "best")
+        restore_kernel(r.ctx, "best")
         b = actions.build_runner(r.ctx)
         if not b["ok"]:
             raise PipelineStop("optimization: the best kernel no longer builds: " + _brief(b, 3000))
@@ -812,11 +1130,11 @@ def _optimization(r: Run) -> None:
     o = r.state.opt
     st = StopState(**o["stop"]) if o.get("stop") else StopState()
     if not o.get("best_snapshot"):
-        workspace.snapshot_kernel(ctx, "best")
+        snapshot_kernel(ctx, "best")
         b = actions.build_runner(ctx)
         if not b["ok"]:
             raise PipelineStop("optimization: the accepted kernel no longer builds: " + _brief(b, 3000))
-        base_draw = qparams.new_draw(r.ctx, "baseline")  # both baselines on one fresh draw
+        base_draw = new_draw(r.ctx, "baseline")  # both baselines on one fresh draw
         s1, b1 = _full_bench(r, "baseline_1", draw=base_draw)
         s2, _ = _full_bench(r, "baseline_2", draw=base_draw)
         if not s1 or not s2:
@@ -833,11 +1151,11 @@ def _optimization(r: Run) -> None:
         r.state.save(ctx)
         r.note(f"baseline score {o['best_score']:.3f} (noise {o['noise_pct']:.1f}%), hotspots {st.hotspots}")
     else:  # resuming
-        if workspace.differs(ctx, "best"):
+        if kernel_differs(ctx, "best"):
             # an interrupted attempt left a kernel: judge it (no fix rounds) rather than drop it
-            snap = workspace.snapshot_kernel(ctx, "interrupted")
+            snap = snapshot_kernel(ctx, "interrupted")
             _best_runner(r)
-            workspace.restore_kernel(ctx, "interrupted")
+            restore_kernel(ctx, "interrupted")
             o["attempt"] = n = int(o.get("attempt", 0)) + 1
             outcome, gain = _try_candidate(r, o, float(opt.get("min_improvement_pct", 2.0)), False, "",
                                            fix_rounds=0)
@@ -849,7 +1167,7 @@ def _optimization(r: Run) -> None:
             r.state.save(ctx)
             r.note(f"attempt {n} (interrupted, judged on resume): {outcome}")
             shutil.rmtree(snap, ignore_errors=True)
-        workspace.restore_kernel(ctx, "best")
+        restore_kernel(ctx, "best")
         _best_runner(r)
     if "reads" not in (o.get("profile") or {}):  # a profile from before the per-axis steady-state one
         b = actions.build_runner(ctx)
@@ -884,10 +1202,10 @@ def _optimization(r: Run) -> None:
             stop, why = should_stop(st, cfg, saturated_claim=True)
             if stop:
                 r.note(f"optimization stops: {why}")
-                workspace.restore_kernel(ctx, "best")
+                restore_kernel(ctx, "best")
                 break
             message = f"Your OPTIMIZATION_SATURATED claim was not accepted: {why}"
-            workspace.restore_kernel(ctx, "best")
+            restore_kernel(ctx, "best")
             st.record(Attempt(n, "saturation_claim", "both", False, False, 0.0, "rejected: " + why))
             o["stop"] = asdict(st)
             r.state.save(ctx)
@@ -909,7 +1227,7 @@ def _optimization(r: Run) -> None:
         r.state.save(ctx)
         r.note(f"attempt {n} ({target}, {axis}): {outcome}")
     # leave the best kernel in place and built
-    workspace.restore_kernel(ctx, "best")
+    restore_kernel(ctx, "best")
     if (ctx.ws / "inputs" / "q.inputs").read_text() != (ctx.ws / "frozen" / "q.inputs").read_text():
         actions.freeze_inputs(ctx)
         r.state.frozen = {**actions.frozen_hashes(ctx), **actions.glue_hashes(ctx)}
@@ -944,7 +1262,7 @@ def _try_candidate(r: Run, o: dict[str, Any], threshold: float, structural: bool
     frozen_before = dict(r.state.frozen)
 
     def reject(why: str) -> tuple[str, float]:
-        workspace.restore_kernel(ctx, "best")
+        restore_kernel(ctx, "best")
         if inputs_changed:
             actions.freeze_inputs(ctx)
             r.state.frozen = frozen_before
@@ -984,15 +1302,13 @@ def _try_candidate(r: Run, o: dict[str, Any], threshold: float, structural: bool
     w = float(ctx.setting("optimization.proof_cost_weight", 0.0))
     t_best, t_new = float(o.get("best_verify_seconds") or 1.0), float(gates.get("verify_seconds") or 1.0)
     if w > 0 and t_new > t_best:
-        import math
-
         score /= 1.0 + w * math.log2(t_new / t_best)
     gain = (score / pb["best"] - 1.0) * 100.0
     majority = pb["wins"] * 2 > pb["rounds"]
     if gain <= threshold or not majority:
         return reject(f"paired median {score:.3f} vs best {pb['best']:.3f} ({gain:+.1f}%, needs > {threshold:.1f}%; "
                       f"won {pb['wins']}/{pb['rounds']} pairs)")
-    workspace.snapshot_kernel(ctx, "best")
+    snapshot_kernel(ctx, "best")
     shutil.rmtree(Path(ctx.run_dir) / "runners" / "best", ignore_errors=True)
     cand_runner.rename(Path(ctx.run_dir) / "runners" / "best")
     o.update(best_score=score, best_bench=bench, best_verify_seconds=t_new,
@@ -1018,7 +1334,7 @@ def audit(r: Run) -> None:
         report["cpp_store"] = actions.correctness(ctx, store="cpp")
         report["fault_selfcheck"] = actions.fault_selfcheck(ctx)
         report["glue_contract"] = actions.glue_contract(ctx)
-        audit_draw = qparams.new_draw(ctx, "audit")  # a fresh draw, shared by the two audit benches
+        audit_draw = new_draw(ctx, "audit")  # a fresh draw, shared by the two audit benches
         _, report["bench_verus"] = _full_bench(r, "audit_verus", draw=audit_draw)
         mixes = [float(x) for x in ctx.setting("optimization.bench.write_mix_choices", [0.01, 0.05, 0.1])]
         report["bench_cpp_store"] = actions.bench(ctx, mixes, store="cpp", tag="audit_cpp", draw=audit_draw)
@@ -1037,13 +1353,6 @@ def audit(r: Run) -> None:
     r.note(f"audit: {report.get('verdict', '(dry run)')}; report {path}")
 
 
-def _read_json(p: Path) -> dict[str, Any]:
-    try:
-        return json.loads(p.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}
-
-
 STAGE_FUNCS = {
     "preflight": preflight,
     "spec": spec,
@@ -1056,3 +1365,58 @@ STAGE_FUNCS = {
     "optimization": optimization,
     "audit": audit,
 }
+
+
+# ───────────────────────────── the run ─────────────────────────────
+
+
+def run_verus_pipeline(
+    pipeline_config: Any,
+    model_config: Any,
+    workload: dict[str, Any],
+    workload_name: str,
+    query: int,
+    *,
+    stage: str = "all",
+    resume: bool = False,
+    dry_run: bool = False,
+    model_overrides: dict[str, str] | None = None,
+) -> int:
+    t0 = time.time()
+    ctx = build_context(pipeline_config, workload, workload_name, query)
+    ctx.save()
+    state = VerusState.load(ctx) if resume or stage != "all" else VerusState()
+    run = Run(ctx, state, workload, pipeline_config, model_config, model_overrides or {}, dry_run)
+    if stage != "all":
+        if stage not in STAGES:
+            print(f"unknown Verus stage {stage!r}; stages: {', '.join(STAGES)}", file=sys.stderr)
+            return 2
+        todo = [stage]
+        state.done = [s for s in state.done if s != stage]  # asked for explicitly: run it again
+    else:
+        start = STAGES.index(state.stage) if resume and state.stage in STAGES else 0
+        todo = list(STAGES[start:])
+    for name in todo:
+        print(f"=== verus stage: {name} ===", file=sys.stderr)
+        if not dry_run:
+            state.stage = name
+            state.save(ctx)
+        try:
+            STAGE_FUNCS[name](run)
+        except PipelineStop as exc:
+            run.note(f"stopped in {name}: {exc}")
+            print(f"verus pipeline stopped in {name}: {exc}", file=sys.stderr)
+            _print_usage(ctx, t0)
+            return 1
+    if not dry_run and stage == "all":
+        state.stage = "done"
+        state.save(ctx)
+    print("verus pipeline complete" + (" (dry run)" if dry_run else ""), file=sys.stderr)
+    _print_usage(ctx, t0)
+    return 0
+
+
+def _print_usage(ctx: VerusContext, since: float) -> None:
+    """Agent usage of this run, per stage (from the run log's stage_complete events)."""
+    if table := usage_table(ctx.root, ctx.query, {"benchmark_name": ctx.benchmark, "engine_name": "duckdb"}, since):
+        print("agent usage (cost estimated from per-token prices):\n" + table, file=sys.stderr)

@@ -360,7 +360,7 @@ def _run_main(argv: list[str] | None = None) -> int:
     # runs on DuckDB (in-process; no host bootstrap) and skips the C++
     # base-accelerator prerequisite: it must not see C++ accelerators.
     if mode == "verus":
-        from accel_pipeline.verus.run import run_verus_pipeline
+        from accel_pipeline.verus.stages import run_verus_pipeline
 
         print(f"=== verus mode: {args.workload} ===", file=sys.stderr)
         return run_verus_pipeline(

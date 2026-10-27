@@ -282,7 +282,7 @@
   "engine": 7
  },
  "pipeline/orchestrator/accel_pipeline/mcp.py": {
-  "path": 1
+  "path": 3
  },
  "pipeline/orchestrator/accel_pipeline/optimization/bench.py": {
   "engine": 4
@@ -306,31 +306,18 @@
   "symbol": 1
  },
  "pipeline/orchestrator/accel_pipeline/verus/actions.py": {
-  "engine": 7,
+  "engine": 11,
   "engine_branch": 1,
   "target": 3
  },
- "pipeline/orchestrator/accel_pipeline/verus/agent.py": {
-  "engine": 2
- },
  "pipeline/orchestrator/accel_pipeline/verus/context.py": {
-  "target": 1
- },
- "pipeline/orchestrator/accel_pipeline/verus/params.py": {
-  "target": 1
- },
- "pipeline/orchestrator/accel_pipeline/verus/sandbox.py": {
-  "engine": 4
+  "engine": 1,
+  "target": 2
  },
  "pipeline/orchestrator/accel_pipeline/verus/stages.py": {
-  "engine": 1,
+  "engine": 3,
+  "engine_branch": 1,
   "target": 1
- },
- "pipeline/orchestrator/accel_pipeline/verus/tools.py": {
-  "engine": 1
- },
- "pipeline/orchestrator/accel_pipeline/verus/workspace.py": {
-  "engine": 1
  },
  "pipeline/orchestrator/pyproject.toml": {
   "engine": 1
@@ -432,7 +419,7 @@
   "engine": 1,
   "engine_branch": 1
  },
- "pipeline/orchestrator/tests/test_verus_pipeline.py": {
+ "pipeline/orchestrator/tests/test_verus.py": {
   "engine": 1
  },
  "pipeline/prompts/aux_state/shared/aux_state_taxonomy.md": {

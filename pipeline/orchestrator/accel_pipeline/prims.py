@@ -95,10 +95,10 @@ def _run(cmd: list[str], *, cwd: Path, env: dict[str, str] | None = None, timeou
 
 
 @contextmanager
-def file_lock(path: Path) -> Iterator[None]:
+def file_lock(path: Path, *, shared: bool = False) -> Iterator[None]:
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "a+") as fh:
-        fcntl.flock(fh, fcntl.LOCK_EX)
+        fcntl.flock(fh, fcntl.LOCK_SH if shared else fcntl.LOCK_EX)
         try:
             yield
         finally:

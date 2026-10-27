@@ -94,7 +94,7 @@ MODE_TOOLS = {
     "optimization": "accel_pipeline.optimization.loop",
     "engine_backend": "accel_pipeline.engine_backend",
     "pack": "accel_pipeline.pack",
-    "verus": "accel_pipeline.verus.tools",
+    "verus": "accel_pipeline.verus.actions",
 }
 
 
@@ -401,7 +401,7 @@ def main(argv: list[str] | None = None) -> int:
         register_core(tool, _call)
     for mode in modes:
         module = mode_tools(mode)
-        module.register(tool, module.call if mode == "verus" else _call)
+        module.register(tool, _call)
 
     mcp.run(transport="stdio")
     return 0

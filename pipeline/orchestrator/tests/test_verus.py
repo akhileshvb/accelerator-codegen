@@ -1,4 +1,4 @@
-"""Verus pipeline (--mode verus): stopping logic, trust gates, prompts, routing."""
+"""Verus pipeline (--mode verus): stopping logic, trust gates, prompts, MCP tools, random parameters, routing."""
 
 from __future__ import annotations
 
@@ -8,11 +8,11 @@ from pathlib import Path
 
 import pytest
 
-from accel_pipeline.verus import actions
-from accel_pipeline.verus.agent import json_block, render
+from accel_pipeline.data import split_tuple
+from accel_pipeline.verus import actions, context
+from accel_pipeline.verus.actions import TOOLS
 from accel_pipeline.verus.context import VerusContext
-from accel_pipeline.verus.stopping import Attempt, StopConfig, StopState, should_stop, uncovered
-from accel_pipeline.verus.tools import TOOLS
+from accel_pipeline.verus.stages import Attempt, StopConfig, StopState, json_block, render, should_stop, uncovered
 
 REPO = Path(__file__).resolve().parents[3]
 
@@ -212,26 +212,26 @@ def test_parallel_jobs_overlap_and_failures_stop_the_run(tmp_path: Path) -> None
     assert seen == ["tests"]  # the other job still finished before the stop
 
 
-def _registered_wrappers() -> dict:
-    from accel_pipeline.verus import tools
-
-    wrappers = {}
-
-    def tool(*, read_only):
-        return lambda fn: wrappers.setdefault(fn.__name__, fn)
-
-    tools.register(tool, lambda name, *args: None)
-    return wrappers
-
-
-def test_mcp_wrappers_pass_every_tool_parameter() -> None:
-    """Each verus_* MCP wrapper takes exactly its tool's parameters (a dropped one is silently ignored)."""
+def test_mcp_registration_serves_every_tool_with_its_own_parameters(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every tool is registered under its name with its body's parameters (without the run context); a failing
+    call answers the agent with JSON, not an exception."""
     import inspect
 
+    registered = {}
 
-    wrappers = _registered_wrappers()
-    for name, fn in TOOLS.items():
-        assert list(inspect.signature(wrappers[name]).parameters) == list(inspect.signature(fn).parameters), name
+    def tool(*, read_only):
+        return lambda fn: registered.setdefault(fn.__name__, fn)
+
+    actions.register(tool, None)
+    assert set(registered) == set(TOOLS) and "prooflib_publish" in registered
+    assert list(inspect.signature(registered["verus_test"]).parameters) == ["snapshots", "proofs"]
+    assert list(inspect.signature(registered["playbook_append"]).parameters) == ["section", "title", "body", "evidence"]
+    monkeypatch.delenv("ACCEL_VERUS_CONTEXT", raising=False)
+    assert json.loads(registered["verus_sql"]("select 1"))["tool"] == "verus_sql"
+    ctx = _ctx(tmp_path)
+    monkeypatch.setenv("ACCEL_VERUS_CONTEXT", str(ctx.save()))
+    monkeypatch.setattr(actions, "sql", lambda c, q, n: {"rows": [q, n]})
+    assert json.loads(registered["verus_sql"]("select 1", 3)) == {"rows": ["select 1", 3]}
 
 
 def test_stalled_fix_rounds_get_a_second_opinion(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -265,8 +265,7 @@ def test_stalled_fix_rounds_get_a_second_opinion(monkeypatch: pytest.MonkeyPatch
     assert len(advised) == 1
     # round 1 progressed; rounds 2-3 stalled; round 4 carries the advice (same stage and session); round 5 plain
     assert calls == [("verus_kernel", "S1", False)] * 3 + [("verus_kernel", "S1", True), ("verus_kernel", "S1", False)]
-    from accel_pipeline.verus.tools import enabled_tools as stage_tools
-    assert "verus_verify" in stage_tools("verus_kernel_advisor")
+    assert "verus_verify" in actions.enabled_tools("verus_kernel_advisor")
 
 
 # ───────────────────────────── random parameters ─────────────────────────────
@@ -283,10 +282,8 @@ def _pctx(tmp: Path, query: int = 21, sql: str = "SELECT 1 WHERE x = $1") -> Ver
 
 
 def test_draw_seeds_differ_and_are_recorded(tmp_path):
-    from accel_pipeline.verus import params as qp
-
     ctx = _pctx(tmp_path)
-    draws = [qp.new_draw(ctx, "bench") for _ in range(4)]
+    draws = [context.new_draw(ctx, "bench") for _ in range(4)]
     assert len({d.seed for d in draws}) == 4
     for d in draws:
         rec = json.loads(d.record.read_text())
@@ -295,49 +292,41 @@ def test_draw_seeds_differ_and_are_recorded(tmp_path):
 
 
 def test_draw_replays_with_its_seed_and_stays_in_domain(tmp_path):
-    from accel_pipeline.verus import params as qp
-
     ctx = _pctx(tmp_path)
-    a = qp.new_draw(ctx, "a", seed=123)
-    b = qp.new_draw(ctx, "b", seed=123)
+    a = context.new_draw(ctx, "a", seed=123)
+    b = context.new_draw(ctx, "b", seed=123)
     assert a.sets == b.sets
     nations = {"ALGERIA", "ARGENTINA", "BRAZIL", "CANADA", "EGYPT", "ETHIOPIA", "FRANCE", "GERMANY", "INDIA",
                "INDONESIA", "IRAN", "IRAQ", "JAPAN", "JORDAN", "KENYA", "MOROCCO", "MOZAMBIQUE", "PERU", "CHINA",
                "ROMANIA", "SAUDI ARABIA", "VIETNAM", "RUSSIA", "UNITED KINGDOM", "UNITED STATES"}
     for _ in range(5):
-        for t in qp.new_draw(ctx, "c").sets:
-            assert qp.split_tuple(t)[0].strip("'") in nations  # q21: one nation
+        for t in context.new_draw(ctx, "c").sets:
+            assert split_tuple(t)[0].strip("'") in nations  # q21: one nation
 
 
 def test_draw_arity_matches_the_query(tmp_path):
-    from accel_pipeline.verus import params as qp
-
     ctx = _pctx(tmp_path, query=12, sql="... $1 $2 $3 $4")
-    for t in qp.new_draw(ctx, "x").sets:
-        assert len(qp.split_tuple(t)) == 4
-    assert qp.split_tuple("'A, B', DATE '1995-01-01', 0.05") == ["'A, B'", "DATE '1995-01-01'", "0.05"]
-    assert qp.split_tuple("'it''s, ok', 3") == ["'it''s, ok'", "3"]
+    for t in context.new_draw(ctx, "x").sets:
+        assert len(split_tuple(t)) == 4
+    assert split_tuple("'A, B', DATE '1995-01-01', 0.05") == ["'A, B'", "DATE '1995-01-01'", "0.05"]
+    assert split_tuple("'it''s, ok', 3") == ["'it''s, ok'", "3"]
 
 
 def test_no_parameters_no_draw(tmp_path):
-    from accel_pipeline.verus import params as qp
-
-    assert qp.new_draw(_pctx(tmp_path, sql="SELECT 1"), "x") is None
+    assert context.new_draw(_pctx(tmp_path, sql="SELECT 1"), "x") is None
 
 
 def test_check_query_rejects_literal_like(tmp_path):
-    from accel_pipeline.verus import params as qp
-
     # q2's type pattern left as a literal: fewer $n than its domain
     ctx = _pctx(tmp_path / "a", query=2, sql="SELECT 1 WHERE p_type LIKE '%BRASS' AND s = $1 AND r = $2")
-    assert "literal" in qp.check_query(ctx)
+    assert "literal" in context.check_query(ctx)
     # a literal the benchmark fixes (q16's complaints pattern) is not a substitution parameter
     q16 = ("SELECT 1 WHERE p_brand <> $1 AND p_type NOT LIKE $2 AND p_size IN ($3, $4, $5, $6, $7, $8, $9, $10) "
            "AND s_comment LIKE '%Customer%Complaints%'")
-    assert qp.check_query(_pctx(tmp_path / "d", query=16, sql=q16)) == ""
+    assert context.check_query(_pctx(tmp_path / "d", query=16, sql=q16)) == ""
     ctx = _pctx(tmp_path / "b", query=21, sql="SELECT 1 WHERE n = $1 AND p LIKE $2")
-    assert "parameters" in qp.check_query(ctx)  # q21's domain has one parameter
-    assert qp.check_query(_pctx(tmp_path / "c", query=21)) == ""
+    assert "parameters" in context.check_query(ctx)  # q21's domain has one parameter
+    assert context.check_query(_pctx(tmp_path / "c", query=21)) == ""
 
 
 def test_paired_bench_shares_one_draw_and_new_decisions_differ(tmp_path, monkeypatch):
@@ -378,9 +367,7 @@ def test_random_params_added_once_to_frozen_tests(tmp_path):
 
 
 def test_runner_env_modes(tmp_path):
-    from accel_pipeline.verus import params as qp
-
-    d = qp.new_draw(_pctx(tmp_path), "x")
-    assert "VERUS_KIT_PARAMS_FILE" in qp.runner_env(d, "replace")
-    assert "VERUS_KIT_EXTRA_PARAMS_FILE" in qp.runner_env(d, "extra")
-    assert qp.runner_env(None, "replace") == {}
+    d = context.new_draw(_pctx(tmp_path), "x")
+    assert "VERUS_KIT_PARAMS_FILE" in context.draw_env(d, "replace")
+    assert "VERUS_KIT_EXTRA_PARAMS_FILE" in context.draw_env(d, "extra")
+    assert context.draw_env(None, "replace") == {}

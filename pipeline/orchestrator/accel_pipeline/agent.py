@@ -14,8 +14,8 @@ obstacle is not in its files.
 
 The sandbox: ``prefix(binds, cwd)`` is the mode-agnostic part: the system mounts, fresh /tmp /run /home, codex and
 the binds a mode asks for. A bind is ``(mode, src, dst)``, mode ``rw`` | ``ro`` | ``symlink``; later binds win, so a
-read-only layer re-bound over a read-write tree stays read-only. The Verus mounts live in ``verus.sandbox``; the C++
-ones (``cpp_mounts``) are here. The sandbox cuts what an agent can write (substrate/, workloads/) and see;
+read-only layer re-bound over a read-write tree stays read-only. The Verus mounts (an allowlisted clean room) are built
+in ``verus.context``; the C++ ones (``cpp_mounts``) are here. The sandbox cuts what an agent can write (substrate/, workloads/) and see;
 ownership between queries and backends is checked after the stage (``layout.StageWriteCheck``).
 """
 from __future__ import annotations
@@ -113,13 +113,16 @@ def create_agent_backend(
     model_config: ModelConfig,
     workload_name: str = "",
     optimization_iter: int = 0,
+    art_dir: Path | None = None,
+    command_prefix: list[str] | None = None,
 ) -> CodexExecBackend:
+    """The backend for a stage. A mode with its own artifact directory and sandbox (Verus) passes `art_dir` and
+    the bwrap `command_prefix` it built from `prefix`; otherwise they follow the stage and the config."""
     resolved = provider or resolve_stage_provider(stage, model_config)
     if resolved != "codex_exec":
         raise ValueError(f"unsupported provider: {resolved!r}")
 
-    art_dir = None
-    if stage in _ARTIFACT_STAGES and workload_name:
+    if art_dir is None and stage in _ARTIFACT_STAGES and workload_name:
         workload = load_run_workload(pipeline_config, workload_name)
         art_dir = query_artifacts_dir(pipeline_config.repo_root, query, workload=workload)
 
@@ -132,8 +135,10 @@ def create_agent_backend(
         optimization_iter=optimization_iter,
         art_dir=art_dir,
     )
-    if getattr(pipeline_config, "sandbox", "none") == "bwrap":
-
+    if command_prefix is not None:
+        backend.command_prefix = command_prefix
+        backend.prompt_via_stdin = True
+    elif getattr(pipeline_config, "sandbox", "none") == "bwrap":
         backend.command_prefix = cpp_prefix(pipeline_config)
         backend.prompt_via_stdin = True  # the sandbox has its own /tmp: no task file to read back
     return backend
