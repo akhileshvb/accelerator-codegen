@@ -68,4 +68,4 @@ Engine-neutral pieces to reuse (they are in the clean tree): `eval/bench/driver/
 
 ## Exit criterion
 
-`request_gate` **`host_bootstrap`** passes: every target in the table above built through `host.sh build`, the differential ran on a registered query (or answered `--help` when none is registered yet), every other target (with the module test of a registered query) answered `--help`, and the harness files name no query and no benchmark. A critic then reads the harnesses and may send you back for stubs.
+`request_gate` **`host_bootstrap`** passes: every target in the table above built through `host.sh build`, the differential ran on a registered query (or answered `--help` when none is registered yet), every other target (with the module test of a registered query) answered `--help`, and the harness files name no query and no benchmark. A critic then reads the harnesses and may send you back for stubs. A defect a query run recorded names the gate that found it: check your fix with `request_gate` on that gate too (gate scripts need the orchestrator's environment; never run them by hand).

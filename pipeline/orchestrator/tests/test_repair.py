@@ -431,6 +431,18 @@ def test_a_harness_defect_a_gate_finds_goes_to_host_bootstrap_without_an_agent_r
     assert reported == ["gate:test_suite_validate"] and revisions == [] and world.agent_messages == []
 
 
+def test_a_recorded_harness_defect_is_reproduced_through_request_gate(world):
+    from accel_pipeline.engine_backend import pending_harness_requests
+
+    ctx = world.ctx()
+    ctx.workload = {**ctx.workload, "engine_name": "toyengine"}
+    failure = repair_mod.Failure(kind="infra", stage="test_suite", source="gate:test_suite_validate",
+                                 summary="wrote no suite report", reproduce="bash pipeline/gates/run_test_suite_validate.sh 3")
+    repair_mod.report_harness_defect(ctx, failure)
+    text = pending_harness_requests(ctx.pipeline_config.repo_root, "toyengine")
+    assert 'request_gate("test_suite_validate")' in text and "bash pipeline/gates" not in text
+
+
 def test_test_data_that_does_not_load_stops_the_stage_without_a_repair_round(world):
     load = "[host.sh up] rc=0\n[host.sh load workloads/toybench/schema.sql] rc=1\nConstraint Error: violates foreign key"
     world.gate_script = [gate_fail(text=load)]

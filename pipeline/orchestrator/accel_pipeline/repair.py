@@ -431,13 +431,15 @@ def repair_turn(ctx: RepairCtx, failure: Failure, *, must_change: bool | None = 
 
 
 def report_harness_defect(ctx: RepairCtx, failure: Failure) -> None:
-    """Record a gate's finding against the workload harness as a request to host_bootstrap."""
+    """Record a gate's finding against the workload harness as a request to host_bootstrap, reproduced through
+    request_gate (the gate's own shell command needs the orchestrator's environment)."""
     from accel_pipeline.engine_backend import record
 
+    gate = failure.source.removeprefix("gate:")
     if engine := str(ctx.workload.get("engine_name") or ""):
         record(ctx.pipeline_config.repo_root, sanitize_engine_name(engine), {
             "benchmark": str(ctx.workload.get("benchmark_name") or ""), "query": ctx.query, "scope": "harness",
-            "helper": failure.source, "reason": render_failure(failure)})
+            "helper": failure.source, "reason": render_failure(replace(failure, reproduce=f'request_gate("{gate}")'))})
 
 
 def revise_upstream(ctx: RepairCtx) -> bool:
