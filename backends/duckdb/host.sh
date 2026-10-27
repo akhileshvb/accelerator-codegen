@@ -74,7 +74,7 @@ cmd_sql() { # file | -
   head="$(mktemp)" tail="$(mktemp)"
   python3 -I "${HERE}/host/split_last.py" "${head}" "${tail}" < <(cat "${1:--}")
   duckdb_cli "${DB}" <"${head}" >/dev/null
-  duckdb_cli -csv "${DB}" <"${tail}"
+  duckdb_cli -csv -nullvalue '' "${DB}" <"${tail}"
   rm -f "${head}" "${tail}"
 }
 

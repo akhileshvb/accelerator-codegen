@@ -175,7 +175,7 @@ cmd_sql() { # file | -
 import csv, sys
 w = csv.writer(sys.stdout, lineterminator="\n")
 for line in sys.stdin:
-    w.writerow(line.rstrip("\n").split("\t"))'
+    w.writerow("" if f == "NULL" else f for f in line.rstrip("\n").split("\t"))'
   rm -f "${head}" "${tail}"
 }
 
