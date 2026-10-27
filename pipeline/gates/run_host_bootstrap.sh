@@ -112,7 +112,20 @@ print(row.get('accel_hit_rate', '') + '|' + ' '.join(c for c in required if c no
   [[ "${rc}" -eq 0 ]]
 }
 if [[ -n "${REGISTERED_QUERY}" ]]; then
-  bench_read_only || finish fail "the bench failed on a read-only run: ${HARNESS_BENCH_TARGET} --query ${REGISTERED_QUERY}" "${ENGINE_LOG}${SMOKE_LOG}"
+  # run_profile's window (ACCEL_PROFILE_CONTROL, bench_sweep_contract.md): a reader on a fifo records what the bench sends
+  PROFILE_FIFO="${GATE_OUT}/host_bootstrap.profile.ctl"
+  rm -f "${PROFILE_FIFO}" "${PROFILE_FIFO}.seen"
+  mkfifo "${PROFILE_FIFO}"
+  cat "${PROFILE_FIFO}" >"${PROFILE_FIFO}.seen" &
+  PROFILE_READER=$!
+  bench_read_only "ACCEL_PROFILE_CONTROL=${PROFILE_FIFO}" ||
+    finish fail "the bench failed on a read-only run: ${HARNESS_BENCH_TARGET} --query ${REGISTERED_QUERY}" "${ENGINE_LOG}${SMOKE_LOG}"
+  exec 3<>"${PROFILE_FIFO}"  # a writer that never blocks: the reader ends whether or not the bench opened the fifo
+  exec 3>&-
+  wait "${PROFILE_READER}" || true
+  grep -q enable "${PROFILE_FIFO}.seen" || finish fail "the bench never opened run_profile's window: it must wrap its \
+measured read loop in driver::ProfileWindow (ACCEL_PROFILE_CONTROL, bench_sweep_contract.md)" "${ENGINE_LOG}${SMOKE_LOG}"
+  rm -f "${PROFILE_FIFO}" "${PROFILE_FIFO}.seen"
   HIT_RATE="${BENCH_HIT_RATE}"
   [[ -z "${BENCH_MISSING}" ]] ||
     finish fail "the bench row lacks the required columns ${BENCH_MISSING} (bench_sweep_contract.md)" "${ENGINE_LOG}${SMOKE_LOG}"
