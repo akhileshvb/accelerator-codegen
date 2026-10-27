@@ -10,6 +10,7 @@ from accel_pipeline.config import (
     resolve_workload_paths,
     analysis_artifact_path,
     query_artifacts_dir,
+    benchmark_of,
 )
 from accel_pipeline.gates.run import run_gate
 from accel_pipeline.layout import query_dir
@@ -74,7 +75,7 @@ def run(
             user_message=_implementation_user_message(pipeline_config, workload, query),
             model_overrides=model_overrides,
             dry_run=dry_run,
-            must_change=pipeline_config.repo_root / query_dir(str(workload.get("benchmark_name", "tpch")), query),
+            must_change=pipeline_config.repo_root / query_dir(benchmark_of(workload), query),
             session_role=MAIN,
         )
 

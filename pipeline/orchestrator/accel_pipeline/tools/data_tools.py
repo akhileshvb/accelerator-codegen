@@ -29,13 +29,19 @@ import sqlglot
 from sqlglot import exp
 from sqlglot.tokens import Tokenizer, TokenType
 
-from accel_pipeline import datasets
+from accel_pipeline import data
+from accel_pipeline.data import (
+    DataToolContext,
+    Dataset,
+    HostSql,
+    build_data_shape_markdown,
+    catalog_sql,
+    md_table,
+)
 from accel_pipeline.config import PipelineConfig, pipeline_root
-from accel_pipeline.datasets import build_data_shape_markdown, catalog_sql, md_table
 from accel_pipeline.engine_host import host_script, instance_env
 
 LOG_FILE = "data_queries.jsonl"
-CATALOG_SECONDS = 30.0
 
 _LEADING = {"SELECT", "WITH", "EXPLAIN", "DESCRIBE", "DESC", "SUMMARIZE", "SHOW", "VALUES", "FROM"}
 _FORBIDDEN = {
@@ -89,197 +95,13 @@ def _csv(header: list[str], rows: list[tuple] | list[list]) -> str:
     return out.getvalue().rstrip("\n")
 
 
-class HostSql:
-    """`host.sh sql -` of the run's engine instance: one statement in, CSV out, time-boxed."""
-
-    def __init__(self, ctx: "DataToolContext") -> None:
-        cfg = ctx.pipeline_config
-        self.cfg = cfg
-        self.engine = str(ctx.workload.get("engine_name") or "")
-        profile = _read_data_sql(self.engine, pipeline_root(cfg.repo_root))
-        self.dialect = str(profile.get("dialect") or "")  # empty: the neutral dialect
-        self.catalog_sql = str(profile.get("catalog_columns_sql") or "")
-        self.env = {**os.environ, **instance_env(cfg.repo_root, self.engine, cfg.build_dir)}
-
-    def require_up(self) -> None:
-        if not self.engine or not host_script(self.cfg.repo_root, self.engine).is_file():
-            raise RuntimeError(f"no host.sh for engine {self.engine!r}: the data tools need the target engine")
-        if not (Path(self.env["ACCEL_ENGINE_STATE_DIR"]) / "env").is_file():  # written by `up`
-            raise RuntimeError("the engine instance is not up (host.sh up, then load the dataset)")
-
-    def _run(self, sql: str, seconds: float, max_lines: int) -> tuple[int, list[str]]:
-        """(exit code, first max_lines output lines); the process group is killed at the time box or the line cap."""
-        # One statement at a time on the instance: an embedded engine's database file takes one process, and an agent
-        # that issues several tool calls at once would otherwise get lock errors from all but the first.
-        lock = (Path(self.env["ACCEL_ENGINE_STATE_DIR"]) / "data_tools.lock").open("a")
-        fcntl.flock(lock, fcntl.LOCK_EX)
-        try:
-            return self._run_locked(sql, seconds, max_lines)
-        finally:
-            lock.close()
-
-    def _run_locked(self, sql: str, seconds: float, max_lines: int) -> tuple[int, list[str]]:
-        proc = subprocess.Popen(
-            [str(host_script(self.cfg.repo_root, self.engine)), "sql", "-"], cwd=self.cfg.repo_root, env=self.env,
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, start_new_session=True,
-        )
-        timer = _Killer(proc, time.monotonic() + seconds)
-        try:
-            proc.stdin.write(sql)
-            proc.stdin.close()
-            lines: list[str] = []
-            for line in proc.stdout:
-                lines.append(line.rstrip("\n"))
-                if len(lines) >= max_lines:
-                    timer.kill()
-                    break
-            proc.wait()
-        finally:
-            timer.cancel()
-        if timer.fired_on_deadline:
-            raise TimeoutError(f"exceeded the {seconds:g} s time box")
-        return proc.returncode, lines
-
-    def query(self, sql: str, seconds: float, max_rows: int) -> tuple[list[list[str]], bool]:
-        """(header + at most max_rows rows, more rows exist)."""
-        code, lines = self._run(sql, seconds, max_rows + 2)  # header, the rows, one more to tell
-        text = "\n".join(lines)
-        if code != 0 and len(lines) < max_rows + 2:
-            raise RuntimeError(text[-1500:] or f"host.sh sql exited {code}")
-        parsed = list(csv.reader(io.StringIO(text)))
-        return parsed[: max_rows + 1], len(parsed) > max_rows + 1
-
-    def rows(self, sql: str, seconds: float) -> list[list[str | None]]:
-        """The rows of a statement (no header), NULL as None (CSV shows it as an empty cell)."""
-        table, more = self.query(sql, seconds, 10_000_000)
-        return [[c if c != "" else None for c in row] for row in table[1:]]
-
-
-def _read_data_sql(engine: str, root: Path) -> dict[str, Any]:
-    """The engine profile's data_sql block ({} when the engine states none)."""
-    import yaml
-
-    path = root / "config" / "workloads" / f"engine_{engine}.yaml"
-    if not engine or not path.is_file():
-        return {}
-    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    return dict((data.get("engine_profile") or {}).get("data_sql") or {})
-
-
-@dataclass
-class DataToolContext:
-    pipeline_config: PipelineConfig
-    workload: dict[str, Any]
-    query: int
-    art: Path  # the run's artifacts: data_queries.jsonl goes here
-
-    @property
-    def limits(self):
-        return self.pipeline_config.data_tools
-
-
-class Dataset:
-    """The engine's dataset: its catalog, row counts and time-boxed portable statements."""
-
-    def __init__(self, ctx: DataToolContext) -> None:
-        self.runner = HostSql(ctx)
-        self.runner.require_up()
-        seconds = ctx.limits.query_seconds
-        self.probe = datasets.Probe(self.runner, statement_seconds=seconds, total_seconds=seconds)
-        try:
-            self.schema = datasets.read_schema(self.runner, CATALOG_SECONDS, self.runner.catalog_sql)
-        except (RuntimeError, TimeoutError) as exc:
-            raise RuntimeError(f"cannot read the engine's catalog: {exc}") from exc
-        if not self.schema:
-            raise RuntimeError("the engine instance has no tables: load the dataset (host.sh load)")
-        self._rows: dict[str, int] = {}
-
-    @property
-    def dialect(self) -> str | None:
-        return self.runner.dialect or None
-
-    def rows(self, table: str) -> int:
-        if table not in self._rows:
-            self._rows[table] = self.probe.count(f"SELECT COUNT(*) FROM {datasets._q(table)}") or 0
-        return self._rows[table]
-
-    def column(self, spec: str) -> tuple[str, str]:
-        """`table.column` (any case) resolved against the catalog."""
-        table, _, column = spec.strip().partition(".")
-        tables = {t.lower(): t for t in self.schema}
-        if table.lower() not in tables:
-            raise ValueError(f"unknown table {table!r} in {spec!r}; tables: {', '.join(sorted(self.schema))}")
-        table = tables[table.lower()]
-        columns = {c.lower(): c for c in self.schema[table]}
-        if column.lower() not in columns:
-            raise ValueError(f"unknown column {column!r} in {table}; columns: {', '.join(self.schema[table])}")
-        return table, columns[column.lower()]
-
-    def sampling_note(self, tables: list[str]) -> str:
-        big = [f"{t} ({self.rows(t):,} rows)" for t in dict.fromkeys(tables) if self.rows(t) > datasets.SAMPLE_ROWS]
-        if not big:
-            return f"exact (tables are at most {datasets.SAMPLE_ROWS:,} rows)"
-        return (f"sampled: about {datasets.SAMPLE_ROWS:,} rows of {', '.join(big)} (key modulo, or a prefix without an "
-                "integer column); counts are rescaled, quantiles and NDV are estimates")
-
-    def table_of(self, predicate: str) -> str:
-        """The one table whose columns a predicate uses (qualified `table.column` or bare column names)."""
-        tree = datasets.parse_template(f"SELECT 1 WHERE {predicate}", self.dialect)
-        candidates: set[str] | None = None
-        for col in tree.find_all(exp.Column):
-            owners = (
-                {t for t in self.schema if t.lower() == col.table.lower()} if col.table
-                else {t for t, cols in self.schema.items() if col.name.lower() in {c.lower() for c in cols}}
-            )
-            candidates = owners if candidates is None else candidates & owners
-        if not candidates or len(candidates) > 1:
-            raise ValueError(
-                "the predicate must use columns of exactly one table (qualify them as table.column); "
-                f"candidates: {sorted(candidates or [])}"
-            )
-        return next(iter(candidates))
-
-
-def dataset_row_counts(ctx: DataToolContext, tables: list[str]) -> dict[str, int]:
-    """Row counts of `tables` in the engine's dataset; {} when the engine cannot be reached."""
-    try:
-        ds = Dataset(ctx)
-        found = {t.lower(): t for t in ds.schema}
-        return {found[t.lower()]: ds.rows(found[t.lower()]) for t in tables if t.lower() in found}
-    except (RuntimeError, TimeoutError, OSError):
-        return {}
-
-
 def _source(ds: Dataset, table: str) -> tuple[str, float]:
-    return datasets.sample_of(table, ds.rows(table), ds.schema[table])
+    return data.sample_of(table, ds.rows(table), ds.schema[table])
 
 
 def _quantile_cells(res: tuple) -> list[Any]:
     n, lo, qs, hi = res
     return [f"{n:,}", lo, qs[0], qs[1], qs[2], hi]
-
-
-class _Killer:
-    """Kills a process group at a deadline or on request."""
-
-    def __init__(self, proc: subprocess.Popen, deadline: float) -> None:
-        self.proc = proc
-        self.fired_on_deadline = False
-        self._timer = threading.Timer(max(deadline - time.monotonic(), 0.0), self._expire)
-        self._timer.start()
-
-    def _expire(self) -> None:
-        self.fired_on_deadline = True
-        self.kill()
-
-    def kill(self) -> None:
-        try:
-            os.killpg(self.proc.pid, signal.SIGKILL)
-        except (ProcessLookupError, PermissionError):
-            pass
-
-    def cancel(self) -> None:
-        self._timer.cancel()
 
 
 def make_data_tools(ctx: DataToolContext) -> dict[str, Callable[..., str]]:
@@ -334,7 +156,7 @@ def make_data_tools(ctx: DataToolContext) -> dict[str, Callable[..., str]]:
             rows = []
             for table in dict.fromkeys(t for t, _ in refs):
                 cols = [c for t, c in refs if t == table]
-                found = datasets.column_stats(ds.probe, table, cols, ds.schema[table], ds.rows(table))
+                found = data.column_stats(ds.probe, table, cols, ds.schema[table], ds.rows(table))
                 for c in cols:
                     st = found.get(c)
                     if st:
@@ -358,7 +180,7 @@ def make_data_tools(ctx: DataToolContext) -> dict[str, Callable[..., str]]:
             (lt, lc), (rt, rc) = ds.column(left), ds.column(right)
             rows = []
             for (t, c), (ot, oc) in (((lt, lc), (rt, rc)), ((rt, rc), (lt, lc))):
-                res, match = datasets.fanout(ds.probe, t, c, ot, oc, ds.rows(t), ds.schema[t])
+                res, match = data.fanout(ds.probe, t, c, ot, oc, ds.rows(t), ds.schema[t])
                 if res:
                     rows.append([f"{t}.{c} -> {ot}.{oc}", f"{res[0]:,}", res[1], res[2], res[3],
                                  "-" if match is None else f"{match:.1%}"])
@@ -390,8 +212,8 @@ def make_data_tools(ctx: DataToolContext) -> dict[str, Callable[..., str]]:
             src, scale = _source(ds, table)
             rows = []
             for v in values:
-                where = re.sub(r"\$1\b", lambda _: datasets.literal(v), predicate_sql)
-                n = ds.probe.count(f"SELECT COUNT(*) FROM {src} AS {datasets._q(table)} WHERE {where}")
+                where = re.sub(r"\$1\b", lambda _: data.literal(v), predicate_sql)
+                n = ds.probe.count(f"SELECT COUNT(*) FROM {src} AS {data._q(table)} WHERE {where}")
                 n = None if n is None else int(n * scale)
                 rows.append([v, "-" if n is None else f"{n:,}", "-" if n is None or not total else f"{n / total:.2%}"])
             text = (f"table {table} ({total:,} rows); {ds.sampling_note([table])}\n\n"
@@ -410,13 +232,13 @@ def make_data_tools(ctx: DataToolContext) -> dict[str, Callable[..., str]]:
         def run() -> tuple[str, dict[str, Any]]:
             ds = Dataset(ctx)
             ka, kb = ds.column(a), ds.column(b)
-            shape = datasets.QueryShape()
+            shape = data.QueryShape()
             if ka[0] != kb[0]:
                 shape.joins.append(_equality(ds, join_sql, {ka[0], kb[0]}))
-            res, _ = datasets.spread(ds.probe, ka, kb, shape, {t: ds.rows(t) for t in {ka[0], kb[0]}}, ds.schema)
+            res, _ = data.spread(ds.probe, ka, kb, shape, {t: ds.rows(t) for t in {ka[0], kb[0]}}, ds.schema)
             if not res:
                 raise RuntimeError("no result (timed out, or no joined rows)")
-            unit = "days" if datasets.type_family(ds.schema[ka[0]][ka[1]]) == "date" else "units"
+            unit = "days" if data.type_family(ds.schema[ka[0]][ka[1]]) == "date" else "units"
             text = (f"{a} - {b} over {'joined ' if ka[0] != kb[0] else ''}rows, in {unit}; "
                     f"{ds.sampling_note([ka[0], kb[0]])}\n\n"
                     + "\n".join(md_table(["rows", "min", "p1", "p50", "p99", "max"], [_quantile_cells(res)])))
@@ -456,7 +278,7 @@ def _equality(ds: Dataset, join_sql: str, tables: set[str]) -> tuple[tuple[str, 
     """The two (table, column) sides of `join_sql`, an equality between columns of `tables`."""
     if not join_sql.strip():
         raise ValueError("join_sql is required when the columns are in different tables")
-    tree = datasets.parse_template(f"SELECT 1 WHERE {join_sql}", ds.dialect).args["where"].this
+    tree = data.parse_template(f"SELECT 1 WHERE {join_sql}", ds.dialect).args["where"].this
     if not (isinstance(tree, exp.EQ) and isinstance(tree.this, exp.Column) and isinstance(tree.expression, exp.Column)):
         raise ValueError("join_sql must be one equality between two columns")
     sides = []

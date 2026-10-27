@@ -1,4 +1,4 @@
-# The write frequency the benchmarks sample from on every run (accel_pipeline.test_suite.
+# The write frequency the benchmarks sample from on every run (accel_pipeline.data.
 # draw_write_frequencies: 0% is always added). 1-60% spans the range an accelerator has to stay fast
 # across: from a nearly read-only stream (a few refreshes per thousand reads) to a write-heavy stream
 # where more than half the operations maintain the state. The range is wider than the pipeline default

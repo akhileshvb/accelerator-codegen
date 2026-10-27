@@ -6,7 +6,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from accel_pipeline.config import PipelineConfig, load_workload, resolve_workload_paths, with_facts
+from accel_pipeline.config import PipelineConfig, load_workload, resolve_workload_paths, with_facts, benchmark_of
 
 
 def _substitute(template: str, values: dict[str, str]) -> str:
@@ -66,7 +66,7 @@ def _build_stub_values(
     query: int,
     manifest: dict[str, dict[str, list[str]]] | None = None,
 ) -> dict[str, str]:
-    benchmark = str(workload.get("benchmark_name", "tpch"))
+    benchmark = benchmark_of(workload)
     header_basename = str(
         workload.get("header_basename", paths["header_path"].split("/")[-1].replace(".hpp", ""))
     )
@@ -118,7 +118,7 @@ def materialize_workload_stubs(
     repo = pipeline_config.repo_root
     pipe = pipeline_config.pipeline_root
     paths = resolve_workload_paths(pipeline_config, workload, query)
-    benchmark = str(workload.get("benchmark_name", "tpch"))
+    benchmark = benchmark_of(workload)
     engine = str(workload.get("engine_name") or "")
     values = _build_stub_values(with_facts(repo, workload, query), paths, query, read_api_manifest(repo, engine))
 
@@ -182,7 +182,7 @@ def _workload_name_from_gate(repo_root: Path, query: int, engine: str) -> str:
     workload_name = ctx.get("workload_name")
     if workload_name:
         return str(workload_name)
-    benchmark = str(ctx.get("benchmark_name", "tpch"))
+    benchmark = benchmark_of(ctx)
     return f"{benchmark}_q{query}"
 
 
@@ -209,7 +209,7 @@ def materialize_registration(pipeline_config: PipelineConfig, workload: dict[str
         return {"created": [], "skipped": f"engine {engine!r} has no registration scaffold"}
     if (repo / destination).is_file():
         return {"created": [], "skipped_existing": 1}
-    benchmark = str(workload.get("benchmark_name", "tpch"))
+    benchmark = benchmark_of(workload)
     analysis = json.loads(analysis_artifact_path(repo, query, workload=workload).read_text(encoding="utf-8"))
     facts = with_facts(repo, workload, query)
     accelerator_id = str(analysis["accelerator_id"])

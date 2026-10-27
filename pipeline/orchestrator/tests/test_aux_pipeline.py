@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from accel_pipeline.validation import AuxAnalysisValidationError, validate_aux_analysis, validate_aux_analysis_file
+from accel_pipeline.data import AuxAnalysisValidationError, validate_aux_analysis, validate_aux_analysis_file
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -336,7 +336,7 @@ class TestAuxAnalysisValidation:
             validate_aux_analysis(analysis)
 
     def test_repair_fills_fewer_than_three_explanation(self):
-        from accel_pipeline.validation import repair_aux_analysis
+        from accel_pipeline.data import repair_aux_analysis
 
         analysis = _sample_valid_analysis()
         analysis["state_candidate_search"]["candidates"] = analysis["state_candidate_search"]["candidates"][:2]

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from accel_pipeline.sweep_csv import STORE_DIAGNOSTIC_FIELDS, coerce_diagnostic_field
+from accel_pipeline.data import STORE_DIAGNOSTIC_FIELDS, coerce_diagnostic_field
 
 def extract_store_diagnostics(metrics: dict[str, Any] | None) -> dict[str, Any]:
     """Pull factual store/execution measurements from benchmark metrics."""

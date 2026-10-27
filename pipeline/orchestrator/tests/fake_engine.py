@@ -9,7 +9,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from accel_pipeline.config import DataToolsConfig
-from accel_pipeline.tools.data_tools import DataToolContext
+from accel_pipeline.data import DataToolContext
 
 HOST = """#!/usr/bin/env bash
 case "$1" in

@@ -1,4 +1,4 @@
-# The domain every run draws fresh random tuples from (accel_pipeline.test_suite.draw_tuples):
+# The domain every run draws fresh random tuples from (accel_pipeline.data.draw_tuples):
 # 20 tuples in the full tier, 4 in quick, 12 in the stage's validation.
 # $1 is the query's only real parameter; $2 is the end date it derives (type: derived), so every draw
 # keeps $2 = $1 + 1 month the way DuckDB's `DATE + INTERVAL '1' month` does (the day clamped to the

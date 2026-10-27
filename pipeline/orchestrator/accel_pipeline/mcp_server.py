@@ -15,6 +15,7 @@ from typing import Any, Callable, Literal
 
 from accel_pipeline.gates.run import tool_call_limit
 from accel_pipeline.config import read_json
+from accel_pipeline.data import DataToolContext
 from accel_pipeline.session import record_check, keep_alive
 from accel_pipeline.quick import profile_hot_spots
 from accel_pipeline.tools import mode_tools
@@ -100,7 +101,7 @@ def build_mcp_tool_callables(
 ) -> dict[str, Callable[..., str]]:
     from accel_pipeline.gates.run import run_gate
     from accel_pipeline.gates.stamps import current_stamp
-    from accel_pipeline.tools.data_tools import DataToolContext, make_data_tools
+    from accel_pipeline.tools.data_tools import make_data_tools
     from accel_pipeline.tools.gate_tools import (
         ToolContext as GateCtx,
         _compact_gate_payload,
@@ -206,7 +207,7 @@ def build_mcp_tool_callables(
     def validate_analysis() -> str:
         """Check analysis.json as the analysis stage will when the turn ends."""
         from accel_pipeline.config import analysis_artifact_path
-        from accel_pipeline.validation import AuxAnalysisValidationError, validate_aux_analysis_file
+        from accel_pipeline.data import AuxAnalysisValidationError, validate_aux_analysis_file
 
         try:
             validate_aux_analysis_file(analysis_artifact_path(pipeline_config.repo_root, query, workload=workload),

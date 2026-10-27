@@ -11,7 +11,7 @@ from accel_pipeline.repair import StageFailure
 from accel_pipeline.runlog import log_analysis_candidates, log_event
 from accel_pipeline.session import MAIN
 from accel_pipeline.stages.base import run_agent_stage
-from accel_pipeline.validation import AuxAnalysisValidationError, repair_aux_analysis, validate_aux_analysis_file
+from accel_pipeline.data import AuxAnalysisValidationError, repair_aux_analysis, validate_aux_analysis_file
 
 
 def _ensure_dataset(pipeline_config: PipelineConfig, workload_name: str) -> None:

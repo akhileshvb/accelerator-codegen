@@ -87,7 +87,7 @@ def workload_schema_constraints(bench: str) -> str:
 
 
 def suite_dir(bench: str, query: int | str) -> str:
-    """The query's test suite: written by the test_suite stage, then frozen (accel_pipeline.test_suite)."""
+    """The query's test suite: written by the test_suite stage, then frozen (accel_pipeline.data)."""
     return f"{ACCELERATORS}/{bench}/q{query}/tests/workload"
 
 

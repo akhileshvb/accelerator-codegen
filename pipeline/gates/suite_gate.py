@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The gates' side of the frozen test suite (accel_pipeline.test_suite): what a gate script needs of it.
+"""The gates' side of the frozen test suite (accel_pipeline.data): what a gate script needs of it.
 
     suite_gate.py <root> prepare <quick|full|validate>   exports for the run: verifies the freeze, draws the run's random
                                                 tuples under a fresh seed (ACCEL_SUITE_SEED reproduces one), prints the
@@ -102,7 +102,7 @@ def main(argv: list[str]) -> int:
     if suite is None:
         return 0
     sys.path.insert(0, str(root / "pipeline" / "orchestrator"))
-    from accel_pipeline import test_suite as ts
+    from accel_pipeline import data as ts
 
     if command == "prepare":
         return prepare(ts, ctx, suite, rest[0])

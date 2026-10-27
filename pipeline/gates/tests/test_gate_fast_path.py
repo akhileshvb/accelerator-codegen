@@ -195,7 +195,7 @@ def suite_ctx(repo, suite_yaml: str) -> dict:
     orchestrator = repo / "pipeline" / "orchestrator"
     orchestrator.symlink_to(GATES.parents[0] / "orchestrator")
     sys.path.insert(0, str(orchestrator))
-    from accel_pipeline import test_suite as ts
+    from accel_pipeline import data as ts
 
     suite = repo / "suite"
     suite.mkdir()

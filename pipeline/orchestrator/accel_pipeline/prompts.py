@@ -35,7 +35,9 @@ from accel_pipeline.config import (
     resolve_workload_paths,
     sanitize_engine_name,
     with_facts,
+    benchmark_of,
 )
+from accel_pipeline.data import DataToolContext, build_data_section, dataset_row_counts, dependent_table_names
 from accel_pipeline.engine_host import format_host_block
 from accel_pipeline.gates.build_stamp import git, is_relevant
 from accel_pipeline.layout import query_dir as query_dir_of
@@ -164,7 +166,7 @@ def _shared_keys(cfg: PipelineConfig, workload: dict[str, Any], query: int, stag
                  analysis_path: Path) -> dict[str, str]:
     repo, pipe = cfg.repo_root, cfg.pipeline_root
     kind = workload.get("workload_kind")
-    benchmark = str(workload.get("benchmark_name", "tpch"))
+    benchmark = benchmark_of(workload)
     raw_engine = workload.get("engine_name")
     engine_name = str(raw_engine or "") if kind == "engine_backend" else sanitize_engine_name(str(raw_engine) if raw_engine else "")
     engine_host = dict(workload.get("engine_host") or (engine_host_conventions(engine_name, repo_root=repo) if engine_name else {}))
@@ -345,9 +347,6 @@ def _aux_keys(cfg: PipelineConfig, workload: dict[str, Any], query: int, stage: 
 
 def _analysis_reference(cfg: PipelineConfig, workload: dict[str, Any], query: int, reference_sql: str) -> dict[str, str]:
     """The query, its parameters and the data, as the analysis stages see them."""
-    from accel_pipeline.datasets import build_data_section, dependent_table_names
-    from accel_pipeline.tools.data_tools import DataToolContext, dataset_row_counts
-
     if not reference_sql.strip():
         reference_sql = (
             f"-- MISSING reference SQL at {workload.get('reference_sql_path') or '(unset)'}\n"
@@ -544,7 +543,7 @@ def build_implementation_bootstrap(
     *,
     cost_model_config: str,
 ) -> str:
-    benchmark = str(workload.get("benchmark_name", "tpch"))
+    benchmark = benchmark_of(workload)
     engine = str(workload.get("engine_name") or "")
     q = f"q{query}"
     qdir = f"accelerators/{benchmark}/{q}"

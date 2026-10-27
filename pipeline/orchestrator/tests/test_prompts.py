@@ -42,7 +42,7 @@ from accel_pipeline.prompts import (
     touched_since,
 )
 from accel_pipeline.stages import audit as audit_stage
-from accel_pipeline.validation import STATE_STORAGE_TEXT_FIELDS
+from accel_pipeline.data import STATE_STORAGE_TEXT_FIELDS
 
 
 PIPELINE_ROOT = Path(__file__).resolve().parents[2]

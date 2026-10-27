@@ -1,5 +1,5 @@
-"""The per-query test suite: format validation, seeded draws, freezing, the stage flow and its gate plumbing."""
-
+"""The run's data: the query-shape statistics the agents query, the test cuts made out of the dataset, and the
+per-query test suite (format validation, seeded draws, freezing, the stage flow and its gate plumbing)."""
 from __future__ import annotations
 
 import json
@@ -11,13 +11,233 @@ from pathlib import Path
 
 import pytest
 import yaml
+from fake_engine import make_engine, QUERY
 
-from accel_pipeline import repair as repair_mod, test_suite as ts
-from accel_pipeline.optimization.aux_bench import aggregate_sweep_repeats
+from accel_pipeline import data as data_mod, repair as repair_mod
 from accel_pipeline.config import PipelineConfig, RepairConfig, SuiteConfig
-from accel_pipeline.repair import Failure, failure_from_gate
+from accel_pipeline.data import (
+    build_data_shape_markdown,
+    cut_selects,
+    CutDatasets,
+    Dataset,
+    ensure_cut_datasets,
+    key_links,
+)
 from accel_pipeline.gates.run import GateResult
 from accel_pipeline.layout import layer_write_verdict
+from accel_pipeline.optimization.aux_bench import aggregate_sweep_repeats
+from accel_pipeline.repair import Failure, failure_from_gate
+
+
+@pytest.fixture()
+def dataset(tmp_path, monkeypatch):
+    return Dataset(make_engine(tmp_path, monkeypatch))
+
+
+def test_analysis_finds_roles_joins_params_and_spreads(dataset):
+    shape = data_mod.analyze_query(QUERY, dataset.schema, "sqlite")
+    assert shape.roles[("orders", "region")] == {"G"}
+    assert shape.roles[("events", "order_id")] == {"J"}
+    assert len(shape.joins) == 1
+    ops = {(p.table, p.column, p.op) for p in shape.params}
+    assert ops == {("orders", "kind", "="), ("orders", "placed", "<"), ("events", "happened", ">"), ("events", "amount", ">")}
+    assert [(a[1], b[1]) for a, b, _ in shape.spread_pairs] == [("placed", "happened")]
+
+
+def _markdown(dataset):
+    return build_data_shape_markdown(QUERY, dataset.runner, dataset.schema, "fake", 10, 30)
+
+
+def test_spread_values_are_the_real_differences(dataset):
+    facts = data_mod.compute(QUERY, dataset.runner, dataset.schema)
+    (_, _, _, res, sampled), = facts["spreads"]
+    n, lo, qs, hi = res
+    assert n == 400 and not sampled
+    expected = [i % 100 + 5 + i % 7 - (1 + i % 100) for i in range(400)]
+    assert (int(float(lo)), int(float(hi))) == (-max(expected), -min(expected))
+
+
+def test_large_tables_are_sampled(dataset, monkeypatch):
+    monkeypatch.setattr(data_mod, "SAMPLE_ROWS", 50)
+    facts = data_mod.compute(QUERY, dataset.runner, dataset.schema)
+    assert facts["spreads"][0][4] is True
+    assert facts["rows"] == {"events": 400, "orders": 100}
+
+
+def test_date_difference_is_built_for_the_engine_to_transpile():
+    import sqlglot
+    from sqlglot import exp
+
+    tree = sqlglot.parse_one(f"SELECT {data_mod.diff_sql('a', 'b', 'date')}")
+    assert tree.find(exp.DateDiff) is not None
+    assert "CAST" in data_mod.diff_sql("a", "b", "number")
+
+
+def test_percentiles_are_window_functions_not_engine_functions():
+    sql = data_mod._quantile_cells([0.5]) + data_mod._ranked("SELECT 1 AS v")
+    assert "OVER" in sql and "quantile" not in sql.lower() and "percentile" not in sql.lower()
+
+
+SCHEMA = """CREATE TABLE orders(id INTEGER, kind TEXT, region TEXT, placed INTEGER);
+CREATE TABLE events(order_id INTEGER, happened INTEGER, amount NUMERIC);
+"""
+JOINS = [(("orders", "o_custkey"), ("customer", "c_custkey")), (("lineitem", "l_orderkey"), ("orders", "o_orderkey"))]
+ROWS = {"lineitem": 6000, "orders": 1500, "customer": 150}
+INTEGERS = {"lineitem": ["l_orderkey", "l_linenumber"], "orders": ["o_orderkey", "o_custkey"], "customer": ["c_custkey"]}
+
+
+def selects(root_rows=600, rows=ROWS):
+    return cut_selects(["customer", "orders", "lineitem"], JOINS, rows, INTEGERS, root_rows)
+
+
+def test_the_largest_table_is_sampled_by_its_join_key_and_the_others_follow_the_joins():
+    out = selects()
+    assert out["lineitem"] == "SELECT * FROM lineitem WHERE l_orderkey % 11 = 0"  # every 11th key: 10 rounded up to a prime
+    assert out["orders"] == f"SELECT * FROM orders WHERE o_orderkey IN (SELECT l_orderkey FROM ({out['lineitem']}) AS kept)"
+    assert out["customer"] == f"SELECT * FROM customer WHERE c_custkey IN (SELECT o_custkey FROM ({out['orders']}) AS kept)"
+
+
+def test_a_table_within_the_row_target_is_kept_whole():
+    assert selects(root_rows=6000)["lineitem"] == "SELECT * FROM lineitem"
+
+
+def test_tables_no_join_reaches_are_cut_on_their_own():
+    out = cut_selects(["orders", "nation"], [], {"orders": 1000, "nation": 5000}, {"orders": ["o_orderkey"], "nation": ["n_key"]}, 500)
+    assert out["nation"] == "SELECT * FROM nation ORDER BY n_key LIMIT 500"
+    assert out["orders"] == "SELECT * FROM orders ORDER BY o_orderkey LIMIT 500"
+
+
+def test_the_stride_is_a_prime_so_it_cannot_line_up_with_blocks_of_keys():
+    strides = {rows: data_mod._sample("t", rows, 100, ["k"], ["k"]).rsplit("% ", 1)[1].split(" ")[0] for rows in (1000, 6400, 99_999)}
+    assert strides == {1000: "11", 6400: "67", 99_999: "1009"}
+
+
+def test_a_sample_with_no_rows_is_an_error(tmp_path):
+    with pytest.raises(ValueError, match="no rows"):
+        data_mod._write_cut(type("R", (), {"rows": lambda self, sql, seconds: []})(), {"t": "SELECT 1"}, tmp_path / "cut")
+
+
+def test_a_table_no_key_links_keeps_its_first_rows():
+    # SEC-EDGAR's pre, for a query that reads num and sub: its integers are a few report and line numbers, and a
+    # modulo of them by the stride kept no row at all
+    out = cut_selects(["num", "pre", "notes"], [], {"num": 50, "pre": 9_600_799, "notes": 10},
+                      {"num": ["ddate"], "pre": ["report", "line"], "notes": []}, 5)
+    assert out["pre"] == "SELECT * FROM pre ORDER BY report, line LIMIT 5"
+    assert out["notes"] == "SELECT * FROM notes LIMIT 5" and "%" not in out["pre"]
+
+
+def test_a_text_join_key_is_sampled_by_rank_not_by_another_integer_column():
+    # SEC-EDGAR: num joins sub on adsh (text); num's integer columns are a handful of report dates and quarter counts
+    joins = [(("num", "adsh"), ("sub", "adsh"))]
+    out = cut_selects(["num", "sub"], joins, {"num": 1000, "sub": 50}, {"num": ["ddate", "qtrs"], "sub": ["cik"]}, 100)
+    assert "ROW_NUMBER() OVER (ORDER BY adsh)" in out["num"] and "key_rank % 11 = 0" in out["num"] and "ddate" not in out["num"]
+    assert out["sub"].startswith("SELECT * FROM sub WHERE adsh IN (SELECT adsh FROM (")
+
+
+def test_key_columns_with_the_same_name_link_tables_the_query_does_not_join():
+    schema = {"lineitem": {"l_orderkey": "BIGINT", "l_partkey": "BIGINT", "l_comment": "VARCHAR"},
+              "orders": {"o_orderkey": "BIGINT", "o_totalprice": "DECIMAL"},
+              "partsupp": {"ps_partkey": "BIGINT"}, "part": {"p_partkey": "BIGINT"},
+              "visits": {"customer_id": "INTEGER", "id": "INTEGER"}, "customers": {"customer_id": "INTEGER", "id": "INTEGER", "year": "INTEGER"}}
+    assert key_links(schema) == [
+        (("lineitem", "l_orderkey"), ("orders", "o_orderkey")),
+        (("lineitem", "l_partkey"), ("partsupp", "ps_partkey")), (("lineitem", "l_partkey"), ("part", "p_partkey")),
+        (("partsupp", "ps_partkey"), ("part", "p_partkey")),
+        (("visits", "customer_id"), ("customers", "customer_id"))]  # not the bare `id`s, not text or decimals
+
+
+def test_scale_is_full_rows_per_subset_row_and_one_when_unknown():
+    cuts = CutDatasets(None, None, {"source_rows": {"orders": 1000, "events": 5000}, "subset_rows": {"orders": 10, "events": 100}})
+    assert cuts.scale(["orders"]) == 100 and cuts.scale(["ORDERS", "events"]) == pytest.approx(6000 / 110)
+    assert cuts.scale(["nation"]) == 1.0 and cuts.scale() == pytest.approx(6000 / 110)
+    assert CutDatasets(None, None, {"source_rows": {}, "subset_rows": {}}).scale(["orders"]) == 1.0
+
+
+@pytest.fixture()
+def cut_env(tmp_path, monkeypatch):
+    """The fake SQLite engine (host.sh sql) holding 100 orders and 400 events, and a workload over them."""
+    ctx = make_engine(tmp_path, monkeypatch)
+    repo = ctx.pipeline_config.repo_root
+    (repo / "workloads" / "acme" / "schema.sql").write_text(SCHEMA)
+    (repo / "workloads" / "acme" / "inst.sql").write_text(QUERY.replace("$1", "'k1'").replace("$2", "50").replace("$3", "2"))
+    data = tmp_path / "data"
+    data.mkdir()
+    (data / "orders.tbl").write_text("1|k|r|1|\n")
+    (data / "events.tbl").write_text("1|1|1|\n")
+    monkeypatch.setattr(data_mod, "SUBSET_ROOT_ROWS", 120)
+    monkeypatch.setattr(data_mod, "TINY_ROOT_ROWS", 30)
+    workload = {**ctx.workload, "workload_kind": "aux_state", "dataset_dir": str(data),
+                "reference_sql_path": str(repo / "workloads" / "acme" / "inst.sql")}
+    return ctx.pipeline_config, workload, data
+
+
+def rows_of(directory, table):
+    return [line.rstrip("|").split("|") for line in (directory / f"{table}.tbl").read_text().splitlines()]
+
+
+def test_the_cuts_are_join_closed_and_the_tiny_one_is_smaller(cut_env):
+    cfg, workload, _ = cut_env
+    cuts = ensure_cut_datasets(cfg, workload, 1)
+    events, orders = rows_of(cuts.subset, "events"), rows_of(cuts.subset, "orders")
+    assert 0 < len(events) < 400 and len(orders) < 100
+    assert {e[0] for e in events} == {o[0] for o in orders}  # every kept event has its order, and no order is kept without events
+    assert len(rows_of(cuts.tiny, "events")) < len(events)
+    assert len(rows_of(cuts.subset, "events")) == cuts.manifest["subset_rows"]["events"]
+    assert cuts.manifest["source_rows"] == {"events": 400, "orders": 100} and cuts.scale(["events"]) > 1
+
+
+def test_the_children_of_a_kept_key_are_all_kept(cut_env):
+    cfg, workload, _ = cut_env
+    cuts = ensure_cut_datasets(cfg, workload, 1)
+    kept = {e[0] for e in rows_of(cuts.subset, "events")}
+    all_events = [(1 + i % 100) for i in range(400)]  # fake_engine.make_dataset
+    assert len(rows_of(cuts.subset, "events")) == sum(1 for o in all_events if str(o) in kept)
+
+
+def test_every_table_of_the_dataset_is_cut_even_when_the_query_does_not_read_it(cut_env, tmp_path):
+    cfg, workload, data = cut_env
+    cfg.repo_root.joinpath("workloads", "acme", "q1.sql").write_text("SELECT COUNT(*) FROM events WHERE amount > $1")  # no orders
+    (data / "orders.tbl").write_text("1|k|r|1|\n")
+    cuts = ensure_cut_datasets(cfg, workload, 1)
+    assert {p.name for p in cuts.subset.glob("*.tbl")} == {"events.tbl", "orders.tbl"} and rows_of(cuts.subset, "events")
+
+
+def test_the_cuts_are_made_once_per_dataset(cut_env, monkeypatch):
+    cfg, workload, data = cut_env
+    first = ensure_cut_datasets(cfg, workload, 1)
+    with monkeypatch.context() as m:
+        m.setattr(data_mod, "_cut", lambda *a: pytest.fail("cut again"))
+        assert ensure_cut_datasets(cfg, workload, 1).subset == first.subset
+    (data / "orders.tbl").write_text("1|k|r|1|\n2|k|r|2|\n")  # another dataset: another key
+    assert ensure_cut_datasets(cfg, workload, 1).subset != first.subset
+
+
+def test_an_engine_that_cannot_answer_leaves_no_half_made_cut(cut_env, monkeypatch, capsys):
+    cfg, workload, _ = cut_env
+    with monkeypatch.context() as m:
+        m.setenv("FAKE_ENGINE_DB", "/nonexistent.sqlite")
+        assert ensure_cut_datasets(cfg, workload, 1) is None
+    assert "test databases not made" in capsys.readouterr().err
+    assert not list(cfg.build_dir.parent.glob("build.subset/*/.done"))
+    assert ensure_cut_datasets(cfg, workload, 1) is not None  # a later run makes them
+
+
+def test_no_dataset_directory_means_no_cuts(cut_env, tmp_path):
+    cfg, workload, _ = cut_env
+    assert ensure_cut_datasets(cfg, {**workload, "dataset_dir": str(tmp_path / "missing")}, 1) is None
+
+
+def test_ready_made_databases_from_the_environment_win(cut_env, monkeypatch):
+    cfg, workload, _ = cut_env
+    monkeypatch.setenv("ACCEL_SUBSET_DATASET_DIR", "/given")
+    cuts = ensure_cut_datasets(cfg, workload, 1)
+    assert str(cuts.subset) == str(cuts.tiny) == "/given" and cuts.scale(["events"]) == 1.0
+
+
+def test_the_description_names_the_sizes():
+    manifest = {"source_rows": {"orders": 100}, "subset_rows": {"orders": 10}, "tiny_rows": {"orders": 2}}
+    assert data_mod.describe(manifest) == "subset 10 rows (of 100), tiny 2 rows; per table orders 10/2"
+
 
 QUERY_SQL = "SELECT k, SUM(v) FROM t WHERE seg = $1 AND d < $2 GROUP BY k ORDER BY 2 DESC LIMIT 10\n"
 GATES = Path(__file__).resolve().parents[2] / "gates"
@@ -86,7 +306,7 @@ def write_suite(root: Path, *, params=PARAMS, manifest=MANIFEST, domain=DOMAIN, 
 
 def problems(suite: Path, **kw) -> list[str]:
     args = dict(query_sql=QUERY_SQL, param_names=["seg", "d"], dependent_tables=["t"], aux=True)
-    return ts.validate_static(suite, **{**args, **kw})
+    return data_mod.validate_static(suite, **{**args, **kw})
 
 
 def edited(base: dict, path: list[str], value) -> dict:
@@ -160,38 +380,38 @@ def report(**over) -> dict:
 
 
 def test_a_clean_run_report_passes(tmp_path):
-    assert ts.validate_report(report(), write_suite(tmp_path), ["t"], True) == []
+    assert data_mod.validate_report(report(), write_suite(tmp_path), ["t"], True) == []
 
 
 def test_a_table_no_transaction_changes_the_answer_of_is_reported(tmp_path):
     silent = report(txn_effects=[{"txn": n, "changes_answers_of": 0} for n in TXNS])
-    found = ts.validate_report(silent, write_suite(tmp_path), ["t"], True)
+    found = data_mod.validate_report(silent, write_suite(tmp_path), ["t"], True)
     assert any("no transaction on t changes the answer" in p for p in found)
 
 
 def test_edge_claims_are_checked_against_the_run(tmp_path):
     suite = write_suite(tmp_path)
-    found = ts.validate_report(report(tuple_rows=[3, 2, 1, 7, 1]), suite, ["t"], True)
+    found = data_mod.validate_report(report(tuple_rows=[3, 2, 1, 7, 1]), suite, ["t"], True)
     assert any("empty_result: tuple 4 returns 7 rows" in p for p in found)
-    found = ts.validate_report(report(), write_suite(tmp_path / "x", params=PARAMS[:4] + ["'A', DATE '1995-03-15'"]), ["t"], True)
+    found = data_mod.validate_report(report(), write_suite(tmp_path / "x", params=PARAMS[:4] + ["'A', DATE '1995-03-15'"]), ["t"], True)
     assert any("null_param: tuple 5 contains no NULL" in p for p in found)
 
 
 def test_errors_of_the_run_are_problems(tmp_path):
-    assert ts.validate_report(report(errors=["txn 2: boom"]), write_suite(tmp_path), ["t"], True) == ["txn 2: boom"]
+    assert data_mod.validate_report(report(errors=["txn 2: boom"]), write_suite(tmp_path), ["t"], True) == ["txn 2: boom"]
 
 
 def test_draws_are_reproducible_from_the_seed(tmp_path):
     suite = write_suite(tmp_path)
     domain = yaml.safe_load((suite / "domain.yaml").read_text())
-    first = ts.draw_tuples(domain, 20, 42)
-    assert first == ts.draw_tuples(domain, 20, 42) != ts.draw_tuples(domain, 20, 43)
-    assert all(len(ts.split_tuple(t)) == 2 for t in first) and len(set(first)) > 10
+    first = data_mod.draw_tuples(domain, 20, 42)
+    assert first == data_mod.draw_tuples(domain, 20, 42) != data_mod.draw_tuples(domain, 20, 43)
+    assert all(len(data_mod.split_tuple(t)) == 2 for t in first) and len(set(first)) > 10
     mix = yaml.safe_load((suite / "write_mix.yaml").read_text())
-    freqs = ts.draw_write_frequencies(mix, 3, 42)
-    assert freqs == ts.draw_write_frequencies(mix, 3, 42)
+    freqs = data_mod.draw_write_frequencies(mix, 3, 42)
+    assert freqs == data_mod.draw_write_frequencies(mix, 3, 42)
     assert freqs[0] == 0 and len(freqs) == 4 and all(1 <= f <= 50 for f in freqs[1:]) and freqs == sorted(set(freqs))
-    assert len({tuple(ts.draw_write_frequencies(mix, 3, s)) for s in range(30)}) > 5
+    assert len({tuple(data_mod.draw_write_frequencies(mix, 3, s)) for s in range(30)}) > 5
 
 
 def test_derived_parameters_follow_their_source():
@@ -200,8 +420,8 @@ def test_derived_parameters_follow_their_source():
                          {"name": "pattern", "type": "pattern", "template": "%{}%", "words": ["red", "green"]},
                          {"name": "q", "type": "decimal", "min": 1, "max": 2, "scale": 2},
                          {"name": "n", "type": "int", "min": 5, "max": 6}]}
-    for tuple_ in ts.draw_tuples(domain, 30, 1):
-        start, end, pattern, q, n = ts.split_tuple(tuple_)
+    for tuple_ in data_mod.draw_tuples(domain, 30, 1):
+        start, end, pattern, q, n = data_mod.split_tuple(tuple_)
         month = int(start[-6:-4]) - 1
         assert int(end[-6:-4]) - 1 == (month + 3) % 12
         assert pattern in ("'%red%'", "'%green%'") and 1 <= float(q) <= 2 and n in ("5", "6")
@@ -210,46 +430,46 @@ def test_derived_parameters_follow_their_source():
 def test_a_run_environment_is_its_seed_and_tier(tmp_path):
     suite = write_suite(tmp_path)
     cfg = SuiteConfig(acceptance_random_tuples=7, differential_every=4)
-    full = ts.run_environment(suite, tier="full", cfg=cfg, seed=5, params_file=tmp_path / "full.sql")
-    again = ts.run_environment(suite, tier="full", cfg=cfg, seed=5, params_file=tmp_path / "again.sql")
+    full = data_mod.run_environment(suite, tier="full", cfg=cfg, seed=5, params_file=tmp_path / "full.sql")
+    again = data_mod.run_environment(suite, tier="full", cfg=cfg, seed=5, params_file=tmp_path / "again.sql")
     assert (tmp_path / "full.sql").read_text() == (tmp_path / "again.sql").read_text()
     assert len((tmp_path / "full.sql").read_text().splitlines()) == 7
     assert full["ACCEL_SUITE_SEED"] == "5" and full["ACCEL_SUITE_EVERY"] == "4" and "ACCEL_SUITE_TXNS" not in full
-    quick = ts.run_environment(suite, tier="quick", cfg=cfg, seed=5, params_file=tmp_path / "quick.sql")
+    quick = data_mod.run_environment(suite, tier="quick", cfg=cfg, seed=5, params_file=tmp_path / "quick.sql")
     assert len((tmp_path / "quick.sql").read_text().splitlines()) == 7 and quick["ACCEL_SUITE_EVERY"] == "4"  # as many as the full tier
     assert "ACCEL_SUITE_TXNS" not in quick  # every transaction of the suite
-    iterate = ts.run_environment(suite, tier="iterate", cfg=SuiteConfig(acceptance_random_tuples=7, iterate_random_tuples=3, iterate_every=10),
+    iterate = data_mod.run_environment(suite, tier="iterate", cfg=SuiteConfig(acceptance_random_tuples=7, iterate_random_tuples=3, iterate_every=10),
                                  seed=5, params_file=tmp_path / "iterate.sql")
     assert len((tmp_path / "iterate.sql").read_text().splitlines()) == 3 and iterate["ACCEL_SUITE_EVERY"] == "10"
     assert "ACCEL_SUITE_TXNS" not in iterate
-    fresh = ts.run_environment(suite, tier="full", cfg=cfg, seed=None, params_file=tmp_path / "fresh.sql")
+    fresh = data_mod.run_environment(suite, tier="full", cfg=cfg, seed=None, params_file=tmp_path / "fresh.sql")
     assert fresh["ACCEL_SUITE_SEED"] != "0" and again == {**full, "ACCEL_SUITE_PARAMS_FILE": again["ACCEL_SUITE_PARAMS_FILE"]}
 
 
 def test_transactions_are_profiled_by_declared_kind_and_written_tables(tmp_path):
     suite = write_suite(tmp_path)
-    profiles = ts.txn_profiles(suite)
-    assert profiles["001.sql"] == ("point_insert", ("t",)) and list(profiles) == list(ts.txn_files(suite))
+    profiles = data_mod.txn_profiles(suite)
+    assert profiles["001.sql"] == ("point_insert", ("t",)) and list(profiles) == list(data_mod.txn_files(suite))
 
 
 def test_a_frozen_suite_cannot_be_edited_and_a_change_request_is_the_way(tmp_path):
     suite, art = write_suite(tmp_path), tmp_path / "art"
     art.mkdir()
-    assert "never frozen" in ts.frozen_problem(art, suite)
-    record = ts.freeze(art, suite, query=3)
-    assert ts.frozen_problem(art, suite) == "" and record["hash"] == ts.content_hash(suite)
+    assert "never frozen" in data_mod.frozen_problem(art, suite)
+    record = data_mod.freeze(art, suite, query=3)
+    assert data_mod.frozen_problem(art, suite) == "" and record["hash"] == data_mod.content_hash(suite)
     (suite / "txns" / "001.sql").write_text("INSERT INTO t VALUES (2, 'B', DATE '1995-01-01', 1);")
-    assert "was edited" in ts.frozen_problem(art, suite) and "change request" in ts.frozen_problem(art, suite)
+    assert "was edited" in data_mod.frozen_problem(art, suite) and "change request" in data_mod.frozen_problem(art, suite)
     (suite / "txns" / "001.sql").write_text(TXNS["001.sql"])
-    assert ts.frozen_problem(art, suite) == ""
+    assert data_mod.frozen_problem(art, suite) == ""
     (suite / "extra.sql").write_text("-- new file\n")
-    assert ts.frozen_problem(art, suite)
-    (art / ts.CHANGE_REQUEST).write_text("001.sql inserts a duplicate key\n")
-    assert ts.pending_change_request(art) == "001.sql inserts a duplicate key"
-    ts.archive_change_request(art, "the tester kept the suite as it was")
-    assert ts.pending_change_request(art) == ""
+    assert data_mod.frozen_problem(art, suite)
+    (art / data_mod.CHANGE_REQUEST).write_text("001.sql inserts a duplicate key\n")
+    assert data_mod.pending_change_request(art) == "001.sql inserts a duplicate key"
+    data_mod.archive_change_request(art, "the tester kept the suite as it was")
+    assert data_mod.pending_change_request(art) == ""
     assert "kept the suite" in (art / "test_suite_change_requests" / "01.md").read_text()
-    ts.archive_change_request(art, "filed already by the tester")   # nothing pending: not an error, nothing archived
+    data_mod.archive_change_request(art, "filed already by the tester")   # nothing pending: not an error, nothing archived
     assert len(list((art / "test_suite_change_requests").glob("*.md"))) == 1
 
 
@@ -303,7 +523,7 @@ class World:
         return {}
 
     def _gates(self, ctx, names):
-        found = ts.validate_static(self.directory, query_sql=QUERY_SQL, param_names=["seg", "d"], dependent_tables=["t"], aux=True)
+        found = data_mod.validate_static(self.directory, query_sql=QUERY_SQL, param_names=["seg", "d"], dependent_tables=["t"], aux=True)
         if not found:
             return [GateResult(names[0], "pass", {})], None
         result = GateResult(names[0], "fail", {"log_tail": "\n".join(found), "returncode": 1})
@@ -318,23 +538,23 @@ def test_a_suite_that_fails_validation_goes_back_to_the_tester_then_is_frozen(tm
     world.run()
     assert len(world.messages) == 2 and "scale_scenarios" in world.messages[1]
     assert world.roles == ["tester", "tester"]
-    assert ts.frozen_problem(world.art, world.directory) == ""
+    assert data_mod.frozen_problem(world.art, world.directory) == ""
 
 
 def test_a_change_request_reruns_the_tester_and_archives_the_outcome(tmp_path, monkeypatch):
     world = World(tmp_path, monkeypatch, [{}, dict(txns={**TXNS, "001.sql": "INSERT INTO t VALUES (7, 'A', DATE '1995-01-01', 1);"})])
     world.run()
-    (world.art / ts.CHANGE_REQUEST).write_text("001.sql: key 1 already exists in t")
+    (world.art / data_mod.CHANGE_REQUEST).write_text("001.sql: key 1 already exists in t")
     world.stage.revise(world.config, None, "toy", 3)
     assert "key 1 already exists" in world.messages[-1] and "change request" in world.messages[-1]
-    assert ts.pending_change_request(world.art) == "" and ts.frozen_problem(world.art, world.directory) == ""
+    assert data_mod.pending_change_request(world.art) == "" and data_mod.frozen_problem(world.art, world.directory) == ""
     assert "changed the suite" in (world.art / "test_suite_change_requests" / "01.md").read_text()
 
 
 def test_a_repair_turn_of_another_stage_hands_a_pending_change_request_to_the_tester(tmp_path, monkeypatch):
     world = World(tmp_path, monkeypatch, [{}])
     world.run()
-    (world.art / ts.CHANGE_REQUEST).write_text("003.sql deletes a row that is gone")
+    (world.art / data_mod.CHANGE_REQUEST).write_text("003.sql deletes a row that is gone")
     ctx = repair_mod.RepairCtx(world.config, None, "toy", 3, stage="implementation")
     ctx.repair_turn = lambda failure: pytest.fail("the implementer must not repair around a suite the tester has to judge")
     repair_mod.repair_turn(ctx, Failure(kind="code", stage="implementation", source="gate:aux_correctness", summary="x"))
@@ -349,7 +569,7 @@ def gate_world(tmp_path, *, frozen=True) -> dict:
     (art / "gates").mkdir(parents=True)
     (tmp_path / "q.sql").write_text(QUERY_SQL)
     if frozen:
-        ts.freeze(art, suite, query=3)
+        data_mod.freeze(art, suite, query=3)
     settings = {"dir": str(suite), "query_sql": str(tmp_path / "q.sql"), "function": "accel_toy_q3_aux", "arity": 2,
                 "param_names": ["seg", "d"], "aux": True, "schema_sql": "", "config": asdict(SuiteConfig())}
     ctx = {"test_suite": settings, "artifacts_dir": str(art), "query_number": 3}
@@ -484,11 +704,11 @@ def test_the_format_docs_worked_example_passes_the_static_checks(tmp_path):
     (suite / "write_mix.yaml").write_text("version: 1\nfrequency_pct: {min: 1, max: 50, samples: 3, distribution: log}\n"
                                           "kinds: {point_update: 5, point_insert: 2, point_delete: 2, bulk_insert: 1}\n", encoding="utf-8")
     query = "SELECT kind, count(*) FROM events WHERE ts >= $1 AND ts < $2 AND status = $3 GROUP BY 1 ORDER BY 1"
-    assert ts.validate_static(suite, query_sql=query, param_names=["a", "b", "c"], dependent_tables=["events"], aux=True) == []
+    assert data_mod.validate_static(suite, query_sql=query, param_names=["a", "b", "c"], dependent_tables=["events"], aux=True) == []
 
 
 def test_fixed_tuples_must_follow_a_derived_parameter():
-    from accel_pipeline.test_suite import _check_derived
+    from accel_pipeline.data import _check_derived
 
     domain = {"params": [{"name": "start", "type": "date"}, {"name": "end", "type": "derived", "from": "start", "add_months": 1}]}
     good = "DATE '1995-01-31', DATE '1995-02-28'"

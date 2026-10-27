@@ -11,13 +11,14 @@ from __future__ import annotations
 import sys
 from typing import Any
 
-from accel_pipeline import test_suite as suite
+from accel_pipeline import data as suite
 from accel_pipeline.config import (
     ModelConfig,
     PipelineConfig,
     load_run_workload,
     analysis_artifact_path,
     query_artifacts_dir,
+    benchmark_of,
 )
 from accel_pipeline.repair import render_failure, RepairCtx, run_with_repair
 from accel_pipeline.runlog import append_experiment_log
@@ -40,7 +41,7 @@ def run(
     change_request: str = "",
 ) -> Any:
     workload = load_run_workload(pipeline_config, workload_name)
-    root, bench = pipeline_config.repo_root, str(workload.get("benchmark_name", "tpch"))
+    root, bench = pipeline_config.repo_root, benchmark_of(workload)
     directory = suite.suite_path(root, bench, query)
     art = query_artifacts_dir(root, query, workload=workload)
     analysis = analysis_artifact_path(root, query, workload=workload)
@@ -103,7 +104,7 @@ def revise(
     and the request is archived with the outcome."""
     workload = load_run_workload(pipeline_config, workload_name)
     art = query_artifacts_dir(pipeline_config.repo_root, query, workload=workload)
-    directory = suite.suite_path(pipeline_config.repo_root, str(workload.get("benchmark_name", "tpch")), query)
+    directory = suite.suite_path(pipeline_config.repo_root, benchmark_of(workload), query)
     before = suite.content_hash(directory)
     run(pipeline_config, model_config, workload_name, query, model_overrides,
         change_request=suite.pending_change_request(art))

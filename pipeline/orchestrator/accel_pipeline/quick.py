@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from accel_pipeline import check_report, write_cost, test_suite as ts
+from accel_pipeline import check_report, write_cost, data as ts
 from accel_pipeline.gates.build_stamp import code_stamp
 from accel_pipeline.check_measure import Bench
 from accel_pipeline.config import (
@@ -31,8 +31,7 @@ from accel_pipeline.gates.stamps import check_version, current_stamp
 from accel_pipeline.gates.run import run_gate
 from accel_pipeline.layout import query_dir
 from accel_pipeline.perf_profile import render_for_agent
-from accel_pipeline.datasets import CutDatasets, ensure_cut_datasets
-from accel_pipeline.test_suite import suite_path
+from accel_pipeline.data import CutDatasets, ensure_cut_datasets, suite_path
 
 QUICK_GATE = "quick_check"
 # What kills one differential run inside a gate (aux_gate_common.sh engine_run): the budget the projection must fit.

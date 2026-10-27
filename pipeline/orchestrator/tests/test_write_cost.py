@@ -9,7 +9,7 @@ import pytest
 from accel_pipeline import quick, write_cost
 from accel_pipeline.config import QuickTierConfig, gates_dir_for_query, query_artifacts_dir
 from accel_pipeline.layout import suite_dir
-from accel_pipeline.datasets import CutDatasets
+from accel_pipeline.data import CutDatasets
 from conftest import WORKLOAD, Gate
 
 PROFILES = {"001.sql": ("point_update", ("orders",)), "002.sql": ("bulk_delete", ("orders",))}
@@ -165,7 +165,7 @@ def test_other_gates_and_other_workloads_are_never_refused(config):
 
 
 def test_rebuilds_of_supported_delta_writes_are_unfaithful():
-    from accel_pipeline.test_suite import statements
+    from accel_pipeline.data import statements
 
     report = {"build_seconds": 0.020, "write_costs": [
         {"txn": "001.sql", "maint_ms": 15.0, "write_ms": 40.0, "read_ms": 1.0},   # rebuild-sized
@@ -181,7 +181,7 @@ def test_rebuilds_of_supported_delta_writes_are_unfaithful():
 
 
 def test_a_rebuild_shown_by_one_thread_run_only_is_noise():
-    from accel_pipeline.test_suite import statements
+    from accel_pipeline.data import statements
 
     slow = {"build_seconds": 0.020, "write_costs": [{"txn": "001.sql", "maint_ms": 15.0, "write_ms": 40.0, "read_ms": 1.0}]}
     fast = {"build_seconds": 0.020, "write_costs": [{"txn": "001.sql", "maint_ms": 0.2, "write_ms": 40.0, "read_ms": 1.0}]}

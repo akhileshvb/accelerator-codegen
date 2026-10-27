@@ -27,12 +27,13 @@ from accel_pipeline.config import (
     FACTS_FILE,
     workload_facts,
     read_json,
+    benchmark_of,
 )
 from accel_pipeline.engine_host import host_script, inject_host_runtime_into_gate_env, instance_tag
 from accel_pipeline.gates.stamps import current_stamp, record_pass
 from accel_pipeline.layout import workload_schema_sql
 from accel_pipeline.session import HEARTBEAT_FILE
-from accel_pipeline.test_suite import gate_settings
+from accel_pipeline.data import gate_settings
 
 
 GATE_SCRIPTS = {
@@ -321,7 +322,7 @@ def run_gate(
     if tier:
         gate_env["ACCEL_GATE_TIER"] = tier
     if tier == "quick" or gate_name in SUBSET_DATASET_GATES:
-        from accel_pipeline.datasets import ensure_cut_datasets
+        from accel_pipeline.data import ensure_cut_datasets
 
         if cuts := ensure_cut_datasets(pipeline_config, workload, query):
             gate_env["ACCEL_SUBSET_DATASET_DIR"] = str(cuts.subset)
@@ -441,7 +442,7 @@ def build_gate_context(
     query: int,
 ) -> dict[str, Any]:
     paths = resolve_workload_paths(pipeline_config, workload, query)
-    benchmark = str(workload.get("benchmark_name", "tpch"))
+    benchmark = benchmark_of(workload)
     kind = str(workload.get("workload_kind", "base"))
     engine = sanitize_engine_name(str(workload.get("engine_name") or ""))
     host = dict(workload.get("engine_host") or engine_host_conventions(engine, repo_root=pipeline_config.repo_root))

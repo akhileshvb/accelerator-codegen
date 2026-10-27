@@ -35,6 +35,7 @@ from accel_pipeline.config import (
     ModelConfig,
     PipelineConfig,
     query_artifacts_dir,
+    benchmark_of,
 )
 from accel_pipeline.gates.parallel import first_failure, run_gates_parallel
 from accel_pipeline.gates.run import GateFailure, GateResult
@@ -419,7 +420,7 @@ def repair_turn(ctx: RepairCtx, failure: Failure, *, must_change: bool | None = 
 
 def _revise_test_suite(ctx: RepairCtx) -> bool:
     """A change request against the frozen test suite goes to the tester before the implementation is touched again."""
-    from accel_pipeline import test_suite as suite
+    from accel_pipeline import data as suite
     from accel_pipeline.stages import test_suite
 
     if not suite.pending_change_request(ctx.art):
@@ -432,7 +433,7 @@ def _revise_test_suite(ctx: RepairCtx) -> bool:
 def _crash_debug_turn(ctx: RepairCtx, must_change: bool) -> Callable[[Failure], None]:
     from accel_pipeline.stages.base import run_agent_stage
 
-    bench = str(ctx.workload.get("benchmark_name", "tpch"))
+    bench = benchmark_of(ctx.workload)
 
     def turn(failure: Failure) -> None:
         run_agent_stage(

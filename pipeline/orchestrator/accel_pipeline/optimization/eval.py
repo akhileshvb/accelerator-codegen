@@ -13,7 +13,7 @@ from typing import Any
 from accel_pipeline.gates.run import build_jobs
 from accel_pipeline.pack.measurement_lease import run_measured
 from accel_pipeline.optimization.aux_bench import summarize_sweep_rows
-from accel_pipeline.sweep_csv import parse_aux_benchmark_output
+from accel_pipeline.data import parse_aux_benchmark_output
 from accel_pipeline.optimization.base_bench import parse_benchmark_log
 from accel_pipeline.config import MeasurementConfig, PipelineConfig, resolve_workload_paths
 from accel_pipeline.repair import Failure

@@ -837,7 +837,7 @@ def load_run_workload(pipeline_config: PipelineConfig, name: str) -> dict[str, A
 
 def _merge_benchmark_pack(workload: dict[str, Any], pack: dict[str, Any], repo_root: Path, datasets: dict[str, Path]) -> dict[str, Any]:
     merged = {**pack, **workload}
-    benchmark = str(merged.get("benchmark_name", "tpch"))
+    benchmark = benchmark_of(merged)
     merged.setdefault("artifact_namespace", benchmark)
     merged.setdefault("display_name", benchmark)
     for key, target in (("dataset_key", "dataset_db"), ("scale_dataset_key", "scale_db")):
@@ -875,7 +875,7 @@ def _expand_fairness_search_paths(workload: dict[str, Any], engine: str) -> None
     """Expand {bench}/{engine} in `fairness.kernel_search_paths` for the run."""
     fairness = workload.get("fairness")
     if isinstance(fairness, dict) and fairness.get("kernel_search_paths"):
-        bench = str(workload.get("benchmark_name", "tpch"))
+        bench = benchmark_of(workload)
         fairness["kernel_search_paths"] = [
             str(p).replace("{bench}", bench).replace("{engine}", engine) for p in fairness["kernel_search_paths"]
         ]
@@ -883,7 +883,7 @@ def _expand_fairness_search_paths(workload: dict[str, Any], engine: str) -> None
 
 def _derive_query_names(data: dict[str, Any], engine: str, root: Path) -> None:
     """The query's names (py), plus the engine profile's registration symbol."""
-    bench, q = str(data.get("benchmark_name", "tpch")), data.get("query_number")
+    bench, q = benchmark_of(data), data.get("query_number")
     if q is None:
         return
     pattern = registration_symbol_pattern(load_engine_profile(engine, pipeline_root(root)))
@@ -980,7 +980,7 @@ def resolve_workload_paths(
     workload: dict[str, Any],
     query: int,
 ) -> dict[str, str]:
-    benchmark = str(workload.get("benchmark_name", "tpch"))
+    benchmark = benchmark_of(workload)
     q = int(workload.get("query_number", query))
     kind = workload.get("workload_kind")
     engine = sanitize_engine_name(str(workload.get("engine_name") or ""))
@@ -1078,6 +1078,10 @@ def resolve_optimization_edit_paths(
         "all_paths": all_paths,
         "is_aux": False,
     }
+
+
+def benchmark_of(workload: dict[str, Any]) -> str:
+    return str(workload.get("benchmark_name", "tpch"))
 
 
 def workload_benchmark_name(workload: dict[str, Any] | None) -> str:
@@ -1228,7 +1232,7 @@ def derive_query_facts(sql: str, schema_sql: str) -> dict[str, Any]:
 
 def workload_facts(repo: Path, workload: dict[str, Any], query: int) -> dict[str, Any]:
     """The run's derived facts, written to the run's artifacts (workload_facts.json)."""
-    benchmark = str(workload.get("benchmark_name", "tpch"))
+    benchmark = benchmark_of(workload)
     sql = Path(workload["reference_sql_path"]).read_text(encoding="utf-8")
     schema_sql = (repo / workload_schema_sql(benchmark)).read_text(encoding="utf-8")
     facts = derive_query_facts(sql, schema_sql)

@@ -256,7 +256,7 @@ def gate_writers(probe: Probe) -> list[str]:
 
 def test_database(probe: Probe) -> list[str]:
     """The join-closed test databases (the differential subset and the tiny sanitizer cut) exist or can be built now."""
-    from accel_pipeline.datasets import ensure_cut_datasets
+    from accel_pipeline.data import ensure_cut_datasets
 
     try:
         cuts = ensure_cut_datasets(probe.cfg, probe.workload, probe.query)
