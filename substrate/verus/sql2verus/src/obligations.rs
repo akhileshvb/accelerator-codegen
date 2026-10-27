@@ -42,8 +42,11 @@
 //     (nonzero: NULL, the value is then unspecified); its spec view is an
 //     Option and NULL is inside the envelope.  A scan's WHERE keeps a row
 //     only where its predicate is true (a comparison with NULL is false, as
-//     in the spec).  A scan of one NULL-able column, a NULL-able KEYS column,
-//     and a lossy delta over NULL-able values are refused.
+//     in the spec).  A scan of one NULL-able column and a lossy delta over
+//     NULL-able values are refused.
+//   * A KEYS column may be NULL-able (a row whose key is NULL matches no key,
+//     as in SQL IN) or text (keys compare as bytes; a CHAR(n) column compared
+//     without trailing spaces is refused).
 //   * A row type without text is #[repr(C)] + Copy and passed as a slice;
 //     one with text is passed as an owned Vec (build) or &Vec (apply).
 //   * The kernel provides crate::kernel::{State, build, execute, apply,
@@ -671,16 +674,18 @@ pub(crate) async fn obligations(
             if !ob.tr.used[&sel.table].contains(k) {
                 bail!("{what}: KEYS {k} is not read by the query (not in Db)");
             }
-            if ty == Ty::Text {
-                bail!("{what}: KEYS {k}: text keys are not supported");
+            if ty == Ty::Text && ob.tr.sch.char_cols.contains(&(sel.table.clone(), k.clone())) {
+                bail!("{what}: KEYS {k} is a CHAR(n) column compared without trailing spaces (keys compare as bytes)");
             }
-            if ob.tr.sch.col_ty[&(sel.table.clone(), k.clone())].1 {
-                bail!("{what}: KEYS {k} is NULL-able");
-            }
-            let rt = rt_ty(ty)?;
+            let rt = rt_ty(ty).map_err(|e| format!("{what}: KEYS {k}: {e}"))?;
             key_rt = Some(rt);
             let kv = ob.prim_seq_view(ty)?;
-            conds.push(format!("{kv}(keys).contains({}.{})", sel.var, sanitize(k)));
+            let x = format!("{}.{}", sel.var, sanitize(k));
+            conds.push(if ob.tr.sch.col_ty[&(sel.table.clone(), k.clone())].1 {
+                format!("{x} is Some && {kv}(keys).contains({x}->0)")
+            } else {
+                format!("{kv}(keys).contains({x})")
+            });
         }
         let trow = table_row(&sel.table);
         let rhs = if conds.is_empty() && proj == sel.var {
@@ -703,7 +708,7 @@ pub(crate) async fn obligations(
         let mut w = String::new();
         writeln!(w, "/// {what}: {}", sel.doc).unwrap();
         if rescan {
-            writeln!(w, "///   restricted to the rows whose {} is one of `keys`.", d.keys.as_ref().unwrap()).unwrap();
+            writeln!(w, "///   restricted to the rows whose {} is one of `keys` (a NULL key matches none).", d.keys.as_ref().unwrap()).unwrap();
         }
         writeln!(w, "pub open spec fn {fname}(db: Db{kp}, rows: Seq<{elem}>) -> bool {{").unwrap();
         writeln!(w, "    forall|f: spec_fn({spec_ty}) -> int| #[trigger] sum({sv}(rows), f) == {rhs}").unwrap();
@@ -1091,7 +1096,7 @@ pub(crate) async fn obligations(
         ps.extend(delta_params(&deltas));
         let mut req = vec![];
         for s in scans.iter().filter(|s| s.rescan) {
-            ps.push(P { name: format!("{}_keys", s.name), ty: format!("&[{}]", s.key_rt.unwrap()), ghost: false, arg: Arg::Rows(Elem::Prim(s.key_rt.unwrap())) });
+            ps.push(P { name: format!("{}_keys", s.name), ty: pass(s.key_rt.unwrap(), s.key_rt.unwrap() != "Vec<u8>", false).0, ghost: false, arg: Arg::Rows(Elem::Prim(s.key_rt.unwrap())) });
             let (ty, _) = pass(&s.elem, s.copy, false);
             ps.push(P { name: format!("{}_rows", s.name), ty, ghost: false, arg: Arg::Rows(s.el.clone()) });
         }
