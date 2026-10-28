@@ -1016,3 +1016,4 @@ def test_the_agent_sandbox_gets_no_cgroup_to_write(tmp_path, monkeypatch):
     monkeypatch.setattr(agent.shutil, "which", lambda name: "/usr/bin/bwrap")
     args = agent.prefix([], tmp_path)
     assert args[args.index("--unsetenv") + 1] == "ACCEL_CGROUP"  # its /sys is read-only; the session's cap bounds it
+    assert not agent._forwarded_to_mcp("ACCEL_CGROUP") and agent._forwarded_to_mcp("ACCEL_RUN_MEMORY_MB")

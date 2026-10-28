@@ -148,8 +148,15 @@ def create_agent_backend(
     return backend
 
 
+# What never enters the agent's sandbox, by its env or the MCP sidecar: the run's delegated cgroup (its /sys is
+# read-only; the cap the session runs under, made outside it, bounds what runs inside).
+OUTSIDE_AGENT_SANDBOX = ("ACCEL_CGROUP",)
+
+
 def _forwarded_to_mcp(key: str) -> bool:
     """Engine, verus and mode settings reach the MCP server; the pipeline's own ACCEL_PIPELINE_* are set explicitly."""
+    if key in OUTSIDE_AGENT_SANDBOX:
+        return False
     return key in ("ACCEL_PIPELINE_MODE", "CMAKE_BUILD_PARALLEL_LEVEL") or (key.startswith("ACCEL_") and not key.startswith("ACCEL_PIPELINE_"))
 
 
@@ -1141,8 +1148,7 @@ def prefix(binds: list[Bind], cwd: Path, *, setting: str = "sandbox") -> list[st
     if not bwrap:
         raise RuntimeError(f"{setting} is bwrap but bubblewrap is not installed (or set {setting}: none)")
     args = [bwrap, "--unshare-all", "--share-net", "--die-with-parent",
-            # its /sys is read-only: no cgroup of its own; the cap the session runs under (run_outcome cap) bounds it
-            "--unsetenv", "ACCEL_CGROUP",
+            *(a for key in OUTSIDE_AGENT_SANDBOX for a in ("--unsetenv", key)),
             "--ro-bind", "/usr", "/usr", "--ro-bind", "/etc", "/etc"]
     for link in ("bin", "lib", "lib64", "sbin"):
         p = Path("/") / link
