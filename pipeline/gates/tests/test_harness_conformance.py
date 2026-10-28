@@ -43,6 +43,7 @@ def test_a_declining_module_hits_nothing_so_there_is_no_hit_rate_to_compare(repo
     ({"FAKE_MULTI_POINT": "1", "FAKE_BENCH_ONE_ROW": "0"}, "bench-rows"),
     ({"FAKE_BENCH_NO_HIT_MEDIAN": "other,"}, "bench-columns"),
     ({"FAKE_BENCH_NO_PROFILE": "1"}, "bench-profile-window"),
+    ({"FAKE_BENCH_NO_PIN": "1"}, "bench-measure-pin"),
     ({"FAKE_BENCH_BUILDS": "0"}, "bench-state-builds"),
     ({"FAKE_BENCH_CONSTANT": "1"}, "bench-hit-rate"),
     ({"FAKE_COST_DELTA": "null"}, "calibrate-cost-model"),

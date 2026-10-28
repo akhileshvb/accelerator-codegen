@@ -160,7 +160,7 @@ printf '[%s]' "$(IFS=,; echo "${DRAWS[*]}")" > "${DRAWS_JSON}"
 
 # Two extra read-only points (first repeat, first suite): at one thread, and at the thread count the pipeline
 # configures for runs (ACCEL_AUX_THREADS, else the worker's CPUs) on that many CPUs of the worker's core set, not
-# on the lease's one-core slot. Report-only: the speedup of N threads over 1, reads and build.
+# on the lease's slot. Report-only: the speedup of N threads over 1, reads and build.
 THREADS_N=1
 THREADS1_CSV="${ACCEL_AUX_BENCH_WORK_DIR}/results_threads1.csv"
 THREADSN_CSV="${ACCEL_AUX_BENCH_WORK_DIR}/results_threadsN.csv"

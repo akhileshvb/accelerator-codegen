@@ -1585,16 +1585,16 @@ class HostRun:
     def run(self, command: list[str], *, env: Mapping[str, str] | None = None, timeout: float | None = None,
             measured: str = "") -> subprocess.CompletedProcess[str]:
         """`command` through `host.sh run`, killed with its children at `timeout`. A non-empty `measured` (the reason)
-        queues it for the measurement lease and pins it to the lease's CPUs; the queueing is outside `timeout` and
-        the stderr ends with the line that reports it (pack.waited_seconds)."""
+        queues it for the measurement lease and exports the lease's CPUs for its measured part to pin to; the
+        queueing is outside `timeout` and the stderr ends with the line that reports it (pack.waited_seconds)."""
         from accel_pipeline.pack import Window, holder_name, measurement_window
 
         env = {**(env or self.env())}
         if Path(env["TMPDIR"]).parent.is_dir():  # the instance is up: its scratch lives in its state dir
             Path(env["TMPDIR"]).mkdir(exist_ok=True)
         with (measurement_window(holder_name(), measured) if measured else contextlib.nullcontext(Window())) as window:
-            argv = window.argv([sys.executable, str(RUN_OUTCOME), "cap",
-                                "--", str(host_script(self.cfg.repo_root, self.engine)), "run", *command])  # its memory cap
+            argv = [sys.executable, str(RUN_OUTCOME), "cap",
+                    "--", str(host_script(self.cfg.repo_root, self.engine)), "run", *command]  # its memory cap
             with subprocess.Popen(argv, cwd=self.cfg.repo_root, env={**env, **window.env}, stdout=subprocess.PIPE,
                                   stderr=subprocess.PIPE, text=True, start_new_session=True) as proc:
                 try:

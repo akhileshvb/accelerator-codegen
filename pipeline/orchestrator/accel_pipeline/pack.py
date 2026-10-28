@@ -297,7 +297,7 @@ def activate(cfg: ConcurrencyConfig) -> CoreBudget:
 # Benchmarks measure on the reserved measurement CPUs, one per slot:
 #
 #     with measurement_window(holder, reason) as window:
-#         subprocess.run(window.argv(cmd), env={**os.environ, **window.env}, timeout=...)
+#         subprocess.run(cmd, env={**os.environ, **window.env}, timeout=...)
 #
 # Waiting is first come first served, bounded, and beats the agent heartbeat.
 
@@ -374,22 +374,13 @@ class Window:
     def env(self) -> dict[str, str]:
         if not self.cpus:
             return {}
-        return {"ACCEL_MEASURE_CPUS": format_cpus(self.cpus), "ACCEL_MEASURE_THREADS": str(len(self.cpus))}
-
-    def argv(self, cmd: list[str]) -> list[str]:
-        """`cmd` pinned to the measurement CPUs (accelerator and baseline share the one budget)."""
-        if not self.cpus:
-            return cmd
-        if shutil.which("taskset") is None:
-            print("[measurement-lease] taskset missing: running unpinned", file=sys.stderr, flush=True)
-            return cmd
-        return ["taskset", "-c", format_cpus(self.cpus), *cmd]
+        return {"ACCEL_MEASURE_CPUS": format_cpus(self.cpus)}
 
     def line(self) -> str:
         if not self.leased:
             return "[measurement-lease] off"
-        pinned = f"; pinned to cores {format_cpus(self.cpus)}" if self.cpus else ""
-        return f"[measurement-lease] waited {self.waited_sec:.1f} s for the measurement lease{pinned}"
+        measured = f"; the measured run uses cores {format_cpus(self.cpus)}" if self.cpus else ""
+        return f"[measurement-lease] waited {self.waited_sec:.1f} s for the measurement lease{measured}"
 
 
 def _acquire_window(holder: str, reason: str, beat: Callable[[], None] | None = None) -> tuple[BinaryIO | None, Window]:
@@ -422,7 +413,7 @@ def _acquire_window(holder: str, reason: str, beat: Callable[[], None] | None = 
 
 @contextmanager
 def measurement_window(holder: str, reason: str, *, beat: Callable[[], None] | None = None) -> Iterator[Window]:
-    """Hold the lease for the block; yields how long it queued and the CPUs to pin the measurement to."""
+    """Hold the lease for the block; yields how long it queued and the CPUs of the measured run."""
     handle, window = _acquire_window(holder, reason, beat)
     try:
         yield window
@@ -436,11 +427,12 @@ def holder_name() -> str:
 
 
 def run_measured(cmd: list[str], *, reason: str, timeout: float | None = None, **kwargs) -> subprocess.CompletedProcess:
-    """subprocess.run of a benchmark under the lease, pinned to the measurement CPUs. The queueing is outside
+    """subprocess.run of a benchmark under the lease; it pins its measured part to the window's CPUs
+    (ACCEL_MEASURE_CPUS, eval/bench/driver/measured_cpus.hpp). The queueing is outside
     `timeout`; the run's stderr ends with the line that reports it (see waited_seconds)."""
     with measurement_window(holder_name(), reason) as window:
         env = {**(kwargs.pop("env", None) or os.environ), **window.env}
-        proc = subprocess.run(window.argv(cmd), env=env, timeout=timeout, **kwargs)
+        proc = subprocess.run(cmd, env=env, timeout=timeout, **kwargs)
     proc.stderr = f"{proc.stderr or ''}\n{window.line()}\n"
     return proc
 
@@ -457,9 +449,8 @@ def noise_warning(load_factor: float = 1.5) -> str | None:
 
 
 def measure_main(argv: list[str]) -> int:
-    """Queue, pin this process to the slot's CPUs and exec the command still holding the lease: it ends with the
-    process."""
-    parser = argparse.ArgumentParser(prog="pack measure", description="Run a command holding the measurement lease, pinned to the measurement CPUs.")
+    """Queue, export the slot's CPUs and exec the command still holding the lease: it ends with the process."""
+    parser = argparse.ArgumentParser(prog="pack measure", description="Run a command holding the measurement lease, with the measurement CPUs in its environment.")
     parser.add_argument("--holder", required=True)
     parser.add_argument("--reason", default="")
     parser.add_argument("cmd", nargs=argparse.REMAINDER)
@@ -472,12 +463,7 @@ def measure_main(argv: list[str]) -> int:
         return BUSY_EXIT
     if handle is not None:
         os.set_inheritable(handle.fileno(), True)
-    if window.cpus:
-        try:
-            os.sched_setaffinity(0, window.cpus)
-            os.environ.update(window.env)
-        except OSError as exc:
-            print(f"[measurement-lease] cannot pin to {format_cpus(window.cpus)} ({exc}): running unpinned", file=sys.stderr, flush=True)
+    os.environ.update(window.env)
     os.execvp(cmd[0], cmd)
 
 

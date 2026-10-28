@@ -1,5 +1,6 @@
 #include "eval/tests/test_support/db_paths.hpp"
 #include "eval/bench/driver/bench_cli.hpp"
+#include "eval/bench/driver/measured_cpus.hpp"
 
 #include "backends/duckdb/api/register.hpp"
 #include "eval/tests/test_support/interference_calibration.hpp"
@@ -53,6 +54,8 @@ int CalibrateAndWriteCostModel(int query_num, const std::vector<std::string> &po
 	    !positional.empty() ? positional[0]
 	                          : accelerator_codegen::aux_state::core::AuxCostModelDefaultPath(
 	                                accelerator_codegen::aux_state::engine::LookupSharedQuery("tpch", query_num).cost_model);
+	// The calibration measures contention on the measured cores; its builds are small beside the sweep's.
+	accelerator_codegen::benchmarks::driver::PinToMeasuredCpus(0);
 	duckdb::DuckDB database(db_path);
 	auto all_queries = test_support::MultiConnectionTestQueries();
 	if (std::find(all_queries.begin(), all_queries.end(), query_num) == all_queries.end()) {

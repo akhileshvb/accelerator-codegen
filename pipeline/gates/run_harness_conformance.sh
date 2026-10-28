@@ -115,7 +115,8 @@ memory_budget 4  # four runs side by side
 for target in "${DIFF_BINARY}" "${MULTI_CONN_TARGET}" "${CROSS_ACCEL_TARGET}"; do
   launch "${target}" engine_run "${target}" "${QUERY}"
 done
-ACCEL_PROFILE_CONTROL="${PROFILE_FIFO}" launch bench_forced bench_points
+MEASURE_CPU="$(python3 -c 'import os; print(min(os.sched_getaffinity(0)))')"
+ACCEL_MEASURE_CPUS="${MEASURE_CPU}" ACCEL_PROFILE_CONTROL="${PROFILE_FIFO}" launch bench_forced bench_points
 settle
 export ACCEL_RUN_MEMORY_MB="${SINGLE_RUN_MB}" ACCEL_ENGINE_MEMORY_MB="$((SINGLE_RUN_MB / 2))"
 failed_run "${DIFF_BINARY}" differential
@@ -126,6 +127,8 @@ failed_run bench_forced bench-run
   fail "clause suite-report: the differential passed with ACCEL_SUITE_DIR set but wrote no suite report at ACCEL_SUITE_REPORT (host_contract.md, Test suite)"
 window_opened ||
   fail "clause bench-profile-window: the bench never opened run_profile's window: wrap its measured read loop in driver::ProfileWindow (ACCEL_PROFILE_CONTROL)"
+grep -qF "[measure] measured run pinned to cores ${MEASURE_CPU}" "${RUNS}/bench_forced.log" ||
+  fail "clause bench-measure-pin: the bench did not pin its warmup and measured loop to ACCEL_MEASURE_CPUS: call driver::PinToMeasuredCpus (eval/bench/driver/measured_cpus.hpp) after the state build, before the warmup"
 message="$(python3 "${CHECKS}" bench-rows "${RUNS}/bench_forced.log" "${POINTS}")"
 [[ -z "${message}" ]] || fail "${message}"
 

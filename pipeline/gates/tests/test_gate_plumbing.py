@@ -43,6 +43,7 @@ case "${verb}" in
       [[ -z "${FAKE_BENCH_NO_SUITE:-}" || -z "${ACCEL_SUITE_DIR:-}" ]] || { echo "benchmark has no query binding"; exit 1; }
       rate=0.0; [[ -z "${FAKE_BENCH_CONSTANT:-}" && -n "${ACCEL_AUX_FORCE_FALLBACK:-}" ]] || rate=1.0
       [[ -z "${FAKE_BENCH_DECLINES:-}" ]] || rate=0.0  # no module behind the registration: nothing ever hits
+      [[ -z "${ACCEL_MEASURE_CPUS:-}" || -n "${FAKE_BENCH_NO_PIN:-}" ]] || echo "[measure] measured run pinned to cores ${ACCEL_MEASURE_CPUS}" >&2
       [[ -z "${ACCEL_PROFILE_CONTROL:-}" || -n "${FAKE_BENCH_NO_PROFILE:-}" ]] || echo enable >"${ACCEL_PROFILE_CONTROL}"
       echo "suite,write_frequency_pct,workload_speedup,query_only_speedup,num_queries,accel_fallback_reads,state_builds,engine_ref_query_median_us,${FAKE_BENCH_NO_HIT_MEDIAN:-accel_hit_median_us,}accel_hit_rate"
       for pct in ${FAKE_BENCH_ONE_ROW:-${ACCEL_AUX_WRITE_FREQUENCIES//,/ }}; do

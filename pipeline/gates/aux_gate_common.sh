@@ -254,9 +254,9 @@ engine_run() { _engine_run "" "$@"; }
 # What the last engine_run left (a gate may skip every run: a sanitizer quick_check without a differential).
 RC=0 LOG="" RUN_REASON=""
 
-# engine_run for a benchmark: queues for the host-wide measurement lease (outside the time limit), runs
-# pinned to the measurement CPUs (ACCEL_RUN_CPUS: to those instead), and records the queueing as the phase
-# measurement_lease_wait.
+# engine_run for a benchmark: queues for the host-wide measurement lease (outside the time limit), exports the
+# measurement CPUs for the bench to pin its measured part to (ACCEL_RUN_CPUS: to those instead), and
+# records the queueing as the phase measurement_lease_wait.
 engine_measure() { _engine_run "${ACCEL_GATE_NAME:-${GATE_QUERY:-gate}}" "$@"; }
 
 _engine_run() {
@@ -269,7 +269,7 @@ _engine_run() {
 	[[ -z "${lease}" ]] ||
 		wrap=(env "PYTHONPATH=${ACCEL_PIPELINE_PYTHONPATH:-${GATE_ROOT}/pipeline/orchestrator}:${PYTHONPATH:-}" python3 -m accel_pipeline.pack measure
 			--holder "${ACCEL_INSTANCE_TAG:-${ACCEL_PIPELINE_WORKER_ID:-w0}}" --reason "${lease}" --)
-	[[ -z "${ACCEL_RUN_CPUS:-}" ]] || pin=(taskset -c "${ACCEL_RUN_CPUS}")   # after the lease's own pinning: a wider set
+	[[ -z "${ACCEL_RUN_CPUS:-}" ]] || pin=(env "ACCEL_MEASURE_CPUS=${ACCEL_RUN_CPUS}")   # a wider set than the lease's
 	"${wrap[@]}" "${pin[@]}" python3 "${RUN_OUTCOME}" run "${limit}" "${ACCEL_GATE_OUT:+${ACCEL_GATE_OUT%.json}.run.json}" "${1##*/}" -- \
 		"${ENGINE_HOST}" run "$@" >"${live}" 2>&1 && RC=0 || RC=$?
 	LOG="$(<"${live}")"
@@ -337,7 +337,7 @@ engine_target_gate() {
 
 # Threads the gate's processes may use: ACCEL_AUX_THREADS, else the CPUs of this process's affinity (the
 # worker's core budget). With `measure`, one lease window of the measurement set (ACCEL_MEASURE_SET split into
-# ACCEL_MEASURE_SLOTS windows), the CPUs the lease pins a benchmark to.
+# ACCEL_MEASURE_SLOTS windows), the CPUs the lease gives a benchmark.
 gate_threads() {
 	if [[ -n "${ACCEL_AUX_THREADS:-}" ]]; then echo "${ACCEL_AUX_THREADS}"; return; fi
 	if [[ "${1:-}" == measure && -n "${ACCEL_MEASURE_SET:-}" ]]; then

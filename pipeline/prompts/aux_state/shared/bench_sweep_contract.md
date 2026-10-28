@@ -33,6 +33,7 @@ The `aux_bench_sweep` gate calls the bench for each suite (the workload's `aux_b
 | `ACCEL_BENCH_REF_SAMPLES` | Legacy; ignored when benchmarks use warmup + measured loop |
 | `ACCEL_BENCH_BASE_WRITE_SAMPLES` | Base-path write calibration samples |
 | `ACCEL_Q{N}_MAINTENANCE_MODE` | Set `hybrid` during measured workload |
+| `ACCEL_MEASURE_CPUS` | The cores of the measured run, set under the measurement lease (clause `bench-measure-pin`) |
 | `ACCEL_PROFILE_CONTROL` | Comma-separated `perf --control` fifos set by `run_profile` (clause `bench-profile-window`) |
 
 Query-specific bench params (the template's own parameters) follow the Q{N} manifest / test helpers.
@@ -81,6 +82,11 @@ A failure names its clause:
   same rate both ways assumes it. (With only the declining module registered nothing hits and the two are not compared.)
 - **`bench-profile-window`**: the bench wraps its measured read loop in `driver::ProfileWindow`
   (`eval/bench/driver/profile_window.hpp`; `run_profile` sets `ACCEL_PROFILE_CONTROL` and samples only inside it).
+- **`bench-measure-pin`**: the bench builds its state on the run's whole core budget (the engine's threads at that
+  budget), then calls `driver::PinToMeasuredCpus` (`eval/bench/driver/measured_cpus.hpp`) before its warmup and sets the
+  engine's threads to the count it returns, on the reference and the accelerator connections alike. Warmup and the
+  measured loop, writes, maintenance and rebuilds in it included, run pinned to `ACCEL_MEASURE_CPUS`; the conformance
+  check sets it and requires the helper's `[measure] measured run pinned to cores` line.
 
 ## Measured workload
 

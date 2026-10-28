@@ -253,19 +253,19 @@ def test_slots_let_benchmarks_measure_at_once_on_disjoint_cpus(host_dir, monkeyp
 
 
 @needs_two_cpus
-def test_the_wrapper_pins_the_command_and_holds_the_lease_until_it_exits(host_dir):
+def test_the_wrapper_exports_the_cores_and_holds_the_lease_until_it_exits(host_dir):
     measure = CPUS[-1]
     env = {**os.environ, "PYTHONPATH": PACKAGE_ROOT, pack.MEASURE_SET_ENV: str(measure)}
-    code = "import os, sys, time; print(sorted(os.sched_getaffinity(0)), os.environ['ACCEL_MEASURE_THREADS'], flush=True); time.sleep(1.5)"
+    code = "import os, sys, time; print(os.environ['ACCEL_MEASURE_CPUS'], len(os.sched_getaffinity(0)) > 1, flush=True); time.sleep(1.5)"
     proc = subprocess.Popen(
         [sys.executable, "-m", "accel_pipeline.pack", "measure", "--holder", "h", "--reason", "bench", "--", sys.executable, "-c", code],
         env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
     )
-    assert proc.stdout.readline().strip() == f"[{measure}] 1"
+    assert proc.stdout.readline().strip() == f"{measure} True"  # the command keeps the affinity it was started with
     assert [i["holder"] for i in pack.holders()] == ["h"]  # still held by the exec'd command
     proc.wait()
     assert pack.holders() == []
-    assert re.search(r"waited 0\.\d s for the measurement lease; pinned to cores", proc.stderr.read())
+    assert re.search(r"waited 0\.\d s for the measurement lease; the measured run uses cores", proc.stderr.read())
 
 
 # --- shared-file lease, isolation, quarantine, the runner ---
