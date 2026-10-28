@@ -1074,6 +1074,14 @@ def _cpp_string_list(items: list[str]) -> str:
     return "{" + ", ".join('"' + item.replace("\\", "\\\\").replace('"', '\\"') + '"' for item in items) + "}"
 
 
+def _default_binding_texts(repo: Path, workload: dict[str, Any], benchmark: str, query: int) -> list[str]:
+    """The query's default arguments as text ([] when the bound reference SQL does not line up with the template)."""
+    from accel_pipeline.data import binding_texts, default_binding
+
+    template, bound = repo / "workloads" / benchmark / f"q{query}.sql", Path(workload["reference_sql_path"])
+    return binding_texts(default_binding(template.read_text(encoding="utf-8"), bound.read_text(encoding="utf-8"))) or []
+
+
 def materialize_registration(pipeline_config: PipelineConfig, workload: dict[str, Any], query: int) -> dict[str, Any]:
     """The query's registration before any test is written: the engine's scaffold (`backends/<engine>/api/scaffold/
     register.cpp.tpl`) filled with the query's SQL and facts, so the query is registered with a module that declines
@@ -1103,6 +1111,7 @@ def materialize_registration(pipeline_config: PipelineConfig, workload: dict[str
         "base_sql": read_workload_file(workload.get("reference_sql_path") or "", "reference SQL (reference_sql_path)").strip().rstrip(";"),
         "fallback_sql": read_workload_file(repo / workload_query_sql(benchmark, query), "query template").strip().rstrip(";"),
         "tables": _cpp_string_list([t["name"] for t in facts["dependent_tables"]]),
+        "binding": _cpp_string_list(_default_binding_texts(repo, workload, benchmark, query)),
     }
     content = _substitute(template.read_text(encoding="utf-8"), values)
     _write_if_missing(repo / destination, content)

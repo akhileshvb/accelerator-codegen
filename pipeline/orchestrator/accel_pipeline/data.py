@@ -1579,6 +1579,19 @@ def default_binding(template_sql: str, bound_sql: str) -> list[str] | None:
     return [values[n] for n in range(1, max(values) + 1)] if set(values) == set(range(1, max(values) + 1)) else None
 
 
+def binding_texts(binding: list[str] | None) -> list[str] | None:
+    """The default binding's values as plain text (a literal, or a cast of one), for a registration to cast to the
+    parameters' types; None when one is an expression."""
+    texts = []
+    for value in binding or []:
+        node = sqlglot.parse_one(value)
+        node = node.this if isinstance(node, exp.Cast) else node
+        if not isinstance(node, exp.Literal):
+            return None
+        texts.append(str(node.this))
+    return texts if binding else None
+
+
 def write_probe_suite(directory: Path, binding: list[str]) -> Path:
     """The smallest suite (one tuple at the default binding, no transactions) for checking that a harness reads the
     suite environment before the query's own suite is frozen."""
