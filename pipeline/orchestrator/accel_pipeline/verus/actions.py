@@ -1566,7 +1566,8 @@ def sandbox_selfcheck(ctx: VerusContext) -> dict[str, Any]:
               'command -v codex >/dev/null || echo "MISSING codex"',
               f'[ -x "{verus}" ] || echo "MISSING verus ({verus})"',
               "true"]
-    proc = subprocess.run(sandbox_prefix(ctx) + ["bash", "-c", "\n".join(lines)], capture_output=True,
+    in_root = agent.prefix(sandbox_mounts(ctx), ctx.root, setting="verus.sandbox")  # preflight: no workspace yet
+    proc = subprocess.run(in_root + ["bash", "-c", "\n".join(lines)], capture_output=True,
                           text=True, timeout=60)
     out = [l for l in proc.stdout.splitlines() if l.strip()]
     visible = [l[len("VISIBLE "):] for l in out if l.startswith("VISIBLE ")]

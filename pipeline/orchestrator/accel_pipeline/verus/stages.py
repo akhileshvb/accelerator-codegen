@@ -179,6 +179,8 @@ class Run:
         cfg = self.pipeline_config
         codex_home = Path(getattr(cfg, "codex_home", None) or Path(ctx.pipeline_root) / ".codex")
         mc = self.model_config
+        if mc.codex_compact_prompt_file:  # the agent's root is the workspace; the prompt is the tree's
+            mc = dataclasses.replace(mc, codex_compact_prompt_file=str(ctx.root / mc.codex_compact_prompt_file))
         if timeout_sec:
             mc = dataclasses.replace(mc, codex_timeout_sec=int(timeout_sec))
         os.environ["ACCEL_VERUS_CONTEXT"] = str(ctx.save())
