@@ -37,7 +37,7 @@ import yaml
 from accel_pipeline.agent import ensure_codex_config
 from accel_pipeline.config import (
     ConcurrencyConfig, PipelineConfig, find_repo_root, load_model_config, load_pipeline_config, load_repo_dotenv, load_workload,
-    pipeline_root, workload_engines,
+    benchmark_of, pipeline_root, workload_engines,
 )
 from accel_pipeline.data import instance_tag
 from accel_pipeline.layout import owned_path_globs, query_dir, query_id_from_rel
@@ -641,7 +641,7 @@ def _seed_generated_sources(primary: Path, dest: Path) -> None:
     materializes HEAD, while aux modules are often untracked and shared headers dirty on the primary. Uses
     `shutil.copy` so destination mtimes are now: build dirs persist across worktree resets, and preserved source
     mtimes made CMake skip rebuilds and left stale objects."""
-    for rel in ("accelerators", "backends", "substrate", "eval/harness", "eval/tests", "eval/bench/tpch/single-threaded", "workloads", "cmake"):
+    for rel in ("accelerators", "backends", "substrate", "eval/harness", "eval/tests", "eval/bench", "workloads", "cmake"):
         src = primary / rel
         if src.is_dir():
             for path in src.rglob("*"):
@@ -680,7 +680,7 @@ def ensure_worker_worktree(primary: Path, worker_id: str, workload: dict[str, An
     return dest
 
 
-def sync_owned_to_primary(*, primary: Path, worktree: Path, query: int, benchmark: str = "tpch") -> list[str]:
+def sync_owned_to_primary(*, primary: Path, worktree: Path, query: int, benchmark: str) -> list[str]:
     """Copy this query's owned sources from the worker worktree back to the primary."""
     primary, worktree = Path(primary).resolve(), Path(worktree).resolve()
     if primary == worktree:
@@ -736,7 +736,7 @@ def foreign_trees_for_workload(workload: dict[str, Any]) -> list[str]:
     other engines its workload supports; during an engine_backend run the workload's `agent_hidden_trees`."""
     engine = str(workload.get("engine_name") or "").strip()
     if workload.get("workload_kind") != "engine_backend":
-        bench = str(workload.get("benchmark_name") or "tpch")
+        bench = benchmark_of(workload)
         query = workload.get("query_number")
         return [
             tree
@@ -1071,7 +1071,8 @@ def parse_pack_queries(pack: dict[str, Any]) -> list[PackQuery]:
     """One entry per query x engine; an entry's `engines:` overrides the pack's."""
     out: list[PackQuery] = []
     default_engines = list(pack.get("engines") or [])
-    templates = pack.get("workload_template", "tpch_q{q}_aux")
+    if not (templates := pack.get("workload_template")):
+        raise ValueError("the benchmark pack names no workload_template (e.g. <bench>_q{q}_aux): which workload runs each query")
     # A list runs each query's accelerators side by side (e.g. its base and its aux workload).
     default_templates = [str(t) for t in templates] if isinstance(templates, list) else [str(templates)]
     for item in pack.get("queries") or []:

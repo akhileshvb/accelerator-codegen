@@ -32,6 +32,7 @@ from accel_pipeline.config import (
     PipelineConfig,
     analysis_artifact_path,
     apply_workload_overrides,
+    benchmark_of,
     load_pipeline_config,
     load_query_analysis,
     load_run_workload,
@@ -210,7 +211,7 @@ def advance_best_valid_baseline(pipeline_config, workload, query, *, attempt_id:
         from accel_pipeline.pack import primary_repo_root, sync_owned_to_primary, using_worktree_isolation
 
         if using_worktree_isolation():
-            bench_name = str(workload.get("artifact_namespace") or workload.get("benchmark_name") or "tpch")
+            bench_name = str(workload.get("artifact_namespace") or benchmark_of(workload))
             synced = sync_owned_to_primary(primary=primary_repo_root(pipeline_config.repo_root), worktree=Path(pipeline_config.repo_root),
                                            query=query, benchmark=bench_name)
             if synced:

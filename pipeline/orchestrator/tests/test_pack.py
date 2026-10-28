@@ -310,14 +310,17 @@ def test_worker_isolation_rewrites_build_dir(tmp_path: Path, monkeypatch):
 def test_pack_expands_queries_by_engine(tmp_path: Path):
     pack = {
         "engines": ["duckdb", "postgres"],
+        "workload_template": "toybench_q{q}_aux",
         "queries": [1, {"query": 6, "engines": ["mysql"]}],
     }
     runs = [(q.query, q.engine, q.workload) for q in parse_pack_queries(pack)]
     assert runs == [
-        (1, "duckdb", "tpch_q1_aux"),
-        (1, "postgres", "tpch_q1_aux"),
-        (6, "mysql", "tpch_q6_aux"),
+        (1, "duckdb", "toybench_q1_aux"),
+        (1, "postgres", "toybench_q1_aux"),
+        (6, "mysql", "toybench_q6_aux"),
     ]
+    with pytest.raises(ValueError, match="workload_template"):
+        parse_pack_queries({"engines": ["toyengine"], "queries": [1]})  # no benchmark is the default
 
 
 def test_a_run_hides_the_querys_other_engines():
