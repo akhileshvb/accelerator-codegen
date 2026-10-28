@@ -159,15 +159,6 @@ public:
   }
 };
 
-struct SecEdgarQ24OutputRow {
-  std::string tag;
-  std::string version;
-  bool tag_null = false;
-  bool version_null = false;
-  int64_t count = 0;
-  double total = 0.0;
-};
-
 // Image payload. `pre` is set on the PreMembership image, `groups` on the
 // Aggregates image.
 struct SecEdgarQ24State {
@@ -191,9 +182,6 @@ struct SecEdgarQ24StateImage {
 std::vector<uint8_t> EncodeSecEdgarQ24PreMembership(const SecEdgarQ24State &);
 std::vector<uint8_t> EncodeSecEdgarQ24TagVersions(const SecEdgarQ24State &);
 std::vector<uint8_t> EncodeSecEdgarQ24Aggregates(const SecEdgarQ24State &);
-
-std::vector<SecEdgarQ24OutputRow>
-BuildSecEdgarQ24Output(const SecEdgarQ24State &);
 
 // Ordered log of what a transaction did; replayed in Stage so interleavings of
 // num and pre writes resolve exactly as sequential execution would.
@@ -277,7 +265,7 @@ public:
   // key = empty result).
   static void EmitOutput(const Q24GroupState &groups,
                          const std::string &bucket_key, core::AuxRowSink &sink);
-  // Maps the table function arguments () / (year BIGINT, uom VARCHAR) to a
+  // Maps the table function arguments (year BIGINT, uom VARCHAR) to a
   // bucket key. False: the result is empty (NULL or non-matching argument).
   static bool ParseArguments(const core::QueryArguments &, std::string &bucket_key);
   // Reads the published aggregates image; false when absent/invalid.
