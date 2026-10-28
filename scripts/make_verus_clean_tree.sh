@@ -6,8 +6,8 @@
 # backends, substrate/verus/{common,store,kit,sql2verus} and accelerators/prooflib
 # (prooflib and the playbook as seeded), the query SQL, and the pipeline.
 #
-# Also sets up what is gitignored: .env, the pipeline's Codex home (config and
-# MCP launcher only, no memories; paths rewritten), the orchestrator venv.
+# Also sets up what is gitignored: .env and the orchestrator venv. The pipeline's
+# Codex home starts empty: the pipeline writes its config from pipeline/codex/.
 # The Verus binary is used in place (VERUS_BIN; the sandbox mounts it).
 #
 # --no-backends: also drop every engine backend (backends/*), for the clean
@@ -52,11 +52,6 @@ git init -q && git add -A && git -c user.name="clean tree" -c user.email="clean@
 VERUS="${VERUS_BIN:-${SRC}/tools/verus/verus-x86-linux/verus}"
 [[ -x "${VERUS}" ]] || { echo "no Verus binary at ${VERUS} (set VERUS_BIN)" >&2; exit 1; }
 grep -q '^VERUS_BIN=' .env 2>/dev/null || echo "VERUS_BIN=${VERUS}" >> .env
-mkdir -p pipeline/.codex
-for f in config.toml run_mcp_server.sh; do
-  [[ -f "${SRC}/pipeline/.codex/${f}" ]] && cp "${SRC}/pipeline/.codex/${f}" "pipeline/.codex/${f}"
-done
-[[ -f pipeline/.codex/config.toml ]] && sed -i "s|${SRC}|${DEST}|g" pipeline/.codex/config.toml
 
 python3 -m venv pipeline/orchestrator/.venv
 pipeline/orchestrator/.venv/bin/pip install -q -e pipeline/orchestrator
@@ -67,6 +62,5 @@ removed: ${remove[*]}
 
 run (agents are sandboxed to this tree by bwrap; preflight checks it):
   export VERUS_BIN=${VERUS}
-  cd ${DEST}/pipeline/orchestrator && .venv/bin/python -m accel_pipeline.cli \\
-    --query 21 --workload tpch_q21_aux --mode verus --models-config pipeline/config/models.codex.yaml
+  cd ${DEST}/pipeline/orchestrator && .venv/bin/python -m accel_pipeline run tpch_q21_aux --mode verus
 EOF
