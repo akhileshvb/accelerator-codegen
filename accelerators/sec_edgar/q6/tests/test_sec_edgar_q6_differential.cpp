@@ -6,13 +6,14 @@
 // filter columns, multi-table transactions, aborted transactions and bulk
 // batches, and compares the aux answer with plain DuckDB SQL after each step.
 //
-// Q6 is parameterized by (fy, stmt, uom) (defaults 2023, 'IS', 'USD'). After
-// every step the default answer AND several random parameter triples (the
-// benchmark domain plus edges: NULL, unknown, look-alike values) are compared
-// with plain DuckDB SQL and with a state built from scratch. The DATA is
-// randomized around the parameters too: neighbouring fiscal years, NULL fy,
-// look-alike units ('usd', 'USD ', 'EUR'), look-alike statements ('is', 'BS'),
-// NULL/empty labels and names, exact ties, duplicates and orphan keys.
+// Q6 is parameterized by (fy, stmt, uom). After every step the drawn parameter
+// sets (eval/harness/param_sets.hpp) AND several random parameter triples (the
+// drawn values plus edges: NULL, unknown, look-alike values) are compared with
+// the query template bound to the same arguments and with a state built from
+// scratch. The DATA is randomized around the drawn sets too: their fiscal
+// years, units and statements, NULL fy, look-alike units and statements (lower
+// case, trailing blank), NULL/empty labels and names, exact ties, duplicates and
+// orphan keys. The writes target one drawn set at a time.
 //
 // usage: test_sec_edgar_q6_differential [synthetic|synthetic-large|<db_path>]
 //        [seed] [ops] [parallel]
@@ -40,8 +41,11 @@
 
 #include "eval/harness/cost_calibration.hpp"
 #include "eval/harness/differential.hpp"
+#include "eval/harness/param_sets.hpp"
+#include "sec_edgar/q6/tests/q6_domain.hpp"
 #include "substrate/aux/core/aux_calibration.hpp"
 #include "eval/tests/test_support/module_runtime.hpp"
+#include "backends/duckdb/api/sql_fallback.hpp"
 #include "catalog/query_catalog.hpp"
 #include "sec_edgar/q6/duckdb/aux/duckdb_scan.hpp"
 #include "sec_edgar/q6/duckdb/aux/module.hpp"
@@ -61,6 +65,7 @@ using core::MaintenanceAction;
 using core::MutationBatch;
 using core::MutationKind;
 using Rng = std::mt19937_64;
+using accelerator_codegen::aux_state::q6_tests::Domain;
 
 void Require(bool ok, const std::string &message) {
   if (!ok) {
@@ -120,8 +125,8 @@ int g_param_checks = 3;
 // ---------------------------------------------------------------------------
 class Harness {
 public:
-  Harness(duckdb::Connection &connection, bool parallel_variant)
-      : connection_(connection),
+  Harness(duckdb::Connection &connection, bool parallel_variant, const Domain &domain)
+      : connection_(connection), domain_(domain),
         entry_(engine::LookupSharedQuery("sec_edgar", 6)),
         scan_(connection), log_(std::make_shared<ActionLog>()) {
     if (parallel_variant) {
@@ -139,7 +144,7 @@ public:
 
   void Build() { runtime_->Build(); }
 
-  std::vector<AuxRow> Execute(const core::QueryArguments &args = {}) {
+  std::vector<AuxRow> Execute(const core::QueryArguments &args) {
     CollectSink sink;
     runtime_->Read(args, sink);
     return std::move(sink.rows);
@@ -147,11 +152,18 @@ public:
 
   struct Params {
     bool fy_null = false;
-    int64_t fy = 2023;
+    int64_t fy = 0;
     bool stmt_null = false;
-    std::string stmt = "IS";
+    std::string stmt;
     bool uom_null = false;
-    std::string uom = "USD";
+    std::string uom;
+    static Params Of(const core::QueryArguments &set) {
+      Params p;
+      p.fy = Domain::FyOf(set);
+      p.stmt = Domain::StmtOf(set);
+      p.uom = Domain::UomOf(set);
+      return p;
+    }
     core::QueryArguments Args() const {
       core::QueryArguments a;
       a.values.push_back(fy_null ? AuxValue::Null(core::AuxType::Int64)
@@ -162,21 +174,6 @@ public:
                                   : AuxValue::Of(core::AuxType::String, uom));
       return a;
     }
-    static std::string Quote(const std::string &v) {
-      std::string out = "'";
-      for (char c : v) out += c == '\'' ? std::string("''") : std::string(1, c);
-      return out + "'";
-    }
-    std::string Sql() const {
-      return "SELECT s.name, p.stmt, n.tag, p.plabel, SUM(n.value) AS total_value, COUNT(*) AS cnt "
-             "FROM num n JOIN sub s ON n.adsh = s.adsh "
-             "JOIN pre p ON n.adsh = p.adsh AND n.tag = p.tag AND n.version = p.version "
-             "WHERE n.uom = " + (uom_null ? std::string("NULL") : Quote(uom)) +
-             " AND p.stmt = " + (stmt_null ? std::string("NULL") : Quote(stmt)) +
-             " AND s.fy = " + (fy_null ? std::string("NULL") : std::to_string(fy)) +
-             " AND n.value IS NOT NULL GROUP BY s.name, p.stmt, n.tag, p.plabel "
-             "ORDER BY total_value DESC, s.name, n.tag, p.plabel LIMIT 200";
-    }
     std::string Text() const {
       return "(" + (fy_null ? std::string("NULL") : std::to_string(fy)) + "," +
              (stmt_null ? std::string("NULL") : stmt) + "," + (uom_null ? std::string("NULL") : uom) + ")";
@@ -184,33 +181,35 @@ public:
   };
   std::mt19937_64 param_rng_{0x5EED};
   Params RandomParams() {
-    static const int64_t fys[] = {2021, 2022, 2023, 2023, 2024, 2019, 2025, 0};
-    static const char *stmts[] = {"BS", "IS", "IS", "CF", "EQ", "CI", "ZZ", "is"};
-    static const char *uoms[] = {"USD", "USD", "shares", "pure", "CAD", "CNY", "EUR", "zz", "usd"};
+    const auto &focus = domain_.sets[param_rng_() % domain_.sets.size()];
     Params p;
     auto pick = [&](size_t n) { return static_cast<size_t>(param_rng_() % n); };
-    if (pick(14) == 0) p.fy_null = true; else p.fy = fys[pick(sizeof fys / sizeof *fys)];
-    if (pick(14) == 0) p.stmt_null = true; else p.stmt = stmts[pick(sizeof stmts / sizeof *stmts)];
-    if (pick(14) == 0) p.uom_null = true; else p.uom = uoms[pick(sizeof uoms / sizeof *uoms)];
+    if (pick(14) == 0) p.fy_null = true; else p.fy = domain_.Fy(param_rng_, Domain::FyOf(focus));
+    if (pick(14) == 0) p.stmt_null = true; else p.stmt = domain_.Text(param_rng_, domain_.stmts, Domain::StmtOf(focus));
+    if (pick(14) == 0) p.uom_null = true; else p.uom = domain_.Text(param_rng_, domain_.uoms, Domain::UomOf(focus));
     return p;
   }
 
   void CheckAgainstBase(const std::string &context) {
     Require(module_->CheckValidity(runtime_->Backend(), {}),
             "aux state not valid after " + context);
-    std::string at = "default";
+    std::string at = "none";
     try {
-      std::vector<Params> params{Params{}};
+      std::vector<Params> params;
+      for (const auto &set : domain_.sets) params.push_back(Params::Of(set));
+      const auto drawn = params.size();
       for (int i = 0; i < g_param_checks; ++i) params.push_back(RandomParams());
       std::shared_ptr<const q::SecEdgarQ6State> fresh;
       if (g_fresh_check) {
         fresh = std::static_pointer_cast<q::SecEdgarQ6Module>(module_)->BuildState(runtime_->Backend());
       }
-      for (const auto &p : params) {
+      for (std::size_t i = 0; i < params.size(); ++i) {
+        const auto &p = params[i];
         at = p.Text();
         const auto got = Execute(p.Args());
+        if (i < drawn) drawn_nonempty += got.empty() ? 0 : 1;
         if (fresh) CheckAgainstFresh(*fresh, p, got);
-        harness::CompareAuxRowsToSql(connection_, entry_, p.Sql(), got);
+        harness::CompareAuxRowsToSql(connection_, entry_, engine::BindArguments(entry_.base_sql, p.Args()), got);
       }
     } catch (const std::exception &e) {
       throw std::runtime_error(std::string(e.what()) + " [params " + at + " after " + context + "]");
@@ -297,6 +296,8 @@ public:
   MaintenanceAction LastAction() const {
     return log_->staged ? log_->last : MaintenanceAction::NoOp;
   }
+  uint64_t drawn_nonempty = 0; // checks of a drawn set that returned rows
+
   uint64_t FootprintBytes() const {
     uint64_t total = 0;
     auto &services = runtime_->Backend();
@@ -311,6 +312,7 @@ public:
 
 private:
   duckdb::Connection &connection_;
+  const Domain &domain_;
   const engine::SharedQueryCatalogEntry &entry_;
   q::SecEdgarQ6DuckdbScan scan_;
   std::shared_ptr<ActionLog> log_;
@@ -389,13 +391,21 @@ struct Scale {
 
 class Db {
 public:
-  Db(duckdb::Connection &con, uint64_t seed, bool real, Scale scale)
-      : con(con), rng(seed), real(real), scale(scale) {}
+  Db(duckdb::Connection &con, uint64_t seed, bool real, Scale scale, const Domain &domain)
+      : con(con), rng(seed), real(real), scale(scale), domain(domain), focus(&domain.sets.front()) {}
+
+  // The drawn set the next writes target.
+  void PickFocus() { focus = &domain.sets[Rand(domain.sets.size())]; }
+  int64_t FocusFy() const { return Domain::FyOf(*focus); }
+  const std::string &FocusStmt() const { return Domain::StmtOf(*focus); }
+  const std::string &FocusUom() const { return Domain::UomOf(*focus); }
 
   duckdb::Connection &con;
   Rng rng;
   bool real;
   Scale scale;
+  const Domain &domain;
+  const core::QueryArguments *focus;
   Table num{"num", 1, {}, {}};
   Table sub{"sub", 2, {}, {}};
   Table pre{"pre", 3, {}, {}};
@@ -454,24 +464,20 @@ public:
     return Value::DOUBLE(kExact[Rand(sizeof kExact / sizeof *kExact)]);
   }
   Value NumUom() {
-    static const char *k[] = {"USD", "USD", "USD", "USD", "USD", "EUR", "usd", "USD ", "", "CAD",
-                              "shares", "shares", "pure", "CNY"};
     if (Chance(0.04)) return Value(duckdb::LogicalType::VARCHAR);
-    return Value(k[Rand(sizeof k / sizeof *k)]);
+    return Value(domain.Text(rng, domain.uoms, FocusUom()));
   }
   Value NullableStr(const std::vector<std::string> &pool, double null_p) {
     if (Chance(null_p)) return Value(duckdb::LogicalType::VARCHAR);
     return Value(Pick(pool));
   }
   Value Fy() {
-    static const int k[] = {2023, 2023, 2023, 2023, 2022, 2024, 2023, 2021, 2025, 2022, 2024, 2019, 0};
     if (Chance(0.04)) return Value(duckdb::LogicalType::INTEGER);
-    return Value::INTEGER(k[Rand(sizeof k / sizeof *k)]);
+    return Value::INTEGER(static_cast<int>(domain.Fy(rng, FocusFy())));
   }
   Value Stmt() {
-    static const char *k[] = {"IS", "IS", "IS", "IS", "BS", "CF", "is", "IS ", "EQ", "CI"};
     if (Chance(0.04)) return Value(duckdb::LogicalType::VARCHAR);
-    return Value(k[Rand(sizeof k / sizeof *k)]);
+    return Value(domain.Text(rng, domain.stmts, FocusStmt()));
   }
   std::string AdshName(int i) {
     char buf[32];
@@ -540,7 +546,7 @@ public:
       }
       // exact duplicates (multiplicity) and extra labels for the same key
       for (int d = 0; d < scale.adsh / 2 + 1; ++d) {
-        sql << ",(" << Literal(Value(Pick(adshs))) << ",1,99,'IS'," << Literal(Value(tags[1 % tags.size()]))
+        sql << ",(" << Literal(Value(Pick(adshs))) << ",1,99," << Literal(Value(FocusStmt())) << "," << Literal(Value(tags[1 % tags.size()]))
             << "," << Literal(Value(versions[0])) << "," << Literal(Value(plabels[1 % plabels.size()])) << ")";
       }
       Query(sql.str());
@@ -667,7 +673,9 @@ public:
   }
 
   // Predicates that find rows that matter / do not matter -------------------
-  std::string CohortAdshPredicate() { return "adsh IN (SELECT adsh FROM sub WHERE fy = 2023)"; }
+  std::string CohortAdshPredicate() { return "adsh IN (SELECT adsh FROM sub WHERE fy = " + std::to_string(FocusFy()) + ")"; }
+  std::string UomIs() { return "uom = " + Literal(Value(FocusUom())); }
+  std::string StmtIs() { return "stmt = " + Literal(Value(FocusStmt())); }
 
   std::vector<std::string> SubAdshes() {
     std::vector<std::string> out;
@@ -676,14 +684,14 @@ public:
   }
   std::vector<std::string> CohortSubAdshes() {
     std::vector<std::string> out;
-    for (auto &r : Rows("SELECT adsh FROM sub WHERE fy = 2023 ORDER BY adsh LIMIT 100000")) out.push_back(r[0].ToString());
+    for (auto &r : Rows("SELECT adsh FROM sub WHERE fy = " + std::to_string(FocusFy()) + " ORDER BY adsh LIMIT 100000")) out.push_back(r[0].ToString());
     return out;
   }
 
   Row NewNumRow() {
     // mostly keys of existing IS pre rows in the cohort
     Row key;
-    auto hits = Rows("SELECT adsh, tag, version FROM pre WHERE stmt = 'IS' AND " + CohortAdshPredicate() +
+    auto hits = Rows("SELECT adsh, tag, version FROM pre WHERE " + StmtIs() + " AND " + CohortAdshPredicate() +
                      " AND rowid >= " + std::to_string(real ? Rand(static_cast<uint64_t>(max_rowid_cache["pre"])) : 0) +
                      " LIMIT 50");
     if (Chance(0.75) && !hits.empty()) {
@@ -728,13 +736,13 @@ std::vector<MutationBatch> OpNumInsert(Db &d) {
 std::vector<MutationBatch> OpNumDelete(Db &d) {
   const bool join_hits = d.Chance(0.6);
   const size_t n = d.Chance(0.1) ? d.scale.bulk : 1 + d.Rand(4);
-  auto ids = d.PickRowids(d.num, join_hits ? "uom = 'USD' AND " + d.CohortAdshPredicate() : "", n);
+  auto ids = d.PickRowids(d.num, join_hits ? d.UomIs() + " AND " + d.CohortAdshPredicate() : "", n);
   if (ids.empty()) return {};
   return {d.DeleteRows(d.num, ids)};
 }
 std::vector<MutationBatch> OpNumUpdateValue(Db &d) {
   const size_t n = d.Chance(0.1) ? d.scale.bulk : 1 + d.Rand(3);
-  auto ids = d.PickRowids(d.num, d.Chance(0.7) ? "uom = 'USD' AND " + d.CohortAdshPredicate() : "", n);
+  auto ids = d.PickRowids(d.num, d.Chance(0.7) ? d.UomIs() + " AND " + d.CohortAdshPredicate() : "", n);
   if (ids.empty()) return {};
   return {d.UpdateRows(d.num, ids, {{"value", d.NumValue()}})};
 }
@@ -889,7 +897,7 @@ std::vector<MutationBatch> OpPreInsert(Db &d) {
   return {d.InsertRows(d.pre, rows)};
 }
 std::vector<MutationBatch> OpPreDelete(Db &d) {
-  auto ids = d.PickRowids(d.pre, d.Chance(0.7) ? "stmt = 'IS' AND " + d.CohortAdshPredicate() : "", 1 + d.Rand(3));
+  auto ids = d.PickRowids(d.pre, d.Chance(0.7) ? d.StmtIs() + " AND " + d.CohortAdshPredicate() : "", 1 + d.Rand(3));
   if (ids.empty()) return {};
   return {d.DeleteRows(d.pre, ids)};
 }
@@ -899,12 +907,12 @@ std::vector<MutationBatch> OpPreUpdateStmt(Db &d) {
   return {d.UpdateRows(d.pre, ids, {{"stmt", d.Stmt()}})};
 }
 std::vector<MutationBatch> OpPreUpdatePlabel(Db &d) {
-  auto ids = d.PickRowids(d.pre, "stmt = 'IS' AND " + d.CohortAdshPredicate(), 1 + d.Rand(3));
+  auto ids = d.PickRowids(d.pre, d.StmtIs() + " AND " + d.CohortAdshPredicate(), 1 + d.Rand(3));
   if (ids.empty()) return {};
   return {d.UpdateRows(d.pre, ids, {{"plabel", d.NullableStr(d.plabels, 0.15)}})};
 }
 std::vector<MutationBatch> OpPreUpdateKey(Db &d) {
-  auto ids = d.PickRowids(d.pre, d.Chance(0.6) ? "stmt = 'IS'" : "", 1 + d.Rand(2));
+  auto ids = d.PickRowids(d.pre, d.Chance(0.6) ? d.StmtIs() : "", 1 + d.Rand(2));
   if (ids.empty()) return {};
   const int which = static_cast<int>(d.Rand(3));
   std::vector<std::pair<std::string, Value>> sets;
@@ -957,7 +965,8 @@ int main(int argc, char **argv) {
     Scale scale = {9, 40, 6, 3, 5, 8, 600, 200};
     if (mode == "synthetic-large") scale = {400, 3000, 60, 4, 6, 12, 40000, 4000};
     if (real) scale = {0, 0, 0, 0, 0, 0, 0, 3000};
-    Db db(connection, seed, real, scale);
+    const Domain domain(harness::ArgumentSets(engine::LookupSharedQuery("sec_edgar", 6)));
+    Db db(connection, seed, real, scale, domain);
     if (!real) {
       db.MakeData();
     } else {
@@ -971,7 +980,7 @@ int main(int argc, char **argv) {
     }
     db.RefreshRowidCache();
 
-    Harness harness_(connection, parallel);
+    Harness harness_(connection, parallel, domain);
     harness_.Build();
     harness_.CheckAgainstBase("initial build");
     std::cout << "mode=" << mode << " seed=" << seed << " ops=" << ops
@@ -1049,6 +1058,7 @@ int main(int argc, char **argv) {
         label += ")";
       }
       harness_.Begin();
+      db.PickFocus();
       std::vector<MutationBatch> muts;
       for (const auto *c : chosen) {
         auto m = c->fn(db);
@@ -1107,6 +1117,8 @@ int main(int argc, char **argv) {
       }
       if (!real || ops >= 200) Require(sub_pre_delta > 0, "sub/pre never took the ApplyDelta path");
     }
+    Require(harness_.drawn_nonempty > 0, "no drawn parameter set returned rows");
+    std::cout << "drawn-set checks with rows: " << harness_.drawn_nonempty << "\n";
     std::cout << "PASS test_sec_edgar_q6_differential\n";
     return 0;
   } catch (const std::exception &e) {

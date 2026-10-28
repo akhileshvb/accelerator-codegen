@@ -25,7 +25,7 @@ DEFAULT_DEST = ROOT.parent / "accelerator-codegen-duckdb" / "sec_edgar_test.duck
 SUBSET_SQL = ROOT / "workloads" / "sec_edgar" / "test_db_subset.sql"
 
 PROBE_CHECKS = {
-    "q1": "SELECT adsh, line, stmt, rfile FROM pre WHERE stmt IS NOT NULL ORDER BY adsh, line LIMIT 1",
+    "q1": "SELECT adsh, line, stmt, rfile FROM pre WHERE stmt = 'BS' ORDER BY adsh, line LIMIT 1",
     "q2": (
         "SELECT n.adsh, n.tag, n.value, n.uom FROM num n "
         "JOIN sub s ON n.adsh = s.adsh "

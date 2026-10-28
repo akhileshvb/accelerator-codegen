@@ -68,17 +68,20 @@ const SharedQueryRegistrar kEntry{SharedQueryCatalogEntry{1,
      core::SecEdgarQ1Layout::kAccelerator,
      "SELECT stmt, rfile, COUNT(*) AS cnt, COUNT(DISTINCT adsh) AS num_filings, "
      "AVG(line) AS avg_line_num "
-     "FROM pre WHERE stmt IS NOT NULL GROUP BY stmt, rfile ORDER BY cnt DESC",
-     "SELECT * FROM accel_sec_edgar_q1_aux()",
+     "FROM pre WHERE stmt = $1 GROUP BY stmt, rfile ORDER BY cnt DESC",
+     "SELECT * FROM accel_sec_edgar_q1_aux($1)",
      "SELECT * FROM accel_sec_edgar_q1()",
-     "SELECT * FROM accel_sec_edgar_q1_aux()",
-     "SELECT adsh, line, stmt, rfile, rowid FROM pre WHERE stmt IS NOT NULL "
+     "SELECT * FROM accel_sec_edgar_q1_aux($1)",
+     "SELECT adsh, line, stmt, rfile, rowid FROM pre WHERE stmt = $1 "
      "AND line IS NOT NULL LIMIT 1",
-     {},
+     {{core::AuxValue::Null(core::AuxType::String)}},
      1,
      false,
      BuildSecEdgarQ1Probe,
-     core::kSecEdgarQ1CostModel}};
+     core::kSecEdgarQ1CostModel,
+     "SELECT stmt, rfile, COUNT(*) AS cnt, COUNT(DISTINCT adsh) AS num_filings, "
+     "AVG(line) AS avg_line_num "
+     "FROM pre WHERE stmt = $1 GROUP BY stmt, rfile ORDER BY cnt DESC"}};
 
 } // namespace q1_catalog
 } // namespace
@@ -147,6 +150,9 @@ struct SecEdgarQ1Scan : SecEdgarQ1InitialScan {
 
 // Engine capture delivers pre's stmt, rfile, adsh, line: the compact row the
 // module reads.
+// accel_sec_edgar_q1_aux(stmt VARCHAR) answers any stmt from the same state.
+const std::vector<std::vector<::duckdb::LogicalType>> kOverloads{{::duckdb::LogicalType::VARCHAR}};
+
 SecEdgarQ1Config Config() {
   SecEdgarQ1Config c{1};
   c.pre_attnums = {3, 5, 0, 2};
@@ -162,7 +168,8 @@ const AuxQueryRegistrar kQuery{AuxQuery{
     [](::duckdb::Connection &connection) {
       const auto c = Config();
       return MakeBinding<SecEdgarQ1Scan, SecEdgarQ1Module>(connection, CaptureTables(c), c);
-    }}};
+    },
+    kOverloads}};
 
 #ifdef ACCEL_ENABLE_PARALLEL_AUX
 const AuxQueryRegistrar kParallelQuery{AuxQuery{
@@ -172,7 +179,8 @@ const AuxQueryRegistrar kParallelQuery{AuxQuery{
     [](::duckdb::Connection &connection) {
       const auto c = Config();
       return MakeBinding<SecEdgarQ1Scan, SecEdgarQ1ParallelModule>(connection, CaptureTables(c), c);
-    }}};
+    },
+    kOverloads}};
 #endif
 
 } // namespace

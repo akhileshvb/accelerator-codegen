@@ -1,7 +1,9 @@
 // Footprint + read-path micro benchmark of the SEC-EDGAR Q2 aux state.
 //   measure_sec_edgar_q2_state <db_path> [iterations]
 // Prints build time, heap bytes / encoded bytes of the state, and the cost of
-// the in-memory read path (FinalizeSecEdgarQ2) for several (fy, uom) draws.
+// the in-memory read path (FinalizeSecEdgarQ2) for the parameter sets drawn by
+// eval/harness/param_sets (ACCEL_PARAM_SEED=<s> reproduces a run), a unit that
+// does not exist, and the maintenance cost of bumping the top row of the first set with an answer.
 #include <chrono>
 #include <cstdlib>
 #include <iomanip>
@@ -10,7 +12,9 @@
 #include "substrate/aux/core/aux_calibration.hpp"
 #include "substrate/aux/core/aux_types.hpp"
 #include "eval/tests/test_support/module_runtime.hpp"
+#include "catalog/query_catalog.hpp"
 #include "duckdb.hpp"
+#include "eval/harness/param_sets.hpp"
 #include "sec_edgar/q2/cost_model.hpp"
 #include "sec_edgar/q2/duckdb/aux/duckdb_scan.hpp"
 #include "sec_edgar/q2/duckdb/aux/module.hpp"
@@ -69,13 +73,26 @@ int main(int argc, char **argv) {
             << " escaped_counts=" << escaped
             << " dict_adsh=" << state->adsh.HeapBytes() << " dict_tag=" << state->tag.HeapBytes()
             << " fy=" << state->fy.MemoryBytes() << " names=" << state->names.MemoryBytes() << "\n";
+  const auto sets = accelerator_codegen::aux_state::harness::ArgumentSets(
+      accelerator_codegen::aux_state::engine::LookupSharedQuery("sec_edgar", 2));
   struct Draw {
     int64_t fy;
-    const char *uom;
+    std::string uom;
   };
-  const Draw draws[] = {{2022, "pure"}, {2023, "pure"}, {2012, "pure"},
-                        {2021, "pure"}, {2022, "EUR"},  {2022, "none"},
-                        {2022, "USD"},  {2021, "USD"}, {2012, "USD"}, {2022, "shares"}};
+  std::vector<Draw> draws;
+  for (const auto &args : sets) {
+    draws.push_back({std::get<int64_t>(args.values[0].payload), std::get<std::string>(args.values[1].payload)});
+  }
+  draws.push_back({draws.front().fy, "none"});
+  // The maintenance benchmark uses the first set with a non-empty answer.
+  Draw first = draws.front();
+  for (const auto &d : draws) {
+    std::vector<SecEdgarQ2OutputRow> rows;
+    if (FinalizeSecEdgarQ2(*state, d.fy, d.uom, rows) && !rows.empty()) {
+      first = d;
+      break;
+    }
+  }
   for (const auto &d : draws) {
     std::vector<SecEdgarQ2OutputRow> rows;
     FinalizeSecEdgarQ2(*state, d.fy, d.uom, rows);
@@ -93,30 +110,30 @@ int main(int argc, char **argv) {
 
   {
     // cost of re-reading one group from the base table (the "lost group" path)
-    auto q0 = con.Query("SELECT adsh, tag FROM num WHERE uom = 'pure' AND value IS NOT NULL LIMIT 1");
+    auto q0 = con.Query("SELECT adsh, tag FROM num WHERE uom = '" + first.uom + "' AND value IS NOT NULL LIMIT 1");
     std::vector<std::pair<std::string, std::string>> g{
         {q0->GetValue(0, 0).ToString(), q0->GetValue(1, 0).ToString()}};
     const auto l0 = Clock::now();
     size_t n = 0;
-    scan.LookupNumValueCounts("pure", g, [&](const SecEdgarQ2ValueCountRow &) { ++n; });
+    scan.LookupNumValueCounts(first.uom, g, [&](const SecEdgarQ2ValueCountRow &) { ++n; });
     std::cout << "lookup of one group: ms="
               << std::chrono::duration<double, std::milli>(Clock::now() - l0).count()
               << " distinct values=" << n << "\n";
   }
-  // ---- maintenance micro benchmark: bump the top 'pure' group of fy 2022.
+  // ---- maintenance micro benchmark: bump the top group of the first set with an answer.
   namespace core = accelerator_codegen::aux_state::core;
   const auto cost = core::LoadAuxCostModelJson(core::AuxCostModelDefaultPath(core::kSecEdgarQ2CostModel));
   accelerator_codegen::aux_state::test::ModuleRuntime runtime(
       con, std::make_shared<SecEdgarQ2Module>(cfg, &scan), cost);
   runtime.Build();
   std::vector<SecEdgarQ2OutputRow> top;
-  FinalizeSecEdgarQ2(*state, 2022, "pure", top);
+  FinalizeSecEdgarQ2(*state, first.fy, first.uom, top);
   if (top.empty()) {
     return 0;
   }
   // find the adsh of the top row
   auto q = con.Query("SELECT n.adsh, n.tag FROM num n JOIN sub s ON n.adsh = s.adsh WHERE "
-                     "s.fy = 2022 AND n.uom = 'pure' AND n.value = " +
+                     "s.fy = " + std::to_string(first.fy) + " AND n.uom = '" + first.uom + "' AND n.value = " +
                      std::to_string(top[0].value) + " LIMIT 1");
   std::string adsh = q->GetValue(0, 0).ToString(), tag = q->GetValue(1, 0).ToString();
   const auto row = [&](double v) {
@@ -126,7 +143,7 @@ int main(int argc, char **argv) {
                          AuxValue::Of(AuxType::String, std::string("v")),
                          AuxValue::Of(AuxType::Int64, int64_t(20220101)),
                          AuxValue::Of(AuxType::Int64, int64_t(4)),
-                         AuxValue::Of(AuxType::String, std::string("pure")),
+                         AuxValue::Of(AuxType::String, first.uom),
                          AuxValue::Null(AuxType::String), AuxValue::Of(AuxType::Double, v),
                          AuxValue::Null(AuxType::String)}};
   };
@@ -160,7 +177,7 @@ int main(int argc, char **argv) {
                                                    {SecEdgarQ2Module::kStatePartition});
   const auto *img = snap.partitions.front().As<SecEdgarQ2StateImage>();
   std::vector<SecEdgarQ2OutputRow> after;
-  FinalizeSecEdgarQ2(*img->state, 2022, "pure", after);
+  FinalizeSecEdgarQ2(*img->state, first.fy, first.uom, after);
   std::cout << "top value after " << writes << " bumps: " << after[0].value << " (expected " << v
             << ")\n";
   return 0;

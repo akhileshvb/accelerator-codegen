@@ -20,7 +20,10 @@
 namespace {
 using Clock = std::chrono::steady_clock;
 
-constexpr const char *kReferenceSqlPath = "workloads/sec_edgar/q1.sql";
+// The base kernel's fixed query: Q1 over every non-NULL stmt (the aux accelerator takes stmt as $1).
+constexpr const char *kReferenceSql =
+    "SELECT stmt, rfile, COUNT(*) AS cnt, COUNT(DISTINCT adsh) AS num_filings, AVG(line) AS avg_line_num "
+    "FROM pre WHERE stmt IS NOT NULL GROUP BY stmt, rfile ORDER BY cnt DESC";
 
 int GetEnvInt(const char *name, int fallback) {
 	const char *value = std::getenv(name);
@@ -39,10 +42,6 @@ void Require(bool condition, const std::string &message) {
 	if (!condition) {
 		throw std::runtime_error(message);
 	}
-}
-
-std::string ReadFile(const std::string &path) {
-	return accelerator_codegen::test_support::ReadFile(path);
 }
 
 void ExecuteAndConsume(duckdb::Connection &connection, const std::string &sql) {
@@ -156,7 +155,7 @@ int main() {
 		const int warmup = GetEnvInt("ACCEL_BENCH_WARMUP", 3);
 		const int iters = GetEnvInt("ACCEL_BENCH_ITERS", 10);
 		const bool profile_mode = GetEnvBool("ACCEL_BENCH_PROFILE");
-		const auto reference_sql = ReadFile(kReferenceSqlPath);
+		const std::string reference_sql = kReferenceSql;
 		const std::string accelerator_sql = "SELECT * FROM accel_sec_edgar_q1()";
 
 		duckdb::DuckDB database(db_path);

@@ -167,13 +167,9 @@ bool ParseSicBound(const core::AuxValue &v, bool is_low, int32_t &out, bool &all
 
 SecEdgarQ4Params ParseArguments(const core::QueryArguments &args) {
   SecEdgarQ4Params p;
-  if (args.values.empty()) {
-    return p;
-  }
   if (args.values.size() != 4) {
     throw std::invalid_argument(
-        "sec_edgar q4 aux expects () or (sic_lo INTEGER, sic_hi INTEGER, stmt VARCHAR, "
-        "uom VARCHAR)");
+        "sec_edgar q4 aux expects (sic_lo INTEGER, sic_hi INTEGER, stmt VARCHAR, uom VARCHAR)");
   }
   bool lo_out = false, hi_out = false;
   const bool lo_ok = ParseSicBound(args.values[0], true, p.sic_lo, lo_out);

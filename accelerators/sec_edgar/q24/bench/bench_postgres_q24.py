@@ -7,6 +7,9 @@ maintenance) for a num value UPDATE and a pre triple DELETE in three modes:
   plain     capture triggers disabled (a stock write)
   triggers  triggers enabled, no accelerator in the session
   aux       accelerator state built in the session (maintained at commit)
+Plain, build and hit reads run for every parameter set drawn from the parameter source
+(ACCEL_PARAM_SEED / ACCEL_PARAM_SETS / ACCEL_PARAM_FILE, eval/harness/param_sets.py); the write
+workload is anchored on the first drawn set that has an answer.
 Env: PGHOST PGPORT PGUSER PGPASSWORD, Q24_DB (default sec_edgar).
 Usage: bench_postgres_q24.py [--plain-reps 3] [--build-reps 3] [--write-reps 30]
 Needs the triple indexes (scripts/postgres_sec_edgar_q24_indexes.sql).
@@ -18,7 +21,7 @@ import statistics
 import subprocess
 import sys
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "tests", "aux_state"))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "tests"))
 import test_postgres_sec_edgar_q24_differential as T  # noqa: E402
 
 TIME = re.compile(r"^Time: ([0-9.]+) ms")
@@ -64,45 +67,53 @@ def main():
     a = ap.parse_args()
     db = os.environ.get("Q24_DB", "sec_edgar")
 
+    cells = T.drawn_cells()
     s = Timed(db, "bench")
-    top = s.rows(T.ACCEL_SQL)
-    assert top, "no result rows to anchor the write workload"
+    for year, uom in cells:
+        top = s.rows(T.accel_sql(year, uom))
+        if top:
+            break
+    assert top, "no drawn parameter set has result rows to anchor the write workload"
     tag, ver = top[0][0], top[0][1]
-    nums = s.rows("SELECT DISTINCT adsh FROM num WHERE tag=%s AND version=%s AND uom='USD' "
-                  "AND ddate BETWEEN 20230101 AND 20231231 AND value IS NOT NULL LIMIT %d"
-                  % (lit(tag), lit(ver), a.write_reps))
+    in_cell = "uom=%s AND ddate BETWEEN %d*10000+101 AND %d*10000+1231" % (lit(uom), year, year)
+    nums = s.rows("SELECT DISTINCT adsh FROM num WHERE tag=%s AND version=%s AND %s "
+                  "AND value IS NOT NULL LIMIT %d" % (lit(tag), lit(ver), in_cell, a.write_reps))
     pres = s.rows("SELECT DISTINCT p.adsh FROM pre p JOIN num n ON n.adsh=p.adsh AND n.tag=p.tag "
                   "AND n.version=p.version WHERE p.tag=%s AND p.version=%s LIMIT %d"
                   % (lit(tag), lit(ver), a.write_reps))
     nums = [r[0] for r in nums]
     pres = [r[0] for r in pres]
-    print("anchor group %s / %s; %d num triples, %d pre triples" % (tag, ver, len(nums), len(pres)))
+    print("anchor cell %s/%s group %s / %s; %d num triples, %d pre triples" %
+          (year, uom, tag, ver, len(nums), len(pres)))
     s.run("DROP TABLE IF EXISTS pre_bak_bench")
     s.run("CREATE TABLE pre_bak_bench AS SELECT * FROM pre WHERE false")
     s.close()
 
-    # Plain query.
-    v = []
-    for _ in range(a.plain_reps):
-        x = Timed(db, "plain")
-        v.append(x.ms(T.PLAIN_SQL.replace(' COLLATE "C" NULLS FIRST', '')))
-        x.close()
-    line("plain SQL read", v)
+    for cy, cu in cells:
+        accel = T.accel_sql(cy, cu)
+        label = "(%s, %s)" % (cy, cu)
+        # Plain query.
+        v = []
+        for _ in range(a.plain_reps):
+            x = Timed(db, "plain")
+            v.append(x.ms(T.plain_sql(cy, cu).replace(' COLLATE "C" NULLS FIRST', '')))
+            x.close()
+        line("plain SQL read " + label, v)
 
-    # Build (first call in a fresh backend).
-    v = []
-    for _ in range(a.build_reps):
-        x = Timed(db, "build")
-        v.append(x.ms(T.ACCEL_SQL))
-        x.close()
-    line("aux build (first call)", v)
+        # Build (first call in a fresh backend).
+        v = []
+        for _ in range(a.build_reps):
+            x = Timed(db, "build")
+            v.append(x.ms(accel))
+            x.close()
+        line("aux build (first call) " + label, v)
 
-    # Hit reads.
-    x = Timed(db, "read")
-    x.ms(T.ACCEL_SQL)
-    v = [x.ms(T.ACCEL_SQL) for _ in range(a.read_reps)]
-    line("aux read (hit)", v)
-    x.close()
+        # Hit reads.
+        x = Timed(db, "read")
+        x.ms(accel)
+        v = [x.ms(accel) for _ in range(a.read_reps)]
+        line("aux read (hit) " + label, v)
+        x.close()
 
     def writes(sess, label):
         vn, vp = [], []
@@ -128,14 +139,15 @@ def main():
     writes(x, "triggers only")
     x.close()
     x = Timed(db, "w-aux")
-    x.ms(T.ACCEL_SQL)  # build
+    anchor = T.accel_sql(year, uom)
+    x.ms(anchor)  # build
     writes(x, "aux maintained")
     print("execute counts:", x.rows("SELECT accel_get_execute_counts()"))
     print("last maintenance:", x.rows("SELECT accel_get_last_maintenance_action()"))
     # The maintained state must still equal a fresh build.
     fresh = Timed(db, "fresh")
-    A = x.rows(T.ACCEL_SQL)
-    B = fresh.rows(T.ACCEL_SQL)
+    A = x.rows(anchor)
+    B = fresh.rows(anchor)
     assert A == B, (A, B)
     print("maintained state == fresh build: OK")
     x.close(); fresh.close()

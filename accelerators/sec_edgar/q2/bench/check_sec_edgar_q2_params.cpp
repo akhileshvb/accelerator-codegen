@@ -1,36 +1,47 @@
-// Parameter sweep of the SEC-EDGAR Q2 aux table function against plain SQL on a
-// real database: every unit of measure at fy 2022, the large units at every
-// fiscal year plus edge values.
+// Parameter sweep of the SEC-EDGAR Q2 aux table function against the query template on a
+// real database: the drawn parameter sets (eval/harness/param_sets), every unit of measure
+// at the first drawn fiscal year, the largest units at every fiscal year plus edge values.
 //   check_sec_edgar_q2_params <db_copy> [threads]
 #include <cmath>
+#include <cstdint>
 #include <iostream>
+#include <optional>
 #include <set>
 #include <string>
 #include <vector>
 
 #include "backends/duckdb/api/duckdb_runtime.hpp"
 #include "backends/duckdb/api/register.hpp"
+#include "backends/duckdb/api/sql_fallback.hpp"
+#include "eval/harness/param_sets.hpp"
 #include "catalog/query_catalog.hpp"
 #include "duckdb.hpp"
 
+namespace catalog = accelerator_codegen::aux_state::engine;
+namespace core = accelerator_codegen::aux_state::core;
+namespace harness = accelerator_codegen::aux_state::harness;
+
 namespace {
-std::string Quote(const std::string &s) {
-  std::string out = "'";
-  for (char c : s) out += c == '\'' ? std::string("''") : std::string(1, c);
-  return out + "'";
+
+core::QueryArguments Arguments(const std::optional<int64_t> &fy, const std::optional<std::string> &uom) {
+  core::QueryArguments args;
+  args.values.push_back(fy ? core::AuxValue::Of(core::AuxType::Int64, *fy) : core::AuxValue::Null(core::AuxType::Int64));
+  args.values.push_back(uom ? core::AuxValue::Of(core::AuxType::String, *uom)
+                            : core::AuxValue::Null(core::AuxType::String));
+  return args;
 }
-std::string Sql(const std::string &fy, const std::string &uom) {
-  return "SELECT s.name, n.tag, n.value FROM num n JOIN sub s ON n.adsh = s.adsh "
-         "JOIN (SELECT adsh, tag, MAX(value) AS max_value FROM num WHERE uom = " + uom +
-         " AND value IS NOT NULL GROUP BY adsh, tag) m ON n.adsh = m.adsh AND n.tag = m.tag "
-         "AND n.value = m.max_value WHERE n.uom = " + uom + " AND s.fy = " + fy +
-         " AND n.value IS NOT NULL ORDER BY n.value DESC, s.name, n.tag LIMIT 100";
+
+std::vector<std::string> Column(duckdb::Connection &con, const std::string &sql) {
+  std::vector<std::string> out;
+  auto r = con.Query(sql);
+  for (duckdb::idx_t i = 0; r && !r->HasError() && i < r->RowCount(); ++i) out.push_back(r->GetValue(0, i).ToString());
+  return out;
 }
+
 } // namespace
 
 int main(int argc, char **argv) {
   if (argc < 2) return 2;
-  namespace catalog = accelerator_codegen::aux_state::engine;
   duckdb::DuckDB db(argv[1]);
   duckdb::Connection con(db);
   accelerator_codegen::RegisterAcceleratorFunctions(con);
@@ -38,22 +49,20 @@ int main(int argc, char **argv) {
   const auto &entry = catalog::LookupSharedQuery("sec_edgar", 2);
   catalog::duckdb::DuckdbRuntime runtime(con, entry, 10.0);
   runtime.Build();
-  std::vector<std::string> uoms;
-  auto r = con.Query("SELECT DISTINCT uom FROM num WHERE uom IS NOT NULL ORDER BY 1");
-  for (duckdb::idx_t i = 0; i < r->RowCount(); ++i) uoms.push_back(r->GetValue(0, i).ToString());
+  const auto sets = harness::ArgumentSets(entry);
+  const int64_t drawn_fy = std::get<int64_t>(sets.front().values[0].payload);
+  // Every unit in the data and a few that are not, the largest units, the fiscal years in the data and edge values.
+  std::vector<std::string> uoms = Column(con, "SELECT DISTINCT uom FROM num WHERE uom IS NOT NULL ORDER BY 1");
+  const auto large = Column(con, "SELECT uom FROM num WHERE uom IS NOT NULL GROUP BY uom ORDER BY count(*) DESC LIMIT 6");
   uoms.push_back("nonexistent");
   uoms.push_back("");
   uoms.push_back("us'd");
-  const std::vector<std::string> large = {"USD", "shares", "EUR", "CNY", "pure", "CAD"};
-  const std::vector<std::string> fys = {"2012", "2016", "2020", "2021", "2022", "2023", "2024", "2025",
-                                        "0", "-1", "2147483647", "-2147483648", "9223372036854775807",
-                                        "CAST(NULL AS INTEGER)"};
+  std::vector<std::optional<int64_t>> fys = {0, -1, 2147483647, -2147483647 - 1, INT64_MAX, std::nullopt};
+  for (const auto &fy : Column(con, "SELECT DISTINCT fy FROM sub WHERE fy IS NOT NULL ORDER BY 1")) fys.push_back(std::stoll(fy));
   int checked = 0, failed = 0;
-  const auto check = [&](const std::string &fy, const std::string &uom) {
-    const std::string call = "SELECT * FROM accel_sec_edgar_q2_aux(" + fy + ", " +
-                             (uom == "\x01NULL" ? "NULL" : Quote(uom)) + ")";
-    auto got = con.Query(call);
-    auto want = con.Query(Sql(fy == "CAST(NULL AS INTEGER)" ? "NULL" : fy, Quote(uom)));
+  const auto check = [&](const core::QueryArguments &args) {
+    auto got = con.Query(catalog::BindArguments(entry.duckdb_aux_sql, args));
+    auto want = con.Query(catalog::BindArguments(entry.base_sql, args));
     ++checked;
     bool ok = got && !got->HasError() && want && !want->HasError() && got->RowCount() == want->RowCount();
     for (duckdb::idx_t i = 0; ok && i < want->RowCount(); ++i)
@@ -63,13 +72,15 @@ int main(int argc, char **argv) {
       }
     if (!ok) {
       ++failed;
-      std::cout << "MISMATCH fy=" << fy << " uom=" << uom << " "
+      std::cout << "MISMATCH (" << harness::ArgumentLiterals(args) << ") "
                 << (got && got->HasError() ? got->GetError() : "") << "\n";
     }
   };
-  for (const auto &u : uoms) check("2022", u);
+  for (const auto &args : sets) check(args);
+  for (const auto &u : uoms) check(Arguments(drawn_fy, u));
   for (const auto &u : large)
-    for (const auto &f : fys) check(f, u);
+    for (const auto &f : fys) check(Arguments(f, u));
+  check(Arguments(drawn_fy, std::nullopt));
   std::cout << "checked=" << checked << " failed=" << failed << "\n";
   return failed == 0 ? 0 : 1;
 }

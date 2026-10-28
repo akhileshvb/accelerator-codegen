@@ -4,6 +4,7 @@
 // this file names no query.
 #include "backends/duckdb/api/catalog/query_catalog.hpp"
 
+#include "backends/duckdb/api/sql_fallback.hpp"
 #include "substrate/verus/kit/verus_kit.hpp"
 
 #include <algorithm>
@@ -119,6 +120,17 @@ core::QueryArguments ToCoreArguments(const SharedQueryArguments &arguments) {
   return core::QueryArguments{arguments.values};
 }
 
+bool HasDefaultBinding(const SharedQueryCatalogEntry &entry) {
+  return std::none_of(entry.benchmark_arguments.values.begin(), entry.benchmark_arguments.values.end(),
+                      [](const core::AuxValue &value) { return value.is_null; });
+}
+
+core::QueryArguments DefaultArguments(const SharedQueryCatalogEntry &entry) {
+  Require(HasDefaultBinding(entry), std::string(entry.accelerator_id ? entry.accelerator_id : "?") +
+                                        " has no default binding: pass the query's arguments");
+  return ToCoreArguments(entry.benchmark_arguments);
+}
+
 const SharedQueryCatalogEntry &LookupSharedQuery(const std::string &workload_name,
                                                int query_id) {
   const auto *entry = FindEntry(workload_name, query_id);
@@ -202,7 +214,13 @@ const SharedQueryCatalogEntry &LookupSharedQueryParallel(const std::string &work
                                                        int query_id) {
   const auto &base = LookupSharedQuery(workload_name, query_id);
   const std::string id = std::string(base.accelerator_id) + "_aux_parallel";
-  return Derived(id, base, "SELECT * FROM accel_" + id + "()", true);
+  // The base aux call with the same arguments, on the parallel table function.
+  const std::string serial_fn = "accel_" + std::string(base.accelerator_id) + "_aux(";
+  std::string aux_sql = base.duckdb_aux_sql;
+  const auto at = aux_sql.find(serial_fn);
+  Require(at != std::string::npos, "aux SQL does not call " + serial_fn);
+  aux_sql.replace(at, serial_fn.size(), "accel_" + id + "(");
+  return Derived(id, base, aux_sql, true);
 }
 
 std::vector<int> SharedQueriesForWorkload(const std::string &workload_name) {
@@ -216,9 +234,13 @@ std::vector<int> SharedQueriesForWorkload(const std::string &workload_name) {
   return out;
 }
 
-SharedProbe FindSharedProbe(::duckdb::Connection &connection,
-                            const SharedQueryCatalogEntry &entry) {
-  auto result = connection.Query(entry.probe_select_sql);
+SharedProbe FindSharedProbe(::duckdb::Connection &connection, const SharedQueryCatalogEntry &entry) {
+  return FindSharedProbe(connection, entry, DefaultArguments(entry));
+}
+
+SharedProbe FindSharedProbe(::duckdb::Connection &connection, const SharedQueryCatalogEntry &entry,
+                            const core::QueryArguments &arguments) {
+  auto result = connection.Query(BindArguments(entry.probe_select_sql, arguments));
   Require(result != nullptr && !result->HasError() && result->RowCount() >= 1,
           result ? ("shared probe failed for Q" + std::to_string(entry.query_id) +
                       ": " + result->GetError())
@@ -261,11 +283,15 @@ std::string NormalizeFingerprintValue(const ::duckdb::Value &value) {
   }
 }
 
-std::string FingerprintSharedBaseSql(::duckdb::Connection &connection,
-                                     const SharedQueryCatalogEntry &entry) {
+std::string FingerprintSharedBaseSql(::duckdb::Connection &connection, const SharedQueryCatalogEntry &entry) {
+  return FingerprintSharedBaseSql(connection, entry, DefaultArguments(entry));
+}
+
+std::string FingerprintSharedBaseSql(::duckdb::Connection &connection, const SharedQueryCatalogEntry &entry,
+                                     const core::QueryArguments &arguments) {
   Require(entry.base_sql != nullptr && *entry.base_sql,
           "missing base_sql for shared fingerprint");
-  auto base_result = connection.Query(entry.base_sql);
+  auto base_result = connection.Query(BindArguments(entry.base_sql, arguments));
   Require(base_result != nullptr && !base_result->HasError(),
           base_result ? base_result->GetError()
                       : "DuckDB fingerprint query failed");
@@ -284,9 +310,13 @@ std::string FingerprintSharedBaseSql(::duckdb::Connection &connection,
   return out.str();
 }
 
-bool SharedProbeChangesBaseResult(::duckdb::Connection &connection,
-                                  const SharedQueryCatalogEntry &entry,
-                                  const SharedProbe &probe,
+bool SharedProbeChangesBaseResult(::duckdb::Connection &connection, const SharedQueryCatalogEntry &entry,
+                                  const SharedProbe &probe, const std::string &before_fp) {
+  return SharedProbeChangesBaseResult(connection, entry, DefaultArguments(entry), probe, before_fp);
+}
+
+bool SharedProbeChangesBaseResult(::duckdb::Connection &connection, const SharedQueryCatalogEntry &entry,
+                                  const core::QueryArguments &arguments, const SharedProbe &probe,
                                   const std::string &before_fp) {
   connection.BeginTransaction();
   auto updated = connection.Query(probe.update_sql);
@@ -294,7 +324,7 @@ bool SharedProbeChangesBaseResult(::duckdb::Connection &connection,
     connection.Rollback();
     return false;
   }
-  const auto after_fp = FingerprintSharedBaseSql(connection, entry);
+  const auto after_fp = FingerprintSharedBaseSql(connection, entry, arguments);
   connection.Rollback();
   return after_fp != before_fp;
 }
@@ -302,13 +332,19 @@ bool SharedProbeChangesBaseResult(::duckdb::Connection &connection,
 std::vector<SharedProbe> CollectInvalidatingSharedProbes(
     ::duckdb::Connection &connection, const SharedQueryCatalogEntry &entry,
     int candidate_limit, int max_keep) {
+  return CollectInvalidatingSharedProbes(connection, entry, DefaultArguments(entry), candidate_limit, max_keep);
+}
+
+std::vector<SharedProbe> CollectInvalidatingSharedProbes(
+    ::duckdb::Connection &connection, const SharedQueryCatalogEntry &entry, const core::QueryArguments &arguments,
+    int candidate_limit, int max_keep) {
   Require(static_cast<bool>(entry.build_probe),
           "missing build_probe for Q" + std::to_string(entry.query_id));
   Require(candidate_limit > 0 && max_keep > 0,
           "invalidating probe limits must be positive");
-  const auto before_fp = FingerprintSharedBaseSql(connection, entry);
+  const auto before_fp = FingerprintSharedBaseSql(connection, entry, arguments);
   const std::string probe_sql =
-      ExpandProbeSelectLimit(entry.probe_select_sql, candidate_limit);
+      BindArguments(ExpandProbeSelectLimit(entry.probe_select_sql, candidate_limit), arguments);
   auto result = connection.Query(probe_sql);
   Require(result != nullptr && !result->HasError() && result->RowCount() >= 1,
           result ? ("invalidating probe select failed for Q" +
@@ -321,7 +357,7 @@ std::vector<SharedProbe> CollectInvalidatingSharedProbes(
       std::min<int>(max_keep, static_cast<int>(materialized.RowCount()))));
   for (::duckdb::idx_t row = 0; row < materialized.RowCount(); ++row) {
     auto probe = entry.build_probe(materialized, row);
-    if (!SharedProbeChangesBaseResult(connection, entry, probe, before_fp)) {
+    if (!SharedProbeChangesBaseResult(connection, entry, arguments, probe, before_fp)) {
       continue;
     }
     probes.push_back(std::move(probe));
@@ -338,9 +374,13 @@ std::vector<SharedProbe> CollectInvalidatingSharedProbes(
   return probes;
 }
 
-SharedProbe FindInvalidatingSharedProbe(::duckdb::Connection &connection,
-                                        const SharedQueryCatalogEntry &entry) {
-  auto probes = CollectInvalidatingSharedProbes(connection, entry,
+SharedProbe FindInvalidatingSharedProbe(::duckdb::Connection &connection, const SharedQueryCatalogEntry &entry) {
+  return FindInvalidatingSharedProbe(connection, entry, DefaultArguments(entry));
+}
+
+SharedProbe FindInvalidatingSharedProbe(::duckdb::Connection &connection, const SharedQueryCatalogEntry &entry,
+                                        const core::QueryArguments &arguments) {
+  auto probes = CollectInvalidatingSharedProbes(connection, entry, arguments,
                                                 /*candidate_limit=*/256,
                                                 /*max_keep=*/1);
   return probes.front();
@@ -389,16 +429,15 @@ RowidProbeTarget ParseRowidProbe(const SharedProbe &probe) {
   return target;
 }
 
-BatchWritePool CollectBatchWritePool(::duckdb::Connection &connection,
-                                     const SharedQueryCatalogEntry &entry,
-                                     std::size_t want, std::size_t min_rows,
-                                     const char *filler_select_sql) {
+BatchWritePool CollectBatchWritePool(::duckdb::Connection &connection, const SharedQueryCatalogEntry &entry,
+                                     const core::QueryArguments &arguments, std::size_t want,
+                                     std::size_t min_rows, const char *filler_select_sql) {
   Require(static_cast<bool>(entry.build_probe),
           "missing build_probe for Q" + std::to_string(entry.query_id));
   BatchWritePool pool;
   std::unordered_set<int64_t> seen;
   const auto take = [&](const std::string &sql, bool invalidating) {
-    auto result = connection.Query(sql);
+    auto result = connection.Query(BindArguments(sql, arguments));
     Require(result != nullptr && !result->HasError(),
             result ? ("batch pool select failed for Q" + std::to_string(entry.query_id) +
                       ": " + result->GetError())

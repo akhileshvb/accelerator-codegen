@@ -11,6 +11,7 @@
 #include "backends/duckdb/api/aux_query_registry.hpp"
 #include "backends/duckdb/api/duckdb_host.hpp"
 #include "backends/duckdb/api/shared_query_engine.hpp"
+#include "backends/duckdb/api/sql_fallback.hpp"
 #include "backends/duckdb/api/verus_host.hpp"
 #include "backends/duckdb/api/scan.hpp"
 #include "substrate/aux/core/aux_execute_stats.hpp"
@@ -241,9 +242,7 @@ void DuckdbRuntime::ExecuteInto(const core::QueryArguments &arguments, core::Aux
   Read(arguments, sink);
 }
 
-std::vector<core::AuxRow> DuckdbRuntime::ExecuteCollect() {
-  return ExecuteCollect(ToCoreArguments(entry_.benchmark_arguments));
-}
+std::vector<core::AuxRow> DuckdbRuntime::ExecuteCollect() { return ExecuteCollect(DefaultArguments(entry_)); }
 
 std::vector<core::AuxRow> DuckdbRuntime::ExecuteCollect(const core::QueryArguments &arguments) {
   MaterializeSink sink;
@@ -252,7 +251,7 @@ std::vector<core::AuxRow> DuckdbRuntime::ExecuteCollect(const core::QueryArgumen
   return std::move(sink.rows);
 }
 
-void DuckdbRuntime::Execute() { Execute(ToCoreArguments(entry_.benchmark_arguments)); }
+void DuckdbRuntime::Execute() { Execute(DefaultArguments(entry_)); }
 
 void DuckdbRuntime::Execute(const core::QueryArguments &arguments) {
   core::BeginAuxExecuteProfiling();
@@ -424,15 +423,16 @@ void DuckdbRuntime::ApplyMutationBatch(const core::MutationBatch &mutation) {
 
 void DuckdbRuntime::UseManualCapture() { host_.SetManualCapture(true); }
 
-void DuckdbRuntime::ExecuteBaseQuery() {
-  // A Verus kit's SQL is parameterized ($1, ...): its own fallback runs it
-  // with the benchmark arguments.
+void DuckdbRuntime::ExecuteBaseQuery() { ExecuteBaseQuery(DefaultArguments(entry_)); }
+
+void DuckdbRuntime::ExecuteBaseQuery(const core::QueryArguments &arguments) {
+  // A Verus kit's SQL is parameterized ($1, ...): its own fallback runs it.
   if (IsVerusKitAccelerator(entry_.accelerator_id)) {
     MaterializeSink sink;
-    accelerator_.binding->Module().ExecuteFallback(*accelerator_.backend, ToCoreArguments(entry_.benchmark_arguments), sink);
+    accelerator_.binding->Module().ExecuteFallback(*accelerator_.backend, arguments, sink);
     return;
   }
-  auto result = connection_.Query(entry_.base_sql);
+  auto result = connection_.Query(BindArguments(entry_.base_sql, arguments));
   if (!result || result->HasError()) {
     throw std::runtime_error(result ? result->GetError() : "DuckDB base query failed");
   }
@@ -508,7 +508,7 @@ DuckdbCalibrationEngine::WriteThenRead(const std::string &sql,
   try {
     runtime.ApplyWrite(sql);
     const auto read_start = Clock::now();
-    runtime.Execute();
+    runtime.Execute(arguments);
     timed.read_us = MicrosSince(read_start);
   } catch (...) {
     core::SetForcedMaintenanceActionName("");

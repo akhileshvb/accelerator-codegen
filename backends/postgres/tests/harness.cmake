@@ -3,11 +3,10 @@
 # SEC-EDGAR Q4 differential: psql client (no server SDK to build, a server with
 # the extension installed to run).
 add_executable(test_postgres_sec_edgar_q4_differential
-    accelerators/sec_edgar/q4/tests/test_postgres_sec_edgar_q4_differential.cpp)
+    accelerators/sec_edgar/q4/tests/test_postgres_sec_edgar_q4_differential.cpp
+    eval/harness/param_source.cpp)
 target_include_directories(test_postgres_sec_edgar_q4_differential PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/accelerators)
-target_compile_definitions(test_postgres_sec_edgar_q4_differential PRIVATE
-    ACCEL_SRC_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
 
 if(NOT TARGET accel_backend_postgres)
     return()
@@ -18,11 +17,14 @@ find_package(Threads REQUIRED)
 # libpq clients of a running server with the extension installed.
 include(accelerators/sec_edgar/q2/tests/PostgresSecEdgarQ2Tests.cmake)
 accel_add_backend_exe(postgres test_sec_edgar_q6_postgres_differential CLIENT
-    accelerators/sec_edgar/q6/tests/test_sec_edgar_q6_postgres_differential.cpp)
+    accelerators/sec_edgar/q6/tests/test_sec_edgar_q6_postgres_differential.cpp
+    eval/harness/param_source.cpp)
 accel_add_backend_exe(postgres test_postgres_sec_edgar_q1_differential CLIENT
-    accelerators/sec_edgar/q1/tests/test_postgres_sec_edgar_q1_differential.cpp)
+    accelerators/sec_edgar/q1/tests/test_postgres_sec_edgar_q1_differential.cpp
+    eval/harness/param_source.cpp)
 accel_add_backend_exe(postgres benchmark_postgres_sec_edgar_q1 CLIENT
-    accelerators/sec_edgar/q1/bench/benchmark_postgres_sec_edgar_q1.cpp)
+    accelerators/sec_edgar/q1/bench/benchmark_postgres_sec_edgar_q1.cpp
+    eval/harness/param_source.cpp)
 target_link_libraries(test_postgres_sec_edgar_q1_differential PRIVATE Threads::Threads)
 target_link_libraries(benchmark_postgres_sec_edgar_q1 PRIVATE Threads::Threads)
 

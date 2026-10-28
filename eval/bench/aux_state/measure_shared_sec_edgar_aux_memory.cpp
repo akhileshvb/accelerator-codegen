@@ -9,10 +9,12 @@
 #include <vector>
 
 #include "catalog/query_catalog.hpp"
+#include "eval/harness/param_sets.hpp"
 #include "backends/duckdb/api/duckdb_runtime.hpp"
 #include "duckdb.hpp"
 
 namespace catalog = accelerator_codegen::aux_state::engine;
+namespace harness = accelerator_codegen::aux_state::harness;
 using catalog::duckdb::DuckdbRuntime;
 
 namespace {
@@ -57,7 +59,11 @@ int main(int argc, char **argv) {
       DuckdbRuntime runtime(connection, entry, 10.0);
       runtime.Build();
       const int64_t rss_after = ReadRssKb();
-      const auto rows = runtime.ExecuteCollect().size();
+      // The state serves every parameter set; rows: the largest answer among the drawn sets.
+      std::size_t rows = 0;
+      for (const auto &arguments : harness::ArgumentSets(entry)) {
+        rows = std::max(rows, runtime.ExecuteCollect(arguments).size());
+      }
       const double rss_mb =
           static_cast<double>(std::max<int64_t>(0, rss_after - rss_before)) /
           1024.0;

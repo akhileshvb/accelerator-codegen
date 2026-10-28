@@ -5,7 +5,9 @@
 #include <string>
 #include <vector>
 
+#include "backends/duckdb/api/sql_fallback.hpp"
 #include "eval/harness/differential.hpp"
+#include "eval/harness/param_sets.hpp"
 #include "eval/tests/test_support/db_paths.hpp"
 #include "catalog/query_catalog.hpp"
 
@@ -23,13 +25,15 @@ void Require(bool condition, const std::string &message) {
   }
 }
 
-// Whether the DB has a row for the query's catalog probe select: the
+// Whether the DB has a row for the query's catalog probe select under `arguments`: the
 // incremental check needs one to invalidate the query. A test DB built
 // without that query's seed rows has none (a data gap, not a code bug).
-bool HasProbeRow(const std::string &db_path, const engine::SharedQueryCatalogEntry &entry) {
+bool HasProbeRow(const std::string &db_path, const engine::SharedQueryCatalogEntry &entry,
+                 const accelerator_codegen::aux_state::core::QueryArguments &arguments) {
   duckdb::DuckDB database(db_path);
   duckdb::Connection connection(database);
-  auto result = connection.Query(engine::ExpandProbeSelectLimit(entry.probe_select_sql, 1));
+  auto result = connection.Query(
+      engine::BindArguments(engine::ExpandProbeSelectLimit(entry.probe_select_sql, 1), arguments));
   Require(result != nullptr && !result->HasError(),
           "probe select failed for " + std::string(entry.workload_name) + " Q" +
               std::to_string(entry.query_id) + ": " + (result ? result->GetError() : "null"));
@@ -43,18 +47,25 @@ std::vector<int> RunWorkload(const std::string &db_path, const std::string &work
     const auto &entry = engine::LookupSharedQuery(workload, query_id);
     // TPC-H: the DB is generated with every query's seeds, so a missing probe
     // row is a real failure (left to the check). SEC-EDGAR: the test DB is a
-    // sample of an external dataset that may predate a query's probe.
-    if (workload == "sec_edgar" && !HasProbeRow(db_path, entry)) {
+    // sample of an external dataset that may predate a query's probe, and a drawn
+    // parameter set may select none of it: such sets are skipped, and the query
+    // is a gap when no set has a probe row.
+    int ran = 0;
+    for (const auto &arguments : accelerator_codegen::aux_state::harness::ArgumentSets(entry)) {
+      if (workload == "sec_edgar" && !HasProbeRow(db_path, entry, arguments)) {
+        continue;
+      }
+      std::cerr << "incremental differential: " << entry.workload_name << " Q" << entry.query_id << " ("
+                << accelerator_codegen::aux_state::harness::ArgumentLiterals(arguments) << ")\n";
+      accelerator_codegen::aux_state::harness::RunIncrementalDifferentialCheck(db_path, entry, arguments);
+      ++ran;
+    }
+    if (ran == 0) {
       std::cerr << "NO PROBE ROWS " << entry.workload_name << " Q" << entry.query_id << '\n';
       no_probe_rows.push_back(query_id);
       continue;
     }
-    std::cerr << "incremental differential: " << entry.workload_name << " Q"
-              << entry.query_id << '\n';
-    accelerator_codegen::aux_state::harness::RunIncrementalDifferentialCheck(
-        db_path, entry);
-    std::cerr << "PASS " << entry.workload_name << " Q" << entry.query_id
-              << '\n';
+    std::cerr << "PASS " << entry.workload_name << " Q" << entry.query_id << " (" << ran << " parameter sets)\n";
   }
   return no_probe_rows;
 }

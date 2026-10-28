@@ -50,30 +50,30 @@ const SharedQueryRegistrar kEntry{SharedQueryCatalogEntry{24,
      "FROM num n "
      "LEFT JOIN pre p ON n.tag = p.tag AND n.version = p.version AND "
      "n.adsh = p.adsh "
-     "WHERE n.uom = 'USD' AND n.ddate BETWEEN 20230101 AND 20231231 "
+     "WHERE n.uom = $2 AND n.ddate BETWEEN $1 * 10000 + 101 AND $1 * 10000 + 1231 "
      "AND n.value IS NOT NULL AND p.adsh IS NULL "
      "GROUP BY n.tag, n.version "
      "HAVING COUNT(*) > 10 "
      "ORDER BY cnt DESC "
      "LIMIT 100",
-     "SELECT * FROM accel_sec_edgar_q24_aux()",
-     "SELECT * FROM accel_sec_edgar_q24()",
-     "SELECT * FROM accel_sec_edgar_q24_aux()",
+     "SELECT * FROM accel_sec_edgar_q24_aux($1, $2)",
+     "SELECT * FROM accel_sec_edgar_q24_aux($1, $2)",
+     "SELECT * FROM accel_sec_edgar_q24_aux($1, $2)",
      "SELECT n.rowid, n.adsh, n.tag, n.version, n.ddate, n.qtrs, n.uom, n.coreg, "
      "n.value FROM num n "
      "LEFT JOIN pre p ON n.tag = p.tag AND n.version = p.version AND "
-     "n.adsh = p.adsh WHERE n.uom = 'USD' AND n.ddate BETWEEN 20230101 "
-     "AND 20231231 AND n.value IS NOT NULL AND p.adsh IS NULL "
+     "n.adsh = p.adsh WHERE n.uom = $2 AND n.ddate BETWEEN $1 * 10000 + 101 "
+     "AND $1 * 10000 + 1231 AND n.value IS NOT NULL AND p.adsh IS NULL "
      "AND (n.tag, n.version) IN ("
      "  SELECT n2.tag, n2.version FROM num n2 "
      "  LEFT JOIN pre p2 ON n2.tag = p2.tag AND n2.version = p2.version AND "
-     "  n2.adsh = p2.adsh WHERE n2.uom = 'USD' AND n2.ddate BETWEEN 20230101 "
-     "  AND 20231231 AND n2.value IS NOT NULL AND p2.adsh IS NULL "
+     "  n2.adsh = p2.adsh WHERE n2.uom = $2 AND n2.ddate BETWEEN $1 * 10000 + 101 "
+     "  AND $1 * 10000 + 1231 AND n2.value IS NOT NULL AND p2.adsh IS NULL "
      "  GROUP BY n2.tag, n2.version HAVING COUNT(*) > 10 "
      "  ORDER BY COUNT(*) DESC "
      "  LIMIT 100"
      ") ORDER BY n.value DESC LIMIT 1",
-     {},
+     {{core::AuxValue::Null(core::AuxType::Int64), core::AuxValue::Null(core::AuxType::String)}},
      101,
      true,
      BuildSecEdgarQ24Probe,
@@ -516,10 +516,9 @@ public:
   ::duckdb::Connection &connection;
 };
 
-// accel_sec_edgar_q24_aux() uses the defaults (2023, 'USD');
-// accel_sec_edgar_q24_aux(year BIGINT, uom VARCHAR) binds the query's parameters.
-const std::vector<std::vector<::duckdb::LogicalType>> kOverloads{
-    {::duckdb::LogicalType::BIGINT, ::duckdb::LogicalType::VARCHAR}};
+// accel_sec_edgar_q24_aux(year BIGINT, uom VARCHAR)
+const std::vector<::duckdb::LogicalType> kArgumentTypes{
+    ::duckdb::LogicalType::BIGINT, ::duckdb::LogicalType::VARCHAR};
 
 // num's full rows; pre's adsh, tag, version.
 SecEdgarQ24Config Config() {
@@ -535,23 +534,21 @@ CaptureTableList CaptureTables(const SecEdgarQ24Config &c) {
 const AuxQueryRegistrar kQuery{AuxQuery{
     core::SecEdgarQ24Layout::kAccelerator,
     "accel_sec_edgar_q24_aux",
-    {},
+    kArgumentTypes,
     [](::duckdb::Connection &connection) {
       const auto c = Config();
       return MakeBinding<SecEdgarQ24Scan, SecEdgarQ24Module>(connection, CaptureTables(c), c);
-    },
-    kOverloads}};
+    }}};
 
 #ifdef ACCEL_ENABLE_PARALLEL_AUX
 const AuxQueryRegistrar kParallelQuery{AuxQuery{
     std::string(core::SecEdgarQ24Layout::kAccelerator) + "_aux_parallel",
     std::string("accel_") + core::SecEdgarQ24Layout::kAccelerator + "_aux_parallel",
-    {},
+    kArgumentTypes,
     [](::duckdb::Connection &connection) {
       const auto c = Config();
       return MakeBinding<SecEdgarQ24Scan, SecEdgarQ24ParallelModule>(connection, CaptureTables(c), c);
-    },
-    kOverloads}};
+    }}};
 #endif
 
 } // namespace

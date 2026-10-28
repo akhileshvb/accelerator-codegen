@@ -7,13 +7,13 @@
 //    edge values), then feeds the matching mutation batch to the runtime's
 //    coordinator and compares the accelerator against the reference SQL
 //    (`entry.base_sql`).
-//  * Q3 is parameterized as accel_sec_edgar_q3_aux(fy BIGINT, uom VARCHAR)
-//    (defaults 2022 / 'USD'). Every verification compares the defaults and
-//    several random (fy, uom) drawn from the domain {2021..2024} x {USD,
-//    shares, pure, CAD, CNY, EUR} plus edge values (2019, 2025, 0, NULL
-//    arguments, unknown / case-variant / empty uom) against the reference SQL
-//    with the parameters substituted, interleaved with random writes. The
-//    data (fy, uom, name, cik, value, adsh format) is drawn at random too.
+//  * Q3 is parameterized as accel_sec_edgar_q3_aux(fy BIGINT, uom VARCHAR).
+//    Every verification compares every drawn parameter set (the parameter
+//    source, eval/harness/param_sets.hpp) and several edge arguments (fiscal
+//    years outside the domain, NULL arguments, unknown / case-variant / empty
+//    uom) against the query template bound to the same arguments, interleaved
+//    with random writes. The data (fy and uom drawn from the sets plus noise,
+//    name, cik, value, adsh format) is drawn at random too.
 //
 // Usage: test_sec_edgar_q3_differential [iterations_per_seed] [seeds]
 //        [real_db_copy]   (optional: also run a short write sequence on a
@@ -33,8 +33,10 @@
 #include <vector>
 
 #include "eval/harness/differential.hpp"
+#include "eval/harness/param_sets.hpp"
 #include "backends/duckdb/api/duckdb_runtime.hpp"
 #include "backends/duckdb/api/register.hpp"
+#include "backends/duckdb/api/sql_fallback.hpp"
 #include "catalog/query_catalog.hpp"
 #include "duckdb.hpp"
 
@@ -68,7 +70,7 @@ struct NumM {
   std::string adsh;
   bool adsh_null = false;
   std::string tag;
-  std::string uom = "USD";
+  std::string uom;
   bool uom_null = false;
   bool value_null = false;
   double value = 0.0;
@@ -80,7 +82,7 @@ struct SubM {
   bool name_null = false;
   int cik = 0;
   bool cik_null = false;
-  int fy = 2022;
+  int fy = 0;
   bool fy_null = false;
 };
 
@@ -149,8 +151,41 @@ core::AuxRow SubRowOf(const SubM &m) {
 
 // ---- generator -----------------------------------------------------------------
 
+// The values the data is drawn from: the fiscal years and units of the drawn
+// parameter sets, so the sets select rows.
+struct ParamPools {
+  std::vector<int> fys;
+  std::vector<std::string> uoms;
+};
+
+ParamPools PoolsOf(const std::vector<core::QueryArguments> &sets) {
+  ParamPools pools;
+  const auto add = [](auto &pool, const auto &value) {
+    if (std::find(pool.begin(), pool.end(), value) == pool.end()) {
+      pool.push_back(value);
+    }
+  };
+  for (const auto &set : sets) {
+    add(pools.fys, static_cast<int>(std::get<int64_t>(set.values.at(0).payload)));
+    add(pools.uoms, std::get<std::string>(set.values.at(1).payload));
+  }
+  return pools;
+}
+
+std::string Lower(std::string s) {
+  std::transform(s.begin(), s.end(), s.begin(), [](unsigned char ch) { return std::tolower(ch); });
+  return s;
+}
+
 struct Gen {
-  explicit Gen(uint32_t seed) : rng(seed) {
+  Gen(uint32_t seed, ParamPools pools) : rng(seed), fy_pool(std::move(pools.fys)) {
+    uom_pool = std::move(pools.uoms);
+    for (const auto &uom : uom_pool) {
+      noise_uoms.push_back(Lower(uom)); // case variants never match
+    }
+    noise_uoms.push_back("");
+    fy_noise = {*std::min_element(fy_pool.begin(), fy_pool.end()) - 10,
+                *std::max_element(fy_pool.begin(), fy_pool.end()) + 1};
     for (int i = 0; i < 40; ++i) {
       char buf[32];
       std::snprintf(buf, sizeof buf, "%010d-22-%06d", 7000 + i % 17, i);
@@ -191,10 +226,7 @@ struct Gen {
     n.adsh = Pick(adsh_pool);
     n.adsh_null = Int(0, 50) == 0;
     n.tag = "T" + std::to_string(next_tag++);
-    static const std::vector<std::string> uoms = {"USD", "USD", "USD", "USD", "usd",
-                                                  "EUR", "pure", "shares", "", "CAD",
-                                                  "CNY", "shares", "pure"};
-    n.uom = Pick(uoms);
+    n.uom = Int(0, 3) == 0 ? Pick(noise_uoms) : Pick(uom_pool);
     n.uom_null = Int(0, 40) == 0;
     n.value_null = Int(0, 12) == 0;
     n.value = Value();
@@ -207,13 +239,13 @@ struct Gen {
     s.name_null = Int(0, 30) == 0;
     s.cik = Pick(ciks);
     s.cik_null = Int(0, 40) == 0;
-    static const std::vector<int> fys = {2022, 2022, 2022, 2022, 2021, 2023, 2024,
-                                         2012, 2025, 2021, 2023};
-    s.fy = Pick(fys);
+    s.fy = Int(0, 5) == 0 ? Pick(fy_noise) : Pick(fy_pool);
     s.fy_null = Int(0, 30) == 0;
     return s;
   }
   std::mt19937 rng;
+  std::vector<int> fy_pool, fy_noise;
+  std::vector<std::string> uom_pool, noise_uoms;
   std::vector<std::string> adsh_pool, names;
   std::vector<int> ciks;
   int next_tag = 1;
@@ -223,28 +255,13 @@ struct Gen {
 
 struct Fixture {
   Fixture(duckdb::Connection &connection, const catalog::SharedQueryCatalogEntry &entry)
-      : connection(connection), entry(entry), runtime(connection, entry, 10.0) {
+      : connection(connection), entry(entry), sets(harness::ArgumentSets(entry)),
+        runtime(connection, entry, 10.0) {
     runtime.UseManualCapture(); // Send() hand-builds each change
   }
 
-  // base_sql with `s.fy = 2022` / `n.uom = 'USD'` replaced by the parameters.
-  std::string ParamSql(const std::string &fy_sql, const std::string &uom_sql) const {
-    std::string sql = entry.base_sql;
-    const auto replace_all = [&](const std::string &from, const std::string &to) {
-      std::size_t at = 0;
-      int count = 0;
-      while ((at = sql.find(from, at)) != std::string::npos) {
-        sql.replace(at, from.size(), to);
-        at += to.size();
-        ++count;
-      }
-      Require(count == 1, "base_sql shape changed: " + from);
-    };
-    replace_all("s.fy = 2022", "s.fy = " + fy_sql);
-    replace_all("s2.fy = 2022", "s2.fy = " + fy_sql);
-    replace_all("n.uom = 'USD'", "n.uom = " + uom_sql);
-    replace_all("n2.uom = 'USD'", "n2.uom = " + uom_sql);
-    return sql;
+  std::string ReferenceSql(const core::QueryArguments &args) const {
+    return catalog::BindArguments(entry.base_sql, args);
   }
 
   // ORDER BY total DESC leaves the order of equal totals (e.g. several groups
@@ -298,40 +315,38 @@ struct Fixture {
     }
   }
 
-  void VerifyParams(Gen &gen) {
-    static const std::vector<int64_t> fys = {2021, 2022, 2022, 2023, 2024, 2019, 2025, 0,
-                                             -1, 2147483647};
-    static const std::vector<std::string> uoms = {"USD", "USD", "shares", "pure", "CAD",
-                                                  "CNY", "EUR", "nonexistent", "usd", "",
-                                                  "USD "};
+  void VerifyArguments(const core::QueryArguments &args, bool edge) {
+    try {
+      auto rows = runtime.ExecuteCollect(args);
+      (edge ? edge_nonempty : set_nonempty) += rows.empty() ? 0 : 1;
+      CompareParamRows(ReferenceSql(args), rows);
+    } catch (const std::exception &e) {
+      throw std::runtime_error("params (" + harness::ArgumentLiterals(args) + "): " + e.what());
+    }
+    ++(edge ? edge_checks : set_checks);
+  }
+
+  void VerifyEdgeArguments(Gen &gen) {
+    static const std::vector<int64_t> fys = {0, -1, 2147483647};
+    static const std::vector<std::string> uoms = {"nonexistent", ""};
     const bool fy_null = gen.Int(0, 14) == 0;
     const bool uom_null = gen.Int(0, 14) == 0;
-    const int64_t fy = gen.Pick(fys);
-    const std::string uom = gen.Pick(uoms);
+    const bool drawn = gen.Int(0, 1) == 0;
+    const int64_t fy = drawn ? gen.Pick(gen.fy_noise) : gen.Pick(fys);
+    const std::string uom = drawn ? gen.Pick(gen.noise_uoms) + " " : gen.Pick(uoms);
     core::QueryArguments args;
     args.values.push_back(fy_null ? core::AuxValue::Null(core::AuxType::Int64) : Int(fy));
     args.values.push_back(uom_null ? core::AuxValue::Null(core::AuxType::String) : Str(uom));
-    const std::string sql = ParamSql(fy_null ? "NULL" : std::to_string(fy),
-                                     uom_null ? "NULL" : Q(uom));
-    try {
-      auto rows = runtime.ExecuteCollect(args);
-      param_nonempty += rows.empty() ? 0 : 1;
-      CompareParamRows(sql, rows);
-    } catch (const std::exception &e) {
-      throw std::runtime_error("params fy=" + (fy_null ? std::string("NULL") : std::to_string(fy)) +
-                               " uom=" + (uom_null ? std::string("NULL") : Q(uom)) + ": " +
-                               e.what());
-    }
-    ++param_verifications;
+    VerifyArguments(args, true);
   }
 
   void Verify(const std::string &context, Gen &gen) {
     try {
-      auto rows = runtime.ExecuteCollect();
-      nonempty += rows.empty() ? 0 : 1;
-      harness::CompareAuxRowsToBase(connection, entry, rows);
+      for (const auto &args : sets) {
+        VerifyArguments(args, false);
+      }
       for (int i = 0; i < 3; ++i) {
-        VerifyParams(gen);
+        VerifyEdgeArguments(gen);
       }
     } catch (const std::exception &e) {
       throw std::runtime_error(context + ": " + e.what() + " [last sql: " +
@@ -340,8 +355,9 @@ struct Fixture {
     ++verifications;
     // SQL table-function path (what a client really calls).
     if (verifications % 7 == 0) {
-      auto base = connection.Query(entry.base_sql);
-      auto aux = connection.Query(entry.duckdb_aux_sql);
+      const auto &args = sets[verifications % sets.size()];
+      auto base = connection.Query(ReferenceSql(args));
+      auto aux = connection.Query(catalog::BindArguments(entry.duckdb_aux_sql, args));
       Require(base && !base->HasError(), "base");
       Require(aux && !aux->HasError(), aux ? aux->GetError() : "aux null");
       Require(base->RowCount() == aux->RowCount(),
@@ -383,13 +399,13 @@ struct Fixture {
 
   duckdb::Connection &connection;
   const catalog::SharedQueryCatalogEntry &entry;
+  std::vector<core::QueryArguments> sets;
   DuckdbRuntime runtime;
   std::vector<NumM> num;
   std::map<std::string, SubM> sub;
   uint64_t verifications = 0;
-  uint64_t nonempty = 0;
-  uint64_t param_verifications = 0;
-  uint64_t param_nonempty = 0;
+  uint64_t set_checks = 0, set_nonempty = 0;
+  uint64_t edge_checks = 0, edge_nonempty = 0;
 };
 
 void CreateSchema(duckdb::Connection &c) {
@@ -495,8 +511,7 @@ void Step(Fixture &f, Gen &gen, Counters &counters) {
     std::vector<core::ColumnId> cols;
     std::string set;
     if (gen.Int(0, 1)) {
-      static const char *to[] = {"USD", "EUR", "shares", "CAD", "pure"};
-      n.uom = to[gen.Int(0, 4)];
+      n.uom = gen.Pick(gen.uom_pool);
       n.uom_null = gen.Int(0, 15) == 0;
       set += std::string("uom = ") + (n.uom_null ? "NULL" : Q(n.uom));
       cols.push_back(5);
@@ -548,7 +563,7 @@ void Step(Fixture &f, Gen &gen, Counters &counters) {
     if (f.num.size() < 50) {
       break;
     }
-    const std::string pred_uom = gen.Int(0, 1) ? "EUR" : "pure";
+    const std::string pred_uom = gen.Pick(gen.uom_pool);
     std::vector<NumM> gone;
     std::vector<NumM> kept;
     for (const auto &r : f.num) {
@@ -564,7 +579,7 @@ void Step(Fixture &f, Gen &gen, Counters &counters) {
       f.Send(kNumTable, core::MutationKind::Delete, std::move(aux), {});
       ++counters.bulk_num;
     }
-    // scale every USD value of one filing
+    // scale every value of one filing
     const std::string adsh = gen.Pick(gen.adsh_pool);
     std::vector<core::AuxRow> before, after;
     std::string tags;
@@ -682,7 +697,7 @@ void RunSeed(uint32_t seed, int iterations) {
   accelerator_codegen::RegisterAcceleratorFunctions(connection);
   CreateSchema(connection);
   const auto &entry = catalog::LookupSharedQuery("sec_edgar", 3);
-  Gen gen(seed);
+  Gen gen(seed, PoolsOf(harness::ArgumentSets(entry)));
   std::vector<NumM> initial;
   for (int i = 0; i < 400; ++i) {
     auto r = gen.RandomNum();
@@ -708,9 +723,10 @@ void RunSeed(uint32_t seed, int iterations) {
     Step(f, gen, counters);
     f.Verify("seed " + std::to_string(seed) + " iter " + std::to_string(it), gen);
   }
+  Require(f.set_nonempty > 0, "no drawn parameter set selected any rows");
   std::cerr << "seed " << seed << ": " << iterations << " steps (single num "
             << counters.single_num << ", bulk num " << counters.bulk_num << ", sub "
-            << counters.sub_ops << "), " << f.verifications << " verifications (" << f.nonempty << " non-empty), " << f.param_verifications << " parameterized (" << f.param_nonempty << " non-empty), footprint "
+            << counters.sub_ops << "), " << f.verifications << " verifications, " << f.set_checks << " drawn-set checks (" << f.set_nonempty << " non-empty), " << f.edge_checks << " edge checks (" << f.edge_nonempty << " non-empty), footprint "
             << f.runtime.AuxStateFootprintBytes() << " bytes\n";
 }
 
@@ -722,19 +738,31 @@ void RunRealDb(const std::string &path) {
   const auto &entry = catalog::LookupSharedQuery("sec_edgar", 3);
   Fixture f(connection, entry);
   f.runtime.Build();
-  Gen gen(5);
+  Gen gen(5, PoolsOf(f.sets));
   f.Verify("real db initial", gen);
   auto fetch = [&](const std::string &sql) {
     auto r = connection.Query(sql);
     Require(r && !r->HasError(), sql);
     return r;
   };
-  // pick real USD fy2022 rows and existing sub rows to mutate
-  auto rows = fetch(
-      "SELECT n.adsh, n.tag, n.version, n.ddate, n.qtrs, n.uom, n.coreg, n.value, n.rowid "
-      "FROM num n JOIN sub s ON n.adsh = s.adsh WHERE s.fy = 2022 AND n.uom = 'USD' "
-      "AND n.value IS NOT NULL ORDER BY n.value DESC LIMIT 3");
-  Require(rows->RowCount() == 3, "no candidate rows");
+  // pick real rows of a drawn (fy, uom) and existing sub rows to mutate
+  std::unique_ptr<duckdb::MaterializedQueryResult> rows;
+  int64_t fy = 0;
+  std::string uom;
+  for (const auto &args : f.sets) {
+    auto candidates = fetch(catalog::BindArguments(
+        "SELECT n.adsh, n.tag, n.version, n.ddate, n.qtrs, n.uom, n.coreg, n.value, n.rowid "
+        "FROM num n JOIN sub s ON n.adsh = s.adsh WHERE s.fy = $1 AND n.uom = $2 "
+        "AND n.value IS NOT NULL ORDER BY n.value DESC LIMIT 3",
+        args));
+    if (candidates->RowCount() == 3) {
+      rows = std::move(candidates);
+      fy = std::get<int64_t>(args.values[0].payload);
+      uom = std::get<std::string>(args.values[1].payload);
+      break;
+    }
+  }
+  Require(rows != nullptr, "no drawn parameter set has candidate rows");
   auto row_of = [&](duckdb::idx_t r, double value) {
     core::AuxRow row;
     row.values = {Str(rows->GetValue(0, r).ToString()), Str(rows->GetValue(1, r).ToString()),
@@ -760,23 +788,23 @@ void RunRealDb(const std::string &path) {
                        Q(rows->GetValue(0, 0).ToString()) + "," + Q(rows->GetValue(1, 0).ToString()) +
                        "," + Q(rows->GetValue(2, 0).ToString()) + "," +
                        rows->GetValue(3, 0).ToString() + "," + rows->GetValue(4, 0).ToString() +
-                       ",'USD'," + Q(rows->GetValue(6, 0).ToString()) + "," + D(v0) + ")");
+                       "," + Q(uom) + "," + Q(rows->GetValue(6, 0).ToString()) + "," + D(v0) + ")");
   f.Send(kNumTable, core::MutationKind::Insert, {}, {row_of(0, v0)});
   f.Verify("real db insert", gen);
-  // sub: move a top filing out of fy 2022 and back
+  // sub: move a top filing out of its fiscal year and back
   const auto adsh = rows->GetValue(0, 1).ToString();
   auto sub = fetch("SELECT adsh, name, cik, fy FROM sub WHERE adsh = " + Q(adsh));
-  auto sub_row = [&](int fy) {
+  auto sub_row = [&](int64_t year) {
     core::AuxRow row;
     row.values = {Str(sub->GetValue(0, 0).ToString()), Str(sub->GetValue(1, 0).ToString()),
-                  Int(sub->GetValue(2, 0).GetValue<int64_t>()), Int(fy)};
+                  Int(sub->GetValue(2, 0).GetValue<int64_t>()), Int(year)};
     return row;
   };
-  Exec(connection, "UPDATE sub SET fy = 2021 WHERE adsh = " + Q(adsh));
-  f.Send(kSubTable, core::MutationKind::Update, {sub_row(2022)}, {sub_row(2021)}, {3});
+  Exec(connection, "UPDATE sub SET fy = " + std::to_string(fy + 1) + " WHERE adsh = " + Q(adsh));
+  f.Send(kSubTable, core::MutationKind::Update, {sub_row(fy)}, {sub_row(fy + 1)}, {3});
   f.Verify("real db sub fy out", gen);
-  Exec(connection, "UPDATE sub SET fy = 2022 WHERE adsh = " + Q(adsh));
-  f.Send(kSubTable, core::MutationKind::Update, {sub_row(2021)}, {sub_row(2022)}, {3});
+  Exec(connection, "UPDATE sub SET fy = " + std::to_string(fy) + " WHERE adsh = " + Q(adsh));
+  f.Send(kSubTable, core::MutationKind::Update, {sub_row(fy + 1)}, {sub_row(fy)}, {3});
   f.Verify("real db sub fy in", gen);
   std::cerr << "real db: OK, footprint " << f.runtime.AuxStateFootprintBytes() << " bytes\n";
 }

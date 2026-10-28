@@ -1,5 +1,5 @@
 // The SQL fallback answers exactly as the state does: each call of a SEC-EDGAR
-// aux table function (default and parameterized) read from the state, then
+// aux table function (the drawn parameter sets and edge cases) read from the state, then
 // again with ACCEL_AUX_FORCE_FALLBACK=1 (rows compared up to ORDER BY ties).
 //   test_fallback_state_agree <sec_edgar.duckdb>
 #include <algorithm>
@@ -12,26 +12,41 @@
 
 #include "backends/duckdb/api/duckdb_runtime.hpp"
 #include "backends/duckdb/api/register.hpp"
+#include "eval/harness/param_sets.hpp"
 #include "catalog/query_catalog.hpp"
 #include "duckdb.hpp"
 
 namespace {
 
 namespace catalog = accelerator_codegen::aux_state::engine;
+namespace harness = accelerator_codegen::aux_state::harness;
 
-struct Calls {
+// Edge-case argument lists (SQL text) read besides the parameter sets drawn for each query.
+struct EdgeCalls {
   int query_id;
-  std::vector<std::string> arguments; // SQL text of each call's argument list
+  std::vector<std::string> arguments;
 };
 
-const std::vector<Calls> kCalls = {
-    {1, {""}},
-    {2, {"", "2022, 'pure'", "2021, 'USD'"}},
-    {3, {"", "2021, 'USD'", "2023, 'shares'", "2022, 'nonexistent'", "NULL, 'USD'"}},
-    {4, {"", "1000, 3999, 'IS', 'USD'", "0, 9999, 'BS', 'shares'", "4000, 4999, 'EQ', NULL"}},
-    {6, {"", "2022, 'BS', 'USD'", "2021, 'CF', 'shares'", "2023, 'IS', 'nonexistent'"}},
-    {24, {"", "2022, 'USD'", "2021, 'pure'", "2147483647, 'USD'", "NULL, 'USD'"}},
+const std::vector<EdgeCalls> kEdgeCalls = {
+    {1, {"'nonexistent'", "NULL"}},
+    {3, {"2022, 'nonexistent'", "NULL, 'USD'"}},
+    {4, {"0, 9999, 'nonexistent', 'USD'", "NULL, 9999, 'BS', 'USD'", "0, 9999, 'BS', NULL"}},
+    {6, {"2023, 'IS', 'nonexistent'"}},
+    {24, {"2147483647, 'USD'", "NULL, 'USD'"}},
 };
+
+std::vector<std::string> CallsOf(const catalog::SharedQueryCatalogEntry &entry) {
+  std::vector<std::string> calls;
+  for (const auto &arguments : harness::ArgumentSets(entry)) {
+    calls.push_back(harness::ArgumentLiterals(arguments));
+  }
+  for (const auto &edge : kEdgeCalls) {
+    if (edge.query_id == entry.query_id) {
+      calls.insert(calls.end(), edge.arguments.begin(), edge.arguments.end());
+    }
+  }
+  return calls;
+}
 
 std::vector<std::vector<duckdb::Value>> Read(duckdb::Connection &connection, const std::string &sql) {
   auto result = connection.Query(sql);
@@ -85,17 +100,26 @@ int main(int argc, char **argv) {
   duckdb::Connection connection(database);
   accelerator_codegen::RegisterAcceleratorFunctions(connection);
   int failed = 0, checked = 0;
-  for (const auto &group : kCalls) {
-    const auto &entry = catalog::LookupSharedQuery("sec_edgar", group.query_id);
+  for (const int query_id : catalog::SharedQueriesForWorkload("sec_edgar")) {
+    const auto &entry = catalog::LookupSharedQuery("sec_edgar", query_id);
     catalog::duckdb::DuckdbRuntime runtime(connection, entry, 10.0);
     runtime.Build();
-    for (const auto &arguments : group.arguments) {
-      const auto sql = "SELECT * FROM accel_sec_edgar_q" + std::to_string(group.query_id) + "_aux(" + arguments + ")";
+    for (const auto &arguments : CallsOf(entry)) {
+      const auto sql = "SELECT * FROM accel_sec_edgar_q" + std::to_string(query_id) + "_aux(" + arguments + ")";
       unsetenv("ACCEL_AUX_FORCE_FALLBACK");
-      auto from_state = Read(connection, sql);
-      setenv("ACCEL_AUX_FORCE_FALLBACK", "1", 1);
-      auto from_sql = Read(connection, sql);
-      unsetenv("ACCEL_AUX_FORCE_FALLBACK");
+      std::vector<std::vector<duckdb::Value>> from_state, from_sql;
+      try {
+        from_state = Read(connection, sql);
+        setenv("ACCEL_AUX_FORCE_FALLBACK", "1", 1);
+        from_sql = Read(connection, sql);
+        unsetenv("ACCEL_AUX_FORCE_FALLBACK");
+      } catch (const std::exception &error) {
+        unsetenv("ACCEL_AUX_FORCE_FALLBACK");
+        ++checked;
+        ++failed;
+        std::cout << "ERROR " << sql << ": " << std::string(error.what()).substr(0, 200) << "\n";
+        continue;
+      }
       SortByExactColumns(from_state);
       SortByExactColumns(from_sql);
       bool ok = from_state.size() == from_sql.size();

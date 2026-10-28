@@ -3,7 +3,9 @@
 #endif
 
 #include "eval/tests/test_support/db_paths.hpp"
+#include "backends/duckdb/api/sql_fallback.hpp"
 #include "eval/harness/differential.hpp"
+#include "eval/harness/param_sets.hpp"
 #include "backends/duckdb/api/register.hpp"
 #include "backends/duckdb/api/duckdb_runtime.hpp"
 #include "catalog/query_catalog.hpp"
@@ -32,6 +34,7 @@ namespace {
 namespace catalog = accelerator_codegen::aux_state::engine;
 namespace harness = accelerator_codegen::aux_state::harness;
 using catalog::duckdb::DuckdbRuntime;
+using Arguments = accelerator_codegen::aux_state::core::QueryArguments;
 using accelerator_codegen::aux_state::core::AuxEngineServices;
 using accelerator_codegen::aux_state::core::AuxRow;
 using accelerator_codegen::aux_state::core::AuxRowSink;
@@ -200,7 +203,7 @@ void LoadQuery(duckdb::Connection &connection, const std::string &sql,
 }
 
 void CompareTriple(duckdb::Connection &connection, const catalog::SharedQueryCatalogEntry &st,
-                   const catalog::SharedQueryCatalogEntry &parallel, int threads) {
+                   const catalog::SharedQueryCatalogEntry &parallel, const Arguments &arguments, int threads) {
   ScopedEnv aux("ACCEL_AUX_THREADS", std::to_string(threads));
   SetThreads(connection, 1);
   const std::string label =
@@ -209,10 +212,11 @@ void CompareTriple(duckdb::Connection &connection, const catalog::SharedQueryCat
   duckdb::unique_ptr<duckdb::QueryResult> st_aux;
   duckdb::unique_ptr<duckdb::QueryResult> mt_aux;
   duckdb::unique_ptr<duckdb::QueryResult> mt_repeat;
-  LoadQuery(connection, st.base_sql, label + " base", base);
-  LoadQuery(connection, st.duckdb_aux_sql, label + " st", st_aux);
-  LoadQuery(connection, parallel.duckdb_aux_sql, label + " mt", mt_aux);
-  LoadQuery(connection, parallel.duckdb_aux_sql, label + " mt-repeat", mt_repeat);
+  const auto bound = [&](const char *sql) { return catalog::BindArguments(sql, arguments); };
+  LoadQuery(connection, bound(st.base_sql), label + " base", base);
+  LoadQuery(connection, bound(st.duckdb_aux_sql), label + " st", st_aux);
+  LoadQuery(connection, bound(parallel.duckdb_aux_sql), label + " mt", mt_aux);
+  LoadQuery(connection, bound(parallel.duckdb_aux_sql), label + " mt-repeat", mt_repeat);
   auto &b = base->Cast<duckdb::MaterializedQueryResult>();
   auto &s = st_aux->Cast<duckdb::MaterializedQueryResult>();
   auto &p = mt_aux->Cast<duckdb::MaterializedQueryResult>();
@@ -224,17 +228,17 @@ void CompareTriple(duckdb::Connection &connection, const catalog::SharedQueryCat
 
 void CompareRuntimes(duckdb::Connection &connection,
                      const catalog::SharedQueryCatalogEntry &st,
-                     const catalog::SharedQueryCatalogEntry &parallel, int threads) {
+                     const catalog::SharedQueryCatalogEntry &parallel, const Arguments &arguments, int threads) {
   ScopedEnv aux("ACCEL_AUX_THREADS", std::to_string(threads));
   SetThreads(connection, threads);
   DuckdbRuntime st_runtime(connection, st, 10.0);
   DuckdbRuntime mt_runtime(connection, parallel, 10.0);
   st_runtime.Build();
   mt_runtime.Build();
-  harness::RequireSharedMatchesBase(connection, st_runtime, st);
-  harness::RequireSharedMatchesBase(connection, mt_runtime, parallel);
-  const auto st_rows = st_runtime.ExecuteCollect();
-  const auto mt_rows = mt_runtime.ExecuteCollect();
+  harness::RequireSharedMatchesBase(connection, st_runtime, st, arguments);
+  harness::RequireSharedMatchesBase(connection, mt_runtime, parallel, arguments);
+  const auto st_rows = st_runtime.ExecuteCollect(arguments);
+  const auto mt_rows = mt_runtime.ExecuteCollect(arguments);
   Require(st_rows.size() == mt_rows.size(),
           "Q" + std::to_string(st.query_id) + " runtime row count mismatch");
 }
@@ -355,17 +359,25 @@ void SeedLargeSyntheticSecEdgar(duckdb::Connection &connection) {
     FROM range()SQL") + kRows + ") t(i)");
 }
 
+// Whether the query bound to `arguments` has rows on the connection's data (a write can change an answer only then).
+bool HasAnswer(duckdb::Connection &connection, const catalog::SharedQueryCatalogEntry &entry,
+               const Arguments &arguments) {
+  auto result = connection.Query(catalog::BindArguments(entry.base_sql, arguments));
+  Require(result && !result->HasError(), result ? result->GetError() : "base query failed");
+  return result->RowCount() > 0;
+}
+
 void ApplyInvalidatingWrite(duckdb::Connection &connection,
                             const catalog::SharedQueryCatalogEntry &parallel,
-                            int threads) {
+                            const Arguments &arguments, int threads) {
   SetThreads(connection, threads);
   ScopedEnv aux("ACCEL_AUX_THREADS", std::to_string(threads));
   DuckdbRuntime runtime(connection, parallel, 10.0);
   runtime.Build();
-  harness::RequireSharedMatchesBase(connection, runtime, parallel);
-  auto probe = catalog::FindInvalidatingSharedProbe(connection, parallel);
+  harness::RequireSharedMatchesBase(connection, runtime, parallel, arguments);
+  auto probe = catalog::FindInvalidatingSharedProbe(connection, parallel, arguments);
   runtime.Apply(probe);
-  harness::RequireSharedMatchesBase(connection, runtime, parallel);
+  harness::RequireSharedMatchesBase(connection, runtime, parallel, arguments);
   auto restore = connection.Query(probe.restore_sql);
   Require(restore && !restore->HasError(),
           restore ? restore->GetError() : "synthetic restore failed");
@@ -380,7 +392,7 @@ void RunCatalogChecks() {
             "ST accelerator id must not be parallel");
     Require(catalog::IsParallelAuxAccelerator(parallel.accelerator_id),
             "parallel catalog id must end in _aux_parallel");
-    Require(std::string(parallel.duckdb_aux_sql).find("_aux_parallel()") != std::string::npos,
+    Require(std::string(parallel.duckdb_aux_sql).find("_aux_parallel(") != std::string::npos,
             "parallel DuckDB SQL name");
     Require(std::string(st.duckdb_aux_sql) != std::string(parallel.duckdb_aux_sql),
             "ST and parallel SQL names must differ");
@@ -470,6 +482,7 @@ public:
   bool ended = false;
 };
 
+// The stmt values UnitServices holds, one group each.
 void RunUnitFallbackMerge() {
   UnitServices services;
   SecEdgarQ1ParallelModule parallel(SecEdgarQ1Config{1}, &services);
@@ -480,15 +493,20 @@ void RunUnitFallbackMerge() {
   serial.Build(services, sb);
   Require(pb.finished && sb.finished, "unit build did not finish");
   services.store.Install(pb.images);
-  UnitSink ps;
-  UnitSink ss;
-  parallel.Execute(services, {}, ps);
+  for (const char *stmt : {"BS", "IS"}) {
+    const Arguments arguments{{AuxValue::Of(AuxType::String, std::string(stmt))}};
+    UnitSink ps;
+    parallel.Execute(services, arguments, ps);
+    Require(ps.ended && ps.rows.size() == 1, std::string("unit parallel read of ") + stmt);
+  }
   services.store.accelerator = "sec_edgar_q1";
   services.store.Install(sb.images);
-  serial.Execute(services, {}, ss);
-  Require(ps.ended && ss.ended, "unit execute did not end");
-  Require(ps.rows.size() == ss.rows.size(), "unit row count mismatch");
-  Require(ps.rows.size() == 2, "expected two Q1 groups");
+  for (const char *stmt : {"BS", "IS"}) {
+    const Arguments arguments{{AuxValue::Of(AuxType::String, std::string(stmt))}};
+    UnitSink ss;
+    serial.Execute(services, arguments, ss);
+    Require(ss.ended && ss.rows.size() == 1, std::string("unit serial read of ") + stmt);
+  }
 }
 
 void RunSyntheticSuite() {
@@ -502,18 +520,31 @@ void RunSyntheticSuite() {
         catalog::LookupSharedQuery("sec_edgar", query_id);
     const auto &parallel =
         catalog::LookupSharedQueryParallel("sec_edgar", query_id);
-    CompareRuntimes(connection, st, parallel, 1);
-    CompareRuntimes(connection, st, parallel, n);
-    CompareTriple(connection, st, parallel, 1);
-    CompareTriple(connection, st, parallel, n);
+    for (const auto &arguments : harness::ArgumentSets(st)) {
+      CompareRuntimes(connection, st, parallel, arguments, 1);
+      CompareRuntimes(connection, st, parallel, arguments, n);
+      CompareTriple(connection, st, parallel, arguments, 1);
+      CompareTriple(connection, st, parallel, arguments, n);
+    }
   }
   for (int query_id : kSecQueries) {
     const auto &parallel =
         catalog::LookupSharedQueryParallel("sec_edgar", query_id);
-    std::cerr << "synthetic invalidating write Q" << query_id << " t=1\n";
-    ApplyInvalidatingWrite(connection, parallel, 1);
-    std::cerr << "synthetic invalidating write Q" << query_id << " t=" << n << '\n';
-    ApplyInvalidatingWrite(connection, parallel, n);
+    int written = 0;
+    for (const auto &arguments : harness::ArgumentSets(parallel)) {
+      if (!HasAnswer(connection, parallel, arguments)) {
+        continue; // a write changes no answer that is empty
+      }
+      std::cerr << "synthetic invalidating write Q" << query_id << " ("
+                << harness::ArgumentLiterals(arguments) << ") t=1\n";
+      ApplyInvalidatingWrite(connection, parallel, arguments, 1);
+      std::cerr << "synthetic invalidating write Q" << query_id << " t=" << n << '\n';
+      ApplyInvalidatingWrite(connection, parallel, arguments, n);
+      ++written;
+    }
+    if (written == 0) {
+      std::cerr << "synthetic invalidating write Q" << query_id << ": every drawn set has an empty answer\n";
+    }
   }
 }
 
@@ -530,7 +561,9 @@ void RunLargeSyntheticSuite() {
         catalog::LookupSharedQuery("sec_edgar", query_id);
     const auto &parallel =
         catalog::LookupSharedQueryParallel("sec_edgar", query_id);
-    CompareTriple(connection, st, parallel, n);
+    for (const auto &arguments : harness::ArgumentSets(st)) {
+      CompareTriple(connection, st, parallel, arguments, n);
+    }
     std::cerr << "large synthetic Q" << query_id << " OK\n";
   }
 }
@@ -565,24 +598,26 @@ void RunFileReadOnlySuite(const std::string &path) {
         catalog::LookupSharedQuery("sec_edgar", query_id);
     const auto &parallel =
         catalog::LookupSharedQueryParallel("sec_edgar", query_id);
-    CompareRuntimes(connection, st, parallel, 1);
-    CompareRuntimes(connection, st, parallel, n);
-    CompareTriple(connection, st, parallel, 1);
-    CompareTriple(connection, st, parallel, n);
+    for (const auto &arguments : harness::ArgumentSets(st)) {
+      CompareRuntimes(connection, st, parallel, arguments, 1);
+      CompareRuntimes(connection, st, parallel, arguments, n);
+      CompareTriple(connection, st, parallel, arguments, 1);
+      CompareTriple(connection, st, parallel, arguments, n);
+    }
   }
 }
 
 void ApplyProbeAndCheck(duckdb::Connection &connection, DuckdbRuntime &runtime,
-                        const catalog::SharedQueryCatalogEntry &parallel,
+                        const catalog::SharedQueryCatalogEntry &parallel, const Arguments &arguments,
                         catalog::SharedProbe probe) {
-  const auto before_fp = catalog::FingerprintSharedBaseSql(connection, parallel);
-  Require(catalog::SharedProbeChangesBaseResult(connection, parallel, probe, before_fp),
+  const auto before_fp = catalog::FingerprintSharedBaseSql(connection, parallel, arguments);
+  Require(catalog::SharedProbeChangesBaseResult(connection, parallel, arguments, probe, before_fp),
           "forced probe does not change DuckDB Q" + std::to_string(parallel.query_id));
   try {
     runtime.Apply(probe);
-    Require(catalog::FingerprintSharedBaseSql(connection, parallel) != before_fp,
+    Require(catalog::FingerprintSharedBaseSql(connection, parallel, arguments) != before_fp,
             "Apply() did not invalidate DuckDB Q" + std::to_string(parallel.query_id));
-    harness::RequireSharedMatchesBase(connection, runtime, parallel);
+    harness::RequireSharedMatchesBase(connection, runtime, parallel, arguments);
   } catch (...) {
     auto restore = connection.Query(probe.restore_sql);
     (void)restore;
@@ -592,25 +627,25 @@ void ApplyProbeAndCheck(duckdb::Connection &connection, DuckdbRuntime &runtime,
   Require(restore && !restore->HasError(),
           restore ? restore->GetError() : "restore failed");
   runtime.Build();
-  harness::RequireSharedMatchesBase(connection, runtime, parallel);
+  harness::RequireSharedMatchesBase(connection, runtime, parallel, arguments);
 }
 
 std::vector<catalog::SharedProbe>
 CollectWriteProbes(duckdb::Connection &connection,
-                   const catalog::SharedQueryCatalogEntry &parallel) {
+                   const catalog::SharedQueryCatalogEntry &parallel, const Arguments &arguments) {
   try {
-    return catalog::CollectInvalidatingSharedProbes(connection, parallel, 4096, 5);
+    return catalog::CollectInvalidatingSharedProbes(connection, parallel, arguments, 4096, 5);
   } catch (const std::exception &) {
   }
   const std::string probe_sql =
-      catalog::ExpandProbeSelectLimit(parallel.probe_select_sql, 64);
+      catalog::BindArguments(catalog::ExpandProbeSelectLimit(parallel.probe_select_sql, 64), arguments);
   auto result = connection.Query(probe_sql);
   Require(result && !result->HasError() && result->RowCount() >= 1,
           result ? ("forced probe select failed for Q" +
                     std::to_string(parallel.query_id) + ": " + result->GetError())
                  : "forced probe select returned null");
   auto &materialized = result->Cast<duckdb::MaterializedQueryResult>();
-  const auto before_fp = catalog::FingerprintSharedBaseSql(connection, parallel);
+  const auto before_fp = catalog::FingerprintSharedBaseSql(connection, parallel, arguments);
   std::vector<catalog::SharedProbe> probes;
   const bool num_probe = parallel.query_id != 1;
   for (duckdb::idx_t row = 0; row < materialized.RowCount() && probes.size() < 5;
@@ -631,18 +666,18 @@ CollectWriteProbes(duckdb::Connection &connection,
               accelerator_codegen::aux_state::core::AuxType::Double,
               original + 1000000.0);
     }
-    if (catalog::SharedProbeChangesBaseResult(connection, parallel, probe, before_fp)) {
+    if (catalog::SharedProbeChangesBaseResult(connection, parallel, arguments, probe, before_fp)) {
       probes.push_back(std::move(probe));
     }
   }
   if (probes.empty() && parallel.query_id == 4) {
-    auto q4 = connection.Query(R"SQL(
+    auto q4 = connection.Query(catalog::BindArguments(R"SQL(
       SELECT n.rowid, n.adsh, n.tag, n.version, n.ddate, n.qtrs, n.uom, n.coreg, n.value
       FROM num n
       JOIN sub s ON n.adsh = s.adsh
       JOIN pre p ON n.adsh = p.adsh AND n.tag = p.tag AND n.version = p.version
       JOIN tag t ON n.tag = t.tag AND n.version = t.version
-      WHERE n.uom = 'USD' AND p.stmt = 'EQ' AND s.sic BETWEEN 4000 AND 4999
+      WHERE n.uom = $4 AND p.stmt = $3 AND s.sic BETWEEN $1 AND $2
         AND n.value IS NOT NULL AND t.abstract = 0
         AND (s.sic, t.tlabel) IN (
           SELECT s2.sic, t2.tlabel
@@ -650,14 +685,14 @@ CollectWriteProbes(duckdb::Connection &connection,
           JOIN sub s2 ON n2.adsh = s2.adsh
           JOIN pre p2 ON n2.adsh = p2.adsh AND n2.tag = p2.tag AND n2.version = p2.version
           JOIN tag t2 ON n2.tag = t2.tag AND n2.version = t2.version
-          WHERE n2.uom = 'USD' AND p2.stmt = 'EQ' AND s2.sic BETWEEN 4000 AND 4999
+          WHERE n2.uom = $4 AND p2.stmt = $3 AND s2.sic BETWEEN $1 AND $2
             AND n2.value IS NOT NULL AND t2.abstract = 0
           GROUP BY s2.sic, t2.tlabel
           HAVING COUNT(DISTINCT s2.cik) >= 2
         )
       ORDER BY n.value DESC NULLS LAST
       LIMIT 16
-    )SQL");
+    )SQL", arguments));
     Require(q4 && !q4->HasError() && q4->RowCount() >= 1,
             q4 && q4->HasError() ? q4->GetError()
                                  : "Q4 qualifying-group probe select returned no rows");
@@ -677,7 +712,7 @@ CollectWriteProbes(duckdb::Connection &connection,
           accelerator_codegen::aux_state::core::AuxValue::Of(
               accelerator_codegen::aux_state::core::AuxType::Double,
               original + 1000000.0);
-      if (catalog::SharedProbeChangesBaseResult(connection, parallel, probe, before_fp)) {
+      if (catalog::SharedProbeChangesBaseResult(connection, parallel, arguments, probe, before_fp)) {
         probes.push_back(std::move(probe));
       }
     }
@@ -690,19 +725,19 @@ CollectWriteProbes(duckdb::Connection &connection,
 
 void RunCopiedWriteDifferential(const std::string &work,
                                 const catalog::SharedQueryCatalogEntry &parallel,
-                                int threads) {
+                                const Arguments &arguments, int threads) {
   ScopedEnv aux("ACCEL_AUX_THREADS", std::to_string(threads));
   duckdb::DuckDB database(work.c_str());
   duckdb::Connection connection(database);
   SetThreads(connection, threads);
   DuckdbRuntime runtime(connection, parallel, 10.0);
   runtime.Build();
-  harness::RequireSharedMatchesBase(connection, runtime, parallel);
+  harness::RequireSharedMatchesBase(connection, runtime, parallel, arguments);
   std::vector<catalog::SharedProbe> probes;
   try {
-    probes = CollectWriteProbes(connection, parallel);
+    probes = CollectWriteProbes(connection, parallel, arguments);
   } catch (const std::exception &error) {
-    auto base = connection.Query(parallel.base_sql);
+    auto base = connection.Query(catalog::BindArguments(parallel.base_sql, arguments));
     const bool empty =
         base && !base->HasError() && base->RowCount() == 0;
     if (empty) {
@@ -713,17 +748,17 @@ void RunCopiedWriteDifferential(const std::string &work,
     throw std::runtime_error(std::string("Q") + std::to_string(parallel.query_id) +
                              " write probes: " + error.what());
   }
-  ApplyProbeAndCheck(connection, runtime, parallel, probes.front());
+  ApplyProbeAndCheck(connection, runtime, parallel, arguments, probes.front());
   const int nprobes = std::min(3, static_cast<int>(probes.size()));
   for (int i = 0; i < nprobes; ++i) {
-    ApplyProbeAndCheck(connection, runtime, parallel, probes[static_cast<std::size_t>(i)]);
+    ApplyProbeAndCheck(connection, runtime, parallel, arguments, probes[static_cast<std::size_t>(i)]);
   }
   std::vector<catalog::SharedProbe> applied;
   try {
     for (int i = 0; i < nprobes; ++i) {
       runtime.Apply(probes[static_cast<std::size_t>(i)]);
       applied.push_back(probes[static_cast<std::size_t>(i)]);
-      harness::RequireSharedMatchesBase(connection, runtime, parallel);
+      harness::RequireSharedMatchesBase(connection, runtime, parallel, arguments);
     }
   } catch (...) {
     for (auto it = applied.rbegin(); it != applied.rend(); ++it) {
@@ -737,7 +772,7 @@ void RunCopiedWriteDifferential(const std::string &work,
             restore ? restore->GetError() : "sequence restore failed");
   }
   runtime.Build();
-  harness::RequireSharedMatchesBase(connection, runtime, parallel);
+  harness::RequireSharedMatchesBase(connection, runtime, parallel, arguments);
 }
 
 void RunFileWriteSuite(const std::string &source) {
@@ -746,13 +781,15 @@ void RunFileWriteSuite(const std::string &source) {
   for (int query_id : kSecQueries) {
     const auto &parallel =
         catalog::LookupSharedQueryParallel("sec_edgar", query_id);
-    for (int threads : thread_counts) {
-      const auto work = WorkCopyPath(query_id, threads, "write");
-      CopyDb(source, work);
-      std::cerr << "file write differential Q" << query_id << " t=" << threads
-                << " work=" << work << '\n';
-      RunCopiedWriteDifferential(work.string(), parallel, threads);
-      std::filesystem::remove(work);
+    for (const auto &arguments : harness::ArgumentSets(parallel)) {
+      for (int threads : thread_counts) {
+        const auto work = WorkCopyPath(query_id, threads, "write");
+        CopyDb(source, work);
+        std::cerr << "file write differential Q" << query_id << " (" << harness::ArgumentLiterals(arguments)
+                  << ") t=" << threads << " work=" << work << '\n';
+        RunCopiedWriteDifferential(work.string(), parallel, arguments, threads);
+        std::filesystem::remove(work);
+      }
     }
   }
 }

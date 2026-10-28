@@ -3,6 +3,7 @@
 #include "backends/duckdb/api/register.hpp"
 #include "eval/tests/test_support/interference_calibration.hpp"
 #include "eval/tests/test_support/cross_accel_helpers.hpp"
+#include "eval/harness/param_sets.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -202,7 +203,7 @@ double RebuildTargetPartitionUs(duckdb::Connection &connection, int target_query
 	const auto &entry = LookupSharedQuery(workload_name, target_query);
 	const auto start = Clock::now();
 	DuckdbRuntime runtime(connection, entry, 10.0);
-	const auto probe = FindSharedProbe(connection, entry);
+	const auto probe = FindSharedProbe(connection, entry, accelerator_codegen::aux_state::harness::ArgumentSets(entry).front());
 	runtime.Build();
 	runtime.ApplyMutationBatch(BuildSharedMutation(entry, probe));
 	return ElapsedUs(start, Clock::now());

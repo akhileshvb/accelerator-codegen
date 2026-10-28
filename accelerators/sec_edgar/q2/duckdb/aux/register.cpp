@@ -49,31 +49,43 @@ const SharedQueryRegistrar kEntry{SharedQueryCatalogEntry{2,
      "JOIN ("
      "    SELECT adsh, tag, MAX(value) AS max_value "
      "    FROM num "
-     "    WHERE uom = 'pure' AND value IS NOT NULL "
+     "    WHERE uom = $2 AND value IS NOT NULL "
      "    GROUP BY adsh, tag"
      ") m ON n.adsh = m.adsh AND n.tag = m.tag AND n.value = m.max_value "
-     "WHERE n.uom = 'pure' AND s.fy = 2022 AND n.value IS NOT NULL "
+     "WHERE n.uom = $2 AND s.fy = $1 AND n.value IS NOT NULL "
      "ORDER BY n.value DESC, s.name, n.tag "
      "LIMIT 100",
-     "SELECT * FROM accel_sec_edgar_q2_aux()",
+     "SELECT * FROM accel_sec_edgar_q2_aux($1, $2)",
      "SELECT * FROM accel_sec_edgar_q2()",
-     "SELECT * FROM accel_sec_edgar_q2_aux()",
+     "SELECT * FROM accel_sec_edgar_q2_aux($1, $2)",
      "SELECT n.rowid, n.adsh, n.tag, n.version, n.ddate, n.qtrs, n.uom, n.coreg, "
      "n.value FROM num n "
      "JOIN sub s ON n.adsh = s.adsh "
      "JOIN ("
      "    SELECT adsh, tag, MAX(value) AS max_value "
      "    FROM num "
-     "    WHERE uom = 'pure' AND value IS NOT NULL "
+     "    WHERE uom = $2 AND value IS NOT NULL "
      "    GROUP BY adsh, tag"
      ") m ON n.adsh = m.adsh AND n.tag = m.tag AND n.value = m.max_value "
-     "WHERE n.uom = 'pure' AND s.fy = 2022 AND n.value IS NOT NULL "
+     "WHERE n.uom = $2 AND s.fy = $1 AND n.value IS NOT NULL "
      "ORDER BY n.value DESC, s.name, n.tag LIMIT 1",
-     {},
+     {{core::AuxValue::Null(core::AuxType::Int64), core::AuxValue::Null(core::AuxType::String)}},
      1,
      false,
      BuildSecEdgarQ2Probe,
-     core::kSecEdgarQ2CostModel}};
+     core::kSecEdgarQ2CostModel,
+     "SELECT s.name, n.tag, n.value "
+     "FROM num n "
+     "JOIN sub s ON n.adsh = s.adsh "
+     "JOIN ("
+     "    SELECT adsh, tag, MAX(value) AS max_value "
+     "    FROM num "
+     "    WHERE uom = $2 AND value IS NOT NULL "
+     "    GROUP BY adsh, tag"
+     ") m ON n.adsh = m.adsh AND n.tag = m.tag AND n.value = m.max_value "
+     "WHERE n.uom = $2 AND s.fy = $1 AND n.value IS NOT NULL "
+     "ORDER BY n.value DESC, s.name, n.tag "
+     "LIMIT 100"}};
 
 } // namespace q2_catalog
 } // namespace
@@ -90,8 +102,7 @@ using namespace scan;
 // The data access is columnar SQL on the runtime's connection (duckdb_scan.cpp).
 using SecEdgarQ2Scan = SecEdgarQ2DuckdbScan;
 
-// accel_sec_edgar_q2_aux() uses the template defaults (fy 2022, uom 'pure');
-// accel_sec_edgar_q2_aux(fy BIGINT, uom VARCHAR) binds the template literals.
+// accel_sec_edgar_q2_aux(fy BIGINT, uom VARCHAR) answers any values from the same state.
 const std::vector<std::vector<::duckdb::LogicalType>> kOverloads{
     {::duckdb::LogicalType::BIGINT, ::duckdb::LogicalType::VARCHAR}};
 

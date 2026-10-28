@@ -48,6 +48,8 @@ keep:
   - eval/tests/test_support/toy_build_state.hpp
   - eval/harness/float_order_ties.hpp
   - eval/harness/slot_gates.*
+  - eval/harness/param_source.*
+  - eval/harness/param_sets.py
   # engine-neutral eval drivers: result plotting, comparison drivers, benchmark data and parameters
   - eval/compare/*.py
   - eval/compare/*.sh
@@ -72,6 +74,8 @@ generated:
   - eval/harness/*.cmake
   - eval/harness/cost_calibration.*
   - eval/harness/differential.*
+  - eval/harness/param_sets.hpp
+  - eval/harness/param_sets.cpp
   - eval/harness/suite.hpp
   - eval/harness/tpch_rf.*
   - eval/harness/tpch_test_recipes.hpp

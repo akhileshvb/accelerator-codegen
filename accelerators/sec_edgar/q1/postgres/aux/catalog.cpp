@@ -11,11 +11,15 @@ const PostgresQueryCatalogRegistrar kRegistrar(PostgresSharedQueryCatalogEntry{
     /* base_sql */
     "SELECT stmt, rfile, COUNT(*) AS cnt, COUNT(DISTINCT adsh) AS num_filings, "
     "AVG(line) AS avg_line_num "
-    "FROM pre WHERE stmt IS NOT NULL GROUP BY stmt, rfile ORDER BY cnt DESC",
+    "FROM pre WHERE stmt = $1 GROUP BY stmt, rfile ORDER BY cnt DESC",
     /* accelerator_sql */
-    "SELECT * FROM accel_sec_edgar_q1_aux()",
+    "SELECT * FROM accel_sec_edgar_q1_aux($1)",
     /* aux_sql */
-    "SELECT * FROM accel_sec_edgar_q1_aux()",
+    "SELECT * FROM accel_sec_edgar_q1_aux($1)",
+    /* fallback_sql */
+    "SELECT stmt, rfile, COUNT(*) AS cnt, COUNT(DISTINCT adsh) AS num_filings, "
+    "AVG(line) AS avg_line_num "
+    "FROM pre WHERE stmt = $1 GROUP BY stmt, rfile ORDER BY cnt DESC",
 });
 
 } // namespace

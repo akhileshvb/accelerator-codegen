@@ -51,16 +51,16 @@ const SharedQueryRegistrar kEntry{SharedQueryCatalogEntry{4,
      "JOIN sub s ON n.adsh = s.adsh "
      "JOIN tag t ON n.tag = t.tag AND n.version = t.version "
      "JOIN pre p ON n.adsh = p.adsh AND n.tag = p.tag AND n.version = p.version "
-     "WHERE n.uom = 'USD' AND p.stmt = 'EQ' "
-     "AND s.sic BETWEEN 4000 AND 4999 "
+     "WHERE n.uom = $4 AND p.stmt = $3 "
+     "AND s.sic BETWEEN $1 AND $2 "
      "AND n.value IS NOT NULL AND t.abstract = 0 "
      "GROUP BY s.sic, t.tlabel, p.stmt "
      "HAVING COUNT(DISTINCT s.cik) >= 2 "
      "ORDER BY total_value DESC "
      "LIMIT 500",
-     "SELECT * FROM accel_sec_edgar_q4_aux()",
+     "SELECT * FROM accel_sec_edgar_q4_aux($1, $2, $3, $4)",
      "SELECT * FROM accel_sec_edgar_q4()",
-     "SELECT * FROM accel_sec_edgar_q4_aux()",
+     "SELECT * FROM accel_sec_edgar_q4_aux($1, $2, $3, $4)",
      "SELECT n.rowid, n.adsh, n.tag, n.version, n.ddate, n.qtrs, n.uom, n.coreg, "
      "n.value FROM num n "
      "JOIN sub s ON n.adsh = s.adsh "
@@ -72,17 +72,19 @@ const SharedQueryRegistrar kEntry{SharedQueryCatalogEntry{4,
      "    JOIN tag t2 ON n2.tag = t2.tag AND n2.version = t2.version "
      "    JOIN pre p2 ON n2.adsh = p2.adsh AND n2.tag = p2.tag AND "
      "    n2.version = p2.version "
-     "    WHERE n2.uom = 'USD' AND p2.stmt = 'EQ' AND s2.sic BETWEEN 4000 AND 4999 "
+     "    WHERE n2.uom = $4 AND p2.stmt = $3 AND s2.sic BETWEEN $1 AND $2 "
      "    AND n2.value IS NOT NULL AND t2.abstract = 0 "
      "    GROUP BY s2.sic, t2.tlabel, p2.stmt "
      "    HAVING COUNT(DISTINCT s2.cik) >= 2 "
      "    ORDER BY SUM(n2.value) DESC "
      "    LIMIT 500"
      ") top ON s.sic = top.sic AND t.tlabel = top.tlabel AND p.stmt = top.stmt "
-     "WHERE n.uom = 'USD' AND p.stmt = 'EQ' AND s.sic BETWEEN 4000 AND 4999 "
+     "WHERE n.uom = $4 AND p.stmt = $3 AND s.sic BETWEEN $1 AND $2 "
      "AND n.value IS NOT NULL AND t.abstract = 0 "
      "ORDER BY n.adsh, n.tag, n.version LIMIT 1",
-     {},
+     // The signature (sic_lo, sic_hi, stmt, uom): no default binding.
+     {{core::AuxValue::Null(core::AuxType::Int64), core::AuxValue::Null(core::AuxType::Int64),
+       core::AuxValue::Null(core::AuxType::String), core::AuxValue::Null(core::AuxType::String)}},
      1,
      false,
      BuildSecEdgarQ4Probe,
@@ -112,11 +114,10 @@ using namespace scan;
 // materializing num row by row.
 using SecEdgarQ4Scan = query::SecEdgarQ4DuckDbScan;
 
-// accel_sec_edgar_q4_aux() = the template defaults (4000, 4999, 'EQ', 'USD');
 // accel_sec_edgar_q4_aux(sic_lo, sic_hi, stmt, uom) answers any parameters.
-const std::vector<std::vector<::duckdb::LogicalType>> kOverloads{
-    {::duckdb::LogicalType::INTEGER, ::duckdb::LogicalType::INTEGER,
-     ::duckdb::LogicalType::VARCHAR, ::duckdb::LogicalType::VARCHAR}};
+const std::vector<::duckdb::LogicalType> kArgumentTypes{
+    ::duckdb::LogicalType::INTEGER, ::duckdb::LogicalType::INTEGER,
+    ::duckdb::LogicalType::VARCHAR, ::duckdb::LogicalType::VARCHAR};
 
 // The module reads positions in the full num / sub / tag / pre rows.
 SecEdgarQ4Config Config() { return SecEdgarQ4Config{1, 2, 3, 4}; }
@@ -128,23 +129,21 @@ CaptureTableList CaptureTables(const SecEdgarQ4Config &c) {
 const AuxQueryRegistrar kQuery{AuxQuery{
     core::SecEdgarQ4Layout::kAccelerator,
     "accel_sec_edgar_q4_aux",
-    {},
+    kArgumentTypes,
     [](::duckdb::Connection &connection) {
       const auto c = Config();
       return MakeBinding<SecEdgarQ4Scan, SecEdgarQ4Module>(connection, CaptureTables(c), c);
-    },
-    kOverloads}};
+    }}};
 
 #ifdef ACCEL_ENABLE_PARALLEL_AUX
 const AuxQueryRegistrar kParallelQuery{AuxQuery{
     std::string(core::SecEdgarQ4Layout::kAccelerator) + "_aux_parallel",
     std::string("accel_") + core::SecEdgarQ4Layout::kAccelerator + "_aux_parallel",
-    {},
+    kArgumentTypes,
     [](::duckdb::Connection &connection) {
       const auto c = Config();
       return MakeBinding<SecEdgarQ4Scan, SecEdgarQ4ParallelModule>(connection, CaptureTables(c), c);
-    },
-    kOverloads}};
+    }}};
 #endif
 
 } // namespace

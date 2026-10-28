@@ -17,7 +17,10 @@
 #include <tuple>
 #include <vector>
 
+#include "catalog/query_catalog.hpp"
+#include "eval/harness/param_sets.hpp"
 #include "sec_edgar/q6/duckdb/aux/state.hpp"
+#include "sec_edgar/q6/tests/q6_domain.hpp"
 
 using namespace accelerator_codegen::aux_state::query;
 
@@ -133,9 +136,23 @@ std::vector<std::tuple<GroupKey, Expected>> NaiveTop(const std::map<GroupKey, Ex
   return rows;
 }
 
-const char *const kStmts[] = {"IS", "BS", "CF"};
-const char *const kUoms[] = {"USD", "shares", "pure"};
-const int32_t kFys[] = {2022, 2023, 2024};
+using accelerator_codegen::aux_state::q6_tests::Domain;
+
+// The values the scenarios draw from: those of the drawn parameter sets; `cell` is the first set.
+const Domain &Drawn() {
+  static const Domain domain(accelerator_codegen::aux_state::harness::ArgumentSets(
+      accelerator_codegen::aux_state::engine::LookupSharedQuery("sec_edgar", 6)));
+  return domain;
+}
+struct Cell {
+  int32_t fy;
+  std::string stmt, uom;
+};
+Cell FirstCell() {
+  const auto &set = Drawn().sets.front();
+  return {static_cast<int32_t>(Domain::FyOf(set)), Domain::StmtOf(set),
+          Domain::UomOf(set)};
+}
 
 void CheckCombo(const SecEdgarQ6State &state, const std::map<GroupKey, Expected> *agg,
                 int32_t fy, const std::string &stmt, const std::string &uom, const std::string &ctx) {
@@ -182,10 +199,12 @@ void CheckState(const SecEdgarQ6State &state, const Model &m, const std::string 
   // every populated combo plus a few absent ones, with random-ish edge values
   for (const auto &[combo, agg] : naive)
     CheckCombo(state, &agg, std::get<0>(combo), std::get<1>(combo), std::get<2>(combo), ctx);
-  CheckCombo(state, nullptr, 2019, "IS", "USD", ctx);
-  CheckCombo(state, nullptr, 2023, "ZZ", "USD", ctx);
-  CheckCombo(state, nullptr, 2023, "IS", "EUR", ctx);
-  CheckCombo(state, nullptr, int64_t(1) << 40, "IS", "USD", ctx);
+  const auto cell = FirstCell();
+  const auto outside_fy = *std::min_element(Drawn().fys.begin(), Drawn().fys.end()) - 4;
+  CheckCombo(state, nullptr, static_cast<int32_t>(outside_fy), cell.stmt, cell.uom, ctx);
+  CheckCombo(state, nullptr, cell.fy, cell.stmt + "~", cell.uom, ctx);
+  CheckCombo(state, nullptr, cell.fy, cell.stmt, cell.uom + "~", ctx);
+  CheckCombo(state, nullptr, int64_t(1) << 40, cell.stmt, cell.uom, ctx);
   // Cache invariant per combo: exactly the active groups with !(sum < lb), sorted.
   for (uint32_t c = 0; c < state.structure.ComboCount(); ++c) {
     const auto &top = state.Top(c);
@@ -213,14 +232,16 @@ void RunScenario(Rng &rng, int adsh_count, int names, int tags, int plabels, int
   for (int i = 0; i < names; ++i) name_pool.push_back(i == 0 ? "" : i == 1 ? kNull : "Name" + std::to_string(i));
   for (int i = 0; i < tags; ++i) tag_pool.push_back(i == 0 ? "" : "Tag" + std::to_string(i));
   for (int i = 0; i < plabels; ++i) plabel_pool.push_back(i == 0 ? kNull : i == 1 ? "" : "PL" + std::to_string(i));
-  const auto rnd_stmt = [&]() { return std::string(kStmts[rng() % 3]); };
-  const auto rnd_uom = [&]() { return std::string(kUoms[rng() % 3]); };
+  const auto &drawn = Drawn();
+  const auto rnd_stmt = [&]() { return drawn.stmts[rng() % drawn.stmts.size()]; };
+  const auto rnd_uom = [&]() { return drawn.uoms[rng() % drawn.uoms.size()]; };
+  const auto rnd_fy = [&]() { return static_cast<int32_t>(drawn.fys[rng() % drawn.fys.size()]); };
 
   SecEdgarQ6StructureBuilder builder;
   for (int i = 0; i < adsh_count; ++i) {
     const std::string adsh = "ADSH" + std::to_string(i);
     const std::string &name = name_pool[rng() % name_pool.size()];
-    const int32_t fy = kFys[rng() % 3];
+    const int32_t fy = rnd_fy();
     m.cohort.emplace(adsh, Model::Cohort{name, fy});
     builder.AddCohort(adsh, fy, name == kNull ? "" : name, name == kNull);
     if (rng() % 7 == 0) builder.AddCohort(adsh, 1999, "other", false); // duplicate: ignored
@@ -237,7 +258,7 @@ void RunScenario(Rng &rng, int adsh_count, int names, int tags, int plabels, int
     }
   }
   // orphan pre rows (not in cohort) are ignored by the builder.
-  builder.AddPre("ORPHAN", "Tag1", "v1", "IS", "x", false);
+  builder.AddPre("ORPHAN", "Tag1", "v1", rnd_stmt(), "x", false);
   auto structure = builder.Finish();
   {
     std::map<std::tuple<std::string, std::string, std::string>, int> keys;
@@ -333,7 +354,7 @@ void RunScenario(Rng &rng, int adsh_count, int names, int tags, int plabels, int
         const bool in = m.cohort.count(adsh) != 0;
         const std::string new_name = name_pool[rng() % name_pool.size()];
         if (op == 0 || (op == 1 && !in)) {
-          m.cohort[adsh] = {new_name, kFys[rng() % 3]};
+          m.cohort[adsh] = {new_name, rnd_fy()};
         } else if (op == 1) {
           m.cohort.erase(adsh);
         } else if (op == 2) {
@@ -348,7 +369,7 @@ void RunScenario(Rng &rng, int adsh_count, int names, int tags, int plabels, int
           for (auto &p : m.pre)
             if (p.adsh == adsh && rng() % 2) p.plabel = plabel_pool[rng() % plabel_pool.size()];
         } else if (op == 5) {
-          if (in) m.cohort[adsh].fy = kFys[rng() % 3];
+          if (in) m.cohort[adsh].fy = rnd_fy();
         } else {
           for (auto &p : m.pre)
             if (p.adsh == adsh && rng() % 2) p.stmt = rnd_stmt();
@@ -425,11 +446,12 @@ void RunScenario(Rng &rng, int adsh_count, int names, int tags, int plabels, int
 
 void TestSimdMatchesScalar(Rng &rng) {
   // The same writes through both dispatch modes must yield identical caches.
+  const auto cell = FirstCell();
   SecEdgarQ6StructureBuilder builder;
   for (int i = 0; i < 500; ++i) {
-    builder.AddCohort("A" + std::to_string(i), 2023 + i % 2, "N" + std::to_string(i % 40), false);
+    builder.AddCohort("A" + std::to_string(i), cell.fy + i % 2, "N" + std::to_string(i % 40), false);
     for (int k = 0; k < 30; ++k)
-      builder.AddPre("A" + std::to_string(i), "T" + std::to_string(k), "v", k % 4 ? "IS" : "BS",
+      builder.AddPre("A" + std::to_string(i), "T" + std::to_string(k), "v", k % 4 ? cell.stmt : cell.stmt + "~",
                      "P" + std::to_string(k % 5), false);
   }
   auto structure = builder.Finish();
@@ -446,7 +468,7 @@ void TestSimdMatchesScalar(Rng &rng) {
         if (r() % 3) {
           store.push_back("A" + std::to_string(i));
           store.push_back("T" + std::to_string(k));
-          refs.push_back({store[store.size() - 2], store.back(), "v", "USD",
+          refs.push_back({store[store.size() - 2], store.back(), "v", cell.uom,
                           static_cast<double>(r() % 1000) - 200.0, 1});
           // refs hold views into `store`: fix up after the loop
         }
@@ -475,16 +497,17 @@ void TestSimdMatchesScalar(Rng &rng) {
 // Non-dyadic values: sums must not depend on the order writes arrive in, and
 // adding then removing a value must restore the sum bit for bit.
 void TestSumExactness() {
+  const auto cell = FirstCell();
   SecEdgarQ6StructureBuilder builder;
   for (const char *a : {"A", "B"}) {
-    builder.AddCohort(a, 2023, std::string("N") + a, false);
-    builder.AddPre(a, "T", "v", "IS", "P", false);
+    builder.AddCohort(a, cell.fy, std::string("N") + a, false);
+    builder.AddPre(a, "T", "v", cell.stmt, "P", false);
   }
   auto state = std::make_shared<SecEdgarQ6State>(SecEdgarQ6MakeEmptyState(builder.Finish()));
   SecEdgarQ6Rescan(*state);
   const double vals[] = {0.1, 0.2, 0.3, 1e-3, 1e12 + 0.7, 3.14159, -2.718281828};
   const auto apply = [&](const char *adsh, double v, int sign) {
-    const SecEdgarQ6NumRef ref{adsh, "T", "v", "USD", v, sign};
+    const SecEdgarQ6NumRef ref{adsh, "T", "v", cell.uom, v, sign};
     bool overflow = false;
     auto next = SecEdgarQ6ApplyNums(kServices, *state, &ref, 1, &overflow);
     Require(!overflow, "no overflow");
@@ -493,21 +516,21 @@ void TestSumExactness() {
   const size_t n = sizeof vals / sizeof *vals;
   for (size_t i = 0; i < n; ++i) apply("A", vals[i], +1);
   for (size_t i = n; i-- > 0;) apply("B", vals[i], +1);
-  auto rows = SecEdgarQ6TopRows(*state, 2023, "IS", "USD");
+  auto rows = SecEdgarQ6TopRows(*state, cell.fy, cell.stmt, cell.uom);
   Require(rows.size() == 2, "twin rows");
   Require(rows[0].total_value == rows[1].total_value, "twin groups tie bit for bit");
   Require(rows[0].name == "NA" && rows[1].name == "NB", "tie broken by name");
   const double before = rows[0].total_value;
   apply("A", 0.7, +1);
   apply("A", 0.7, -1);
-  rows = SecEdgarQ6TopRows(*state, 2023, "IS", "USD");
+  rows = SecEdgarQ6TopRows(*state, cell.fy, cell.stmt, cell.uom);
   Require(rows[0].total_value == before && rows[0].name == "NA", "add/remove restores the sum");
   for (size_t i = 0; i < n; ++i) apply("A", vals[i], -1);
-  rows = SecEdgarQ6TopRows(*state, 2023, "IS", "USD");
+  rows = SecEdgarQ6TopRows(*state, cell.fy, cell.stmt, cell.uom);
   Require(rows.size() == 1 && rows[0].name == "NB", "A emptied");
-  Require(SecEdgarQ6TopRows(*state, 2022, "IS", "USD").empty() &&
-              SecEdgarQ6TopRows(*state, 2023, "BS", "USD").empty() &&
-              SecEdgarQ6TopRows(*state, 2023, "IS", "EUR").empty(),
+  Require(SecEdgarQ6TopRows(*state, cell.fy + 1, cell.stmt, cell.uom).empty() &&
+              SecEdgarQ6TopRows(*state, cell.fy, cell.stmt + "~", cell.uom).empty() &&
+              SecEdgarQ6TopRows(*state, cell.fy, cell.stmt, cell.uom + "~").empty(),
           "other parameters are empty");
 }
 

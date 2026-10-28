@@ -6,16 +6,18 @@
 //       both tables (join-key + filter-column moves, NULL keys, duplicates,
 //       multi-statement transactions, bulk rebuilds) interleaved with reads;
 //       every step compares the aux result (module Execute and the
-//       accel_sec_edgar_q24_aux() table function) with the base SQL.
+//       accel_sec_edgar_q24_aux() table function) with the query template
+//       bound to the same arguments.
 //   test_sec_edgar_q24_duckdb_differential <sec_edgar.duckdb> <work_copy.duckdb>
 //       Additionally runs a scripted maintenance audit on a writable COPY of
 //       the real database (pre insert/delete on a live orphan triple, new
 //       group creation, filter moves) plus the generic harness differential.
 //
 // Q24 takes (year, uom): accel_sec_edgar_q24_aux(year BIGINT, uom VARCHAR).
-// Every comparison of the synthetic runs also draws random (year, uom) pairs
-// (benchmark domain plus edges: NULLs, unknown uom, years 0 / 2017 / 2025 /
-// huge) and compares them with the plain query bound to them; the data is
+// Every comparison of the synthetic runs checks the parameter sets drawn from the
+// parameter source (harness::ArgumentSets; seed printed as "[params] ...", pin it
+// with ACCEL_PARAM_SEED), the cell the generated rows concentrate in, and edges
+// (NULLs, unknown uom, years 0 / 2017 / 2025 / huge); the data is
 // randomized around the boundaries of every year window (ddate with month/day
 // outside 101..1231, year 0 and negative years) and the HAVING > 10 threshold.
 //   Q24_SWEEP=1 test_sec_edgar_q24_duckdb_differential <db_copy> [threads]
@@ -40,8 +42,10 @@
 #include <vector>
 
 #include "eval/harness/differential.hpp"
+#include "eval/harness/param_sets.hpp"
 #include "backends/duckdb/api/duckdb_runtime.hpp"
 #include "backends/duckdb/api/register.hpp"
+#include "backends/duckdb/api/sql_fallback.hpp"
 #include "catalog/query_catalog.hpp"
 #include "duckdb.hpp"
 #include "sec_edgar/q24/tests/q24_random_writes.hpp"
@@ -51,6 +55,7 @@ namespace {
 using namespace q24test;
 namespace catalog = accelerator_codegen::aux_state::engine;
 namespace harness = accelerator_codegen::aux_state::harness;
+namespace core = accelerator_codegen::aux_state::core;
 using catalog::duckdb::DuckdbRuntime;
 
 [[noreturn]] void Fail(const std::string &message) {
@@ -223,7 +228,12 @@ void CompareResults(duckdb::Connection &con, const std::string &label,
               std::to_string(em.RowCount()));
   const auto erows = SortedRows(em);
   const auto arows = SortedRows(am);
-  Require(erows == arows, label + ": key/count mismatch");
+  if (erows != arows) {
+    std::string diff;
+    for (const auto &r : erows) if (!std::binary_search(arows.begin(), arows.end(), r)) diff += "\n  only in reference: " + r;
+    for (const auto &r : arows) if (!std::binary_search(erows.begin(), erows.end(), r)) diff += "\n  only in aux: " + r;
+    Fail(label + ": key/count mismatch" + diff);
+  }
   // Key (tag, version) -> total, compared with tolerance.
   std::map<std::string, double> et;
   for (duckdb::idx_t i = 0; i < em.RowCount(); ++i)
@@ -240,32 +250,24 @@ void CompareResults(duckdb::Connection &con, const std::string &label,
   }
 }
 
-// Q24 with its two parameters bound: n.uom = :uom, n.ddate BETWEEN
-// :year*10000+101 AND :year*10000+1231 (HAVING / LIMIT fixed). A NULL parameter
-// yields the empty result in SQL. Years beyond +-10^9 would overflow BIGINT in
-// the reference; no INTEGER ddate can lie there, so they compare as 10^9.
-std::string ParamBaseSql(std::optional<int64_t> year, const OptStr &uom) {
-  int64_t y = year ? *year : 0;
-  if (y > 1000000000LL) y = 1000000000LL;
-  if (y < -1000000000LL) y = -1000000000LL;
-  const std::string ys = year ? std::to_string(y) : "NULL";
-  return "SELECT n.tag, n.version, COUNT(*) AS cnt, SUM(n.value) AS total "
-         "FROM num n LEFT JOIN pre p ON n.tag = p.tag AND n.version = p.version "
-         "AND n.adsh = p.adsh WHERE n.uom = " + Lit(uom) +
-         " AND n.ddate BETWEEN " + ys + "::BIGINT*10000+101 AND " + ys +
-         "::BIGINT*10000+1231 AND n.value IS NOT NULL AND p.adsh IS NULL "
-         "GROUP BY n.tag, n.version HAVING COUNT(*) > 10 ORDER BY cnt DESC "
-         "LIMIT 100";
+core::QueryArguments MakeArguments(std::optional<int64_t> year, const OptStr &uom) {
+  return {{year ? core::AuxValue::Of(core::AuxType::Int64, *year)
+                : core::AuxValue::Null(core::AuxType::Int64),
+           uom ? core::AuxValue::Of(core::AuxType::String, *uom)
+               : core::AuxValue::Null(core::AuxType::String)}};
 }
 
-std::string ParamAuxSql(const std::string &aux_sql, std::optional<int64_t> year,
-                        const OptStr &uom) {
-  std::string sql = aux_sql;
-  const auto pos = sql.rfind("()");
-  Require(pos != std::string::npos, "aux sql has no empty argument list");
-  return sql.substr(0, pos) + "(" +
-         (year ? std::to_string(*year) : std::string("NULL")) + "::BIGINT, " +
-         (uom ? Lit(uom) : std::string("NULL")) + "::VARCHAR)" + sql.substr(pos + 2);
+// The query template bound to (year, uom). Years beyond +-10^9 would overflow
+// BIGINT in the reference; no INTEGER ddate can lie there, so they compare as 10^9.
+std::string ParamBaseSql(const catalog::SharedQueryCatalogEntry &entry,
+                         std::optional<int64_t> year, const OptStr &uom) {
+  if (year) year = std::clamp<int64_t>(*year, -1000000000LL, 1000000000LL);
+  return catalog::BindArguments(entry.base_sql, MakeArguments(year, uom));
+}
+
+std::string ParamAuxSql(const catalog::SharedQueryCatalogEntry &entry,
+                        std::optional<int64_t> year, const OptStr &uom) {
+  return catalog::BindArguments(entry.duckdb_aux_sql, MakeArguments(year, uom));
 }
 
 int g_param_nonempty = 0, g_param_total = 0;
@@ -274,31 +276,27 @@ void CheckParams(World &w, const std::string &label, std::optional<int64_t> year
                  const OptStr &uom) {
   const std::string l = label + " [year=" + (year ? std::to_string(*year) : "NULL") +
                         " uom=" + (uom ? *uom : "NULL") + "]";
-  CompareResults(w.con, l, ParamBaseSql(year, uom),
-                 ParamAuxSql(w.entry->duckdb_aux_sql, year, uom));
+  const std::string base_sql = ParamBaseSql(*w.entry, year, uom);
+  CompareResults(w.con, l, base_sql, ParamAuxSql(*w.entry, year, uom));
+  auto r = w.con.Query(base_sql);
+  Require(r && !r->HasError(), l + ": reference failed");
+  const auto rows = r->Cast<duckdb::MaterializedQueryResult>().RowCount();
   ++g_param_total;
-  auto r = w.con.Query(ParamBaseSql(year, uom));
-  if (r && !r->HasError() && r->Cast<duckdb::MaterializedQueryResult>().RowCount() > 0)
-    ++g_param_nonempty;
+  if (rows > 0) ++g_param_nonempty;
+  // Module-level Execute on the same published state.
+  Require(w.runtime->ExecuteCollect(MakeArguments(year, uom)).size() == rows,
+          l + " [runtime]: row count");
 }
 
 void CheckAll(World &w, const std::string &label, Gen *g = nullptr) {
-  const std::string aux_sql = w.entry->duckdb_aux_sql;
-  CompareResults(w.con, label + " [table function]", w.entry->base_sql, aux_sql);
-  if (g) {
-    for (int i = 0; i < 2; ++i) {
-      const auto [year, uom] = g->Params();
-      CheckParams(w, label, year, uom);
-    }
-    // Hot buckets hold the HAVING > 10 groups of the synthetic data.
-    CheckParams(w, label, g->R(2) ? 2023 : 2024, OptStr(g->R(3) ? "USD" : "EUR"));
-  }
-  // Module-level Execute on the same published state.
-  const auto rows = w.runtime->ExecuteCollect();
-  auto base = w.con.Query(w.entry->base_sql);
-  Require(base && !base->HasError(), "base failed");
-  Require(base->Cast<duckdb::MaterializedQueryResult>().RowCount() == rows.size(),
-          label + " [runtime]: row count");
+  for (const auto &args : harness::ArgumentSets(*w.entry))
+    CheckParams(w, label, std::get<int64_t>(args.values[0].payload),
+                std::get<std::string>(args.values[1].payload));
+  if (!g) return;
+  const auto [dense_year, dense_uom] = g->DenseCell();
+  CheckParams(w, label, dense_year, dense_uom);
+  const auto [year, uom] = g->EdgeParams();
+  CheckParams(w, label, year, uom);
 }
 
 // Mirrors one generated change into SQL (the generator already applied it to
@@ -402,25 +400,24 @@ int RunSweep(const std::string &db_path, int threads) {
   combos.push_back({std::nullopt, std::string("USD")});
   combos.push_back({int64_t{2023}, std::nullopt});
   combos.push_back({std::nullopt, std::nullopt});
-  const std::string aux_base = entry.duckdb_aux_sql;
   int nonempty = 0;
   double aux_sum = 0, aux_max = 0, plain_sum = 0;
   for (const auto &[year, uom] : combos) {
     const std::string label = "sweep year=" + (year ? std::to_string(*year) : std::string("NULL")) +
                               " uom=" + (uom ? *uom : std::string("NULL"));
-    const std::string aux_sql = ParamAuxSql(aux_base, year, uom);
+    const std::string aux_sql = ParamAuxSql(entry, year, uom);
     Exec(con, aux_sql); // warm
     const auto ta = Clock::now();
     constexpr int kReps = 20;
     for (int i = 0; i < kReps; ++i) Exec(con, aux_sql);
     const double aux_ms = ms(ta) / kReps;
     const auto tp = Clock::now();
-    auto want = con.Query(ParamBaseSql(year, uom));
+    auto want = con.Query(ParamBaseSql(entry, year, uom));
     const double plain_ms = ms(tp);
     Require(want && !want->HasError(), label + ": reference failed");
     const auto rows = want->Cast<duckdb::MaterializedQueryResult>().RowCount();
     nonempty += rows > 0;
-    CompareResults(con, label, ParamBaseSql(year, uom), aux_sql);
+    CompareResults(con, label, ParamBaseSql(entry, year, uom), aux_sql);
     aux_sum += aux_ms;
     aux_max = std::max(aux_max, aux_ms);
     plain_sum += plain_ms;
@@ -437,8 +434,7 @@ int RunSweep(const std::string &db_path, int threads) {
 } // namespace
 
 // Regression: tags of equal length sharing their first 24 bytes (common in
-// us-gaap, e.g. IncreaseDecreaseInAccounts...) are distinct groups.  The base
-// kernel keyed (tag, version) by a 24-byte prefix and merged them into one row.
+// us-gaap, e.g. IncreaseDecreaseInAccounts...) are distinct groups.
 void CheckTagPrefixCollision() {
   duckdb::DuckDB db(nullptr);
   duckdb::Connection con(db);
@@ -458,9 +454,32 @@ void CheckTagPrefixCollision() {
              std::to_string((t + 1) * 10 + i) + ",NULL)";
   Exec(con, sql);
   const auto &entry = catalog::LookupSharedQuery("sec_edgar", 24);
-  CompareResults(con, "tag prefix collision (base kernel)", entry.base_sql,
-                 "SELECT * FROM accel_sec_edgar_q24()");
+  CompareResults(con, "tag prefix collision", ParamBaseSql(entry, 2023, OptStr("USD")),
+                 ParamAuxSql(entry, 2023, OptStr("USD")));
   std::cout << "tag prefix collision ok\n";
+}
+
+bool NonEmptyAnswer(const std::string &path, const catalog::SharedQueryCatalogEntry &entry,
+                    const core::QueryArguments &args) {
+  duckdb::DuckDB db(path.c_str());
+  duckdb::Connection con(db);
+  auto r = con.Query(catalog::BindArguments(entry.base_sql, args));
+  Require(r && !r->HasError(), "reference failed: " + (r ? r->GetError() : "null"));
+  return r->Cast<duckdb::MaterializedQueryResult>().RowCount() > 0;
+}
+
+// The (year, uom) of the largest HAVING > 10 group: a cell with an answer.
+core::QueryArguments BusiestCell(const std::string &path) {
+  duckdb::DuckDB db(path.c_str());
+  duckdb::Connection con(db);
+  auto r = con.Query(
+      "SELECT n.ddate // 10000, n.uom FROM num n LEFT JOIN pre p ON n.tag = p.tag AND "
+      "n.version = p.version AND n.adsh = p.adsh WHERE n.uom IS NOT NULL AND n.ddate IS NOT NULL "
+      "AND n.value IS NOT NULL AND p.adsh IS NULL AND n.ddate % 10000 BETWEEN 101 AND 1231 "
+      "GROUP BY n.ddate // 10000, n.uom, n.tag, n.version HAVING COUNT(*) > 10 "
+      "ORDER BY COUNT(*) DESC LIMIT 1");
+  Require(r && !r->HasError() && r->RowCount() == 1, "no HAVING group to pick a cell from");
+  return MakeArguments(r->GetValue(0, 0).GetValue<int64_t>(), r->GetValue(1, 0).ToString());
 }
 
 int main(int argc, char **argv) {
@@ -481,38 +500,48 @@ int main(int argc, char **argv) {
       Require(source != work, "work copy must differ from source");
       fs::copy_file(source, work, fs::copy_options::overwrite_existing);
       const auto &entry = catalog::LookupSharedQuery("sec_edgar", 24);
-      std::cerr << "real DB: read-only differential\n";
-      harness::RunDifferentialCheck(work.string(), entry);
-      std::cerr << "real DB: incremental differential\n";
-      harness::RunIncrementalDifferentialCheck(work.string(), entry);
-      std::cerr << "real DB: adversarial writes\n";
-      harness::RunAdversarialWriteDifferentialCheck(work.string(), entry, 5, 0, false);
-      std::cerr << "real DB: scripted maintenance audit\n";
+      const auto sets = harness::ArgumentSets(entry);
+      std::vector<core::QueryArguments> answered;
+      for (const auto &args : sets) {
+        if (NonEmptyAnswer(work.string(), entry, args)) answered.push_back(args);
+        else std::cerr << "params(" << harness::ArgumentLiterals(args) << "): empty answer on the database\n";
+      }
+      // No drawn set has an answer: use the cell of the largest group of the data.
+      if (answered.empty()) answered.push_back(BusiestCell(work.string()));
+      for (const auto &args : answered) {
+        std::cerr << "real DB: differentials for (" << harness::ArgumentLiterals(args) << ")\n";
+        harness::RunDifferentialCheck(work.string(), entry, args);
+        harness::RunIncrementalDifferentialCheck(work.string(), entry, args);
+        harness::RunAdversarialWriteDifferentialCheck(work.string(), entry, args, 5, 0, false);
+      }
+      const auto focus = answered.front();
+      std::cerr << "real DB: scripted maintenance audit on (" << harness::ArgumentLiterals(focus) << ")\n";
       duckdb::DuckDB db(work.string().c_str());
       duckdb::Connection con(db);
       accelerator_codegen::RegisterAcceleratorFunctions(con);
       Exec(con, "PRAGMA threads=8");
       DuckdbRuntime runtime(con, entry, 10.0);
+      runtime.UseManualCapture(); // changes are hand-built below
       runtime.Build();
       auto check = [&](const std::string &label) {
-        CompareResults(con, label, entry.base_sql, "SELECT * FROM accel_sec_edgar_q24_aux()");
-        for (const auto &[y, u] : std::vector<std::pair<int64_t, std::string>>{
-                 {2022, "USD"}, {2023, "shares"}, {2024, "USD"}, {2021, "pure"}, {2023, "EUR"}})
-          CompareResults(con, label + " " + std::to_string(y) + "/" + u,
-                         ParamBaseSql(y, u),
-                         "SELECT * FROM accel_sec_edgar_q24_aux(" + std::to_string(y) +
-                             ", '" + u + "')");
-        harness::RequireSharedMatchesBase(con, runtime, entry);
+        for (const auto &args : sets)
+          CompareResults(con, label + " (" + harness::ArgumentLiterals(args) + ")",
+                         catalog::BindArguments(entry.base_sql, args),
+                         catalog::BindArguments(entry.duckdb_aux_sql, args));
+        CompareResults(con, label + " (" + harness::ArgumentLiterals(focus) + ")",
+                       catalog::BindArguments(entry.base_sql, focus),
+                       catalog::BindArguments(entry.duckdb_aux_sql, focus));
+        harness::RequireSharedMatchesBase(con, runtime, entry, focus);
         std::cerr << "  ok: " << label << "\n";
       };
       check("real initial");
       // Live orphan triple belonging to the top group.
-      auto top = con.Query(
+      auto top = con.Query(catalog::BindArguments(
           "SELECT n.adsh, n.tag, n.version, n.ddate, n.qtrs, n.uom, n.coreg, "
           "n.value FROM num n LEFT JOIN pre p ON n.tag=p.tag AND "
-          "n.version=p.version AND n.adsh=p.adsh WHERE n.uom='USD' AND n.ddate "
-          "BETWEEN 20230101 AND 20231231 AND n.value IS NOT NULL AND p.adsh IS "
-          "NULL ORDER BY n.tag, n.version, n.adsh, n.value LIMIT 1");
+          "n.version=p.version AND n.adsh=p.adsh WHERE n.uom=$2 AND n.ddate "
+          "BETWEEN $1*10000+101 AND $1*10000+1231 AND n.value IS NOT NULL AND p.adsh IS "
+          "NULL ORDER BY n.tag, n.version, n.adsh, n.value LIMIT 1", focus));
       Require(top && !top->HasError() && top->RowCount() == 1, "no orphan row in DB");
       NumRow orphan;
       orphan.adsh = top->GetValue(0, 0).ToString();
@@ -523,6 +552,8 @@ int main(int argc, char **argv) {
       orphan.uom = top->GetValue(5, 0).ToString();
       orphan.coreg = top->GetValue(6, 0).IsNull() ? "" : top->GetValue(6, 0).ToString();
       orphan.value = top->GetValue(7, 0).GetValue<double>();
+      // A ddate in a later year than the focus bucket's.
+      const int64_t out_of_bucket = (*orphan.ddate / 10000 + 3) * 10000 + 105;
       // 1. pre INSERT matching the orphan triple removes it from the result.
       PreRow match{orphan.adsh, orphan.tag, orphan.version};
       Exec(con, "INSERT INTO pre VALUES (" + Lit(match.adsh) + ",9999,9999,'IS',0,'H'," +
@@ -561,8 +592,8 @@ int main(int argc, char **argv) {
       {
         NumRow moved = fresh[0];
         NumRow after = moved;
-        after.ddate = 20240105;
-        Exec(con, "UPDATE num SET ddate=20240105 WHERE tag='Q24NewTag' AND value=" +
+        after.ddate = out_of_bucket;
+        Exec(con, "UPDATE num SET ddate=" + std::to_string(out_of_bucket) + " WHERE tag='Q24NewTag' AND value=" +
                       LitD(moved.value));
         MutationBatch u;
         u.table = 101; u.kind = MutationKind::Update; u.updated_columns = {3};
@@ -585,7 +616,7 @@ int main(int argc, char **argv) {
       MutationBatch nd;
       nd.table = 101; nd.kind = MutationKind::Delete;
       for (auto r : fresh) {
-        if (*r.value == 100.0) r.ddate = 20240105;
+        if (*r.value == 100.0) r.ddate = out_of_bucket;
         if (*r.value == 101.0) r.value = 1101.0;
         nd.old_rows.push_back(ToAux(r));
       }

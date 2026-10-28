@@ -2,7 +2,8 @@
 // Warms the DuckDB buffer pool with the base query first so the delta around
 // Build() is dominated by aux state, then reports in-use heap before/after.
 // footprint_mb is the state's own accounting (SecEdgarQ6State::Bytes) of the
-// state a fresh module builds from the same scan.
+// state a fresh module builds from the same scan. The reads run the drawn
+// parameter sets (eval/harness/param_sets.hpp).
 //
 // usage: measure_q6_aux_heap <db_path> [threads]
 #include <malloc.h>
@@ -16,7 +17,9 @@
 
 #include "backends/duckdb/api/duckdb_runtime.hpp"
 #include "catalog/query_catalog.hpp"
+#include "backends/duckdb/api/sql_fallback.hpp"
 #include "duckdb.hpp"
+#include "eval/harness/param_sets.hpp"
 #include "sec_edgar/q6/duckdb/aux/duckdb_scan.hpp"
 #include "sec_edgar/q6/duckdb/aux/module.hpp"
 #include "eval/tests/test_support/module_runtime.hpp"
@@ -38,7 +41,8 @@ int main(int argc, char **argv) {
   duckdb::Connection connection(database);
   connection.Query(std::string("PRAGMA threads=") + (argc > 2 ? argv[2] : "1"));
   const auto &entry = catalog::LookupSharedQuery("sec_edgar", 6);
-  auto warm = connection.Query(entry.base_sql); // populate the buffer pool
+  const auto sets = accelerator_codegen::aux_state::harness::ArgumentSets(entry);
+  auto warm = connection.Query(catalog::BindArguments(entry.base_sql, sets.front())); // populate the buffer pool
   warm.reset();
   const double before = HeapMb();
   {
@@ -47,7 +51,7 @@ int main(int argc, char **argv) {
     runtime.Build();
     const double build_s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
     const double after = HeapMb();
-    const auto rows = runtime.ExecuteCollect().size();
+    const auto rows = runtime.ExecuteCollect(sets.front()).size();
     namespace q = accelerator_codegen::aux_state::query;
     q::SecEdgarQ6DuckdbScan scan(connection);
     const auto module = std::make_shared<q::SecEdgarQ6Module>(q::SecEdgarQ6Config{1, 2, 3}, &scan);
@@ -55,13 +59,15 @@ int main(int argc, char **argv) {
     const auto state = module->BuildState(module_runtime.Backend());
     const double footprint = static_cast<double>(state->Bytes());
     {
-      // pure state read: the 200 output rows from the top cache
+      // pure state read: the output rows from the top cache, set by set
       std::vector<double> us;
       for (int i = 0; i < 2000; ++i) {
+        const auto &args = sets[static_cast<std::size_t>(i) % sets.size()];
         const auto t = std::chrono::steady_clock::now();
-        const auto r = q::SecEdgarQ6TopRows(*state, 2023, "IS", "USD");
+        const auto r = q::SecEdgarQ6TopRows(*state, std::get<int64_t>(args.values[0].payload),
+                                            std::get<std::string>(args.values[1].payload),
+                                            std::get<std::string>(args.values[2].payload));
         us.push_back(std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - t).count());
-        if (r.size() != 200) return 1;
       }
       std::sort(us.begin(), us.end());
       std::cout << "toprows_p50_us=" << us[us.size() / 2] << "\n";

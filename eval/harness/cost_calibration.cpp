@@ -50,7 +50,7 @@ core::MutationBatch ScaleMutation(const SharedQueryCatalogEntry &entry,
 } // namespace
 
 core::AuxCalibrationResult CalibrateSharedQueryCostModel(
-    duckdb::Connection &connection, const SharedQueryCatalogEntry &entry,
+    duckdb::Connection &connection, const SharedQueryCatalogEntry &entry, const core::QueryArguments &arguments,
     const core::AuxCalibrationConfig &config) {
   DuckdbRuntime runtime(connection, entry, 10.0);
   const auto writes = runtime.CalibrationWrites();
@@ -63,12 +63,12 @@ core::AuxCalibrationResult CalibrateSharedQueryCostModel(
     result.params.first_query_blocking_us = core::MedianTimeUs(
         [&] { runtime.Build(); }, warmups, samples, [&] { runtime.ResetCalibrationState(); });
     runtime.Build();
-    result.params.aux_hit_us = core::MedianTimeUs([&] { runtime.Execute(); }, warmups, samples);
-    result.params.fallback_us = core::MedianTimeUs([&] { runtime.ExecuteBaseQuery(); }, warmups, samples);
+    result.params.aux_hit_us = core::MedianTimeUs([&] { runtime.Execute(arguments); }, warmups, samples);
+    result.params.fallback_us = core::MedianTimeUs([&] { runtime.ExecuteBaseQuery(arguments); }, warmups, samples);
     result.params.invalidation_overhead_us = core::MedianTimeUs(
         [&] { runtime.InvalidateAll(); }, warmups, samples, [&] { runtime.Build(); });
     runtime.Build();
-    aux_engine::duckdb::DuckdbCalibrationEngine engine(runtime);
+    aux_engine::duckdb::DuckdbCalibrationEngine engine(runtime, arguments);
     const auto fitted = core::CalibrateFromWrites(writes, engine, result.params);
     result.params = fitted.params;
     for (const auto &name : fitted.unfitted) {
@@ -84,7 +84,7 @@ core::AuxCalibrationResult CalibrateSharedQueryCostModel(
   }
 
   // No calibration writes: synthetic mutations from the query's probe.
-  const auto probe = FindSharedProbe(connection, entry);
+  const auto probe = FindSharedProbe(connection, entry, arguments);
 
   core::AuxCalibrationHooks hooks;
   // Measure() calls reset before every sample. Keep it a no-op so aux_hit
@@ -96,9 +96,9 @@ core::AuxCalibrationResult CalibrateSharedQueryCostModel(
   };
   hooks.execute_auxiliary = [&] {
     // Hit path only — build_initial_state already published state.
-    runtime.Execute();
+    runtime.Execute(arguments);
   };
-  hooks.execute_fallback = [&] { runtime.ExecuteBaseQuery(); };
+  hooks.execute_fallback = [&] { runtime.ExecuteBaseQuery(arguments); };
   // A fresh published state before each maintenance sample (untimed).
   hooks.prepare_maintenance = [&] {
     runtime.ResetCalibrationState();

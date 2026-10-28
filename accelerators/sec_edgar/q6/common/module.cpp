@@ -21,9 +21,6 @@
 namespace accelerator_codegen::aux_state::query {
 namespace {
 
-constexpr int64_t kDefaultFy = 2023;
-constexpr std::string_view kDefaultStmt = "IS";
-constexpr std::string_view kDefaultUom = "USD";
 constexpr core::PartitionId kStatePartition = core::SecEdgarQ6Layout::kState;
 // Rows (or update pairs) per slice of a num mutation's row loop.
 constexpr std::size_t kAccumulateGrain = 4096;
@@ -882,19 +879,16 @@ namespace {
 
 struct QueryParams {
   bool is_null = false;
-  int64_t fy = kDefaultFy;
-  std::string stmt{kDefaultStmt};
-  std::string uom{kDefaultUom};
+  int64_t fy = 0;
+  std::string stmt;
+  std::string uom;
 };
 
 QueryParams ParseArguments(const core::QueryArguments &args) {
   QueryParams p;
-  if (args.values.empty()) {
-    return p;
-  }
   if (args.values.size() != 3) {
     throw std::invalid_argument(
-        "sec_edgar q6 aux expects () or (fy BIGINT, stmt VARCHAR, uom VARCHAR)");
+        "sec_edgar q6 aux expects (fy BIGINT, stmt VARCHAR, uom VARCHAR)");
   }
   const auto &fy = args.values[0];
   if (fy.is_null || args.values[1].is_null || args.values[2].is_null) {

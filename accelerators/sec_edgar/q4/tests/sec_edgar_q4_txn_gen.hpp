@@ -135,6 +135,10 @@ inline std::string InsertSql(const PreRow &r) {
          ",0,'R'," + Q(r.tag) + "," + Q(r.version) + ",NULL,0," + std::to_string(r.rid) + ")";
 }
 
+// The (stmt, uom) cell the generated data concentrates on, so that parameter sets aimed at it have answers.
+inline constexpr const char *kDenseStmt = "EQ";
+inline constexpr const char *kDenseUom = "USD";
+
 // ----------------------------------------------------------------- oracle
 struct OutRow {
   int32_t sic;
@@ -147,8 +151,8 @@ struct OutRow {
 // Query parameters (q4.sql with BETWEEN :lo AND :hi, p.stmt = :stmt, n.uom = :uom).
 // A nullopt behaves as SQL NULL: the result is empty.
 struct Params {
-  std::optional<int64_t> lo = 4000, hi = 4999;
-  std::optional<std::string> stmt = std::string("EQ"), uom = std::string("USD");
+  std::optional<int64_t> lo, hi;
+  std::optional<std::string> stmt, uom;
 };
 inline std::string Lit(const std::optional<int64_t> &v, bool as_int) {
   if (!v) return as_int ? "CAST(NULL AS INTEGER)" : "NULL";
@@ -182,7 +186,7 @@ inline std::string BaseSql(const Params &p) {
          "ORDER BY total_value DESC, s.sic, t.tlabel NULLS FIRST LIMIT 500";
 }
 
-inline std::vector<OutRow> Oracle(const Db &db, const Params &params = Params{}) {
+inline std::vector<OutRow> Oracle(const Db &db, const Params &params) {
   if (!params.lo || !params.hi || !params.stmt || !params.uom) return {};
   std::map<std::string, const SubRow *> subs;
   for (const auto &s : db.sub) subs[s.adsh] = &s;
@@ -295,13 +299,13 @@ struct Model {
 
   // stmt / uom pools: the parameter domain of the benchmarks plus near misses.
   std::optional<std::string> RandomStmt() {
-    static const char *kStmts[] = {"EQ", "EQ", "EQ", "EQ", "BS", "IS", "CF", "CI", "UN"};
+    const char *kStmts[] = {kDenseStmt, kDenseStmt, kDenseStmt, kDenseStmt, "BS", "IS", "CF", "CI", "UN"};
     const int s = Int(0, 9);
     return s == 9 ? std::nullopt : std::optional<std::string>(kStmts[s]);
   }
   std::string RandomUom() {
-    static const char *kUoms[] = {"USD", "USD", "USD", "USD", "USD", "EUR", "usd",
-                                  "shares", "shares", "pure", "CAD", "CNY"};
+    const char *kUoms[] = {kDenseUom, kDenseUom, kDenseUom, kDenseUom, kDenseUom, "EUR", "usd",
+                           "shares", "shares", "pure", "CAD", "CNY"};
     return kUoms[Int(0, 11)];
   }
 
@@ -374,7 +378,7 @@ struct Model {
           p.adsh = Adsh(a);
           p.tag = Tag(t);
           p.version = Version(0);
-          p.stmt = std::string("EQ");
+          p.stmt = std::string(kDenseStmt);
           p.line = 1;
           p.rid = next_rid++;
           db.pre.push_back(p);
@@ -388,7 +392,7 @@ struct Model {
           n.adsh = Adsh(a);
           n.tag = Tag(t);
           n.version = Version(0);
-          n.uom = std::string("USD");
+          n.uom = std::string(kDenseUom);
           n.value = Value() + 10000.0 * (a % 97);
           n.ddate = 2020;
           n.rid = next_rid++;
@@ -674,6 +678,22 @@ struct Model {
   }
 };
 
+// The dense (stmt, uom) cell over a SIC range.
+inline Params DenseCell(int64_t lo, int64_t hi) {
+  Params p;
+  p.lo = lo;
+  p.hi = hi;
+  p.stmt = std::string(kDenseStmt);
+  p.uom = std::string(kDenseUom);
+  return p;
+}
+
+// The dense cell over the SIC range the generated filings span.
+inline Params DenseParams(const Model &m) {
+  return DenseCell(*std::min_element(m.cfg.sics.begin(), m.cfg.sics.end()),
+                   *std::max_element(m.cfg.sics.begin(), m.cfg.sics.end()));
+}
+
 // Random parameters over the benchmark domain (the 10 SIC divisions, random
 // ranges, edge values, NULLs, inverted ranges), stmt in {BS,IS,CF,EQ,CI,unknown}
 // and uom in {USD,shares,pure,CAD,CNY,EUR,...}.
@@ -688,9 +708,10 @@ inline Params RandomParams(Model &m) {
   Params p;
   const int mode = m.Int(0, 9);
   const auto pick_sic = [&]() -> int64_t {
-    return m.cfg.sics.empty() ? 4000 : m.cfg.sics[static_cast<size_t>(m.Int(0, static_cast<int>(m.cfg.sics.size()) - 1))];
+    return m.PickSic();
   };
-  if (mode <= 1) { // the defaults
+  if (mode <= 1) { // the generated data's dense cell
+    p = DenseParams(m);
   } else if (mode <= 4) {
     const int d = m.Int(0, 9);
     p.lo = kDiv[d][0];

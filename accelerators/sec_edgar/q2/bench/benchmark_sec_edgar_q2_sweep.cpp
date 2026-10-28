@@ -6,6 +6,10 @@
 // The database file is modified (probe value bumps / inserts / deletes) and the
 // probe is restored at the end; always pass a work copy.
 //
+// The sweep runs for every parameter set (fy, uom) that eval/harness/param_sets
+// draws (ACCEL_PARAM_SEED=<s> reproduces a run, ACCEL_PARAM_SETS=<k> sets their
+// number); a set whose answer is empty is skipped. Base and aux run the same sets.
+//
 // Only the public DuckdbRuntime / catalog API is used, so the same binary can
 // be run against an older libaccelerator_codegen.so (LD_LIBRARY_PATH) to
 // compare versions.
@@ -33,6 +37,8 @@
 #include "eval/harness/differential.hpp"
 #include "backends/duckdb/api/duckdb_runtime.hpp"
 #include "backends/duckdb/api/register.hpp"
+#include "backends/duckdb/api/sql_fallback.hpp"
+#include "eval/harness/param_sets.hpp"
 #include "catalog/query_catalog.hpp"
 #include "duckdb.hpp"
 
@@ -158,31 +164,32 @@ private:
   double delta = 1.0;
 };
 
-// Mixed workload on 'pure' rows of fiscal year 2022: inserts, deletes, value
-// updates (some touching the current maxima).
+// Mixed workload on the rows of the arguments' unit and fiscal year: inserts,
+// deletes, value updates (some touching the current maxima).
 class MixedWriter final : public Writer {
 public:
-  MixedWriter(duckdb::Connection &con) : rng(12345) {
-    auto r = con.Query("SELECT n.adsh, n.tag FROM num n JOIN sub s ON n.adsh = s.adsh "
-                       "WHERE s.fy = 2022 AND n.uom = 'pure' AND n.value IS NOT NULL LIMIT 300");
+  MixedWriter(duckdb::Connection &con, const core::QueryArguments &args)
+      : rng(12345), uom(std::get<std::string>(args.values[1].payload)) {
+    auto r = con.Query(catalog::BindArguments("SELECT n.adsh, n.tag FROM num n JOIN sub s ON n.adsh = s.adsh "
+                                              "WHERE s.fy = $1 AND n.uom = $2 AND n.value IS NOT NULL LIMIT 300",
+                                              args));
     Require(r && !r->HasError(), "mixed seed query");
     for (duckdb::idx_t i = 0; i < r->RowCount(); ++i) {
       keys.emplace_back(r->GetValue(0, i).ToString(), r->GetValue(1, i).ToString());
     }
-    Require(!keys.empty(), "no pure fy2022 rows");
+    Require(!keys.empty(), "no rows of the arguments");
   }
   double Write(duckdb::Connection &con, DuckdbRuntime *runtime, double &aux_us) override {
     aux_us = 0;
     const auto &[adsh, tag] = keys[rng() % keys.size()];
     const double value = static_cast<double>(rng() % 1000) * 1000.0;
     const int op = static_cast<int>(rng() % 3);
-    const std::string key = "adsh = '" + adsh + "' AND tag = '" + tag + "' AND uom = 'pure'";
-    const auto start = Clock::now();
+        const auto start = Clock::now();
     core::MutationBatch m;
     m.table = 1;
     if (op == 0 || inserted.empty()) {
       m.kind = core::MutationKind::Insert;
-      Exec(con, "INSERT INTO num VALUES ('" + adsh + "','" + tag + "','v',20220101,4,'pure',NULL," +
+      Exec(con, "INSERT INTO num VALUES ('" + adsh + "','" + tag + "','v',20220101,4,'" + uom + "',NULL," +
                     Num(value) + ",NULL)");
       m.new_rows = {Row(adsh, tag, value)};
       inserted.push_back({adsh, tag, value});
@@ -191,7 +198,7 @@ public:
       const auto [a, t, v] = inserted.back();
       inserted.pop_back();
       Exec(con, "DELETE FROM num WHERE rowid = (SELECT rowid FROM num WHERE adsh = '" + a +
-                    "' AND tag = '" + t + "' AND uom = 'pure' AND value = " + Num(v) + " LIMIT 1)");
+                    "' AND tag = '" + t + "' AND uom = '" + uom + "' AND value = " + Num(v) + " LIMIT 1)");
       m.old_rows = {Row(a, t, v)};
     } else {
       m.kind = core::MutationKind::Update;
@@ -199,7 +206,7 @@ public:
       auto &[a, t, v] = inserted.back();
       const double nv = v + 1.0;
       Exec(con, "UPDATE num SET value = " + Num(nv) + " WHERE rowid = (SELECT rowid FROM num WHERE adsh = '" +
-                    a + "' AND tag = '" + t + "' AND uom = 'pure' AND value = " + Num(v) + " LIMIT 1)");
+                    a + "' AND tag = '" + t + "' AND uom = '" + uom + "' AND value = " + Num(v) + " LIMIT 1)");
       m.old_rows = {Row(a, t, v)};
       m.new_rows = {Row(a, t, nv)};
       v = nv;
@@ -214,22 +221,23 @@ public:
   void Restore(duckdb::Connection &con) override {
     for (const auto &[a, t, v] : inserted) {
       Exec(con, "DELETE FROM num WHERE rowid = (SELECT rowid FROM num WHERE adsh = '" + a +
-                    "' AND tag = '" + t + "' AND uom = 'pure' AND value = " + Num(v) + " LIMIT 1)");
+                    "' AND tag = '" + t + "' AND uom = '" + uom + "' AND value = " + Num(v) + " LIMIT 1)");
     }
     inserted.clear();
   }
 
 private:
-  static core::AuxRow Row(const std::string &adsh, const std::string &tag, double value) {
+  core::AuxRow Row(const std::string &adsh, const std::string &tag, double value) const {
     using core::AuxType;
     using core::AuxValue;
     return {{AuxValue::Of(AuxType::String, adsh), AuxValue::Of(AuxType::String, tag),
              AuxValue::Of(AuxType::String, std::string("v")), AuxValue::Of(AuxType::Int64, int64_t(20220101)),
-             AuxValue::Of(AuxType::Int64, int64_t(4)), AuxValue::Of(AuxType::String, std::string("pure")),
+             AuxValue::Of(AuxType::Int64, int64_t(4)), AuxValue::Of(AuxType::String, uom),
              AuxValue::Null(AuxType::String), AuxValue::Of(AuxType::Double, value),
              AuxValue::Null(AuxType::String)}};
   }
   std::mt19937_64 rng;
+  std::string uom;
   std::vector<std::pair<std::string, std::string>> keys;
   std::vector<std::tuple<std::string, std::string, double>> inserted;
 };
@@ -266,57 +274,17 @@ int main(int argc, char **argv) {
     Exec(con, "PRAGMA threads=" + std::to_string(threads));
     setenv("ACCEL_AUX_THREADS", std::to_string(threads).c_str(), 1);
 
-    const std::string base_sql = entry.base_sql;
-    const std::string aux_sql = entry.duckdb_aux_sql;
     const std::string tag = cfg.mode + "/t" + std::to_string(threads);
-    Emit(csv, "label,regime,pattern,writes_per_read,reads,writes,read_mean_us,read_p50_us,"
+    Emit(csv, "label,params,regime,pattern,writes_per_read,reads,writes,read_mean_us,read_p50_us,"
               "write_mean_us,write_p50_us,write_p99_us,cycle_mean_us,aux_maint_mean_us,aux_maint_p50_us");
 
-    // -------- plain DuckDB: read-only.
-    for (int i = 0; i < 2; ++i) {
-      Drain(con, base_sql);
-    }
-    std::vector<double> base_reads;
-    for (int i = 0; i < std::min(10, std::max(5, cfg.reads / 20)); ++i) {
-      const auto s = Clock::now();
-      Drain(con, base_sql);
-      base_reads.push_back(ElapsedUs(s));
-    }
-    const auto base_read = Summarize(base_reads);
-    Emit(csv, "duckdb/t" + std::to_string(threads) + ",read-only,-,0," + std::to_string(base_reads.size()) +
-                  ",0," + Num(base_read.mean) + "," + Num(base_read.p50) + ",0,0,0," + Num(base_read.mean));
-
-    // -------- aux build + read-only.
     DuckdbRuntime runtime(con, entry, 10.0);
     runtime.UseManualCapture(); // writers hand-build each change
     const auto build_start = Clock::now();
     runtime.Build();
     const double build_us = ElapsedUs(build_start);
-    for (int i = 0; i < 5; ++i) {
-      Drain(con, aux_sql);
-    }
-    std::vector<double> aux_reads;
-    for (int i = 0; i < cfg.reads; ++i) {
-      const auto s = Clock::now();
-      Drain(con, aux_sql);
-      aux_reads.push_back(ElapsedUs(s));
-    }
-    const auto aux_read = Summarize(aux_reads);
-    std::vector<double> direct_reads;
-    for (int i = 0; i < cfg.reads * 5; ++i) {
-      const auto s = Clock::now();
-      (void)runtime.ExecuteCollect();
-      direct_reads.push_back(ElapsedUs(s));
-    }
-    const auto direct = Summarize(direct_reads);
-    Emit(csv, tag + "/module-only,read-only,-,0," + std::to_string(direct_reads.size()) + ",0," +
-                  Num(direct.mean) + "," + Num(direct.p50) + ",0,0,0," + Num(direct.mean));
-    harness::RequireSharedMatchesBase(con, runtime, entry);
-    Emit(csv, tag + ",read-only,-,0," + std::to_string(aux_reads.size()) + ",0," + Num(aux_read.mean) + "," +
-                  Num(aux_read.p50) + ",0,0,0," + Num(aux_read.mean));
-    Emit(csv, tag + ",build,-,0,0,0," + Num(build_us) + "," + Num(build_us) + ",0,0,0,0");
+    Emit(csv, tag + ",-,build,-,0,0,0," + Num(build_us) + "," + Num(build_us) + ",0,0,0,0");
 
-    // -------- write sweeps.
     std::vector<int> rates;
     {
       std::stringstream ss(EnvStr("Q2_BENCH_WRITES_PER_READ", "1,10,100,1000"));
@@ -327,9 +295,6 @@ int main(int argc, char **argv) {
     }
     const int cycles = std::atoi(EnvStr("Q2_BENCH_CYCLES", "20").c_str());
     const std::string pattern_env = EnvStr("Q2_BENCH_PATTERN", "both");
-    if (pattern_env == "none") {
-      return 0;
-    }
     std::vector<std::string> patterns;
     if (pattern_env == "both" || pattern_env == "bump") {
       patterns.push_back("bump");
@@ -337,55 +302,112 @@ int main(int argc, char **argv) {
     if (pattern_env == "both" || pattern_env == "mixed") {
       patterns.push_back("mixed");
     }
-    const auto probe = catalog::FindInvalidatingSharedProbe(con, entry);
-    for (const auto &pattern : patterns) {
-      for (const bool aux : {false, true}) {
-        // Fresh state per series: rebuild the aux state from the current DB.
-        if (aux) {
-          runtime.Build();
-        }
-        std::unique_ptr<Writer> writer;
-        if (pattern == "bump") {
-          writer = std::make_unique<BumpWriter>(probe);
-        } else {
-          writer = std::make_unique<MixedWriter>(con);
-        }
-        for (const int rate : rates) {
-          // base reads are ~seconds: fewer cycles for the plain-DuckDB series
-          const int n_cycles = aux ? cycles : std::max(2, cycles / 10);
-          std::vector<double> read_us, write_us, cycle_us, aux_write_us;
-          for (int c = 0; c < n_cycles; ++c) {
-            double cycle = 0;
-            for (int w = 0; w < rate; ++w) {
-              double aux_us = 0;
-              const double us = writer->Write(con, aux ? &runtime : nullptr, aux_us);
-              write_us.push_back(us);
-              aux_write_us.push_back(aux_us);
-              cycle += us;
-            }
-            const auto s = Clock::now();
-            Drain(con, aux ? aux_sql : base_sql);
-            const double r = ElapsedUs(s);
-            read_us.push_back(r);
-            cycle_us.push_back(cycle + r);
-          }
-          if (aux) {
-            harness::RequireSharedMatchesBase(con, runtime, entry);
-          }
-          const auto rs = Summarize(read_us), ws = Summarize(write_us), cs = Summarize(cycle_us);
-          const auto as = Summarize(aux_write_us);
-          Emit(csv, (aux ? tag : "duckdb/t" + std::to_string(threads)) + ",writes," + pattern + "," +
-                        std::to_string(rate) + "," + std::to_string(rs.n) + "," + std::to_string(ws.n) +
-                        "," + Num(rs.mean) + "," + Num(rs.p50) + "," + Num(ws.mean) + "," + Num(ws.p50) + "," +
-                        Num(ws.p99) + "," + Num(cs.mean) + "," + Num(as.mean) + "," + Num(as.p50));
-        }
-        writer->Restore(con);
+
+    int swept = 0;
+    for (const auto &args : harness::ArgumentSets(entry)) {
+      const std::string base_sql = catalog::BindArguments(entry.base_sql, args);
+      const std::string aux_sql = catalog::BindArguments(entry.duckdb_aux_sql, args);
+      std::string params = harness::ArgumentLiterals(args);
+      params.erase(std::remove(params.begin(), params.end(), ' '), params.end());
+      std::replace(params.begin(), params.end(), ',', '|');
+
+      // -------- plain DuckDB: read-only.
+      if (Drain(con, base_sql) == 0) {
+        std::cerr << "skipping (" << harness::ArgumentLiterals(args) << "): empty answer\n";
+        continue;
       }
+      ++swept;
+      Drain(con, base_sql);
+      std::vector<double> base_reads;
+      for (int i = 0; i < std::min(10, std::max(5, cfg.reads / 20)); ++i) {
+        const auto s = Clock::now();
+        Drain(con, base_sql);
+        base_reads.push_back(ElapsedUs(s));
+      }
+      const auto base_read = Summarize(base_reads);
+      Emit(csv, "duckdb/t" + std::to_string(threads) + "," + params + ",read-only,-,0," +
+                    std::to_string(base_reads.size()) + ",0," + Num(base_read.mean) + "," + Num(base_read.p50) +
+                    ",0,0,0," + Num(base_read.mean));
+
+      // -------- aux read-only.
+      for (int i = 0; i < 5; ++i) {
+        Drain(con, aux_sql);
+      }
+      std::vector<double> aux_reads;
+      for (int i = 0; i < cfg.reads; ++i) {
+        const auto s = Clock::now();
+        Drain(con, aux_sql);
+        aux_reads.push_back(ElapsedUs(s));
+      }
+      const auto aux_read = Summarize(aux_reads);
+      std::vector<double> direct_reads;
+      for (int i = 0; i < cfg.reads * 5; ++i) {
+        const auto s = Clock::now();
+        (void)runtime.ExecuteCollect(args);
+        direct_reads.push_back(ElapsedUs(s));
+      }
+      const auto direct = Summarize(direct_reads);
+      Emit(csv, tag + "/module-only," + params + ",read-only,-,0," + std::to_string(direct_reads.size()) + ",0," +
+                    Num(direct.mean) + "," + Num(direct.p50) + ",0,0,0," + Num(direct.mean));
+      harness::RequireSharedMatchesBase(con, runtime, entry, args);
+      Emit(csv, tag + "," + params + ",read-only,-,0," + std::to_string(aux_reads.size()) + ",0," +
+                    Num(aux_read.mean) + "," + Num(aux_read.p50) + ",0,0,0," + Num(aux_read.mean));
+
+      // -------- write sweeps.
+      if (pattern_env == "none") {
+        continue;
+      }
+      const auto probe = catalog::FindInvalidatingSharedProbe(con, entry, args);
+      for (const auto &pattern : patterns) {
+        for (const bool aux : {false, true}) {
+          // Fresh state per series: rebuild the aux state from the current DB.
+          if (aux) {
+            runtime.Build();
+          }
+          std::unique_ptr<Writer> writer;
+          if (pattern == "bump") {
+            writer = std::make_unique<BumpWriter>(probe);
+          } else {
+            writer = std::make_unique<MixedWriter>(con, args);
+          }
+          for (const int rate : rates) {
+            // base reads are ~seconds: fewer cycles for the plain-DuckDB series
+            const int n_cycles = aux ? cycles : std::max(2, cycles / 10);
+            std::vector<double> read_us, write_us, cycle_us, aux_write_us;
+            for (int c = 0; c < n_cycles; ++c) {
+              double cycle = 0;
+              for (int w = 0; w < rate; ++w) {
+                double aux_us = 0;
+                const double us = writer->Write(con, aux ? &runtime : nullptr, aux_us);
+                write_us.push_back(us);
+                aux_write_us.push_back(aux_us);
+                cycle += us;
+              }
+              const auto s = Clock::now();
+              Drain(con, aux ? aux_sql : base_sql);
+              const double r = ElapsedUs(s);
+              read_us.push_back(r);
+              cycle_us.push_back(cycle + r);
+            }
+            if (aux) {
+              harness::RequireSharedMatchesBase(con, runtime, entry, args);
+            }
+            const auto rs = Summarize(read_us), ws = Summarize(write_us), cs = Summarize(cycle_us);
+            const auto as = Summarize(aux_write_us);
+            Emit(csv, (aux ? tag : "duckdb/t" + std::to_string(threads)) + "," + params + ",writes," + pattern +
+                          "," + std::to_string(rate) + "," + std::to_string(rs.n) + "," + std::to_string(ws.n) +
+                          "," + Num(rs.mean) + "," + Num(rs.p50) + "," + Num(ws.mean) + "," + Num(ws.p50) + "," +
+                          Num(ws.p99) + "," + Num(cs.mean) + "," + Num(as.mean) + "," + Num(as.p50));
+          }
+          writer->Restore(con);
+        }
+      }
+      // Restore the DB (bump series) and verify the aux state follows via rebuild.
+      Exec(con, probe.restore_sql);
+      runtime.Build();
+      harness::RequireSharedMatchesBase(con, runtime, entry, args);
     }
-    // Restore the DB (bump series) and verify the aux state follows via rebuild.
-    Exec(con, probe.restore_sql);
-    runtime.Build();
-    harness::RequireSharedMatchesBase(con, runtime, entry);
+    Require(swept > 0, "every drawn parameter set had an empty answer");
     return 0;
   } catch (const std::exception &e) {
     std::cerr << "benchmark_sec_edgar_q2_sweep failed: " << e.what() << std::endl;

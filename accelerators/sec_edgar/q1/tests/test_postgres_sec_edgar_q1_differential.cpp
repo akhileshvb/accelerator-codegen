@@ -1,5 +1,7 @@
 // PostgreSQL differential for the SEC EDGAR Q1 accelerator
-// (accel_sec_edgar_q1_aux()) against plain SQL (workloads/sec_edgar/q1.sql).
+// (accel_sec_edgar_q1_aux(stmt)) against plain SQL (workloads/sec_edgar/q1.sql)
+// for the stmt values drawn by eval/harness/param_source (ACCEL_PARAM_SEED=<s>
+// reproduces a run; the draw is printed to stderr).
 //
 // Modes (argv[1]):
 //   random  [seed] [steps]  scratch database with a small random `pre`: randomized
@@ -19,6 +21,8 @@
 // Env: Q1_PG_CONN (default: host=127.0.0.1 port=55401 user=postgres password=postgres
 //      dbname=sec_edgar), ACCEL_SRC (repo root, for the trigger script).
 #include <libpq-fe.h>
+
+#include "eval/harness/param_source.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -59,8 +63,8 @@ struct Conn {
   }
   ~Conn() { PQfinish(c); }
   Conn(const Conn &) = delete;
-  Rows Query(const std::string &sql) {
-    PGresult *r = PQexec(c, sql.c_str());
+  Rows Query(const std::string &sql) { return Collect(PQexec(c, sql.c_str()), sql); }
+  static Rows Collect(PGresult *r, const std::string &sql) {
     const auto st = PQresultStatus(r);
     if (st != PGRES_TUPLES_OK && st != PGRES_COMMAND_OK) {
       std::string msg = PQresultErrorMessage(r);
@@ -76,6 +80,14 @@ struct Conn {
     PQclear(r);
     return rows;
   }
+  // $1.. bound as text parameters (a NULL is "\\N").
+  Rows Query(const std::string &sql, const std::vector<std::string> &params) {
+    std::vector<const char *> values;
+    for (const auto &p : params) values.push_back(p == "\\N" ? nullptr : p.c_str());
+    PGresult *r = PQexecParams(c, sql.c_str(), static_cast<int>(values.size()), nullptr, values.data(), nullptr,
+                               nullptr, 0);
+    return Collect(r, sql);
+  }
   // Like Query but returns false (and swallows the error) on failure.
   bool TryExec(const std::string &sql) {
     PGresult *r = PQexec(c, sql.c_str());
@@ -87,15 +99,15 @@ struct Conn {
 
 [[noreturn]] void Fail(const std::string &m) { throw std::runtime_error(m); }
 
-// Reference (workloads/sec_edgar/q1.sql) and accelerator, both in a
+// Reference (workloads/sec_edgar/q1.sql) and accelerator with the stmt as $1, both in a
 // total order (cnt DESC, stmt, rfile) so the unspecified order of ties does not matter.
 const char *kRefSql =
     "SELECT stmt, rfile, cnt, num_filings, avg_line_num FROM ("
     "SELECT stmt, rfile, COUNT(*) AS cnt, COUNT(DISTINCT adsh) AS num_filings, AVG(line) AS avg_line_num "
-    "FROM pre WHERE stmt IS NOT NULL GROUP BY stmt, rfile) q "
+    "FROM pre WHERE stmt = $1 GROUP BY stmt, rfile) q "
     "ORDER BY cnt DESC, stmt COLLATE \"C\", rfile COLLATE \"C\" NULLS FIRST";
 const char *kAccelSql =
-    "SELECT stmt, rfile, cnt, num_filings, avg_line_num FROM accel_sec_edgar_q1_aux() "
+    "SELECT stmt, rfile, cnt, num_filings, avg_line_num FROM accel_sec_edgar_q1_aux($1) "
     "ORDER BY cnt DESC, stmt COLLATE \"C\", rfile COLLATE \"C\" NULLS FIRST";
 
 std::string Dump(const Rows &rows) {
@@ -107,19 +119,36 @@ std::string Dump(const Rows &rows) {
   return s;
 }
 
+// The drawn stmt values as the server reads their literals.
+const std::vector<std::string> &DrawnStmts() {
+  static const std::vector<std::string> stmts = [] {
+    Conn c(BaseConn());
+    std::vector<std::string> out;
+    for (const auto &literals : accelerator_codegen::aux_state::harness::DrawArgumentLists("sec_edgar", 1)) {
+      out.push_back(c.Query("SELECT " + literals)[0][0]);
+    }
+    return out;
+  }();
+  return stmts;
+}
+
 void CheckSame(Conn &c, const std::string &label) {
-  const Rows ref = c.Query(kRefSql);
-  const Rows acc = c.Query(kAccelSql);
-  if (ref != acc) Fail(label + ": accelerator differs from SQL\nSQL:\n" + Dump(ref) + "accelerator:\n" + Dump(acc));
-  // The accelerator's own output order: cnt non-increasing (ORDER BY cnt DESC).
-  const Rows raw = c.Query("SELECT cnt FROM accel_sec_edgar_q1_aux()");
-  long long last = -1;
-  bool first = true;
-  for (const auto &r : raw) {
-    const long long v = std::stoll(r[0]);
-    if (!first && v > last) Fail(label + ": accelerator output not ordered by cnt DESC");
-    last = v;
-    first = false;
+  for (const auto &stmt : DrawnStmts()) {
+    const Rows ref = c.Query(kRefSql, {stmt});
+    const Rows acc = c.Query(kAccelSql, {stmt});
+    if (ref != acc) {
+      Fail(label + ": accelerator differs from SQL for stmt " + stmt + "\nSQL:\n" + Dump(ref) + "accelerator:\n" + Dump(acc));
+    }
+    // The accelerator's own output order: cnt non-increasing (ORDER BY cnt DESC).
+    const Rows raw = c.Query("SELECT cnt FROM accel_sec_edgar_q1_aux($1)", {stmt});
+    long long last = -1;
+    bool first = true;
+    for (const auto &r : raw) {
+      const long long v = std::stoll(r[0]);
+      if (!first && v > last) Fail(label + ": accelerator output not ordered by cnt DESC");
+      last = v;
+      first = false;
+    }
   }
 }
 
@@ -272,34 +301,35 @@ int RunRandom(uint64_t seed, int steps) {
 // ---------------------------------------------------------------------------
 
 void RunIsolation() {
+  const std::string stmt = DrawnStmts()[0];
   Conn a(ConnWithDb(kScratchDb)), b(ConnWithDb(kScratchDb));
   CheckSame(a, "isolation: start");
   a.Query("BEGIN ISOLATION LEVEL REPEATABLE READ");
-  const Rows before = a.Query(kAccelSql);
-  if (before != a.Query(kRefSql)) Fail("isolation: snapshot start differs");
+  const Rows before = a.Query(kAccelSql, {stmt});
+  if (before != a.Query(kRefSql, {stmt})) Fail("isolation: snapshot start differs");
   // Uncommitted writes of b are invisible to a (and to a's accelerator).
   b.Query("BEGIN");
-  b.Query("INSERT INTO pre SELECT * FROM pre WHERE stmt IS NOT NULL LIMIT 500");
-  if (a.Query(kAccelSql) != before) Fail("isolation: uncommitted write visible to accelerator");
+  b.Query("INSERT INTO pre SELECT * FROM pre WHERE stmt = $1 LIMIT 500", {stmt});
+  if (a.Query(kAccelSql, {stmt}) != before) Fail("isolation: uncommitted write visible to accelerator");
   b.Query("COMMIT");
   // Committed after a's snapshot: still invisible to a, in both answers.
-  if (a.Query(kAccelSql) != before) Fail("isolation: later commit visible in a's snapshot (accelerator)");
-  if (a.Query(kRefSql) != before) Fail("isolation: later commit visible in a's snapshot (SQL)");
+  if (a.Query(kAccelSql, {stmt}) != before) Fail("isolation: later commit visible in a's snapshot (accelerator)");
+  if (a.Query(kRefSql, {stmt}) != before) Fail("isolation: later commit visible in a's snapshot (SQL)");
   a.Query("COMMIT");
   CheckSame(a, "isolation: after a's commit");
   // A reader that started before a writer's rolled back transaction never sees it.
   a.Query("BEGIN ISOLATION LEVEL REPEATABLE READ");
-  const Rows snap = a.Query(kAccelSql);
+  const Rows snap = a.Query(kAccelSql, {stmt});
   b.Query("BEGIN");
-  b.Query("DELETE FROM pre WHERE stmt = 'BS'");
+  b.Query("DELETE FROM pre WHERE stmt = $1", {stmt});
   b.Query("ROLLBACK");
-  if (a.Query(kAccelSql) != snap) Fail("isolation: rolled back delete visible");
+  if (a.Query(kAccelSql, {stmt}) != snap) Fail("isolation: rolled back delete visible");
   a.Query("COMMIT");
   CheckSame(a, "isolation: after rolled back delete");
   CheckSame(b, "isolation: writer after rollback");
   // Own uncommitted writes are visible to the writer's own accelerator call.
   b.Query("BEGIN");
-  b.Query("DELETE FROM pre WHERE stmt = 'BS'");
+  b.Query("DELETE FROM pre WHERE stmt = $1", {stmt});
   CheckSame(b, "isolation: own uncommitted delete");
   b.Query("ROLLBACK");
   CheckSame(b, "isolation: after own rolled back delete");
@@ -325,12 +355,12 @@ void RunConcurrent(int seconds) {
         Conn c(ConnWithDb(kScratchDb));
         Gen g(1000 + t);
         // Seed the accelerator in this session so its own commits maintain the state.
-        if (t == 0) c.Query(kAccelSql);
+        if (t == 0) c.Query(kAccelSql, {DrawnStmts()[0]});
         while (!stop) {
           try {
             c.Query("BEGIN");
             for (int i = 0, n = 1 + (int)g.R(3); i < n; ++i) c.Query(g.Statement());
-            if (t == 0 && g.R(3) == 0) c.Query(kAccelSql);
+            if (t == 0 && g.R(3) == 0) c.Query(kAccelSql, {DrawnStmts()[0]});
             c.Query(g.R(4) ? "COMMIT" : "ROLLBACK");
             ++writes;
           } catch (const std::exception &e) {
@@ -348,11 +378,12 @@ void RunConcurrent(int seconds) {
         Conn c(ConnWithDb(kScratchDb));
         while (!stop) {
           c.Query("BEGIN ISOLATION LEVEL REPEATABLE READ");
-          const Rows acc = c.Query(kAccelSql);
-          const Rows ref = c.Query(kRefSql);
-          const Rows acc2 = c.Query(kAccelSql);
+          const auto &stmt = DrawnStmts()[reads % DrawnStmts().size()];
+          const Rows acc = c.Query(kAccelSql, {stmt});
+          const Rows ref = c.Query(kRefSql, {stmt});
+          const Rows acc2 = c.Query(kAccelSql, {stmt});
           c.Query("COMMIT");
-          if (acc != ref || acc2 != ref) fail("concurrent: accelerator differs from SQL\nSQL:\n" + Dump(ref) + "accelerator:\n" + Dump(acc));
+          if (acc != ref || acc2 != ref) fail("concurrent: accelerator differs from SQL for stmt " + stmt + "\nSQL:\n" + Dump(ref) + "accelerator:\n" + Dump(acc));
           ++reads;
         }
       } catch (const std::exception &e) { fail(std::string("reader: ") + e.what()); }

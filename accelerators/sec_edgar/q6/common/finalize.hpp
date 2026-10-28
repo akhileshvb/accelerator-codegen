@@ -134,7 +134,7 @@ struct SecEdgarQ6OutputRow {
 	std::string name;
 	std::string tag;
 	std::string plabel;
-	std::string stmt = "IS";
+	std::string stmt;
 	double total_value = 0.0;
 	int64_t cnt = 0;
 };
@@ -142,14 +142,5 @@ struct SecEdgarQ6OutputRow {
 struct SecEdgarQ6OutputPartition {
 	std::vector<SecEdgarQ6OutputRow> output_rows;
 };
-
-std::vector<SecEdgarQ6PartitionKey> SecEdgarQ6FixedPartitionKeys();
-void RefreshSecEdgarQ6Output(const SecEdgarQ6Fy2023CohortPartition &cohort,
-                             const SecEdgarQ6GroupAggregatesPartition &aggregates, SecEdgarQ6OutputPartition &output);
-bool ApplySecEdgarQ6UsdNumDelta(const SecEdgarQ6Fy2023CohortPartition &cohort,
-                                const SecEdgarQ6PreIsBridgePartition &pre_bridge,
-                                const SecEdgarQ6TagVersionPartition &tag_versions, SecEdgarQ6GroupAggregatesPartition &aggregates,
-                                SecEdgarQ6OutputPartition &output, const SecEdgarQ6AdshKey &adsh_key,
-                                const SecEdgarQ6TagVersionKey &tag_version_key, double value, int8_t sign);
 
 } // namespace accelerator_codegen

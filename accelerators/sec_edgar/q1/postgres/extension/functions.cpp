@@ -25,7 +25,7 @@ namespace {
 // Executed by accel_register_queries().
 constexpr char kFunctionsSql[] = R"SQL(
 DROP FUNCTION IF EXISTS accel_sec_edgar_q1_aux CASCADE;
-CREATE FUNCTION accel_sec_edgar_q1_aux()
+CREATE FUNCTION accel_sec_edgar_q1_aux(stmt text)
 RETURNS TABLE (
   stmt text,
   rfile text,

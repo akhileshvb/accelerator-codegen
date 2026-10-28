@@ -48,7 +48,7 @@ void SecEdgarQ1ParallelModule::Execute(core::AuxEngineServices &services,
     ExecuteFallback(services, arguments, sink);
     return;
   }
-  SecEdgarQ1Module::EmitOutput(*state, sink);
+  SecEdgarQ1Module::EmitOutput(*state, SecEdgarQ1Module::StmtArgument(arguments), sink);
 }
 
 SecEdgarQ1State
