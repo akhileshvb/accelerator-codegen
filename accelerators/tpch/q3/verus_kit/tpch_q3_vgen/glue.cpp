@@ -247,8 +247,8 @@ void *Apply(const void *state, const kit::Changes &changes, kit::Host &host,
       shipments.rows.rows.size(), shipments.rows.rows.data(), err);
 }
 
-bool Execute(const void *state, const core::QueryArguments &args,
-             std::vector<core::AuxRow> &out) {
+template <class Call>
+bool Run(const kit::core::QueryArguments &args, std::vector<kit::core::AuxRow> &out, Call call) {
   std::string segment;
   int32_t cutoff_date = 0;
   if (!kit::ArgText(args, 0, segment) ||
@@ -257,8 +257,7 @@ bool Execute(const void *state, const core::QueryArguments &args,
   }
 
   std::unique_ptr<tpchq3vgen_result, void (*)(tpchq3vgen_result *)> result(
-      tpchq3vgen_execute(static_cast<const tpchq3vgen_state *>(state),
-                         reinterpret_cast<const uint8_t *>(segment.data()),
+      call(reinterpret_cast<const uint8_t *>(segment.data()),
                          segment.size(), cutoff_date),
       tpchq3vgen_result_free);
   if (!result) {
@@ -298,7 +297,21 @@ bool Execute(const void *state, const core::QueryArguments &args,
   return true;
 }
 
-void *PrepareApply(const void *store, const void *base,
+bool Execute(const void *state, const kit::core::QueryArguments &args,
+             std::vector<kit::core::AuxRow> &out) {
+  return Run(args, out, [&](auto... x) {
+    return tpchq3vgen_execute(static_cast<const tpchq3vgen_state *>(state), x...);
+  });
+}
+
+bool Answer(const void *state, const kit::core::QueryArguments &args,
+            std::vector<kit::core::AuxRow> &out) {
+  return Run(args, out, [&](auto... x) {
+    return tpchq3vgens_answer(static_cast<const tpchq3vgens_reading *>(state), x...);
+  });
+}
+
+void *PrepareApply(const void *base,
                    const kit::Changes &changes, kit::Host &host,
                    int32_t *err) {
   const tpchq3vgen_state *base_state = tpchq3vgens_base_state(
@@ -313,8 +326,7 @@ void *PrepareApply(const void *store, const void *base,
       tpchq3vgen_rescan_shipments_by_key_keys, base_state, deltas);
   ShipmentRescan shipments = ReadShipmentsRescan(host, shipment_keys);
 
-  return tpchq3vgens_prepare_apply(
-      static_cast<const tpchq3vgens_store *>(store),
+  return tpchq3vgens_stage_apply(
       static_cast<const tpchq3vgens_base *>(base),
       deltas.customer.c_custkey.size(), deltas.customer.c_custkey.data(),
       deltas.customer.c_mktsegment.bytes.data(),
@@ -326,12 +338,12 @@ void *PrepareApply(const void *store, const void *base,
       shipments.rows.rows.size(), shipments.rows.rows.data(), err);
 }
 
-void *PrepareBuild(const void *store, kit::Host &host) {
+void *PrepareBuild(const kit::HeadFn &head_of, kit::Host &host) {
   CustomerRows customers = ReadCustomers(host);
   OrderRows orders = ReadOrders(host);
   ShipmentRows shipments = ReadShipments(host);
-  return tpchq3vgens_prepare_build(
-      static_cast<const tpchq3vgens_store *>(store),
+  return tpchq3vgens_stage_build(
+      static_cast<const tpchq3vgens_head *>(head_of()),
       customers.c_custkey.size(), customers.c_custkey.data(),
       customers.c_mktsegment.bytes.data(),
       customers.c_mktsegment.off.data(), orders.rows.size(),
@@ -353,29 +365,30 @@ const kit::Glue kGlue = {
     FreeState,
     Apply,
     Execute,
+    Answer,
     PrepareApply,
     PrepareBuild,
     kit::StoreOps{
-        reinterpret_cast<void *(*)()>(tpchq3vgens_new),
-        reinterpret_cast<void (*)(void *)>(tpchq3vgens_free),
-        reinterpret_cast<void *(*)(const void *)>(tpchq3vgens_newest_base),
-        reinterpret_cast<const void *(*)(const void *)>(
-            tpchq3vgens_base_state),
-        reinterpret_cast<void (*)(void *)>(tpchq3vgens_base_free),
-        reinterpret_cast<void *(*)(const void *)>(
-            tpchq3vgens_prepare_invalid),
-        reinterpret_cast<void (*)(void *)>(tpchq3vgens_prepared_free),
-        reinterpret_cast<int32_t (*)(const void *, uint64_t)>(
-            tpchq3vgens_begin),
-        reinterpret_cast<void (*)(const void *)>(tpchq3vgens_abort),
-        reinterpret_cast<int32_t (*)(const void *, void *, uint64_t, uint64_t,
-                                     int32_t)>(tpchq3vgens_install),
-        reinterpret_cast<const void *(*)(const void *, uint64_t, uint64_t,
-                                         int32_t *)>(tpchq3vgens_read),
-        reinterpret_cast<void (*)(const void *)>(tpchq3vgens_state_release),
-        reinterpret_cast<void (*)(const void *)>(tpchq3vgens_invalidate_all),
-        reinterpret_cast<std::size_t (*)(const void *)>(
-            tpchq3vgens_version_count),
+        []() -> void * { return tpchq3vgens_new(); },
+        [](void *store) { tpchq3vgens_free(static_cast<tpchq3vgens_store *>(store)); },
+        [](const void *store) -> void * { return tpchq3vgens_newest_base(static_cast<const tpchq3vgens_store *>(store)); },
+        [](const void *base) -> const void * { return tpchq3vgens_base_state(static_cast<const tpchq3vgens_base *>(base)); },
+        [](void *base) { tpchq3vgens_base_free(static_cast<tpchq3vgens_base *>(base)); },
+        [](const void *store) -> void * { return tpchq3vgens_newest_head(static_cast<const tpchq3vgens_store *>(store)); },
+        [](void *head) { tpchq3vgens_head_free(static_cast<tpchq3vgens_head *>(head)); },
+        [](const void *head) -> void * { return tpchq3vgens_stage_invalid(static_cast<const tpchq3vgens_head *>(head)); },
+        [](void *staged) { tpchq3vgens_staged_free(static_cast<tpchq3vgens_staged *>(staged)); },
+        [](const void *store, uint64_t from) -> int32_t { return tpchq3vgens_begin(static_cast<const tpchq3vgens_store *>(store), from); },
+        [](const void *store) { tpchq3vgens_abort(static_cast<const tpchq3vgens_store *>(store)); },
+        [](const void *store, void *staged, uint64_t from, uint64_t floor, int32_t end_commit) -> int32_t {
+            return tpchq3vgens_install(static_cast<const tpchq3vgens_store *>(store), static_cast<tpchq3vgens_staged *>(staged), from, floor, end_commit);
+        },
+        [](const void *store, uint64_t at, uint64_t tries, int32_t *status) -> const void * {
+            return tpchq3vgens_read(static_cast<const tpchq3vgens_store *>(store), at, tries, status);
+        },
+        [](const void *reading) { tpchq3vgens_reading_free(const_cast<tpchq3vgens_reading *>(static_cast<const tpchq3vgens_reading *>(reading))); },
+        [](const void *store) { tpchq3vgens_invalidate_all(static_cast<const tpchq3vgens_store *>(store)); },
+        [](const void *store) -> std::size_t { return tpchq3vgens_version_count(static_cast<const tpchq3vgens_store *>(store)); },
     },
 };
 

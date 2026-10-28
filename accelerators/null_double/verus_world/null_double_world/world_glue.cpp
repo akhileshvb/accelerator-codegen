@@ -12,7 +12,10 @@ const kit::World kWorld = {
     [](void *st) { null_doublew_free(static_cast<null_doublew_store *>(st)); },
     [](const void *st, uint64_t from) { return null_doublew_begin(static_cast<const null_doublew_store *>(st), from); },
     [](const void *st) { null_doublew_abort(static_cast<const null_doublew_store *>(st)); },
-    [](const void *st) { return static_cast<void *>(null_doublew_batch_new(static_cast<const null_doublew_store *>(st))); },
+    [](const void *st) { return static_cast<void *>(null_doublew_gbase_new(static_cast<const null_doublew_store *>(st))); },
+    [](const void *st) { return null_doublew_newest(static_cast<const null_doublew_store *>(st)); },
+    [](void *gb) { null_doublew_gbase_free(static_cast<null_doublew_gbase *>(gb)); },
+    [](const void *gb) { return static_cast<void *>(null_doublew_batch_new(static_cast<const null_doublew_gbase *>(gb))); },
     [](void *b) { null_doublew_batch_free(static_cast<null_doublew_batch *>(b)); },
     [](const void *st, void *b, uint64_t from, uint64_t floor, int32_t end) {
       return null_doublew_install(static_cast<const null_doublew_store *>(st), static_cast<null_doublew_batch *>(b), from, floor, end);
@@ -20,12 +23,14 @@ const kit::World kWorld = {
     [](const void *st) { return null_doublew_version_count(static_cast<const null_doublew_store *>(st)); },
     {
         {"null_double_q1_vgen",
-         [](void *b, void *s) { null_doublew_batch_set_1(static_cast<null_doublew_batch *>(b), s); },
-         [](const void *st, uint64_t at, uint64_t tries, int32_t *status) {
+         [](const void *gb) { return null_doublew_base_1(static_cast<const null_doublew_gbase *>(gb)); },
+         [](const void *gb) { return null_doublew_head_1(static_cast<const null_doublew_gbase *>(gb)); },
+         [](void *b, void *staged) { return null_doublew_put_1(static_cast<null_doublew_batch *>(b), staged); },
+         [](void *b) { null_doublew_put_invalid_1(static_cast<null_doublew_batch *>(b)); },
+         [](const void *st, uint64_t at, uint64_t tries, int32_t *status) -> const void * {
            return null_doublew_read_1(static_cast<const null_doublew_store *>(st), at, tries, status);
          },
-         [](const void *st) { return null_doublew_newest_1(static_cast<const null_doublew_store *>(st)); },
-         [](const void *s) { null_doublew_release_1(s); },
+         [](const void *r) { null_doublew_release_1(const_cast<void *>(r)); },
          [](const void *st) { null_doublew_invalidate_1(static_cast<const null_doublew_store *>(st)); }},
     },
 };

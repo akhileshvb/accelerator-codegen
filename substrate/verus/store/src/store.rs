@@ -883,6 +883,38 @@ impl<D, W: AuxWorld<D>> Reading<D, W> {
     }
 }
 
+impl<D, W: AuxWorld<D>> Reading<D, W> {
+    /// The same read narrowed to one accelerator's view: `proj` maps the
+    /// database to the accelerator's, `w2` is its part of the world.
+    pub fn narrow<D2, W2: AuxWorld<D2>>(self, Ghost(proj): Ghost<spec_fn(D) -> D2>, w2: W2) -> (r: Reading<D2, W2>)
+        requires
+            w2.ok(proj(self.db())),
+        ensures
+            r.version() == self.version(),
+            r.at() == self.at(),
+            r.db() == proj(self.db()),
+            r.snapshot_db() == proj(self.snapshot_db()),
+            r.contract() == self.contract(),
+            r.newest() == self.newest(),
+    {
+        proof {
+            use_type_invariant(&self);
+        }
+        let ghost tl = self.timeline@;
+        let ghost eng = self.engine@;
+        let ghost tl2 = |n: nat| proj(tl(n));
+        let ghost eng2 = Engine::<D2> { snap: |a: u64| proj((eng.snap)(a)), stamp: eng.stamp };
+        proof {
+            assert(eng2.wf()) by {
+                assert forall|a: u64| #[trigger] (eng2.snap)(a) == (eng2.snap)((eng2.stamp)(a)) by {
+                    assert((eng.snap)(a) == (eng.snap)((eng.stamp)(a)));
+                }
+            }
+        }
+        Reading { v: self.v, at: self.at, world: w2, timeline: Ghost(tl2), engine: Ghost(eng2), window: self.window }
+    }
+}
+
 /// What reading at an epoch gave.
 pub enum Read<D, W: AuxWorld<D>> {
     Found(Reading<D, W>),

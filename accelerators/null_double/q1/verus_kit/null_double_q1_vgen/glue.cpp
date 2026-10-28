@@ -60,21 +60,22 @@ void *Apply(const void *s, const kit::Changes &ch, kit::Host &h, int32_t *err) {
   return nulldoubleq1vgen_apply(state, d.num_delta__n, d.num_delta.data(), err);
 }
 
-void *PrepareApply(const void *st, const void *b, const kit::Changes &ch, kit::Host &h, int32_t *err) {
+void *PrepareApply(const void *b, const kit::Changes &ch, kit::Host &h, int32_t *err) {
   [[maybe_unused]] const auto *state = nulldoubleq1vgens_base_state(static_cast<const nulldoubleq1vgens_base *>(b));
   DeltaIn d;
   d.Fill(ch);
-  return nulldoubleq1vgens_prepare_apply(static_cast<const nulldoubleq1vgens_store *>(st), static_cast<const nulldoubleq1vgens_base *>(b), d.num_delta__n, d.num_delta.data(), err);
+  return nulldoubleq1vgens_stage_apply(static_cast<const nulldoubleq1vgens_base *>(b), d.num_delta__n, d.num_delta.data(), err);
 }
 
-void *PrepareBuild(const void *st, kit::Host &h) {
+void *PrepareBuild(const kit::HeadFn &head_of, kit::Host &h) {
   BuildIn in;
   in.Fill(h);
-  return nulldoubleq1vgens_prepare_build(static_cast<const nulldoubleq1vgens_store *>(st), in.num__n, in.num.data());
+  return nulldoubleq1vgens_stage_build(static_cast<const nulldoubleq1vgens_head *>(head_of()), in.num__n, in.num.data());
 }
 
-bool Execute(const void *s, const core::QueryArguments &a, std::vector<core::AuxRow> &out) {
-  nulldoubleq1vgen_result *r = nulldoubleq1vgen_execute(static_cast<const nulldoubleq1vgen_state *>(s));
+template <class Call>
+bool Run(const core::QueryArguments &a, std::vector<core::AuxRow> &out, Call call) {
+  nulldoubleq1vgen_result *r = call();
   if (!r)
     return false;
   const size_t n = nulldoubleq1vgen_result_len(r);
@@ -99,24 +100,34 @@ bool Execute(const void *s, const core::QueryArguments &a, std::vector<core::Aux
   return true;
 }
 
+bool Execute(const void *s, const core::QueryArguments &a, std::vector<core::AuxRow> &out) {
+  return Run(a, out, [&](auto... x) { return nulldoubleq1vgen_execute(static_cast<const nulldoubleq1vgen_state *>(s), x...); });
+}
+
+bool Answer(const void *s, const core::QueryArguments &a, std::vector<core::AuxRow> &out) {
+  return Run(a, out, [&](auto... x) { return nulldoubleq1vgens_answer(static_cast<const nulldoubleq1vgens_reading *>(s), x...); });
+}
+
 const kit::Glue kGlue = {
     "null_double_q1_vgen", "sec_edgar", 100, kQuerySql,
     {{"num", {"ddate", "qtrs", "value"}}},
     {},
-    Build, FreeState, Apply, Execute, PrepareApply, PrepareBuild,
+    Build, FreeState, Apply, Execute, Answer, PrepareApply, PrepareBuild,
     kit::StoreOps{
         /* new */ []() -> void * { return nulldoubleq1vgens_new(); },
         /* free */ [](void *st) { nulldoubleq1vgens_free(static_cast<nulldoubleq1vgens_store *>(st)); },
         /* newest_base */ [](const void *st) -> void * { return nulldoubleq1vgens_newest_base(static_cast<const nulldoubleq1vgens_store *>(st)); },
         /* base_state */ [](const void *b) -> const void * { return nulldoubleq1vgens_base_state(static_cast<const nulldoubleq1vgens_base *>(b)); },
         /* base_free */ [](void *b) { nulldoubleq1vgens_base_free(static_cast<nulldoubleq1vgens_base *>(b)); },
-        /* prepare_invalid */ [](const void *st) -> void * { return nulldoubleq1vgens_prepare_invalid(static_cast<const nulldoubleq1vgens_store *>(st)); },
-        /* prepared_free */ [](void *pr) { nulldoubleq1vgens_prepared_free(static_cast<nulldoubleq1vgens_prepared *>(pr)); },
+        /* newest_head */ [](const void *st) -> void * { return nulldoubleq1vgens_newest_head(static_cast<const nulldoubleq1vgens_store *>(st)); },
+        /* head_free */ [](void *hd) { nulldoubleq1vgens_head_free(static_cast<nulldoubleq1vgens_head *>(hd)); },
+        /* stage_invalid */ [](const void *hd) -> void * { return nulldoubleq1vgens_stage_invalid(static_cast<const nulldoubleq1vgens_head *>(hd)); },
+        /* staged_free */ [](void *sg) { nulldoubleq1vgens_staged_free(static_cast<nulldoubleq1vgens_staged *>(sg)); },
         /* begin */ [](const void *st, uint64_t from) -> int32_t { return nulldoubleq1vgens_begin(static_cast<const nulldoubleq1vgens_store *>(st), from); },
         /* abort */ [](const void *st) { nulldoubleq1vgens_abort(static_cast<const nulldoubleq1vgens_store *>(st)); },
-        /* install */ [](const void *st, void *pr, uint64_t from, uint64_t floor, int32_t end) -> int32_t { return nulldoubleq1vgens_install(static_cast<const nulldoubleq1vgens_store *>(st), static_cast<nulldoubleq1vgens_prepared *>(pr), from, floor, end); },
+        /* install */ [](const void *st, void *pr, uint64_t from, uint64_t floor, int32_t end) -> int32_t { return nulldoubleq1vgens_install(static_cast<const nulldoubleq1vgens_store *>(st), static_cast<nulldoubleq1vgens_staged *>(pr), from, floor, end); },
         /* read */ [](const void *st, uint64_t at, uint64_t tries, int32_t *status) -> const void * { return nulldoubleq1vgens_read(static_cast<const nulldoubleq1vgens_store *>(st), at, tries, status); },
-        /* state_release */ [](const void *s) { nulldoubleq1vgens_state_release(static_cast<const nulldoubleq1vgen_state *>(s)); },
+        /* reading_free */ [](const void *r) { nulldoubleq1vgens_reading_free(const_cast<nulldoubleq1vgens_reading *>(static_cast<const nulldoubleq1vgens_reading *>(r))); },
         /* invalidate_all */ [](const void *st) { nulldoubleq1vgens_invalidate_all(static_cast<const nulldoubleq1vgens_store *>(st)); },
         /* version_count */ [](const void *st) -> size_t { return nulldoubleq1vgens_version_count(static_cast<const nulldoubleq1vgens_store *>(st)); },
     },

@@ -12,7 +12,10 @@ const kit::World kWorld = {
     [](void *st) { tpchw_free(static_cast<tpchw_store *>(st)); },
     [](const void *st, uint64_t from) { return tpchw_begin(static_cast<const tpchw_store *>(st), from); },
     [](const void *st) { tpchw_abort(static_cast<const tpchw_store *>(st)); },
-    [](const void *st) { return static_cast<void *>(tpchw_batch_new(static_cast<const tpchw_store *>(st))); },
+    [](const void *st) { return static_cast<void *>(tpchw_gbase_new(static_cast<const tpchw_store *>(st))); },
+    [](const void *st) { return tpchw_newest(static_cast<const tpchw_store *>(st)); },
+    [](void *gb) { tpchw_gbase_free(static_cast<tpchw_gbase *>(gb)); },
+    [](const void *gb) { return static_cast<void *>(tpchw_batch_new(static_cast<const tpchw_gbase *>(gb))); },
     [](void *b) { tpchw_batch_free(static_cast<tpchw_batch *>(b)); },
     [](const void *st, void *b, uint64_t from, uint64_t floor, int32_t end) {
       return tpchw_install(static_cast<const tpchw_store *>(st), static_cast<tpchw_batch *>(b), from, floor, end);
@@ -20,180 +23,224 @@ const kit::World kWorld = {
     [](const void *st) { return tpchw_version_count(static_cast<const tpchw_store *>(st)); },
     {
         {"tpch_q1_vgen",
-         [](void *b, void *s) { tpchw_batch_set_1(static_cast<tpchw_batch *>(b), s); },
-         [](const void *st, uint64_t at, uint64_t tries, int32_t *status) {
+         [](const void *gb) { return tpchw_base_1(static_cast<const tpchw_gbase *>(gb)); },
+         [](const void *gb) { return tpchw_head_1(static_cast<const tpchw_gbase *>(gb)); },
+         [](void *b, void *staged) { return tpchw_put_1(static_cast<tpchw_batch *>(b), staged); },
+         [](void *b) { tpchw_put_invalid_1(static_cast<tpchw_batch *>(b)); },
+         [](const void *st, uint64_t at, uint64_t tries, int32_t *status) -> const void * {
            return tpchw_read_1(static_cast<const tpchw_store *>(st), at, tries, status);
          },
-         [](const void *st) { return tpchw_newest_1(static_cast<const tpchw_store *>(st)); },
-         [](const void *s) { tpchw_release_1(s); },
+         [](const void *r) { tpchw_release_1(const_cast<void *>(r)); },
          [](const void *st) { tpchw_invalidate_1(static_cast<const tpchw_store *>(st)); }},
         {"tpch_q2_vgen",
-         [](void *b, void *s) { tpchw_batch_set_2(static_cast<tpchw_batch *>(b), s); },
-         [](const void *st, uint64_t at, uint64_t tries, int32_t *status) {
+         [](const void *gb) { return tpchw_base_2(static_cast<const tpchw_gbase *>(gb)); },
+         [](const void *gb) { return tpchw_head_2(static_cast<const tpchw_gbase *>(gb)); },
+         [](void *b, void *staged) { return tpchw_put_2(static_cast<tpchw_batch *>(b), staged); },
+         [](void *b) { tpchw_put_invalid_2(static_cast<tpchw_batch *>(b)); },
+         [](const void *st, uint64_t at, uint64_t tries, int32_t *status) -> const void * {
            return tpchw_read_2(static_cast<const tpchw_store *>(st), at, tries, status);
          },
-         [](const void *st) { return tpchw_newest_2(static_cast<const tpchw_store *>(st)); },
-         [](const void *s) { tpchw_release_2(s); },
+         [](const void *r) { tpchw_release_2(const_cast<void *>(r)); },
          [](const void *st) { tpchw_invalidate_2(static_cast<const tpchw_store *>(st)); }},
         {"tpch_q3_vgen",
-         [](void *b, void *s) { tpchw_batch_set_3(static_cast<tpchw_batch *>(b), s); },
-         [](const void *st, uint64_t at, uint64_t tries, int32_t *status) {
+         [](const void *gb) { return tpchw_base_3(static_cast<const tpchw_gbase *>(gb)); },
+         [](const void *gb) { return tpchw_head_3(static_cast<const tpchw_gbase *>(gb)); },
+         [](void *b, void *staged) { return tpchw_put_3(static_cast<tpchw_batch *>(b), staged); },
+         [](void *b) { tpchw_put_invalid_3(static_cast<tpchw_batch *>(b)); },
+         [](const void *st, uint64_t at, uint64_t tries, int32_t *status) -> const void * {
            return tpchw_read_3(static_cast<const tpchw_store *>(st), at, tries, status);
          },
-         [](const void *st) { return tpchw_newest_3(static_cast<const tpchw_store *>(st)); },
-         [](const void *s) { tpchw_release_3(s); },
+         [](const void *r) { tpchw_release_3(const_cast<void *>(r)); },
          [](const void *st) { tpchw_invalidate_3(static_cast<const tpchw_store *>(st)); }},
         {"tpch_q4_vgen",
-         [](void *b, void *s) { tpchw_batch_set_4(static_cast<tpchw_batch *>(b), s); },
-         [](const void *st, uint64_t at, uint64_t tries, int32_t *status) {
+         [](const void *gb) { return tpchw_base_4(static_cast<const tpchw_gbase *>(gb)); },
+         [](const void *gb) { return tpchw_head_4(static_cast<const tpchw_gbase *>(gb)); },
+         [](void *b, void *staged) { return tpchw_put_4(static_cast<tpchw_batch *>(b), staged); },
+         [](void *b) { tpchw_put_invalid_4(static_cast<tpchw_batch *>(b)); },
+         [](const void *st, uint64_t at, uint64_t tries, int32_t *status) -> const void * {
            return tpchw_read_4(static_cast<const tpchw_store *>(st), at, tries, status);
          },
-         [](const void *st) { return tpchw_newest_4(static_cast<const tpchw_store *>(st)); },
-         [](const void *s) { tpchw_release_4(s); },
+         [](const void *r) { tpchw_release_4(const_cast<void *>(r)); },
          [](const void *st) { tpchw_invalidate_4(static_cast<const tpchw_store *>(st)); }},
         {"tpch_q5_vgen",
-         [](void *b, void *s) { tpchw_batch_set_5(static_cast<tpchw_batch *>(b), s); },
-         [](const void *st, uint64_t at, uint64_t tries, int32_t *status) {
+         [](const void *gb) { return tpchw_base_5(static_cast<const tpchw_gbase *>(gb)); },
+         [](const void *gb) { return tpchw_head_5(static_cast<const tpchw_gbase *>(gb)); },
+         [](void *b, void *staged) { return tpchw_put_5(static_cast<tpchw_batch *>(b), staged); },
+         [](void *b) { tpchw_put_invalid_5(static_cast<tpchw_batch *>(b)); },
+         [](const void *st, uint64_t at, uint64_t tries, int32_t *status) -> const void * {
            return tpchw_read_5(static_cast<const tpchw_store *>(st), at, tries, status);
          },
-         [](const void *st) { return tpchw_newest_5(static_cast<const tpchw_store *>(st)); },
-         [](const void *s) { tpchw_release_5(s); },
+         [](const void *r) { tpchw_release_5(const_cast<void *>(r)); },
          [](const void *st) { tpchw_invalidate_5(static_cast<const tpchw_store *>(st)); }},
         {"tpch_q6_vgen",
-         [](void *b, void *s) { tpchw_batch_set_6(static_cast<tpchw_batch *>(b), s); },
-         [](const void *st, uint64_t at, uint64_t tries, int32_t *status) {
+         [](const void *gb) { return tpchw_base_6(static_cast<const tpchw_gbase *>(gb)); },
+         [](const void *gb) { return tpchw_head_6(static_cast<const tpchw_gbase *>(gb)); },
+         [](void *b, void *staged) { return tpchw_put_6(static_cast<tpchw_batch *>(b), staged); },
+         [](void *b) { tpchw_put_invalid_6(static_cast<tpchw_batch *>(b)); },
+         [](const void *st, uint64_t at, uint64_t tries, int32_t *status) -> const void * {
            return tpchw_read_6(static_cast<const tpchw_store *>(st), at, tries, status);
          },
-         [](const void *st) { return tpchw_newest_6(static_cast<const tpchw_store *>(st)); },
-         [](const void *s) { tpchw_release_6(s); },
+         [](const void *r) { tpchw_release_6(const_cast<void *>(r)); },
          [](const void *st) { tpchw_invalidate_6(static_cast<const tpchw_store *>(st)); }},
         {"tpch_q7_vgen",
-         [](void *b, void *s) { tpchw_batch_set_7(static_cast<tpchw_batch *>(b), s); },
-         [](const void *st, uint64_t at, uint64_t tries, int32_t *status) {
+         [](const void *gb) { return tpchw_base_7(static_cast<const tpchw_gbase *>(gb)); },
+         [](const void *gb) { return tpchw_head_7(static_cast<const tpchw_gbase *>(gb)); },
+         [](void *b, void *staged) { return tpchw_put_7(static_cast<tpchw_batch *>(b), staged); },
+         [](void *b) { tpchw_put_invalid_7(static_cast<tpchw_batch *>(b)); },
+         [](const void *st, uint64_t at, uint64_t tries, int32_t *status) -> const void * {
            return tpchw_read_7(static_cast<const tpchw_store *>(st), at, tries, status);
          },
-         [](const void *st) { return tpchw_newest_7(static_cast<const tpchw_store *>(st)); },
-         [](const void *s) { tpchw_release_7(s); },
+         [](const void *r) { tpchw_release_7(const_cast<void *>(r)); },
          [](const void *st) { tpchw_invalidate_7(static_cast<const tpchw_store *>(st)); }},
         {"tpch_q8_vgen",
-         [](void *b, void *s) { tpchw_batch_set_8(static_cast<tpchw_batch *>(b), s); },
-         [](const void *st, uint64_t at, uint64_t tries, int32_t *status) {
+         [](const void *gb) { return tpchw_base_8(static_cast<const tpchw_gbase *>(gb)); },
+         [](const void *gb) { return tpchw_head_8(static_cast<const tpchw_gbase *>(gb)); },
+         [](void *b, void *staged) { return tpchw_put_8(static_cast<tpchw_batch *>(b), staged); },
+         [](void *b) { tpchw_put_invalid_8(static_cast<tpchw_batch *>(b)); },
+         [](const void *st, uint64_t at, uint64_t tries, int32_t *status) -> const void * {
            return tpchw_read_8(static_cast<const tpchw_store *>(st), at, tries, status);
          },
-         [](const void *st) { return tpchw_newest_8(static_cast<const tpchw_store *>(st)); },
-         [](const void *s) { tpchw_release_8(s); },
+         [](const void *r) { tpchw_release_8(const_cast<void *>(r)); },
          [](const void *st) { tpchw_invalidate_8(static_cast<const tpchw_store *>(st)); }},
         {"tpch_q9_vgen",
-         [](void *b, void *s) { tpchw_batch_set_9(static_cast<tpchw_batch *>(b), s); },
-         [](const void *st, uint64_t at, uint64_t tries, int32_t *status) {
+         [](const void *gb) { return tpchw_base_9(static_cast<const tpchw_gbase *>(gb)); },
+         [](const void *gb) { return tpchw_head_9(static_cast<const tpchw_gbase *>(gb)); },
+         [](void *b, void *staged) { return tpchw_put_9(static_cast<tpchw_batch *>(b), staged); },
+         [](void *b) { tpchw_put_invalid_9(static_cast<tpchw_batch *>(b)); },
+         [](const void *st, uint64_t at, uint64_t tries, int32_t *status) -> const void * {
            return tpchw_read_9(static_cast<const tpchw_store *>(st), at, tries, status);
          },
-         [](const void *st) { return tpchw_newest_9(static_cast<const tpchw_store *>(st)); },
-         [](const void *s) { tpchw_release_9(s); },
+         [](const void *r) { tpchw_release_9(const_cast<void *>(r)); },
          [](const void *st) { tpchw_invalidate_9(static_cast<const tpchw_store *>(st)); }},
         {"tpch_q10_vgen",
-         [](void *b, void *s) { tpchw_batch_set_10(static_cast<tpchw_batch *>(b), s); },
-         [](const void *st, uint64_t at, uint64_t tries, int32_t *status) {
+         [](const void *gb) { return tpchw_base_10(static_cast<const tpchw_gbase *>(gb)); },
+         [](const void *gb) { return tpchw_head_10(static_cast<const tpchw_gbase *>(gb)); },
+         [](void *b, void *staged) { return tpchw_put_10(static_cast<tpchw_batch *>(b), staged); },
+         [](void *b) { tpchw_put_invalid_10(static_cast<tpchw_batch *>(b)); },
+         [](const void *st, uint64_t at, uint64_t tries, int32_t *status) -> const void * {
            return tpchw_read_10(static_cast<const tpchw_store *>(st), at, tries, status);
          },
-         [](const void *st) { return tpchw_newest_10(static_cast<const tpchw_store *>(st)); },
-         [](const void *s) { tpchw_release_10(s); },
+         [](const void *r) { tpchw_release_10(const_cast<void *>(r)); },
          [](const void *st) { tpchw_invalidate_10(static_cast<const tpchw_store *>(st)); }},
         {"tpch_q11_vgen",
-         [](void *b, void *s) { tpchw_batch_set_11(static_cast<tpchw_batch *>(b), s); },
-         [](const void *st, uint64_t at, uint64_t tries, int32_t *status) {
+         [](const void *gb) { return tpchw_base_11(static_cast<const tpchw_gbase *>(gb)); },
+         [](const void *gb) { return tpchw_head_11(static_cast<const tpchw_gbase *>(gb)); },
+         [](void *b, void *staged) { return tpchw_put_11(static_cast<tpchw_batch *>(b), staged); },
+         [](void *b) { tpchw_put_invalid_11(static_cast<tpchw_batch *>(b)); },
+         [](const void *st, uint64_t at, uint64_t tries, int32_t *status) -> const void * {
            return tpchw_read_11(static_cast<const tpchw_store *>(st), at, tries, status);
          },
-         [](const void *st) { return tpchw_newest_11(static_cast<const tpchw_store *>(st)); },
-         [](const void *s) { tpchw_release_11(s); },
+         [](const void *r) { tpchw_release_11(const_cast<void *>(r)); },
          [](const void *st) { tpchw_invalidate_11(static_cast<const tpchw_store *>(st)); }},
         {"tpch_q12_vgen",
-         [](void *b, void *s) { tpchw_batch_set_12(static_cast<tpchw_batch *>(b), s); },
-         [](const void *st, uint64_t at, uint64_t tries, int32_t *status) {
+         [](const void *gb) { return tpchw_base_12(static_cast<const tpchw_gbase *>(gb)); },
+         [](const void *gb) { return tpchw_head_12(static_cast<const tpchw_gbase *>(gb)); },
+         [](void *b, void *staged) { return tpchw_put_12(static_cast<tpchw_batch *>(b), staged); },
+         [](void *b) { tpchw_put_invalid_12(static_cast<tpchw_batch *>(b)); },
+         [](const void *st, uint64_t at, uint64_t tries, int32_t *status) -> const void * {
            return tpchw_read_12(static_cast<const tpchw_store *>(st), at, tries, status);
          },
-         [](const void *st) { return tpchw_newest_12(static_cast<const tpchw_store *>(st)); },
-         [](const void *s) { tpchw_release_12(s); },
+         [](const void *r) { tpchw_release_12(const_cast<void *>(r)); },
          [](const void *st) { tpchw_invalidate_12(static_cast<const tpchw_store *>(st)); }},
         {"tpch_q13_vgen",
-         [](void *b, void *s) { tpchw_batch_set_13(static_cast<tpchw_batch *>(b), s); },
-         [](const void *st, uint64_t at, uint64_t tries, int32_t *status) {
+         [](const void *gb) { return tpchw_base_13(static_cast<const tpchw_gbase *>(gb)); },
+         [](const void *gb) { return tpchw_head_13(static_cast<const tpchw_gbase *>(gb)); },
+         [](void *b, void *staged) { return tpchw_put_13(static_cast<tpchw_batch *>(b), staged); },
+         [](void *b) { tpchw_put_invalid_13(static_cast<tpchw_batch *>(b)); },
+         [](const void *st, uint64_t at, uint64_t tries, int32_t *status) -> const void * {
            return tpchw_read_13(static_cast<const tpchw_store *>(st), at, tries, status);
          },
-         [](const void *st) { return tpchw_newest_13(static_cast<const tpchw_store *>(st)); },
-         [](const void *s) { tpchw_release_13(s); },
+         [](const void *r) { tpchw_release_13(const_cast<void *>(r)); },
          [](const void *st) { tpchw_invalidate_13(static_cast<const tpchw_store *>(st)); }},
         {"tpch_q14_vgen",
-         [](void *b, void *s) { tpchw_batch_set_14(static_cast<tpchw_batch *>(b), s); },
-         [](const void *st, uint64_t at, uint64_t tries, int32_t *status) {
+         [](const void *gb) { return tpchw_base_14(static_cast<const tpchw_gbase *>(gb)); },
+         [](const void *gb) { return tpchw_head_14(static_cast<const tpchw_gbase *>(gb)); },
+         [](void *b, void *staged) { return tpchw_put_14(static_cast<tpchw_batch *>(b), staged); },
+         [](void *b) { tpchw_put_invalid_14(static_cast<tpchw_batch *>(b)); },
+         [](const void *st, uint64_t at, uint64_t tries, int32_t *status) -> const void * {
            return tpchw_read_14(static_cast<const tpchw_store *>(st), at, tries, status);
          },
-         [](const void *st) { return tpchw_newest_14(static_cast<const tpchw_store *>(st)); },
-         [](const void *s) { tpchw_release_14(s); },
+         [](const void *r) { tpchw_release_14(const_cast<void *>(r)); },
          [](const void *st) { tpchw_invalidate_14(static_cast<const tpchw_store *>(st)); }},
         {"tpch_q15_vgen",
-         [](void *b, void *s) { tpchw_batch_set_15(static_cast<tpchw_batch *>(b), s); },
-         [](const void *st, uint64_t at, uint64_t tries, int32_t *status) {
+         [](const void *gb) { return tpchw_base_15(static_cast<const tpchw_gbase *>(gb)); },
+         [](const void *gb) { return tpchw_head_15(static_cast<const tpchw_gbase *>(gb)); },
+         [](void *b, void *staged) { return tpchw_put_15(static_cast<tpchw_batch *>(b), staged); },
+         [](void *b) { tpchw_put_invalid_15(static_cast<tpchw_batch *>(b)); },
+         [](const void *st, uint64_t at, uint64_t tries, int32_t *status) -> const void * {
            return tpchw_read_15(static_cast<const tpchw_store *>(st), at, tries, status);
          },
-         [](const void *st) { return tpchw_newest_15(static_cast<const tpchw_store *>(st)); },
-         [](const void *s) { tpchw_release_15(s); },
+         [](const void *r) { tpchw_release_15(const_cast<void *>(r)); },
          [](const void *st) { tpchw_invalidate_15(static_cast<const tpchw_store *>(st)); }},
         {"tpch_q16_vgen",
-         [](void *b, void *s) { tpchw_batch_set_16(static_cast<tpchw_batch *>(b), s); },
-         [](const void *st, uint64_t at, uint64_t tries, int32_t *status) {
+         [](const void *gb) { return tpchw_base_16(static_cast<const tpchw_gbase *>(gb)); },
+         [](const void *gb) { return tpchw_head_16(static_cast<const tpchw_gbase *>(gb)); },
+         [](void *b, void *staged) { return tpchw_put_16(static_cast<tpchw_batch *>(b), staged); },
+         [](void *b) { tpchw_put_invalid_16(static_cast<tpchw_batch *>(b)); },
+         [](const void *st, uint64_t at, uint64_t tries, int32_t *status) -> const void * {
            return tpchw_read_16(static_cast<const tpchw_store *>(st), at, tries, status);
          },
-         [](const void *st) { return tpchw_newest_16(static_cast<const tpchw_store *>(st)); },
-         [](const void *s) { tpchw_release_16(s); },
+         [](const void *r) { tpchw_release_16(const_cast<void *>(r)); },
          [](const void *st) { tpchw_invalidate_16(static_cast<const tpchw_store *>(st)); }},
         {"tpch_q17_vgen",
-         [](void *b, void *s) { tpchw_batch_set_17(static_cast<tpchw_batch *>(b), s); },
-         [](const void *st, uint64_t at, uint64_t tries, int32_t *status) {
+         [](const void *gb) { return tpchw_base_17(static_cast<const tpchw_gbase *>(gb)); },
+         [](const void *gb) { return tpchw_head_17(static_cast<const tpchw_gbase *>(gb)); },
+         [](void *b, void *staged) { return tpchw_put_17(static_cast<tpchw_batch *>(b), staged); },
+         [](void *b) { tpchw_put_invalid_17(static_cast<tpchw_batch *>(b)); },
+         [](const void *st, uint64_t at, uint64_t tries, int32_t *status) -> const void * {
            return tpchw_read_17(static_cast<const tpchw_store *>(st), at, tries, status);
          },
-         [](const void *st) { return tpchw_newest_17(static_cast<const tpchw_store *>(st)); },
-         [](const void *s) { tpchw_release_17(s); },
+         [](const void *r) { tpchw_release_17(const_cast<void *>(r)); },
          [](const void *st) { tpchw_invalidate_17(static_cast<const tpchw_store *>(st)); }},
         {"tpch_q18_vgen",
-         [](void *b, void *s) { tpchw_batch_set_18(static_cast<tpchw_batch *>(b), s); },
-         [](const void *st, uint64_t at, uint64_t tries, int32_t *status) {
+         [](const void *gb) { return tpchw_base_18(static_cast<const tpchw_gbase *>(gb)); },
+         [](const void *gb) { return tpchw_head_18(static_cast<const tpchw_gbase *>(gb)); },
+         [](void *b, void *staged) { return tpchw_put_18(static_cast<tpchw_batch *>(b), staged); },
+         [](void *b) { tpchw_put_invalid_18(static_cast<tpchw_batch *>(b)); },
+         [](const void *st, uint64_t at, uint64_t tries, int32_t *status) -> const void * {
            return tpchw_read_18(static_cast<const tpchw_store *>(st), at, tries, status);
          },
-         [](const void *st) { return tpchw_newest_18(static_cast<const tpchw_store *>(st)); },
-         [](const void *s) { tpchw_release_18(s); },
+         [](const void *r) { tpchw_release_18(const_cast<void *>(r)); },
          [](const void *st) { tpchw_invalidate_18(static_cast<const tpchw_store *>(st)); }},
         {"tpch_q19_vgen",
-         [](void *b, void *s) { tpchw_batch_set_19(static_cast<tpchw_batch *>(b), s); },
-         [](const void *st, uint64_t at, uint64_t tries, int32_t *status) {
+         [](const void *gb) { return tpchw_base_19(static_cast<const tpchw_gbase *>(gb)); },
+         [](const void *gb) { return tpchw_head_19(static_cast<const tpchw_gbase *>(gb)); },
+         [](void *b, void *staged) { return tpchw_put_19(static_cast<tpchw_batch *>(b), staged); },
+         [](void *b) { tpchw_put_invalid_19(static_cast<tpchw_batch *>(b)); },
+         [](const void *st, uint64_t at, uint64_t tries, int32_t *status) -> const void * {
            return tpchw_read_19(static_cast<const tpchw_store *>(st), at, tries, status);
          },
-         [](const void *st) { return tpchw_newest_19(static_cast<const tpchw_store *>(st)); },
-         [](const void *s) { tpchw_release_19(s); },
+         [](const void *r) { tpchw_release_19(const_cast<void *>(r)); },
          [](const void *st) { tpchw_invalidate_19(static_cast<const tpchw_store *>(st)); }},
         {"tpch_q20_vgen",
-         [](void *b, void *s) { tpchw_batch_set_20(static_cast<tpchw_batch *>(b), s); },
-         [](const void *st, uint64_t at, uint64_t tries, int32_t *status) {
+         [](const void *gb) { return tpchw_base_20(static_cast<const tpchw_gbase *>(gb)); },
+         [](const void *gb) { return tpchw_head_20(static_cast<const tpchw_gbase *>(gb)); },
+         [](void *b, void *staged) { return tpchw_put_20(static_cast<tpchw_batch *>(b), staged); },
+         [](void *b) { tpchw_put_invalid_20(static_cast<tpchw_batch *>(b)); },
+         [](const void *st, uint64_t at, uint64_t tries, int32_t *status) -> const void * {
            return tpchw_read_20(static_cast<const tpchw_store *>(st), at, tries, status);
          },
-         [](const void *st) { return tpchw_newest_20(static_cast<const tpchw_store *>(st)); },
-         [](const void *s) { tpchw_release_20(s); },
+         [](const void *r) { tpchw_release_20(const_cast<void *>(r)); },
          [](const void *st) { tpchw_invalidate_20(static_cast<const tpchw_store *>(st)); }},
         {"tpch_q21_vgen",
-         [](void *b, void *s) { tpchw_batch_set_21(static_cast<tpchw_batch *>(b), s); },
-         [](const void *st, uint64_t at, uint64_t tries, int32_t *status) {
+         [](const void *gb) { return tpchw_base_21(static_cast<const tpchw_gbase *>(gb)); },
+         [](const void *gb) { return tpchw_head_21(static_cast<const tpchw_gbase *>(gb)); },
+         [](void *b, void *staged) { return tpchw_put_21(static_cast<tpchw_batch *>(b), staged); },
+         [](void *b) { tpchw_put_invalid_21(static_cast<tpchw_batch *>(b)); },
+         [](const void *st, uint64_t at, uint64_t tries, int32_t *status) -> const void * {
            return tpchw_read_21(static_cast<const tpchw_store *>(st), at, tries, status);
          },
-         [](const void *st) { return tpchw_newest_21(static_cast<const tpchw_store *>(st)); },
-         [](const void *s) { tpchw_release_21(s); },
+         [](const void *r) { tpchw_release_21(const_cast<void *>(r)); },
          [](const void *st) { tpchw_invalidate_21(static_cast<const tpchw_store *>(st)); }},
         {"tpch_q22_vgen",
-         [](void *b, void *s) { tpchw_batch_set_22(static_cast<tpchw_batch *>(b), s); },
-         [](const void *st, uint64_t at, uint64_t tries, int32_t *status) {
+         [](const void *gb) { return tpchw_base_22(static_cast<const tpchw_gbase *>(gb)); },
+         [](const void *gb) { return tpchw_head_22(static_cast<const tpchw_gbase *>(gb)); },
+         [](void *b, void *staged) { return tpchw_put_22(static_cast<tpchw_batch *>(b), staged); },
+         [](void *b) { tpchw_put_invalid_22(static_cast<tpchw_batch *>(b)); },
+         [](const void *st, uint64_t at, uint64_t tries, int32_t *status) -> const void * {
            return tpchw_read_22(static_cast<const tpchw_store *>(st), at, tries, status);
          },
-         [](const void *st) { return tpchw_newest_22(static_cast<const tpchw_store *>(st)); },
-         [](const void *s) { tpchw_release_22(s); },
+         [](const void *r) { tpchw_release_22(const_cast<void *>(r)); },
          [](const void *st) { tpchw_invalidate_22(static_cast<const tpchw_store *>(st)); }},
     },
 };

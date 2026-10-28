@@ -133,12 +133,12 @@ void *Build(kit::Host &host) {
   return built;
 }
 
-void *PrepareBuild(const void *store, kit::Host &host) {
+void *PrepareBuild(const kit::HeadFn &head_of, kit::Host &host) {
   void *built = nullptr;
   {
   const BuildInputs inputs(host);
-  built = tpchq20vgens_prepare_build(
-      static_cast<const tpchq20vgens_store *>(store),
+  built = tpchq20vgens_stage_build(
+      static_cast<const tpchq20vgens_head *>(head_of()),
       inputs.parts.keys.size(), inputs.parts.keys.data(),
       inputs.parts.names.bytes.data(), inputs.parts.names.off.data(),
       inputs.stocks.size(), inputs.stocks.data(),
@@ -252,13 +252,13 @@ void *Apply(const void *state, const kit::Changes &changes, kit::Host &host,
       inputs.shipments.size(), inputs.shipments.data(), err);
 }
 
-void *PrepareApply(const void *store, const void *base,
+void *PrepareApply(const void *base,
                    const kit::Changes &changes, kit::Host &host, int32_t *err) {
   ApplyInputs inputs(changes);
   const auto *kernel_base = static_cast<const tpchq20vgens_base *>(base);
   inputs.Rescan(tpchq20vgens_base_state(kernel_base), host);
-  return tpchq20vgens_prepare_apply(
-      static_cast<const tpchq20vgens_store *>(store), kernel_base,
+  return tpchq20vgens_stage_apply(
+      kernel_base,
       inputs.lineitem.size(), inputs.lineitem.data(),
       inputs.nation.keys.size(), inputs.nation.keys.data(),
       inputs.nation.names.bytes.data(), inputs.nation.names.off.data(),
@@ -281,8 +281,8 @@ void FreeState(void *state) {
   tpchq20vgen_free(static_cast<tpchq20vgen_state *>(state));
 }
 
-bool Execute(const void *state, const core::QueryArguments &args,
-             std::vector<core::AuxRow> &out) {
+template <class Call>
+bool Run(const kit::core::QueryArguments &args, std::vector<kit::core::AuxRow> &out, Call call) {
   int32_t start_date;
   std::string pattern;
   std::string nation_name;
@@ -294,8 +294,7 @@ bool Execute(const void *state, const core::QueryArguments &args,
     return false;
   }
   std::unique_ptr<tpchq20vgen_result, decltype(&tpchq20vgen_result_free)> result(
-      tpchq20vgen_execute(static_cast<const tpchq20vgen_state *>(state),
-                         start_date,
+      call(start_date,
                          reinterpret_cast<const uint8_t *>(pattern.data()),
                          pattern.size(),
                          reinterpret_cast<const uint8_t *>(nation_name.data()),
@@ -328,6 +327,20 @@ bool Execute(const void *state, const core::QueryArguments &args,
   return true;
 }
 
+bool Execute(const void *state, const kit::core::QueryArguments &args,
+             std::vector<kit::core::AuxRow> &out) {
+  return Run(args, out, [&](auto... x) {
+    return tpchq20vgen_execute(static_cast<const tpchq20vgen_state *>(state), x...);
+  });
+}
+
+bool Answer(const void *state, const kit::core::QueryArguments &args,
+            std::vector<kit::core::AuxRow> &out) {
+  return Run(args, out, [&](auto... x) {
+    return tpchq20vgens_answer(static_cast<const tpchq20vgens_reading *>(state), x...);
+  });
+}
+
 const kit::Glue kGlue = {
     "tpch_q20_vgen", "tpch", 20, kQuerySql,
     {{"part", {"p_partkey", "p_name"}},
@@ -336,53 +349,29 @@ const kit::Glue kGlue = {
      {"supplier", {"s_suppkey", "s_name", "s_address", "s_nationkey"}},
      {"nation", {"n_nationkey", "n_name"}}},
     {kit::Kind::Date, kit::Kind::Text, kit::Kind::Text, kit::Kind::Date},
-    Build, FreeState, Apply, Execute, PrepareApply, PrepareBuild,
+    Build, FreeState, Apply, Execute, Answer, PrepareApply, PrepareBuild,
     kit::StoreOps{
         []() -> void * { return tpchq20vgens_new(); },
-        [](void *store) {
-          tpchq20vgens_free(static_cast<tpchq20vgens_store *>(store));
+        [](void *store) { tpchq20vgens_free(static_cast<tpchq20vgens_store *>(store)); },
+        [](const void *store) -> void * { return tpchq20vgens_newest_base(static_cast<const tpchq20vgens_store *>(store)); },
+        [](const void *base) -> const void * { return tpchq20vgens_base_state(static_cast<const tpchq20vgens_base *>(base)); },
+        [](void *base) { tpchq20vgens_base_free(static_cast<tpchq20vgens_base *>(base)); },
+        [](const void *store) -> void * { return tpchq20vgens_newest_head(static_cast<const tpchq20vgens_store *>(store)); },
+        [](void *head) { tpchq20vgens_head_free(static_cast<tpchq20vgens_head *>(head)); },
+        [](const void *head) -> void * { return tpchq20vgens_stage_invalid(static_cast<const tpchq20vgens_head *>(head)); },
+        [](void *staged) { tpchq20vgens_staged_free(static_cast<tpchq20vgens_staged *>(staged)); },
+        [](const void *store, uint64_t from) -> int32_t { return tpchq20vgens_begin(static_cast<const tpchq20vgens_store *>(store), from); },
+        [](const void *store) { tpchq20vgens_abort(static_cast<const tpchq20vgens_store *>(store)); },
+        [](const void *store, void *staged, uint64_t from, uint64_t floor, int32_t end_commit) -> int32_t {
+            return tpchq20vgens_install(static_cast<const tpchq20vgens_store *>(store), static_cast<tpchq20vgens_staged *>(staged), from, floor, end_commit);
         },
-        [](const void *store) -> void * {
-          return tpchq20vgens_newest_base(static_cast<const tpchq20vgens_store *>(store));
+        [](const void *store, uint64_t at, uint64_t tries, int32_t *status) -> const void * {
+            return tpchq20vgens_read(static_cast<const tpchq20vgens_store *>(store), at, tries, status);
         },
-        [](const void *base) -> const void * {
-          return tpchq20vgens_base_state(static_cast<const tpchq20vgens_base *>(base));
-        },
-        [](void *base) {
-          tpchq20vgens_base_free(static_cast<tpchq20vgens_base *>(base));
-        },
-        [](const void *store) -> void * {
-          return tpchq20vgens_prepare_invalid(static_cast<const tpchq20vgens_store *>(store));
-        },
-        [](void *prepared) {
-          tpchq20vgens_prepared_free(static_cast<tpchq20vgens_prepared *>(prepared));
-        },
-        [](const void *store, uint64_t from) -> int32_t {
-          return tpchq20vgens_begin(static_cast<const tpchq20vgens_store *>(store), from);
-        },
-        [](const void *store) {
-          tpchq20vgens_abort(static_cast<const tpchq20vgens_store *>(store));
-        },
-        [](const void *store, void *prepared, uint64_t from, uint64_t floor,
-           int32_t end_commit) -> int32_t {
-          return tpchq20vgens_install(static_cast<const tpchq20vgens_store *>(store),
-                                     static_cast<tpchq20vgens_prepared *>(prepared),
-                                     from, floor, end_commit);
-        },
-        [](const void *store, uint64_t at, uint64_t tries,
-           int32_t *status) -> const void * {
-          return tpchq20vgens_read(static_cast<const tpchq20vgens_store *>(store),
-                                  at, tries, status);
-        },
-        [](const void *state) {
-          tpchq20vgens_state_release(static_cast<const tpchq20vgen_state *>(state));
-        },
-        [](const void *store) {
-          tpchq20vgens_invalidate_all(static_cast<const tpchq20vgens_store *>(store));
-        },
-        [](const void *store) -> std::size_t {
-          return tpchq20vgens_version_count(static_cast<const tpchq20vgens_store *>(store));
-        }}};
+        [](const void *reading) { tpchq20vgens_reading_free(const_cast<tpchq20vgens_reading *>(static_cast<const tpchq20vgens_reading *>(reading))); },
+        [](const void *store) { tpchq20vgens_invalidate_all(static_cast<const tpchq20vgens_store *>(store)); },
+        [](const void *store) -> std::size_t { return tpchq20vgens_version_count(static_cast<const tpchq20vgens_store *>(store)); },
+    }};
 
 const kit::Registrar kRegistrar(&kGlue);
 

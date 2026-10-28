@@ -76,10 +76,10 @@ void *Build(kit::Host &host) {
                          rows.priorities.bytes.data(), rows.priorities.off.data());
 }
 
-void *PrepareBuild(const void *store, kit::Host &host) {
+void *PrepareBuild(const kit::HeadFn &head_of, kit::Host &host) {
   const auto rows = Scan(host);
-  return tpchq4vgens_prepare_build(
-      static_cast<const tpchq4vgens_store *>(store), rows.dates.size(),
+  return tpchq4vgens_stage_build(
+      static_cast<const tpchq4vgens_head *>(head_of()), rows.dates.size(),
       rows.dates.data(), rows.priorities.bytes.data(), rows.priorities.off.data());
 }
 
@@ -187,13 +187,13 @@ void *Apply(const void *state, const kit::Changes &changes, kit::Host &host,
       inputs.line_keys.data(), inputs.lines.size(), inputs.lines.data(), err);
 }
 
-void *PrepareApply(const void *store, const void *base,
+void *PrepareApply(const void *base,
                    const kit::Changes &changes, kit::Host &host, int32_t *err) {
   const auto *typed_base = static_cast<const tpchq4vgens_base *>(base);
   const ApplyInputs inputs(tpchq4vgens_base_state(typed_base), changes, host);
   const auto &deltas = inputs.deltas;
-  return tpchq4vgens_prepare_apply(
-      static_cast<const tpchq4vgens_store *>(store), typed_base,
+  return tpchq4vgens_stage_apply(
+      typed_base,
       deltas.lines.size(), deltas.lines.data(), deltas.orders.keys.size(),
       deltas.orders.keys.data(), deltas.orders.values.dates.data(),
       deltas.orders.values.priorities.bytes.data(),
@@ -205,16 +205,15 @@ void *PrepareApply(const void *store, const void *base,
       inputs.line_keys.data(), inputs.lines.size(), inputs.lines.data(), err);
 }
 
-bool Execute(const void *state, const core::QueryArguments &args,
-             std::vector<core::AuxRow> &out) {
+template <class Call>
+bool Run(const kit::core::QueryArguments &args, std::vector<kit::core::AuxRow> &out, Call call) {
   int32_t start_date;
   int32_t end_date;
   if (!kit::ArgDate(args, 0, start_date) || !kit::ArgDate(args, 1, end_date)) {
     return false;
   }
   std::unique_ptr<tpchq4vgen_result, decltype(&tpchq4vgen_result_free)> result(
-      tpchq4vgen_execute(static_cast<const tpchq4vgen_state *>(state),
-                        start_date, end_date),
+      call(start_date, end_date),
       tpchq4vgen_result_free);
   if (!result) {
     return false;
@@ -242,48 +241,47 @@ bool Execute(const void *state, const core::QueryArguments &args,
   return true;
 }
 
+bool Execute(const void *state, const kit::core::QueryArguments &args,
+             std::vector<kit::core::AuxRow> &out) {
+  return Run(args, out, [&](auto... x) {
+    return tpchq4vgen_execute(static_cast<const tpchq4vgen_state *>(state), x...);
+  });
+}
+
+bool Answer(const void *state, const kit::core::QueryArguments &args,
+            std::vector<kit::core::AuxRow> &out) {
+  return Run(args, out, [&](auto... x) {
+    return tpchq4vgens_answer(static_cast<const tpchq4vgens_reading *>(state), x...);
+  });
+}
+
 const kit::Glue kGlue = {
     "tpch_q4_vgen", "tpch", 4, kQuerySql,
     {{"orders", {"o_orderkey", "o_orderdate", "o_orderpriority"}},
      {"lineitem", {"l_orderkey", "l_commitdate", "l_receiptdate"}}},
     {kit::Kind::Date, kit::Kind::Date},
-    Build, FreeState, Apply, Execute, PrepareApply, PrepareBuild,
+    Build, FreeState, Apply, Execute, Answer, PrepareApply, PrepareBuild,
     kit::StoreOps{
         []() -> void * { return tpchq4vgens_new(); },
         [](void *store) { tpchq4vgens_free(static_cast<tpchq4vgens_store *>(store)); },
-        [](const void *store) -> void * {
-          return tpchq4vgens_newest_base(static_cast<const tpchq4vgens_store *>(store));
-        },
-        [](const void *base) -> const void * {
-          return tpchq4vgens_base_state(static_cast<const tpchq4vgens_base *>(base));
-        },
+        [](const void *store) -> void * { return tpchq4vgens_newest_base(static_cast<const tpchq4vgens_store *>(store)); },
+        [](const void *base) -> const void * { return tpchq4vgens_base_state(static_cast<const tpchq4vgens_base *>(base)); },
         [](void *base) { tpchq4vgens_base_free(static_cast<tpchq4vgens_base *>(base)); },
-        [](const void *store) -> void * {
-          return tpchq4vgens_prepare_invalid(static_cast<const tpchq4vgens_store *>(store));
-        },
-        [](void *prepared) {
-          tpchq4vgens_prepared_free(static_cast<tpchq4vgens_prepared *>(prepared));
-        },
-        [](const void *store, uint64_t from) -> int32_t {
-          return tpchq4vgens_begin(static_cast<const tpchq4vgens_store *>(store), from);
-        },
+        [](const void *store) -> void * { return tpchq4vgens_newest_head(static_cast<const tpchq4vgens_store *>(store)); },
+        [](void *head) { tpchq4vgens_head_free(static_cast<tpchq4vgens_head *>(head)); },
+        [](const void *head) -> void * { return tpchq4vgens_stage_invalid(static_cast<const tpchq4vgens_head *>(head)); },
+        [](void *staged) { tpchq4vgens_staged_free(static_cast<tpchq4vgens_staged *>(staged)); },
+        [](const void *store, uint64_t from) -> int32_t { return tpchq4vgens_begin(static_cast<const tpchq4vgens_store *>(store), from); },
         [](const void *store) { tpchq4vgens_abort(static_cast<const tpchq4vgens_store *>(store)); },
-        [](const void *store, void *prepared, uint64_t from, uint64_t floor,
-           int32_t end_commit) -> int32_t {
-          return tpchq4vgens_install(static_cast<const tpchq4vgens_store *>(store),
-                                   static_cast<tpchq4vgens_prepared *>(prepared),
-                                   from, floor, end_commit);
+        [](const void *store, void *staged, uint64_t from, uint64_t floor, int32_t end_commit) -> int32_t {
+            return tpchq4vgens_install(static_cast<const tpchq4vgens_store *>(store), static_cast<tpchq4vgens_staged *>(staged), from, floor, end_commit);
         },
-        [](const void *store, uint64_t at, uint64_t tries,
-           int32_t *status) -> const void * {
-          return tpchq4vgens_read(static_cast<const tpchq4vgens_store *>(store),
-                                at, tries, status);
+        [](const void *store, uint64_t at, uint64_t tries, int32_t *status) -> const void * {
+            return tpchq4vgens_read(static_cast<const tpchq4vgens_store *>(store), at, tries, status);
         },
-        [](const void *state) { tpchq4vgens_state_release(static_cast<const tpchq4vgen_state *>(state)); },
+        [](const void *reading) { tpchq4vgens_reading_free(const_cast<tpchq4vgens_reading *>(static_cast<const tpchq4vgens_reading *>(reading))); },
         [](const void *store) { tpchq4vgens_invalidate_all(static_cast<const tpchq4vgens_store *>(store)); },
-        [](const void *store) -> std::size_t {
-          return tpchq4vgens_version_count(static_cast<const tpchq4vgens_store *>(store));
-        },
+        [](const void *store) -> std::size_t { return tpchq4vgens_version_count(static_cast<const tpchq4vgens_store *>(store)); },
     },
 };
 

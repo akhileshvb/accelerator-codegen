@@ -3,11 +3,17 @@
 // The tpch world: one verified aux store for every accelerator (one
 // reader-writer lock, one version per database commit).  Version v's world
 // holds one slot per accelerator; slot k answers for accelerator k's
-// projection of the database at v (`db_k`).  A commit's new version is
-// assembled outside the lock (`Batch`) from the newest version's world and
-// installed with one write-locked step; readers resolve their snapshot
-// under the read lock (substrate store.rs: the snapshot theorem) and take
-// their accelerator's state.
+// projection of the database at v (`db_k`).
+//
+// A commit's version is assembled outside the lock.  Every accelerator the
+// commit changes stages its slot with its kit's stage_apply / stage_build on
+// its part of the newest version (`base_k` / `head_k` of a `GBase`), and the
+// `Batch` made from that GBase takes it (`put_k`) only if the slot was staged
+// on that very base; any other slot becomes invalid.  So every put state is
+// produced by verified code from slot k of the batch's base world.
+// Readers resolve their snapshot under the read lock (substrate store.rs:
+// the snapshot and commit-order theorems) and are narrowed to their
+// accelerator (`read_k`); the kit's `answer` is Theorem 5.4 on that reading.
 #![allow(unused_imports)]
 use vstd::prelude::*;
 use std::sync::Arc;
@@ -180,6 +186,11 @@ pub open spec fn db_1(d: GDb) -> D1 {
     d.d1
 }
 
+/// tpch_q1_vgen's projection of a timeline.
+pub open spec fn tl_1(t: spec_fn(nat) -> GDb) -> spec_fn(nat) -> D1 {
+    |n: nat| db_1(t(n))
+}
+
 /// d with tpch_q1_vgen's projection replaced by x.
 pub open spec fn with_1(d: GDb, x: D1) -> GDb {
     GDb { d1: x, d2: d.d2, d3: d.d3, d4: d.d4, d5: d.d5, d6: d.d6, d7: d.d7, d8: d.d8, d9: d.d9, d10: d.d10, d11: d.d11, d12: d.d12, d13: d.d13, d14: d.d14, d15: d.d15, d16: d.d16, d17: d.d17, d18: d.d18, d19: d.d19, d20: d.d20, d21: d.d21, d22: d.d22 }
@@ -232,6 +243,11 @@ pub fn slot_1(w: &World, Ghost(d): Ghost<GDb>) -> (r: &Slot<S1>)
 /// tpch_q2_vgen's projection of the database.
 pub open spec fn db_2(d: GDb) -> D2 {
     d.d2
+}
+
+/// tpch_q2_vgen's projection of a timeline.
+pub open spec fn tl_2(t: spec_fn(nat) -> GDb) -> spec_fn(nat) -> D2 {
+    |n: nat| db_2(t(n))
 }
 
 /// d with tpch_q2_vgen's projection replaced by x.
@@ -288,6 +304,11 @@ pub open spec fn db_3(d: GDb) -> D3 {
     d.d3
 }
 
+/// tpch_q3_vgen's projection of a timeline.
+pub open spec fn tl_3(t: spec_fn(nat) -> GDb) -> spec_fn(nat) -> D3 {
+    |n: nat| db_3(t(n))
+}
+
 /// d with tpch_q3_vgen's projection replaced by x.
 pub open spec fn with_3(d: GDb, x: D3) -> GDb {
     GDb { d1: d.d1, d2: d.d2, d3: x, d4: d.d4, d5: d.d5, d6: d.d6, d7: d.d7, d8: d.d8, d9: d.d9, d10: d.d10, d11: d.d11, d12: d.d12, d13: d.d13, d14: d.d14, d15: d.d15, d16: d.d16, d17: d.d17, d18: d.d18, d19: d.d19, d20: d.d20, d21: d.d21, d22: d.d22 }
@@ -340,6 +361,11 @@ pub fn slot_3(w: &World, Ghost(d): Ghost<GDb>) -> (r: &Slot<S3>)
 /// tpch_q4_vgen's projection of the database.
 pub open spec fn db_4(d: GDb) -> D4 {
     d.d4
+}
+
+/// tpch_q4_vgen's projection of a timeline.
+pub open spec fn tl_4(t: spec_fn(nat) -> GDb) -> spec_fn(nat) -> D4 {
+    |n: nat| db_4(t(n))
 }
 
 /// d with tpch_q4_vgen's projection replaced by x.
@@ -396,6 +422,11 @@ pub open spec fn db_5(d: GDb) -> D5 {
     d.d5
 }
 
+/// tpch_q5_vgen's projection of a timeline.
+pub open spec fn tl_5(t: spec_fn(nat) -> GDb) -> spec_fn(nat) -> D5 {
+    |n: nat| db_5(t(n))
+}
+
 /// d with tpch_q5_vgen's projection replaced by x.
 pub open spec fn with_5(d: GDb, x: D5) -> GDb {
     GDb { d1: d.d1, d2: d.d2, d3: d.d3, d4: d.d4, d5: x, d6: d.d6, d7: d.d7, d8: d.d8, d9: d.d9, d10: d.d10, d11: d.d11, d12: d.d12, d13: d.d13, d14: d.d14, d15: d.d15, d16: d.d16, d17: d.d17, d18: d.d18, d19: d.d19, d20: d.d20, d21: d.d21, d22: d.d22 }
@@ -448,6 +479,11 @@ pub fn slot_5(w: &World, Ghost(d): Ghost<GDb>) -> (r: &Slot<S5>)
 /// tpch_q6_vgen's projection of the database.
 pub open spec fn db_6(d: GDb) -> D6 {
     d.d6
+}
+
+/// tpch_q6_vgen's projection of a timeline.
+pub open spec fn tl_6(t: spec_fn(nat) -> GDb) -> spec_fn(nat) -> D6 {
+    |n: nat| db_6(t(n))
 }
 
 /// d with tpch_q6_vgen's projection replaced by x.
@@ -504,6 +540,11 @@ pub open spec fn db_7(d: GDb) -> D7 {
     d.d7
 }
 
+/// tpch_q7_vgen's projection of a timeline.
+pub open spec fn tl_7(t: spec_fn(nat) -> GDb) -> spec_fn(nat) -> D7 {
+    |n: nat| db_7(t(n))
+}
+
 /// d with tpch_q7_vgen's projection replaced by x.
 pub open spec fn with_7(d: GDb, x: D7) -> GDb {
     GDb { d1: d.d1, d2: d.d2, d3: d.d3, d4: d.d4, d5: d.d5, d6: d.d6, d7: x, d8: d.d8, d9: d.d9, d10: d.d10, d11: d.d11, d12: d.d12, d13: d.d13, d14: d.d14, d15: d.d15, d16: d.d16, d17: d.d17, d18: d.d18, d19: d.d19, d20: d.d20, d21: d.d21, d22: d.d22 }
@@ -556,6 +597,11 @@ pub fn slot_7(w: &World, Ghost(d): Ghost<GDb>) -> (r: &Slot<S7>)
 /// tpch_q8_vgen's projection of the database.
 pub open spec fn db_8(d: GDb) -> D8 {
     d.d8
+}
+
+/// tpch_q8_vgen's projection of a timeline.
+pub open spec fn tl_8(t: spec_fn(nat) -> GDb) -> spec_fn(nat) -> D8 {
+    |n: nat| db_8(t(n))
 }
 
 /// d with tpch_q8_vgen's projection replaced by x.
@@ -612,6 +658,11 @@ pub open spec fn db_9(d: GDb) -> D9 {
     d.d9
 }
 
+/// tpch_q9_vgen's projection of a timeline.
+pub open spec fn tl_9(t: spec_fn(nat) -> GDb) -> spec_fn(nat) -> D9 {
+    |n: nat| db_9(t(n))
+}
+
 /// d with tpch_q9_vgen's projection replaced by x.
 pub open spec fn with_9(d: GDb, x: D9) -> GDb {
     GDb { d1: d.d1, d2: d.d2, d3: d.d3, d4: d.d4, d5: d.d5, d6: d.d6, d7: d.d7, d8: d.d8, d9: x, d10: d.d10, d11: d.d11, d12: d.d12, d13: d.d13, d14: d.d14, d15: d.d15, d16: d.d16, d17: d.d17, d18: d.d18, d19: d.d19, d20: d.d20, d21: d.d21, d22: d.d22 }
@@ -664,6 +715,11 @@ pub fn slot_9(w: &World, Ghost(d): Ghost<GDb>) -> (r: &Slot<S9>)
 /// tpch_q10_vgen's projection of the database.
 pub open spec fn db_10(d: GDb) -> D10 {
     d.d10
+}
+
+/// tpch_q10_vgen's projection of a timeline.
+pub open spec fn tl_10(t: spec_fn(nat) -> GDb) -> spec_fn(nat) -> D10 {
+    |n: nat| db_10(t(n))
 }
 
 /// d with tpch_q10_vgen's projection replaced by x.
@@ -720,6 +776,11 @@ pub open spec fn db_11(d: GDb) -> D11 {
     d.d11
 }
 
+/// tpch_q11_vgen's projection of a timeline.
+pub open spec fn tl_11(t: spec_fn(nat) -> GDb) -> spec_fn(nat) -> D11 {
+    |n: nat| db_11(t(n))
+}
+
 /// d with tpch_q11_vgen's projection replaced by x.
 pub open spec fn with_11(d: GDb, x: D11) -> GDb {
     GDb { d1: d.d1, d2: d.d2, d3: d.d3, d4: d.d4, d5: d.d5, d6: d.d6, d7: d.d7, d8: d.d8, d9: d.d9, d10: d.d10, d11: x, d12: d.d12, d13: d.d13, d14: d.d14, d15: d.d15, d16: d.d16, d17: d.d17, d18: d.d18, d19: d.d19, d20: d.d20, d21: d.d21, d22: d.d22 }
@@ -772,6 +833,11 @@ pub fn slot_11(w: &World, Ghost(d): Ghost<GDb>) -> (r: &Slot<S11>)
 /// tpch_q12_vgen's projection of the database.
 pub open spec fn db_12(d: GDb) -> D12 {
     d.d12
+}
+
+/// tpch_q12_vgen's projection of a timeline.
+pub open spec fn tl_12(t: spec_fn(nat) -> GDb) -> spec_fn(nat) -> D12 {
+    |n: nat| db_12(t(n))
 }
 
 /// d with tpch_q12_vgen's projection replaced by x.
@@ -828,6 +894,11 @@ pub open spec fn db_13(d: GDb) -> D13 {
     d.d13
 }
 
+/// tpch_q13_vgen's projection of a timeline.
+pub open spec fn tl_13(t: spec_fn(nat) -> GDb) -> spec_fn(nat) -> D13 {
+    |n: nat| db_13(t(n))
+}
+
 /// d with tpch_q13_vgen's projection replaced by x.
 pub open spec fn with_13(d: GDb, x: D13) -> GDb {
     GDb { d1: d.d1, d2: d.d2, d3: d.d3, d4: d.d4, d5: d.d5, d6: d.d6, d7: d.d7, d8: d.d8, d9: d.d9, d10: d.d10, d11: d.d11, d12: d.d12, d13: x, d14: d.d14, d15: d.d15, d16: d.d16, d17: d.d17, d18: d.d18, d19: d.d19, d20: d.d20, d21: d.d21, d22: d.d22 }
@@ -880,6 +951,11 @@ pub fn slot_13(w: &World, Ghost(d): Ghost<GDb>) -> (r: &Slot<S13>)
 /// tpch_q14_vgen's projection of the database.
 pub open spec fn db_14(d: GDb) -> D14 {
     d.d14
+}
+
+/// tpch_q14_vgen's projection of a timeline.
+pub open spec fn tl_14(t: spec_fn(nat) -> GDb) -> spec_fn(nat) -> D14 {
+    |n: nat| db_14(t(n))
 }
 
 /// d with tpch_q14_vgen's projection replaced by x.
@@ -936,6 +1012,11 @@ pub open spec fn db_15(d: GDb) -> D15 {
     d.d15
 }
 
+/// tpch_q15_vgen's projection of a timeline.
+pub open spec fn tl_15(t: spec_fn(nat) -> GDb) -> spec_fn(nat) -> D15 {
+    |n: nat| db_15(t(n))
+}
+
 /// d with tpch_q15_vgen's projection replaced by x.
 pub open spec fn with_15(d: GDb, x: D15) -> GDb {
     GDb { d1: d.d1, d2: d.d2, d3: d.d3, d4: d.d4, d5: d.d5, d6: d.d6, d7: d.d7, d8: d.d8, d9: d.d9, d10: d.d10, d11: d.d11, d12: d.d12, d13: d.d13, d14: d.d14, d15: x, d16: d.d16, d17: d.d17, d18: d.d18, d19: d.d19, d20: d.d20, d21: d.d21, d22: d.d22 }
@@ -988,6 +1069,11 @@ pub fn slot_15(w: &World, Ghost(d): Ghost<GDb>) -> (r: &Slot<S15>)
 /// tpch_q16_vgen's projection of the database.
 pub open spec fn db_16(d: GDb) -> D16 {
     d.d16
+}
+
+/// tpch_q16_vgen's projection of a timeline.
+pub open spec fn tl_16(t: spec_fn(nat) -> GDb) -> spec_fn(nat) -> D16 {
+    |n: nat| db_16(t(n))
 }
 
 /// d with tpch_q16_vgen's projection replaced by x.
@@ -1044,6 +1130,11 @@ pub open spec fn db_17(d: GDb) -> D17 {
     d.d17
 }
 
+/// tpch_q17_vgen's projection of a timeline.
+pub open spec fn tl_17(t: spec_fn(nat) -> GDb) -> spec_fn(nat) -> D17 {
+    |n: nat| db_17(t(n))
+}
+
 /// d with tpch_q17_vgen's projection replaced by x.
 pub open spec fn with_17(d: GDb, x: D17) -> GDb {
     GDb { d1: d.d1, d2: d.d2, d3: d.d3, d4: d.d4, d5: d.d5, d6: d.d6, d7: d.d7, d8: d.d8, d9: d.d9, d10: d.d10, d11: d.d11, d12: d.d12, d13: d.d13, d14: d.d14, d15: d.d15, d16: d.d16, d17: x, d18: d.d18, d19: d.d19, d20: d.d20, d21: d.d21, d22: d.d22 }
@@ -1096,6 +1187,11 @@ pub fn slot_17(w: &World, Ghost(d): Ghost<GDb>) -> (r: &Slot<S17>)
 /// tpch_q18_vgen's projection of the database.
 pub open spec fn db_18(d: GDb) -> D18 {
     d.d18
+}
+
+/// tpch_q18_vgen's projection of a timeline.
+pub open spec fn tl_18(t: spec_fn(nat) -> GDb) -> spec_fn(nat) -> D18 {
+    |n: nat| db_18(t(n))
 }
 
 /// d with tpch_q18_vgen's projection replaced by x.
@@ -1152,6 +1248,11 @@ pub open spec fn db_19(d: GDb) -> D19 {
     d.d19
 }
 
+/// tpch_q19_vgen's projection of a timeline.
+pub open spec fn tl_19(t: spec_fn(nat) -> GDb) -> spec_fn(nat) -> D19 {
+    |n: nat| db_19(t(n))
+}
+
 /// d with tpch_q19_vgen's projection replaced by x.
 pub open spec fn with_19(d: GDb, x: D19) -> GDb {
     GDb { d1: d.d1, d2: d.d2, d3: d.d3, d4: d.d4, d5: d.d5, d6: d.d6, d7: d.d7, d8: d.d8, d9: d.d9, d10: d.d10, d11: d.d11, d12: d.d12, d13: d.d13, d14: d.d14, d15: d.d15, d16: d.d16, d17: d.d17, d18: d.d18, d19: x, d20: d.d20, d21: d.d21, d22: d.d22 }
@@ -1204,6 +1305,11 @@ pub fn slot_19(w: &World, Ghost(d): Ghost<GDb>) -> (r: &Slot<S19>)
 /// tpch_q20_vgen's projection of the database.
 pub open spec fn db_20(d: GDb) -> D20 {
     d.d20
+}
+
+/// tpch_q20_vgen's projection of a timeline.
+pub open spec fn tl_20(t: spec_fn(nat) -> GDb) -> spec_fn(nat) -> D20 {
+    |n: nat| db_20(t(n))
 }
 
 /// d with tpch_q20_vgen's projection replaced by x.
@@ -1260,6 +1366,11 @@ pub open spec fn db_21(d: GDb) -> D21 {
     d.d21
 }
 
+/// tpch_q21_vgen's projection of a timeline.
+pub open spec fn tl_21(t: spec_fn(nat) -> GDb) -> spec_fn(nat) -> D21 {
+    |n: nat| db_21(t(n))
+}
+
 /// d with tpch_q21_vgen's projection replaced by x.
 pub open spec fn with_21(d: GDb, x: D21) -> GDb {
     GDb { d1: d.d1, d2: d.d2, d3: d.d3, d4: d.d4, d5: d.d5, d6: d.d6, d7: d.d7, d8: d.d8, d9: d.d9, d10: d.d10, d11: d.d11, d12: d.d12, d13: d.d13, d14: d.d14, d15: d.d15, d16: d.d16, d17: d.d17, d18: d.d18, d19: d.d19, d20: d.d20, d21: x, d22: d.d22 }
@@ -1314,6 +1425,11 @@ pub open spec fn db_22(d: GDb) -> D22 {
     d.d22
 }
 
+/// tpch_q22_vgen's projection of a timeline.
+pub open spec fn tl_22(t: spec_fn(nat) -> GDb) -> spec_fn(nat) -> D22 {
+    |n: nat| db_22(t(n))
+}
+
 /// d with tpch_q22_vgen's projection replaced by x.
 pub open spec fn with_22(d: GDb, x: D22) -> GDb {
     GDb { d1: d.d1, d2: d.d2, d3: d.d3, d4: d.d4, d5: d.d5, d6: d.d6, d7: d.d7, d8: d.d8, d9: d.d9, d10: d.d10, d11: d.d11, d12: d.d12, d13: d.d13, d14: d.d14, d15: d.d15, d16: d.d16, d17: d.d17, d18: d.d18, d19: d.d19, d20: d.d20, d21: d.d21, d22: x }
@@ -1363,27 +1479,684 @@ pub fn slot_22(w: &World, Ghost(d): Ghost<GDb>) -> (r: &Slot<S22>)
     &w.s22
 }
 
-/// The next version's world, assembled outside the lock from the newest
-/// version e's world: each accelerator the commit changes gets its new slot
-/// (answering for its projection at e + 1), every other slot is carried.
+/// The newest version e: its world, answering for the database at e, and one
+/// head per accelerator (the version and its projected timeline) that the
+/// slots staged on this base carry.
+pub struct GBase {
+    e: u64,
+    w: World,
+    timeline: Ghost<spec_fn(nat) -> GDb>,
+    h1: Head<D1>,
+    h2: Head<D2>,
+    h3: Head<D3>,
+    h4: Head<D4>,
+    h5: Head<D5>,
+    h6: Head<D6>,
+    h7: Head<D7>,
+    h8: Head<D8>,
+    h9: Head<D9>,
+    h10: Head<D10>,
+    h11: Head<D11>,
+    h12: Head<D12>,
+    h13: Head<D13>,
+    h14: Head<D14>,
+    h15: Head<D15>,
+    h16: Head<D16>,
+    h17: Head<D17>,
+    h18: Head<D18>,
+    h19: Head<D19>,
+    h20: Head<D20>,
+    h21: Head<D21>,
+    h22: Head<D22>,
+}
+
+impl GBase {
+    #[verifier::type_invariant]
+    spec fn wf(self) -> bool {
+        &&& self.e < u64::MAX
+        &&& self.w.ok((self.timeline@)(self.e as nat))
+        &&& self.h1.epoch() == self.e && self.h1.timeline() == tl_1(self.timeline@)
+        &&& self.h2.epoch() == self.e && self.h2.timeline() == tl_2(self.timeline@)
+        &&& self.h3.epoch() == self.e && self.h3.timeline() == tl_3(self.timeline@)
+        &&& self.h4.epoch() == self.e && self.h4.timeline() == tl_4(self.timeline@)
+        &&& self.h5.epoch() == self.e && self.h5.timeline() == tl_5(self.timeline@)
+        &&& self.h6.epoch() == self.e && self.h6.timeline() == tl_6(self.timeline@)
+        &&& self.h7.epoch() == self.e && self.h7.timeline() == tl_7(self.timeline@)
+        &&& self.h8.epoch() == self.e && self.h8.timeline() == tl_8(self.timeline@)
+        &&& self.h9.epoch() == self.e && self.h9.timeline() == tl_9(self.timeline@)
+        &&& self.h10.epoch() == self.e && self.h10.timeline() == tl_10(self.timeline@)
+        &&& self.h11.epoch() == self.e && self.h11.timeline() == tl_11(self.timeline@)
+        &&& self.h12.epoch() == self.e && self.h12.timeline() == tl_12(self.timeline@)
+        &&& self.h13.epoch() == self.e && self.h13.timeline() == tl_13(self.timeline@)
+        &&& self.h14.epoch() == self.e && self.h14.timeline() == tl_14(self.timeline@)
+        &&& self.h15.epoch() == self.e && self.h15.timeline() == tl_15(self.timeline@)
+        &&& self.h16.epoch() == self.e && self.h16.timeline() == tl_16(self.timeline@)
+        &&& self.h17.epoch() == self.e && self.h17.timeline() == tl_17(self.timeline@)
+        &&& self.h18.epoch() == self.e && self.h18.timeline() == tl_18(self.timeline@)
+        &&& self.h19.epoch() == self.e && self.h19.timeline() == tl_19(self.timeline@)
+        &&& self.h20.epoch() == self.e && self.h20.timeline() == tl_20(self.timeline@)
+        &&& self.h21.epoch() == self.e && self.h21.timeline() == tl_21(self.timeline@)
+        &&& self.h22.epoch() == self.e && self.h22.timeline() == tl_22(self.timeline@)
+    }
+
+    pub closed spec fn epoch(self) -> u64 {
+        self.e
+    }
+
+    pub closed spec fn timeline(self) -> spec_fn(nat) -> GDb {
+        self.timeline@
+    }
+}
+
+/// The newest version as a base to stage the next one on (None if no version can follow it).
+pub fn gbase_new(store: &GStore) -> (r: Option<Arc<GBase>>)
+    ensures
+        r matches Some(b) ==> b.timeline() == store.timeline(),
+{
+    let (e, w) = store.newest_world();
+    if e < u64::MAX {
+        let ghost t = store.timeline();
+        Some(Arc::new(GBase {
+            e,
+            w,
+            timeline: Ghost(t),
+            h1: Head::new(e, Ghost(tl_1(t))),
+            h2: Head::new(e, Ghost(tl_2(t))),
+            h3: Head::new(e, Ghost(tl_3(t))),
+            h4: Head::new(e, Ghost(tl_4(t))),
+            h5: Head::new(e, Ghost(tl_5(t))),
+            h6: Head::new(e, Ghost(tl_6(t))),
+            h7: Head::new(e, Ghost(tl_7(t))),
+            h8: Head::new(e, Ghost(tl_8(t))),
+            h9: Head::new(e, Ghost(tl_9(t))),
+            h10: Head::new(e, Ghost(tl_10(t))),
+            h11: Head::new(e, Ghost(tl_11(t))),
+            h12: Head::new(e, Ghost(tl_12(t))),
+            h13: Head::new(e, Ghost(tl_13(t))),
+            h14: Head::new(e, Ghost(tl_14(t))),
+            h15: Head::new(e, Ghost(tl_15(t))),
+            h16: Head::new(e, Ghost(tl_16(t))),
+            h17: Head::new(e, Ghost(tl_17(t))),
+            h18: Head::new(e, Ghost(tl_18(t))),
+            h19: Head::new(e, Ghost(tl_19(t))),
+            h20: Head::new(e, Ghost(tl_20(t))),
+            h21: Head::new(e, Ghost(tl_21(t))),
+            h22: Head::new(e, Ghost(tl_22(t))),
+        }))
+    } else {
+        None
+    }
+}
+
+/// tpch_q1_vgen's state in the base (None if its slot is invalid).
+pub fn base_1(gb: &GBase) -> (r: Option<Base<D1, S1>>)
+    ensures
+        r matches Some(b) ==> b.epoch() == gb.epoch() && b.timeline() == tl_1(gb.timeline()),
+{
+    proof {
+        use_type_invariant(gb);
+    }
+    match &gb.w.s1 {
+        Slot::Valid(a) => Some(Base::new(gb.h1.share(), a.clone())),
+        Slot::Invalid => None,
+    }
+}
+
+/// tpch_q1_vgen's head of the base (to stage a build on).
+pub fn head_1(gb: &GBase) -> (r: Head<D1>)
+    ensures
+        r.epoch() == gb.epoch() && r.timeline() == tl_1(gb.timeline()),
+{
+    proof {
+        use_type_invariant(gb);
+    }
+    gb.h1.share()
+}
+
+/// tpch_q2_vgen's state in the base (None if its slot is invalid).
+pub fn base_2(gb: &GBase) -> (r: Option<Base<D2, S2>>)
+    ensures
+        r matches Some(b) ==> b.epoch() == gb.epoch() && b.timeline() == tl_2(gb.timeline()),
+{
+    proof {
+        use_type_invariant(gb);
+    }
+    match &gb.w.s2 {
+        Slot::Valid(a) => Some(Base::new(gb.h2.share(), a.clone())),
+        Slot::Invalid => None,
+    }
+}
+
+/// tpch_q2_vgen's head of the base (to stage a build on).
+pub fn head_2(gb: &GBase) -> (r: Head<D2>)
+    ensures
+        r.epoch() == gb.epoch() && r.timeline() == tl_2(gb.timeline()),
+{
+    proof {
+        use_type_invariant(gb);
+    }
+    gb.h2.share()
+}
+
+/// tpch_q3_vgen's state in the base (None if its slot is invalid).
+pub fn base_3(gb: &GBase) -> (r: Option<Base<D3, S3>>)
+    ensures
+        r matches Some(b) ==> b.epoch() == gb.epoch() && b.timeline() == tl_3(gb.timeline()),
+{
+    proof {
+        use_type_invariant(gb);
+    }
+    match &gb.w.s3 {
+        Slot::Valid(a) => Some(Base::new(gb.h3.share(), a.clone())),
+        Slot::Invalid => None,
+    }
+}
+
+/// tpch_q3_vgen's head of the base (to stage a build on).
+pub fn head_3(gb: &GBase) -> (r: Head<D3>)
+    ensures
+        r.epoch() == gb.epoch() && r.timeline() == tl_3(gb.timeline()),
+{
+    proof {
+        use_type_invariant(gb);
+    }
+    gb.h3.share()
+}
+
+/// tpch_q4_vgen's state in the base (None if its slot is invalid).
+pub fn base_4(gb: &GBase) -> (r: Option<Base<D4, S4>>)
+    ensures
+        r matches Some(b) ==> b.epoch() == gb.epoch() && b.timeline() == tl_4(gb.timeline()),
+{
+    proof {
+        use_type_invariant(gb);
+    }
+    match &gb.w.s4 {
+        Slot::Valid(a) => Some(Base::new(gb.h4.share(), a.clone())),
+        Slot::Invalid => None,
+    }
+}
+
+/// tpch_q4_vgen's head of the base (to stage a build on).
+pub fn head_4(gb: &GBase) -> (r: Head<D4>)
+    ensures
+        r.epoch() == gb.epoch() && r.timeline() == tl_4(gb.timeline()),
+{
+    proof {
+        use_type_invariant(gb);
+    }
+    gb.h4.share()
+}
+
+/// tpch_q5_vgen's state in the base (None if its slot is invalid).
+pub fn base_5(gb: &GBase) -> (r: Option<Base<D5, S5>>)
+    ensures
+        r matches Some(b) ==> b.epoch() == gb.epoch() && b.timeline() == tl_5(gb.timeline()),
+{
+    proof {
+        use_type_invariant(gb);
+    }
+    match &gb.w.s5 {
+        Slot::Valid(a) => Some(Base::new(gb.h5.share(), a.clone())),
+        Slot::Invalid => None,
+    }
+}
+
+/// tpch_q5_vgen's head of the base (to stage a build on).
+pub fn head_5(gb: &GBase) -> (r: Head<D5>)
+    ensures
+        r.epoch() == gb.epoch() && r.timeline() == tl_5(gb.timeline()),
+{
+    proof {
+        use_type_invariant(gb);
+    }
+    gb.h5.share()
+}
+
+/// tpch_q6_vgen's state in the base (None if its slot is invalid).
+pub fn base_6(gb: &GBase) -> (r: Option<Base<D6, S6>>)
+    ensures
+        r matches Some(b) ==> b.epoch() == gb.epoch() && b.timeline() == tl_6(gb.timeline()),
+{
+    proof {
+        use_type_invariant(gb);
+    }
+    match &gb.w.s6 {
+        Slot::Valid(a) => Some(Base::new(gb.h6.share(), a.clone())),
+        Slot::Invalid => None,
+    }
+}
+
+/// tpch_q6_vgen's head of the base (to stage a build on).
+pub fn head_6(gb: &GBase) -> (r: Head<D6>)
+    ensures
+        r.epoch() == gb.epoch() && r.timeline() == tl_6(gb.timeline()),
+{
+    proof {
+        use_type_invariant(gb);
+    }
+    gb.h6.share()
+}
+
+/// tpch_q7_vgen's state in the base (None if its slot is invalid).
+pub fn base_7(gb: &GBase) -> (r: Option<Base<D7, S7>>)
+    ensures
+        r matches Some(b) ==> b.epoch() == gb.epoch() && b.timeline() == tl_7(gb.timeline()),
+{
+    proof {
+        use_type_invariant(gb);
+    }
+    match &gb.w.s7 {
+        Slot::Valid(a) => Some(Base::new(gb.h7.share(), a.clone())),
+        Slot::Invalid => None,
+    }
+}
+
+/// tpch_q7_vgen's head of the base (to stage a build on).
+pub fn head_7(gb: &GBase) -> (r: Head<D7>)
+    ensures
+        r.epoch() == gb.epoch() && r.timeline() == tl_7(gb.timeline()),
+{
+    proof {
+        use_type_invariant(gb);
+    }
+    gb.h7.share()
+}
+
+/// tpch_q8_vgen's state in the base (None if its slot is invalid).
+pub fn base_8(gb: &GBase) -> (r: Option<Base<D8, S8>>)
+    ensures
+        r matches Some(b) ==> b.epoch() == gb.epoch() && b.timeline() == tl_8(gb.timeline()),
+{
+    proof {
+        use_type_invariant(gb);
+    }
+    match &gb.w.s8 {
+        Slot::Valid(a) => Some(Base::new(gb.h8.share(), a.clone())),
+        Slot::Invalid => None,
+    }
+}
+
+/// tpch_q8_vgen's head of the base (to stage a build on).
+pub fn head_8(gb: &GBase) -> (r: Head<D8>)
+    ensures
+        r.epoch() == gb.epoch() && r.timeline() == tl_8(gb.timeline()),
+{
+    proof {
+        use_type_invariant(gb);
+    }
+    gb.h8.share()
+}
+
+/// tpch_q9_vgen's state in the base (None if its slot is invalid).
+pub fn base_9(gb: &GBase) -> (r: Option<Base<D9, S9>>)
+    ensures
+        r matches Some(b) ==> b.epoch() == gb.epoch() && b.timeline() == tl_9(gb.timeline()),
+{
+    proof {
+        use_type_invariant(gb);
+    }
+    match &gb.w.s9 {
+        Slot::Valid(a) => Some(Base::new(gb.h9.share(), a.clone())),
+        Slot::Invalid => None,
+    }
+}
+
+/// tpch_q9_vgen's head of the base (to stage a build on).
+pub fn head_9(gb: &GBase) -> (r: Head<D9>)
+    ensures
+        r.epoch() == gb.epoch() && r.timeline() == tl_9(gb.timeline()),
+{
+    proof {
+        use_type_invariant(gb);
+    }
+    gb.h9.share()
+}
+
+/// tpch_q10_vgen's state in the base (None if its slot is invalid).
+pub fn base_10(gb: &GBase) -> (r: Option<Base<D10, S10>>)
+    ensures
+        r matches Some(b) ==> b.epoch() == gb.epoch() && b.timeline() == tl_10(gb.timeline()),
+{
+    proof {
+        use_type_invariant(gb);
+    }
+    match &gb.w.s10 {
+        Slot::Valid(a) => Some(Base::new(gb.h10.share(), a.clone())),
+        Slot::Invalid => None,
+    }
+}
+
+/// tpch_q10_vgen's head of the base (to stage a build on).
+pub fn head_10(gb: &GBase) -> (r: Head<D10>)
+    ensures
+        r.epoch() == gb.epoch() && r.timeline() == tl_10(gb.timeline()),
+{
+    proof {
+        use_type_invariant(gb);
+    }
+    gb.h10.share()
+}
+
+/// tpch_q11_vgen's state in the base (None if its slot is invalid).
+pub fn base_11(gb: &GBase) -> (r: Option<Base<D11, S11>>)
+    ensures
+        r matches Some(b) ==> b.epoch() == gb.epoch() && b.timeline() == tl_11(gb.timeline()),
+{
+    proof {
+        use_type_invariant(gb);
+    }
+    match &gb.w.s11 {
+        Slot::Valid(a) => Some(Base::new(gb.h11.share(), a.clone())),
+        Slot::Invalid => None,
+    }
+}
+
+/// tpch_q11_vgen's head of the base (to stage a build on).
+pub fn head_11(gb: &GBase) -> (r: Head<D11>)
+    ensures
+        r.epoch() == gb.epoch() && r.timeline() == tl_11(gb.timeline()),
+{
+    proof {
+        use_type_invariant(gb);
+    }
+    gb.h11.share()
+}
+
+/// tpch_q12_vgen's state in the base (None if its slot is invalid).
+pub fn base_12(gb: &GBase) -> (r: Option<Base<D12, S12>>)
+    ensures
+        r matches Some(b) ==> b.epoch() == gb.epoch() && b.timeline() == tl_12(gb.timeline()),
+{
+    proof {
+        use_type_invariant(gb);
+    }
+    match &gb.w.s12 {
+        Slot::Valid(a) => Some(Base::new(gb.h12.share(), a.clone())),
+        Slot::Invalid => None,
+    }
+}
+
+/// tpch_q12_vgen's head of the base (to stage a build on).
+pub fn head_12(gb: &GBase) -> (r: Head<D12>)
+    ensures
+        r.epoch() == gb.epoch() && r.timeline() == tl_12(gb.timeline()),
+{
+    proof {
+        use_type_invariant(gb);
+    }
+    gb.h12.share()
+}
+
+/// tpch_q13_vgen's state in the base (None if its slot is invalid).
+pub fn base_13(gb: &GBase) -> (r: Option<Base<D13, S13>>)
+    ensures
+        r matches Some(b) ==> b.epoch() == gb.epoch() && b.timeline() == tl_13(gb.timeline()),
+{
+    proof {
+        use_type_invariant(gb);
+    }
+    match &gb.w.s13 {
+        Slot::Valid(a) => Some(Base::new(gb.h13.share(), a.clone())),
+        Slot::Invalid => None,
+    }
+}
+
+/// tpch_q13_vgen's head of the base (to stage a build on).
+pub fn head_13(gb: &GBase) -> (r: Head<D13>)
+    ensures
+        r.epoch() == gb.epoch() && r.timeline() == tl_13(gb.timeline()),
+{
+    proof {
+        use_type_invariant(gb);
+    }
+    gb.h13.share()
+}
+
+/// tpch_q14_vgen's state in the base (None if its slot is invalid).
+pub fn base_14(gb: &GBase) -> (r: Option<Base<D14, S14>>)
+    ensures
+        r matches Some(b) ==> b.epoch() == gb.epoch() && b.timeline() == tl_14(gb.timeline()),
+{
+    proof {
+        use_type_invariant(gb);
+    }
+    match &gb.w.s14 {
+        Slot::Valid(a) => Some(Base::new(gb.h14.share(), a.clone())),
+        Slot::Invalid => None,
+    }
+}
+
+/// tpch_q14_vgen's head of the base (to stage a build on).
+pub fn head_14(gb: &GBase) -> (r: Head<D14>)
+    ensures
+        r.epoch() == gb.epoch() && r.timeline() == tl_14(gb.timeline()),
+{
+    proof {
+        use_type_invariant(gb);
+    }
+    gb.h14.share()
+}
+
+/// tpch_q15_vgen's state in the base (None if its slot is invalid).
+pub fn base_15(gb: &GBase) -> (r: Option<Base<D15, S15>>)
+    ensures
+        r matches Some(b) ==> b.epoch() == gb.epoch() && b.timeline() == tl_15(gb.timeline()),
+{
+    proof {
+        use_type_invariant(gb);
+    }
+    match &gb.w.s15 {
+        Slot::Valid(a) => Some(Base::new(gb.h15.share(), a.clone())),
+        Slot::Invalid => None,
+    }
+}
+
+/// tpch_q15_vgen's head of the base (to stage a build on).
+pub fn head_15(gb: &GBase) -> (r: Head<D15>)
+    ensures
+        r.epoch() == gb.epoch() && r.timeline() == tl_15(gb.timeline()),
+{
+    proof {
+        use_type_invariant(gb);
+    }
+    gb.h15.share()
+}
+
+/// tpch_q16_vgen's state in the base (None if its slot is invalid).
+pub fn base_16(gb: &GBase) -> (r: Option<Base<D16, S16>>)
+    ensures
+        r matches Some(b) ==> b.epoch() == gb.epoch() && b.timeline() == tl_16(gb.timeline()),
+{
+    proof {
+        use_type_invariant(gb);
+    }
+    match &gb.w.s16 {
+        Slot::Valid(a) => Some(Base::new(gb.h16.share(), a.clone())),
+        Slot::Invalid => None,
+    }
+}
+
+/// tpch_q16_vgen's head of the base (to stage a build on).
+pub fn head_16(gb: &GBase) -> (r: Head<D16>)
+    ensures
+        r.epoch() == gb.epoch() && r.timeline() == tl_16(gb.timeline()),
+{
+    proof {
+        use_type_invariant(gb);
+    }
+    gb.h16.share()
+}
+
+/// tpch_q17_vgen's state in the base (None if its slot is invalid).
+pub fn base_17(gb: &GBase) -> (r: Option<Base<D17, S17>>)
+    ensures
+        r matches Some(b) ==> b.epoch() == gb.epoch() && b.timeline() == tl_17(gb.timeline()),
+{
+    proof {
+        use_type_invariant(gb);
+    }
+    match &gb.w.s17 {
+        Slot::Valid(a) => Some(Base::new(gb.h17.share(), a.clone())),
+        Slot::Invalid => None,
+    }
+}
+
+/// tpch_q17_vgen's head of the base (to stage a build on).
+pub fn head_17(gb: &GBase) -> (r: Head<D17>)
+    ensures
+        r.epoch() == gb.epoch() && r.timeline() == tl_17(gb.timeline()),
+{
+    proof {
+        use_type_invariant(gb);
+    }
+    gb.h17.share()
+}
+
+/// tpch_q18_vgen's state in the base (None if its slot is invalid).
+pub fn base_18(gb: &GBase) -> (r: Option<Base<D18, S18>>)
+    ensures
+        r matches Some(b) ==> b.epoch() == gb.epoch() && b.timeline() == tl_18(gb.timeline()),
+{
+    proof {
+        use_type_invariant(gb);
+    }
+    match &gb.w.s18 {
+        Slot::Valid(a) => Some(Base::new(gb.h18.share(), a.clone())),
+        Slot::Invalid => None,
+    }
+}
+
+/// tpch_q18_vgen's head of the base (to stage a build on).
+pub fn head_18(gb: &GBase) -> (r: Head<D18>)
+    ensures
+        r.epoch() == gb.epoch() && r.timeline() == tl_18(gb.timeline()),
+{
+    proof {
+        use_type_invariant(gb);
+    }
+    gb.h18.share()
+}
+
+/// tpch_q19_vgen's state in the base (None if its slot is invalid).
+pub fn base_19(gb: &GBase) -> (r: Option<Base<D19, S19>>)
+    ensures
+        r matches Some(b) ==> b.epoch() == gb.epoch() && b.timeline() == tl_19(gb.timeline()),
+{
+    proof {
+        use_type_invariant(gb);
+    }
+    match &gb.w.s19 {
+        Slot::Valid(a) => Some(Base::new(gb.h19.share(), a.clone())),
+        Slot::Invalid => None,
+    }
+}
+
+/// tpch_q19_vgen's head of the base (to stage a build on).
+pub fn head_19(gb: &GBase) -> (r: Head<D19>)
+    ensures
+        r.epoch() == gb.epoch() && r.timeline() == tl_19(gb.timeline()),
+{
+    proof {
+        use_type_invariant(gb);
+    }
+    gb.h19.share()
+}
+
+/// tpch_q20_vgen's state in the base (None if its slot is invalid).
+pub fn base_20(gb: &GBase) -> (r: Option<Base<D20, S20>>)
+    ensures
+        r matches Some(b) ==> b.epoch() == gb.epoch() && b.timeline() == tl_20(gb.timeline()),
+{
+    proof {
+        use_type_invariant(gb);
+    }
+    match &gb.w.s20 {
+        Slot::Valid(a) => Some(Base::new(gb.h20.share(), a.clone())),
+        Slot::Invalid => None,
+    }
+}
+
+/// tpch_q20_vgen's head of the base (to stage a build on).
+pub fn head_20(gb: &GBase) -> (r: Head<D20>)
+    ensures
+        r.epoch() == gb.epoch() && r.timeline() == tl_20(gb.timeline()),
+{
+    proof {
+        use_type_invariant(gb);
+    }
+    gb.h20.share()
+}
+
+/// tpch_q21_vgen's state in the base (None if its slot is invalid).
+pub fn base_21(gb: &GBase) -> (r: Option<Base<D21, S21>>)
+    ensures
+        r matches Some(b) ==> b.epoch() == gb.epoch() && b.timeline() == tl_21(gb.timeline()),
+{
+    proof {
+        use_type_invariant(gb);
+    }
+    match &gb.w.s21 {
+        Slot::Valid(a) => Some(Base::new(gb.h21.share(), a.clone())),
+        Slot::Invalid => None,
+    }
+}
+
+/// tpch_q21_vgen's head of the base (to stage a build on).
+pub fn head_21(gb: &GBase) -> (r: Head<D21>)
+    ensures
+        r.epoch() == gb.epoch() && r.timeline() == tl_21(gb.timeline()),
+{
+    proof {
+        use_type_invariant(gb);
+    }
+    gb.h21.share()
+}
+
+/// tpch_q22_vgen's state in the base (None if its slot is invalid).
+pub fn base_22(gb: &GBase) -> (r: Option<Base<D22, S22>>)
+    ensures
+        r matches Some(b) ==> b.epoch() == gb.epoch() && b.timeline() == tl_22(gb.timeline()),
+{
+    proof {
+        use_type_invariant(gb);
+    }
+    match &gb.w.s22 {
+        Slot::Valid(a) => Some(Base::new(gb.h22.share(), a.clone())),
+        Slot::Invalid => None,
+    }
+}
+
+/// tpch_q22_vgen's head of the base (to stage a build on).
+pub fn head_22(gb: &GBase) -> (r: Head<D22>)
+    ensures
+        r.epoch() == gb.epoch() && r.timeline() == tl_22(gb.timeline()),
+{
+    proof {
+        use_type_invariant(gb);
+    }
+    gb.h22.share()
+}
+
+/// The next version's world, assembled outside the lock on a base: each
+/// accelerator the commit changes gets its staged slot (answering for its
+/// projection at e + 1), every other slot is carried from the base.
 /// Invariant: the world answers for `target`, the database with each replaced
 /// projection at e + 1 and every carried one at e.
 pub struct Batch {
-    e: u64,
+    base: Arc<GBase>,
     next: World,
     target: Ghost<GDb>,
-    timeline: Ghost<spec_fn(nat) -> GDb>,
 }
 
 impl Batch {
     #[verifier::type_invariant]
     spec fn wf(self) -> bool {
-        &&& self.e < u64::MAX
         &&& self.next.ok(self.target@)
     }
 
     pub closed spec fn epoch(self) -> u64 {
-        self.e
+        self.base.epoch()
     }
 
     pub closed spec fn target(self) -> GDb {
@@ -1391,7 +2164,7 @@ impl Batch {
     }
 
     pub closed spec fn timeline(self) -> spec_fn(nat) -> GDb {
-        self.timeline@
+        self.base.timeline()
     }
 
     /// The database at the version this batch prepares (e + 1).
@@ -1400,17 +2173,17 @@ impl Batch {
     }
 }
 
-/// A batch from the newest version (None if no version can follow it).
-pub fn batch_new(store: &GStore) -> (r: Option<Batch>)
+/// A batch on a base, every slot carried.
+pub fn batch_new(base: &Arc<GBase>) -> (r: Batch)
     ensures
-        r matches Some(b) ==> b.timeline() == store.timeline() && b.target() == store.db_at(b.epoch() as nat),
+        r.epoch() == base.epoch(),
+        r.timeline() == base.timeline(),
+        r.target() == (base.timeline())(base.epoch() as nat),
 {
-    let (e, w) = store.newest_world();
-    if e < u64::MAX {
-        Some(Batch { e, next: w, target: Ghost(store.db_at(e as nat)), timeline: Ghost(store.timeline()) })
-    } else {
-        None
+    proof {
+        use_type_invariant(&**base);
     }
+    Batch { base: base.clone(), next: base.w.share(), target: Ghost((base.timeline@)(base.e as nat)) }
 }
 
 /// The next version (consumes the batch).  HOST CONTRACT (the requires): the
@@ -1425,16 +2198,37 @@ pub fn batch_finish(b: Batch) -> (p: GPrepared)
 {
     proof {
         use_type_invariant(&b);
+        use_type_invariant(&*b.base);
     }
-    Prepared::new(b.e, b.next, b.timeline)
+    Prepared::new(b.base.e, b.next, b.base.timeline)
 }
 
-/// Replace tpch_q1_vgen's slot: `s`, a state answering for its projection of
-/// the database at e + 1 (the kernel's apply / build proof, from the commit's
-/// captured changes), or None (invalid: its queries fall back to SQL).
-pub fn batch_set_1(b: Batch, s: Option<S1>) -> (r: Batch)
-    requires
-        s matches Some(x) ==> x.answers(db_1(b.next_db())),
+/// Replace tpch_q1_vgen's slot by the one staged on this batch's base: true.  A slot
+/// staged on another base is not taken: the slot becomes invalid (false).
+pub fn put_1(b: Batch, st: Staged<D1, S1>) -> (r: (Batch, bool))
+    ensures
+        r.0.epoch() == b.epoch(),
+        r.0.timeline() == b.timeline(),
+        r.0.target() == with_1(b.target(), db_1(b.next_db())),
+{
+    proof {
+        use_type_invariant(&b);
+        use_type_invariant(&*b.base);
+    }
+    let same = st.head().same(&b.base.h1);
+    let ghost (se, stl) = (st.epoch(), st.timeline());
+    let slot = if same {
+        st.into_slot()
+    } else {
+        Slot::Invalid
+    };
+    assert(same ==> slot.ok(db_1(b.next_db())));
+    let next = replace_1(&b.next, slot, Ghost(b.target@), Ghost(db_1(b.next_db())));
+    (Batch { base: b.base, next, target: Ghost(with_1(b.target@, db_1(b.next_db()))) }, same)
+}
+
+/// Make tpch_q1_vgen's slot invalid in the batch.
+pub fn put_invalid_1(b: Batch) -> (r: Batch)
     ensures
         r.epoch() == b.epoch(),
         r.timeline() == b.timeline(),
@@ -1443,50 +2237,31 @@ pub fn batch_set_1(b: Batch, s: Option<S1>) -> (r: Batch)
     proof {
         use_type_invariant(&b);
     }
-    let slot = match s {
-        Some(x) => Slot::Valid(Arc::new(x)),
-        None => Slot::Invalid,
-    };
-    let next = replace_1(&b.next, slot, Ghost(b.target@), Ghost(db_1(b.next_db())));
-    Batch { e: b.e, next, target: Ghost(with_1(b.target@, db_1(b.next_db()))), timeline: b.timeline }
+    let next = replace_1(&b.next, Slot::Invalid, Ghost(b.target@), Ghost(db_1(b.next_db())));
+    Batch { base: b.base, next, target: Ghost(with_1(b.target@, db_1(b.next_db()))) }
 }
 
-/// What a snapshot at engine epoch `at` sees of tpch_q1_vgen (waiting up to
-/// `tries` checks for a pending commit), with the version and the window it
-/// was decided on.  0: a state, answering for its projection at that version,
-/// the version the snapshot rule selects; 1: that version's slot is invalid;
-/// 2: a commit in flight may be visible; 3: the version was evicted.
-pub fn read_1(store: &GStore, at: u64, tries: u64) -> (r: (i32, Option<Arc<S1>>, Ghost<u64>, Ghost<Window>))
+/// What a snapshot at engine epoch `at` sees of tpch_q1_vgen (waiting up to `tries`
+/// checks for a pending commit).  0: a reading narrowed to its slot (the kit's
+/// `answer` runs on it: Theorem 5.4); 1: that version's slot is invalid; 2: a
+/// commit in flight may be visible; 3: the version was evicted.
+pub fn read_1(store: &GStore, at: u64, tries: u64) -> (r: (i32, Option<Reading<D1, Slot<S1>>>))
     ensures
-        r.0 == 0 ==> (r.1 matches Some(a) && (*a).answers(db_1(store.db_at(r.2@ as nat))) && sees(r.3@, at, r.2@ as int)),
-        r.0 == 1 ==> sees(r.3@, at, r.2@ as int),
-        r.0 == 2 ==> in_flight(r.3@, at),
-        r.0 == 3 ==> none_current(r.3@, at),
+        r.0 == 0 ==> r.1 is Some,
         0 <= r.0 <= 3,
+        r.1 matches Some(g) ==> g.at() == at,
 {
-    let (res, win) = store.resolve_wait_seen(at, tries);
-    match res {
-        Resolved::Found(v, w) => {
-            let s = slot_1(&w, Ghost(store.db_at(v as nat)));
-            match s.get() {
-                Some(a) => (0, Some(a), Ghost(v), win),
-                None => (1, None, Ghost(v), win),
+    match store.read(at, tries) {
+        Read::Found(g) => {
+            let slot = <Slot<S1> as AuxWorld<D1>>::share(slot_1(g.world(), Ghost(g.db())));
+            match slot {
+                Slot::Invalid => (1, None),
+                Slot::Valid(_) => (0, Some(g.narrow(Ghost(|d: GDb| db_1(d)), slot))),
             }
         },
-        Resolved::Pending => (2, None, Ghost(0), win),
-        Resolved::NotVisible => (3, None, Ghost(0), win),
+        Read::Pending => (2, None),
+        Read::NotVisible => (3, None),
     }
-}
-
-/// tpch_q1_vgen's state in the newest version (what its next state is applied
-/// to), answering for its projection there; None if invalid.
-pub fn newest_1(store: &GStore) -> (r: (Option<Arc<S1>>, Ghost<u64>))
-    ensures
-        r.0 matches Some(a) ==> (*a).answers(db_1(store.db_at(r.1@ as nat))),
-{
-    let (e, w) = store.newest_world();
-    let s = slot_1(&w, Ghost(store.db_at(e as nat)));
-    (s.get(), Ghost(e))
 }
 
 /// Every kept version's tpch_q1_vgen slot becomes invalid (the others stay).
@@ -1499,6 +2274,7 @@ pub fn invalidate_1(store: &GStore) {
             i <= n,
             n == c.versions.len(),
             cell_ok(c, store.timeline()),
+            exact_ok(c, store.timeline(), store.engine()),
             g.store() == *store,
         decreases n - i,
     {
@@ -1513,12 +2289,32 @@ pub fn invalidate_1(store: &GStore) {
     g.end(c);
 }
 
-/// Replace tpch_q2_vgen's slot: `s`, a state answering for its projection of
-/// the database at e + 1 (the kernel's apply / build proof, from the commit's
-/// captured changes), or None (invalid: its queries fall back to SQL).
-pub fn batch_set_2(b: Batch, s: Option<S2>) -> (r: Batch)
-    requires
-        s matches Some(x) ==> x.answers(db_2(b.next_db())),
+/// Replace tpch_q2_vgen's slot by the one staged on this batch's base: true.  A slot
+/// staged on another base is not taken: the slot becomes invalid (false).
+pub fn put_2(b: Batch, st: Staged<D2, S2>) -> (r: (Batch, bool))
+    ensures
+        r.0.epoch() == b.epoch(),
+        r.0.timeline() == b.timeline(),
+        r.0.target() == with_2(b.target(), db_2(b.next_db())),
+{
+    proof {
+        use_type_invariant(&b);
+        use_type_invariant(&*b.base);
+    }
+    let same = st.head().same(&b.base.h2);
+    let ghost (se, stl) = (st.epoch(), st.timeline());
+    let slot = if same {
+        st.into_slot()
+    } else {
+        Slot::Invalid
+    };
+    assert(same ==> slot.ok(db_2(b.next_db())));
+    let next = replace_2(&b.next, slot, Ghost(b.target@), Ghost(db_2(b.next_db())));
+    (Batch { base: b.base, next, target: Ghost(with_2(b.target@, db_2(b.next_db()))) }, same)
+}
+
+/// Make tpch_q2_vgen's slot invalid in the batch.
+pub fn put_invalid_2(b: Batch) -> (r: Batch)
     ensures
         r.epoch() == b.epoch(),
         r.timeline() == b.timeline(),
@@ -1527,50 +2323,31 @@ pub fn batch_set_2(b: Batch, s: Option<S2>) -> (r: Batch)
     proof {
         use_type_invariant(&b);
     }
-    let slot = match s {
-        Some(x) => Slot::Valid(Arc::new(x)),
-        None => Slot::Invalid,
-    };
-    let next = replace_2(&b.next, slot, Ghost(b.target@), Ghost(db_2(b.next_db())));
-    Batch { e: b.e, next, target: Ghost(with_2(b.target@, db_2(b.next_db()))), timeline: b.timeline }
+    let next = replace_2(&b.next, Slot::Invalid, Ghost(b.target@), Ghost(db_2(b.next_db())));
+    Batch { base: b.base, next, target: Ghost(with_2(b.target@, db_2(b.next_db()))) }
 }
 
-/// What a snapshot at engine epoch `at` sees of tpch_q2_vgen (waiting up to
-/// `tries` checks for a pending commit), with the version and the window it
-/// was decided on.  0: a state, answering for its projection at that version,
-/// the version the snapshot rule selects; 1: that version's slot is invalid;
-/// 2: a commit in flight may be visible; 3: the version was evicted.
-pub fn read_2(store: &GStore, at: u64, tries: u64) -> (r: (i32, Option<Arc<S2>>, Ghost<u64>, Ghost<Window>))
+/// What a snapshot at engine epoch `at` sees of tpch_q2_vgen (waiting up to `tries`
+/// checks for a pending commit).  0: a reading narrowed to its slot (the kit's
+/// `answer` runs on it: Theorem 5.4); 1: that version's slot is invalid; 2: a
+/// commit in flight may be visible; 3: the version was evicted.
+pub fn read_2(store: &GStore, at: u64, tries: u64) -> (r: (i32, Option<Reading<D2, Slot<S2>>>))
     ensures
-        r.0 == 0 ==> (r.1 matches Some(a) && (*a).answers(db_2(store.db_at(r.2@ as nat))) && sees(r.3@, at, r.2@ as int)),
-        r.0 == 1 ==> sees(r.3@, at, r.2@ as int),
-        r.0 == 2 ==> in_flight(r.3@, at),
-        r.0 == 3 ==> none_current(r.3@, at),
+        r.0 == 0 ==> r.1 is Some,
         0 <= r.0 <= 3,
+        r.1 matches Some(g) ==> g.at() == at,
 {
-    let (res, win) = store.resolve_wait_seen(at, tries);
-    match res {
-        Resolved::Found(v, w) => {
-            let s = slot_2(&w, Ghost(store.db_at(v as nat)));
-            match s.get() {
-                Some(a) => (0, Some(a), Ghost(v), win),
-                None => (1, None, Ghost(v), win),
+    match store.read(at, tries) {
+        Read::Found(g) => {
+            let slot = <Slot<S2> as AuxWorld<D2>>::share(slot_2(g.world(), Ghost(g.db())));
+            match slot {
+                Slot::Invalid => (1, None),
+                Slot::Valid(_) => (0, Some(g.narrow(Ghost(|d: GDb| db_2(d)), slot))),
             }
         },
-        Resolved::Pending => (2, None, Ghost(0), win),
-        Resolved::NotVisible => (3, None, Ghost(0), win),
+        Read::Pending => (2, None),
+        Read::NotVisible => (3, None),
     }
-}
-
-/// tpch_q2_vgen's state in the newest version (what its next state is applied
-/// to), answering for its projection there; None if invalid.
-pub fn newest_2(store: &GStore) -> (r: (Option<Arc<S2>>, Ghost<u64>))
-    ensures
-        r.0 matches Some(a) ==> (*a).answers(db_2(store.db_at(r.1@ as nat))),
-{
-    let (e, w) = store.newest_world();
-    let s = slot_2(&w, Ghost(store.db_at(e as nat)));
-    (s.get(), Ghost(e))
 }
 
 /// Every kept version's tpch_q2_vgen slot becomes invalid (the others stay).
@@ -1583,6 +2360,7 @@ pub fn invalidate_2(store: &GStore) {
             i <= n,
             n == c.versions.len(),
             cell_ok(c, store.timeline()),
+            exact_ok(c, store.timeline(), store.engine()),
             g.store() == *store,
         decreases n - i,
     {
@@ -1597,12 +2375,32 @@ pub fn invalidate_2(store: &GStore) {
     g.end(c);
 }
 
-/// Replace tpch_q3_vgen's slot: `s`, a state answering for its projection of
-/// the database at e + 1 (the kernel's apply / build proof, from the commit's
-/// captured changes), or None (invalid: its queries fall back to SQL).
-pub fn batch_set_3(b: Batch, s: Option<S3>) -> (r: Batch)
-    requires
-        s matches Some(x) ==> x.answers(db_3(b.next_db())),
+/// Replace tpch_q3_vgen's slot by the one staged on this batch's base: true.  A slot
+/// staged on another base is not taken: the slot becomes invalid (false).
+pub fn put_3(b: Batch, st: Staged<D3, S3>) -> (r: (Batch, bool))
+    ensures
+        r.0.epoch() == b.epoch(),
+        r.0.timeline() == b.timeline(),
+        r.0.target() == with_3(b.target(), db_3(b.next_db())),
+{
+    proof {
+        use_type_invariant(&b);
+        use_type_invariant(&*b.base);
+    }
+    let same = st.head().same(&b.base.h3);
+    let ghost (se, stl) = (st.epoch(), st.timeline());
+    let slot = if same {
+        st.into_slot()
+    } else {
+        Slot::Invalid
+    };
+    assert(same ==> slot.ok(db_3(b.next_db())));
+    let next = replace_3(&b.next, slot, Ghost(b.target@), Ghost(db_3(b.next_db())));
+    (Batch { base: b.base, next, target: Ghost(with_3(b.target@, db_3(b.next_db()))) }, same)
+}
+
+/// Make tpch_q3_vgen's slot invalid in the batch.
+pub fn put_invalid_3(b: Batch) -> (r: Batch)
     ensures
         r.epoch() == b.epoch(),
         r.timeline() == b.timeline(),
@@ -1611,50 +2409,31 @@ pub fn batch_set_3(b: Batch, s: Option<S3>) -> (r: Batch)
     proof {
         use_type_invariant(&b);
     }
-    let slot = match s {
-        Some(x) => Slot::Valid(Arc::new(x)),
-        None => Slot::Invalid,
-    };
-    let next = replace_3(&b.next, slot, Ghost(b.target@), Ghost(db_3(b.next_db())));
-    Batch { e: b.e, next, target: Ghost(with_3(b.target@, db_3(b.next_db()))), timeline: b.timeline }
+    let next = replace_3(&b.next, Slot::Invalid, Ghost(b.target@), Ghost(db_3(b.next_db())));
+    Batch { base: b.base, next, target: Ghost(with_3(b.target@, db_3(b.next_db()))) }
 }
 
-/// What a snapshot at engine epoch `at` sees of tpch_q3_vgen (waiting up to
-/// `tries` checks for a pending commit), with the version and the window it
-/// was decided on.  0: a state, answering for its projection at that version,
-/// the version the snapshot rule selects; 1: that version's slot is invalid;
-/// 2: a commit in flight may be visible; 3: the version was evicted.
-pub fn read_3(store: &GStore, at: u64, tries: u64) -> (r: (i32, Option<Arc<S3>>, Ghost<u64>, Ghost<Window>))
+/// What a snapshot at engine epoch `at` sees of tpch_q3_vgen (waiting up to `tries`
+/// checks for a pending commit).  0: a reading narrowed to its slot (the kit's
+/// `answer` runs on it: Theorem 5.4); 1: that version's slot is invalid; 2: a
+/// commit in flight may be visible; 3: the version was evicted.
+pub fn read_3(store: &GStore, at: u64, tries: u64) -> (r: (i32, Option<Reading<D3, Slot<S3>>>))
     ensures
-        r.0 == 0 ==> (r.1 matches Some(a) && (*a).answers(db_3(store.db_at(r.2@ as nat))) && sees(r.3@, at, r.2@ as int)),
-        r.0 == 1 ==> sees(r.3@, at, r.2@ as int),
-        r.0 == 2 ==> in_flight(r.3@, at),
-        r.0 == 3 ==> none_current(r.3@, at),
+        r.0 == 0 ==> r.1 is Some,
         0 <= r.0 <= 3,
+        r.1 matches Some(g) ==> g.at() == at,
 {
-    let (res, win) = store.resolve_wait_seen(at, tries);
-    match res {
-        Resolved::Found(v, w) => {
-            let s = slot_3(&w, Ghost(store.db_at(v as nat)));
-            match s.get() {
-                Some(a) => (0, Some(a), Ghost(v), win),
-                None => (1, None, Ghost(v), win),
+    match store.read(at, tries) {
+        Read::Found(g) => {
+            let slot = <Slot<S3> as AuxWorld<D3>>::share(slot_3(g.world(), Ghost(g.db())));
+            match slot {
+                Slot::Invalid => (1, None),
+                Slot::Valid(_) => (0, Some(g.narrow(Ghost(|d: GDb| db_3(d)), slot))),
             }
         },
-        Resolved::Pending => (2, None, Ghost(0), win),
-        Resolved::NotVisible => (3, None, Ghost(0), win),
+        Read::Pending => (2, None),
+        Read::NotVisible => (3, None),
     }
-}
-
-/// tpch_q3_vgen's state in the newest version (what its next state is applied
-/// to), answering for its projection there; None if invalid.
-pub fn newest_3(store: &GStore) -> (r: (Option<Arc<S3>>, Ghost<u64>))
-    ensures
-        r.0 matches Some(a) ==> (*a).answers(db_3(store.db_at(r.1@ as nat))),
-{
-    let (e, w) = store.newest_world();
-    let s = slot_3(&w, Ghost(store.db_at(e as nat)));
-    (s.get(), Ghost(e))
 }
 
 /// Every kept version's tpch_q3_vgen slot becomes invalid (the others stay).
@@ -1667,6 +2446,7 @@ pub fn invalidate_3(store: &GStore) {
             i <= n,
             n == c.versions.len(),
             cell_ok(c, store.timeline()),
+            exact_ok(c, store.timeline(), store.engine()),
             g.store() == *store,
         decreases n - i,
     {
@@ -1681,12 +2461,32 @@ pub fn invalidate_3(store: &GStore) {
     g.end(c);
 }
 
-/// Replace tpch_q4_vgen's slot: `s`, a state answering for its projection of
-/// the database at e + 1 (the kernel's apply / build proof, from the commit's
-/// captured changes), or None (invalid: its queries fall back to SQL).
-pub fn batch_set_4(b: Batch, s: Option<S4>) -> (r: Batch)
-    requires
-        s matches Some(x) ==> x.answers(db_4(b.next_db())),
+/// Replace tpch_q4_vgen's slot by the one staged on this batch's base: true.  A slot
+/// staged on another base is not taken: the slot becomes invalid (false).
+pub fn put_4(b: Batch, st: Staged<D4, S4>) -> (r: (Batch, bool))
+    ensures
+        r.0.epoch() == b.epoch(),
+        r.0.timeline() == b.timeline(),
+        r.0.target() == with_4(b.target(), db_4(b.next_db())),
+{
+    proof {
+        use_type_invariant(&b);
+        use_type_invariant(&*b.base);
+    }
+    let same = st.head().same(&b.base.h4);
+    let ghost (se, stl) = (st.epoch(), st.timeline());
+    let slot = if same {
+        st.into_slot()
+    } else {
+        Slot::Invalid
+    };
+    assert(same ==> slot.ok(db_4(b.next_db())));
+    let next = replace_4(&b.next, slot, Ghost(b.target@), Ghost(db_4(b.next_db())));
+    (Batch { base: b.base, next, target: Ghost(with_4(b.target@, db_4(b.next_db()))) }, same)
+}
+
+/// Make tpch_q4_vgen's slot invalid in the batch.
+pub fn put_invalid_4(b: Batch) -> (r: Batch)
     ensures
         r.epoch() == b.epoch(),
         r.timeline() == b.timeline(),
@@ -1695,50 +2495,31 @@ pub fn batch_set_4(b: Batch, s: Option<S4>) -> (r: Batch)
     proof {
         use_type_invariant(&b);
     }
-    let slot = match s {
-        Some(x) => Slot::Valid(Arc::new(x)),
-        None => Slot::Invalid,
-    };
-    let next = replace_4(&b.next, slot, Ghost(b.target@), Ghost(db_4(b.next_db())));
-    Batch { e: b.e, next, target: Ghost(with_4(b.target@, db_4(b.next_db()))), timeline: b.timeline }
+    let next = replace_4(&b.next, Slot::Invalid, Ghost(b.target@), Ghost(db_4(b.next_db())));
+    Batch { base: b.base, next, target: Ghost(with_4(b.target@, db_4(b.next_db()))) }
 }
 
-/// What a snapshot at engine epoch `at` sees of tpch_q4_vgen (waiting up to
-/// `tries` checks for a pending commit), with the version and the window it
-/// was decided on.  0: a state, answering for its projection at that version,
-/// the version the snapshot rule selects; 1: that version's slot is invalid;
-/// 2: a commit in flight may be visible; 3: the version was evicted.
-pub fn read_4(store: &GStore, at: u64, tries: u64) -> (r: (i32, Option<Arc<S4>>, Ghost<u64>, Ghost<Window>))
+/// What a snapshot at engine epoch `at` sees of tpch_q4_vgen (waiting up to `tries`
+/// checks for a pending commit).  0: a reading narrowed to its slot (the kit's
+/// `answer` runs on it: Theorem 5.4); 1: that version's slot is invalid; 2: a
+/// commit in flight may be visible; 3: the version was evicted.
+pub fn read_4(store: &GStore, at: u64, tries: u64) -> (r: (i32, Option<Reading<D4, Slot<S4>>>))
     ensures
-        r.0 == 0 ==> (r.1 matches Some(a) && (*a).answers(db_4(store.db_at(r.2@ as nat))) && sees(r.3@, at, r.2@ as int)),
-        r.0 == 1 ==> sees(r.3@, at, r.2@ as int),
-        r.0 == 2 ==> in_flight(r.3@, at),
-        r.0 == 3 ==> none_current(r.3@, at),
+        r.0 == 0 ==> r.1 is Some,
         0 <= r.0 <= 3,
+        r.1 matches Some(g) ==> g.at() == at,
 {
-    let (res, win) = store.resolve_wait_seen(at, tries);
-    match res {
-        Resolved::Found(v, w) => {
-            let s = slot_4(&w, Ghost(store.db_at(v as nat)));
-            match s.get() {
-                Some(a) => (0, Some(a), Ghost(v), win),
-                None => (1, None, Ghost(v), win),
+    match store.read(at, tries) {
+        Read::Found(g) => {
+            let slot = <Slot<S4> as AuxWorld<D4>>::share(slot_4(g.world(), Ghost(g.db())));
+            match slot {
+                Slot::Invalid => (1, None),
+                Slot::Valid(_) => (0, Some(g.narrow(Ghost(|d: GDb| db_4(d)), slot))),
             }
         },
-        Resolved::Pending => (2, None, Ghost(0), win),
-        Resolved::NotVisible => (3, None, Ghost(0), win),
+        Read::Pending => (2, None),
+        Read::NotVisible => (3, None),
     }
-}
-
-/// tpch_q4_vgen's state in the newest version (what its next state is applied
-/// to), answering for its projection there; None if invalid.
-pub fn newest_4(store: &GStore) -> (r: (Option<Arc<S4>>, Ghost<u64>))
-    ensures
-        r.0 matches Some(a) ==> (*a).answers(db_4(store.db_at(r.1@ as nat))),
-{
-    let (e, w) = store.newest_world();
-    let s = slot_4(&w, Ghost(store.db_at(e as nat)));
-    (s.get(), Ghost(e))
 }
 
 /// Every kept version's tpch_q4_vgen slot becomes invalid (the others stay).
@@ -1751,6 +2532,7 @@ pub fn invalidate_4(store: &GStore) {
             i <= n,
             n == c.versions.len(),
             cell_ok(c, store.timeline()),
+            exact_ok(c, store.timeline(), store.engine()),
             g.store() == *store,
         decreases n - i,
     {
@@ -1765,12 +2547,32 @@ pub fn invalidate_4(store: &GStore) {
     g.end(c);
 }
 
-/// Replace tpch_q5_vgen's slot: `s`, a state answering for its projection of
-/// the database at e + 1 (the kernel's apply / build proof, from the commit's
-/// captured changes), or None (invalid: its queries fall back to SQL).
-pub fn batch_set_5(b: Batch, s: Option<S5>) -> (r: Batch)
-    requires
-        s matches Some(x) ==> x.answers(db_5(b.next_db())),
+/// Replace tpch_q5_vgen's slot by the one staged on this batch's base: true.  A slot
+/// staged on another base is not taken: the slot becomes invalid (false).
+pub fn put_5(b: Batch, st: Staged<D5, S5>) -> (r: (Batch, bool))
+    ensures
+        r.0.epoch() == b.epoch(),
+        r.0.timeline() == b.timeline(),
+        r.0.target() == with_5(b.target(), db_5(b.next_db())),
+{
+    proof {
+        use_type_invariant(&b);
+        use_type_invariant(&*b.base);
+    }
+    let same = st.head().same(&b.base.h5);
+    let ghost (se, stl) = (st.epoch(), st.timeline());
+    let slot = if same {
+        st.into_slot()
+    } else {
+        Slot::Invalid
+    };
+    assert(same ==> slot.ok(db_5(b.next_db())));
+    let next = replace_5(&b.next, slot, Ghost(b.target@), Ghost(db_5(b.next_db())));
+    (Batch { base: b.base, next, target: Ghost(with_5(b.target@, db_5(b.next_db()))) }, same)
+}
+
+/// Make tpch_q5_vgen's slot invalid in the batch.
+pub fn put_invalid_5(b: Batch) -> (r: Batch)
     ensures
         r.epoch() == b.epoch(),
         r.timeline() == b.timeline(),
@@ -1779,50 +2581,31 @@ pub fn batch_set_5(b: Batch, s: Option<S5>) -> (r: Batch)
     proof {
         use_type_invariant(&b);
     }
-    let slot = match s {
-        Some(x) => Slot::Valid(Arc::new(x)),
-        None => Slot::Invalid,
-    };
-    let next = replace_5(&b.next, slot, Ghost(b.target@), Ghost(db_5(b.next_db())));
-    Batch { e: b.e, next, target: Ghost(with_5(b.target@, db_5(b.next_db()))), timeline: b.timeline }
+    let next = replace_5(&b.next, Slot::Invalid, Ghost(b.target@), Ghost(db_5(b.next_db())));
+    Batch { base: b.base, next, target: Ghost(with_5(b.target@, db_5(b.next_db()))) }
 }
 
-/// What a snapshot at engine epoch `at` sees of tpch_q5_vgen (waiting up to
-/// `tries` checks for a pending commit), with the version and the window it
-/// was decided on.  0: a state, answering for its projection at that version,
-/// the version the snapshot rule selects; 1: that version's slot is invalid;
-/// 2: a commit in flight may be visible; 3: the version was evicted.
-pub fn read_5(store: &GStore, at: u64, tries: u64) -> (r: (i32, Option<Arc<S5>>, Ghost<u64>, Ghost<Window>))
+/// What a snapshot at engine epoch `at` sees of tpch_q5_vgen (waiting up to `tries`
+/// checks for a pending commit).  0: a reading narrowed to its slot (the kit's
+/// `answer` runs on it: Theorem 5.4); 1: that version's slot is invalid; 2: a
+/// commit in flight may be visible; 3: the version was evicted.
+pub fn read_5(store: &GStore, at: u64, tries: u64) -> (r: (i32, Option<Reading<D5, Slot<S5>>>))
     ensures
-        r.0 == 0 ==> (r.1 matches Some(a) && (*a).answers(db_5(store.db_at(r.2@ as nat))) && sees(r.3@, at, r.2@ as int)),
-        r.0 == 1 ==> sees(r.3@, at, r.2@ as int),
-        r.0 == 2 ==> in_flight(r.3@, at),
-        r.0 == 3 ==> none_current(r.3@, at),
+        r.0 == 0 ==> r.1 is Some,
         0 <= r.0 <= 3,
+        r.1 matches Some(g) ==> g.at() == at,
 {
-    let (res, win) = store.resolve_wait_seen(at, tries);
-    match res {
-        Resolved::Found(v, w) => {
-            let s = slot_5(&w, Ghost(store.db_at(v as nat)));
-            match s.get() {
-                Some(a) => (0, Some(a), Ghost(v), win),
-                None => (1, None, Ghost(v), win),
+    match store.read(at, tries) {
+        Read::Found(g) => {
+            let slot = <Slot<S5> as AuxWorld<D5>>::share(slot_5(g.world(), Ghost(g.db())));
+            match slot {
+                Slot::Invalid => (1, None),
+                Slot::Valid(_) => (0, Some(g.narrow(Ghost(|d: GDb| db_5(d)), slot))),
             }
         },
-        Resolved::Pending => (2, None, Ghost(0), win),
-        Resolved::NotVisible => (3, None, Ghost(0), win),
+        Read::Pending => (2, None),
+        Read::NotVisible => (3, None),
     }
-}
-
-/// tpch_q5_vgen's state in the newest version (what its next state is applied
-/// to), answering for its projection there; None if invalid.
-pub fn newest_5(store: &GStore) -> (r: (Option<Arc<S5>>, Ghost<u64>))
-    ensures
-        r.0 matches Some(a) ==> (*a).answers(db_5(store.db_at(r.1@ as nat))),
-{
-    let (e, w) = store.newest_world();
-    let s = slot_5(&w, Ghost(store.db_at(e as nat)));
-    (s.get(), Ghost(e))
 }
 
 /// Every kept version's tpch_q5_vgen slot becomes invalid (the others stay).
@@ -1835,6 +2618,7 @@ pub fn invalidate_5(store: &GStore) {
             i <= n,
             n == c.versions.len(),
             cell_ok(c, store.timeline()),
+            exact_ok(c, store.timeline(), store.engine()),
             g.store() == *store,
         decreases n - i,
     {
@@ -1849,12 +2633,32 @@ pub fn invalidate_5(store: &GStore) {
     g.end(c);
 }
 
-/// Replace tpch_q6_vgen's slot: `s`, a state answering for its projection of
-/// the database at e + 1 (the kernel's apply / build proof, from the commit's
-/// captured changes), or None (invalid: its queries fall back to SQL).
-pub fn batch_set_6(b: Batch, s: Option<S6>) -> (r: Batch)
-    requires
-        s matches Some(x) ==> x.answers(db_6(b.next_db())),
+/// Replace tpch_q6_vgen's slot by the one staged on this batch's base: true.  A slot
+/// staged on another base is not taken: the slot becomes invalid (false).
+pub fn put_6(b: Batch, st: Staged<D6, S6>) -> (r: (Batch, bool))
+    ensures
+        r.0.epoch() == b.epoch(),
+        r.0.timeline() == b.timeline(),
+        r.0.target() == with_6(b.target(), db_6(b.next_db())),
+{
+    proof {
+        use_type_invariant(&b);
+        use_type_invariant(&*b.base);
+    }
+    let same = st.head().same(&b.base.h6);
+    let ghost (se, stl) = (st.epoch(), st.timeline());
+    let slot = if same {
+        st.into_slot()
+    } else {
+        Slot::Invalid
+    };
+    assert(same ==> slot.ok(db_6(b.next_db())));
+    let next = replace_6(&b.next, slot, Ghost(b.target@), Ghost(db_6(b.next_db())));
+    (Batch { base: b.base, next, target: Ghost(with_6(b.target@, db_6(b.next_db()))) }, same)
+}
+
+/// Make tpch_q6_vgen's slot invalid in the batch.
+pub fn put_invalid_6(b: Batch) -> (r: Batch)
     ensures
         r.epoch() == b.epoch(),
         r.timeline() == b.timeline(),
@@ -1863,50 +2667,31 @@ pub fn batch_set_6(b: Batch, s: Option<S6>) -> (r: Batch)
     proof {
         use_type_invariant(&b);
     }
-    let slot = match s {
-        Some(x) => Slot::Valid(Arc::new(x)),
-        None => Slot::Invalid,
-    };
-    let next = replace_6(&b.next, slot, Ghost(b.target@), Ghost(db_6(b.next_db())));
-    Batch { e: b.e, next, target: Ghost(with_6(b.target@, db_6(b.next_db()))), timeline: b.timeline }
+    let next = replace_6(&b.next, Slot::Invalid, Ghost(b.target@), Ghost(db_6(b.next_db())));
+    Batch { base: b.base, next, target: Ghost(with_6(b.target@, db_6(b.next_db()))) }
 }
 
-/// What a snapshot at engine epoch `at` sees of tpch_q6_vgen (waiting up to
-/// `tries` checks for a pending commit), with the version and the window it
-/// was decided on.  0: a state, answering for its projection at that version,
-/// the version the snapshot rule selects; 1: that version's slot is invalid;
-/// 2: a commit in flight may be visible; 3: the version was evicted.
-pub fn read_6(store: &GStore, at: u64, tries: u64) -> (r: (i32, Option<Arc<S6>>, Ghost<u64>, Ghost<Window>))
+/// What a snapshot at engine epoch `at` sees of tpch_q6_vgen (waiting up to `tries`
+/// checks for a pending commit).  0: a reading narrowed to its slot (the kit's
+/// `answer` runs on it: Theorem 5.4); 1: that version's slot is invalid; 2: a
+/// commit in flight may be visible; 3: the version was evicted.
+pub fn read_6(store: &GStore, at: u64, tries: u64) -> (r: (i32, Option<Reading<D6, Slot<S6>>>))
     ensures
-        r.0 == 0 ==> (r.1 matches Some(a) && (*a).answers(db_6(store.db_at(r.2@ as nat))) && sees(r.3@, at, r.2@ as int)),
-        r.0 == 1 ==> sees(r.3@, at, r.2@ as int),
-        r.0 == 2 ==> in_flight(r.3@, at),
-        r.0 == 3 ==> none_current(r.3@, at),
+        r.0 == 0 ==> r.1 is Some,
         0 <= r.0 <= 3,
+        r.1 matches Some(g) ==> g.at() == at,
 {
-    let (res, win) = store.resolve_wait_seen(at, tries);
-    match res {
-        Resolved::Found(v, w) => {
-            let s = slot_6(&w, Ghost(store.db_at(v as nat)));
-            match s.get() {
-                Some(a) => (0, Some(a), Ghost(v), win),
-                None => (1, None, Ghost(v), win),
+    match store.read(at, tries) {
+        Read::Found(g) => {
+            let slot = <Slot<S6> as AuxWorld<D6>>::share(slot_6(g.world(), Ghost(g.db())));
+            match slot {
+                Slot::Invalid => (1, None),
+                Slot::Valid(_) => (0, Some(g.narrow(Ghost(|d: GDb| db_6(d)), slot))),
             }
         },
-        Resolved::Pending => (2, None, Ghost(0), win),
-        Resolved::NotVisible => (3, None, Ghost(0), win),
+        Read::Pending => (2, None),
+        Read::NotVisible => (3, None),
     }
-}
-
-/// tpch_q6_vgen's state in the newest version (what its next state is applied
-/// to), answering for its projection there; None if invalid.
-pub fn newest_6(store: &GStore) -> (r: (Option<Arc<S6>>, Ghost<u64>))
-    ensures
-        r.0 matches Some(a) ==> (*a).answers(db_6(store.db_at(r.1@ as nat))),
-{
-    let (e, w) = store.newest_world();
-    let s = slot_6(&w, Ghost(store.db_at(e as nat)));
-    (s.get(), Ghost(e))
 }
 
 /// Every kept version's tpch_q6_vgen slot becomes invalid (the others stay).
@@ -1919,6 +2704,7 @@ pub fn invalidate_6(store: &GStore) {
             i <= n,
             n == c.versions.len(),
             cell_ok(c, store.timeline()),
+            exact_ok(c, store.timeline(), store.engine()),
             g.store() == *store,
         decreases n - i,
     {
@@ -1933,12 +2719,32 @@ pub fn invalidate_6(store: &GStore) {
     g.end(c);
 }
 
-/// Replace tpch_q7_vgen's slot: `s`, a state answering for its projection of
-/// the database at e + 1 (the kernel's apply / build proof, from the commit's
-/// captured changes), or None (invalid: its queries fall back to SQL).
-pub fn batch_set_7(b: Batch, s: Option<S7>) -> (r: Batch)
-    requires
-        s matches Some(x) ==> x.answers(db_7(b.next_db())),
+/// Replace tpch_q7_vgen's slot by the one staged on this batch's base: true.  A slot
+/// staged on another base is not taken: the slot becomes invalid (false).
+pub fn put_7(b: Batch, st: Staged<D7, S7>) -> (r: (Batch, bool))
+    ensures
+        r.0.epoch() == b.epoch(),
+        r.0.timeline() == b.timeline(),
+        r.0.target() == with_7(b.target(), db_7(b.next_db())),
+{
+    proof {
+        use_type_invariant(&b);
+        use_type_invariant(&*b.base);
+    }
+    let same = st.head().same(&b.base.h7);
+    let ghost (se, stl) = (st.epoch(), st.timeline());
+    let slot = if same {
+        st.into_slot()
+    } else {
+        Slot::Invalid
+    };
+    assert(same ==> slot.ok(db_7(b.next_db())));
+    let next = replace_7(&b.next, slot, Ghost(b.target@), Ghost(db_7(b.next_db())));
+    (Batch { base: b.base, next, target: Ghost(with_7(b.target@, db_7(b.next_db()))) }, same)
+}
+
+/// Make tpch_q7_vgen's slot invalid in the batch.
+pub fn put_invalid_7(b: Batch) -> (r: Batch)
     ensures
         r.epoch() == b.epoch(),
         r.timeline() == b.timeline(),
@@ -1947,50 +2753,31 @@ pub fn batch_set_7(b: Batch, s: Option<S7>) -> (r: Batch)
     proof {
         use_type_invariant(&b);
     }
-    let slot = match s {
-        Some(x) => Slot::Valid(Arc::new(x)),
-        None => Slot::Invalid,
-    };
-    let next = replace_7(&b.next, slot, Ghost(b.target@), Ghost(db_7(b.next_db())));
-    Batch { e: b.e, next, target: Ghost(with_7(b.target@, db_7(b.next_db()))), timeline: b.timeline }
+    let next = replace_7(&b.next, Slot::Invalid, Ghost(b.target@), Ghost(db_7(b.next_db())));
+    Batch { base: b.base, next, target: Ghost(with_7(b.target@, db_7(b.next_db()))) }
 }
 
-/// What a snapshot at engine epoch `at` sees of tpch_q7_vgen (waiting up to
-/// `tries` checks for a pending commit), with the version and the window it
-/// was decided on.  0: a state, answering for its projection at that version,
-/// the version the snapshot rule selects; 1: that version's slot is invalid;
-/// 2: a commit in flight may be visible; 3: the version was evicted.
-pub fn read_7(store: &GStore, at: u64, tries: u64) -> (r: (i32, Option<Arc<S7>>, Ghost<u64>, Ghost<Window>))
+/// What a snapshot at engine epoch `at` sees of tpch_q7_vgen (waiting up to `tries`
+/// checks for a pending commit).  0: a reading narrowed to its slot (the kit's
+/// `answer` runs on it: Theorem 5.4); 1: that version's slot is invalid; 2: a
+/// commit in flight may be visible; 3: the version was evicted.
+pub fn read_7(store: &GStore, at: u64, tries: u64) -> (r: (i32, Option<Reading<D7, Slot<S7>>>))
     ensures
-        r.0 == 0 ==> (r.1 matches Some(a) && (*a).answers(db_7(store.db_at(r.2@ as nat))) && sees(r.3@, at, r.2@ as int)),
-        r.0 == 1 ==> sees(r.3@, at, r.2@ as int),
-        r.0 == 2 ==> in_flight(r.3@, at),
-        r.0 == 3 ==> none_current(r.3@, at),
+        r.0 == 0 ==> r.1 is Some,
         0 <= r.0 <= 3,
+        r.1 matches Some(g) ==> g.at() == at,
 {
-    let (res, win) = store.resolve_wait_seen(at, tries);
-    match res {
-        Resolved::Found(v, w) => {
-            let s = slot_7(&w, Ghost(store.db_at(v as nat)));
-            match s.get() {
-                Some(a) => (0, Some(a), Ghost(v), win),
-                None => (1, None, Ghost(v), win),
+    match store.read(at, tries) {
+        Read::Found(g) => {
+            let slot = <Slot<S7> as AuxWorld<D7>>::share(slot_7(g.world(), Ghost(g.db())));
+            match slot {
+                Slot::Invalid => (1, None),
+                Slot::Valid(_) => (0, Some(g.narrow(Ghost(|d: GDb| db_7(d)), slot))),
             }
         },
-        Resolved::Pending => (2, None, Ghost(0), win),
-        Resolved::NotVisible => (3, None, Ghost(0), win),
+        Read::Pending => (2, None),
+        Read::NotVisible => (3, None),
     }
-}
-
-/// tpch_q7_vgen's state in the newest version (what its next state is applied
-/// to), answering for its projection there; None if invalid.
-pub fn newest_7(store: &GStore) -> (r: (Option<Arc<S7>>, Ghost<u64>))
-    ensures
-        r.0 matches Some(a) ==> (*a).answers(db_7(store.db_at(r.1@ as nat))),
-{
-    let (e, w) = store.newest_world();
-    let s = slot_7(&w, Ghost(store.db_at(e as nat)));
-    (s.get(), Ghost(e))
 }
 
 /// Every kept version's tpch_q7_vgen slot becomes invalid (the others stay).
@@ -2003,6 +2790,7 @@ pub fn invalidate_7(store: &GStore) {
             i <= n,
             n == c.versions.len(),
             cell_ok(c, store.timeline()),
+            exact_ok(c, store.timeline(), store.engine()),
             g.store() == *store,
         decreases n - i,
     {
@@ -2017,12 +2805,32 @@ pub fn invalidate_7(store: &GStore) {
     g.end(c);
 }
 
-/// Replace tpch_q8_vgen's slot: `s`, a state answering for its projection of
-/// the database at e + 1 (the kernel's apply / build proof, from the commit's
-/// captured changes), or None (invalid: its queries fall back to SQL).
-pub fn batch_set_8(b: Batch, s: Option<S8>) -> (r: Batch)
-    requires
-        s matches Some(x) ==> x.answers(db_8(b.next_db())),
+/// Replace tpch_q8_vgen's slot by the one staged on this batch's base: true.  A slot
+/// staged on another base is not taken: the slot becomes invalid (false).
+pub fn put_8(b: Batch, st: Staged<D8, S8>) -> (r: (Batch, bool))
+    ensures
+        r.0.epoch() == b.epoch(),
+        r.0.timeline() == b.timeline(),
+        r.0.target() == with_8(b.target(), db_8(b.next_db())),
+{
+    proof {
+        use_type_invariant(&b);
+        use_type_invariant(&*b.base);
+    }
+    let same = st.head().same(&b.base.h8);
+    let ghost (se, stl) = (st.epoch(), st.timeline());
+    let slot = if same {
+        st.into_slot()
+    } else {
+        Slot::Invalid
+    };
+    assert(same ==> slot.ok(db_8(b.next_db())));
+    let next = replace_8(&b.next, slot, Ghost(b.target@), Ghost(db_8(b.next_db())));
+    (Batch { base: b.base, next, target: Ghost(with_8(b.target@, db_8(b.next_db()))) }, same)
+}
+
+/// Make tpch_q8_vgen's slot invalid in the batch.
+pub fn put_invalid_8(b: Batch) -> (r: Batch)
     ensures
         r.epoch() == b.epoch(),
         r.timeline() == b.timeline(),
@@ -2031,50 +2839,31 @@ pub fn batch_set_8(b: Batch, s: Option<S8>) -> (r: Batch)
     proof {
         use_type_invariant(&b);
     }
-    let slot = match s {
-        Some(x) => Slot::Valid(Arc::new(x)),
-        None => Slot::Invalid,
-    };
-    let next = replace_8(&b.next, slot, Ghost(b.target@), Ghost(db_8(b.next_db())));
-    Batch { e: b.e, next, target: Ghost(with_8(b.target@, db_8(b.next_db()))), timeline: b.timeline }
+    let next = replace_8(&b.next, Slot::Invalid, Ghost(b.target@), Ghost(db_8(b.next_db())));
+    Batch { base: b.base, next, target: Ghost(with_8(b.target@, db_8(b.next_db()))) }
 }
 
-/// What a snapshot at engine epoch `at` sees of tpch_q8_vgen (waiting up to
-/// `tries` checks for a pending commit), with the version and the window it
-/// was decided on.  0: a state, answering for its projection at that version,
-/// the version the snapshot rule selects; 1: that version's slot is invalid;
-/// 2: a commit in flight may be visible; 3: the version was evicted.
-pub fn read_8(store: &GStore, at: u64, tries: u64) -> (r: (i32, Option<Arc<S8>>, Ghost<u64>, Ghost<Window>))
+/// What a snapshot at engine epoch `at` sees of tpch_q8_vgen (waiting up to `tries`
+/// checks for a pending commit).  0: a reading narrowed to its slot (the kit's
+/// `answer` runs on it: Theorem 5.4); 1: that version's slot is invalid; 2: a
+/// commit in flight may be visible; 3: the version was evicted.
+pub fn read_8(store: &GStore, at: u64, tries: u64) -> (r: (i32, Option<Reading<D8, Slot<S8>>>))
     ensures
-        r.0 == 0 ==> (r.1 matches Some(a) && (*a).answers(db_8(store.db_at(r.2@ as nat))) && sees(r.3@, at, r.2@ as int)),
-        r.0 == 1 ==> sees(r.3@, at, r.2@ as int),
-        r.0 == 2 ==> in_flight(r.3@, at),
-        r.0 == 3 ==> none_current(r.3@, at),
+        r.0 == 0 ==> r.1 is Some,
         0 <= r.0 <= 3,
+        r.1 matches Some(g) ==> g.at() == at,
 {
-    let (res, win) = store.resolve_wait_seen(at, tries);
-    match res {
-        Resolved::Found(v, w) => {
-            let s = slot_8(&w, Ghost(store.db_at(v as nat)));
-            match s.get() {
-                Some(a) => (0, Some(a), Ghost(v), win),
-                None => (1, None, Ghost(v), win),
+    match store.read(at, tries) {
+        Read::Found(g) => {
+            let slot = <Slot<S8> as AuxWorld<D8>>::share(slot_8(g.world(), Ghost(g.db())));
+            match slot {
+                Slot::Invalid => (1, None),
+                Slot::Valid(_) => (0, Some(g.narrow(Ghost(|d: GDb| db_8(d)), slot))),
             }
         },
-        Resolved::Pending => (2, None, Ghost(0), win),
-        Resolved::NotVisible => (3, None, Ghost(0), win),
+        Read::Pending => (2, None),
+        Read::NotVisible => (3, None),
     }
-}
-
-/// tpch_q8_vgen's state in the newest version (what its next state is applied
-/// to), answering for its projection there; None if invalid.
-pub fn newest_8(store: &GStore) -> (r: (Option<Arc<S8>>, Ghost<u64>))
-    ensures
-        r.0 matches Some(a) ==> (*a).answers(db_8(store.db_at(r.1@ as nat))),
-{
-    let (e, w) = store.newest_world();
-    let s = slot_8(&w, Ghost(store.db_at(e as nat)));
-    (s.get(), Ghost(e))
 }
 
 /// Every kept version's tpch_q8_vgen slot becomes invalid (the others stay).
@@ -2087,6 +2876,7 @@ pub fn invalidate_8(store: &GStore) {
             i <= n,
             n == c.versions.len(),
             cell_ok(c, store.timeline()),
+            exact_ok(c, store.timeline(), store.engine()),
             g.store() == *store,
         decreases n - i,
     {
@@ -2101,12 +2891,32 @@ pub fn invalidate_8(store: &GStore) {
     g.end(c);
 }
 
-/// Replace tpch_q9_vgen's slot: `s`, a state answering for its projection of
-/// the database at e + 1 (the kernel's apply / build proof, from the commit's
-/// captured changes), or None (invalid: its queries fall back to SQL).
-pub fn batch_set_9(b: Batch, s: Option<S9>) -> (r: Batch)
-    requires
-        s matches Some(x) ==> x.answers(db_9(b.next_db())),
+/// Replace tpch_q9_vgen's slot by the one staged on this batch's base: true.  A slot
+/// staged on another base is not taken: the slot becomes invalid (false).
+pub fn put_9(b: Batch, st: Staged<D9, S9>) -> (r: (Batch, bool))
+    ensures
+        r.0.epoch() == b.epoch(),
+        r.0.timeline() == b.timeline(),
+        r.0.target() == with_9(b.target(), db_9(b.next_db())),
+{
+    proof {
+        use_type_invariant(&b);
+        use_type_invariant(&*b.base);
+    }
+    let same = st.head().same(&b.base.h9);
+    let ghost (se, stl) = (st.epoch(), st.timeline());
+    let slot = if same {
+        st.into_slot()
+    } else {
+        Slot::Invalid
+    };
+    assert(same ==> slot.ok(db_9(b.next_db())));
+    let next = replace_9(&b.next, slot, Ghost(b.target@), Ghost(db_9(b.next_db())));
+    (Batch { base: b.base, next, target: Ghost(with_9(b.target@, db_9(b.next_db()))) }, same)
+}
+
+/// Make tpch_q9_vgen's slot invalid in the batch.
+pub fn put_invalid_9(b: Batch) -> (r: Batch)
     ensures
         r.epoch() == b.epoch(),
         r.timeline() == b.timeline(),
@@ -2115,50 +2925,31 @@ pub fn batch_set_9(b: Batch, s: Option<S9>) -> (r: Batch)
     proof {
         use_type_invariant(&b);
     }
-    let slot = match s {
-        Some(x) => Slot::Valid(Arc::new(x)),
-        None => Slot::Invalid,
-    };
-    let next = replace_9(&b.next, slot, Ghost(b.target@), Ghost(db_9(b.next_db())));
-    Batch { e: b.e, next, target: Ghost(with_9(b.target@, db_9(b.next_db()))), timeline: b.timeline }
+    let next = replace_9(&b.next, Slot::Invalid, Ghost(b.target@), Ghost(db_9(b.next_db())));
+    Batch { base: b.base, next, target: Ghost(with_9(b.target@, db_9(b.next_db()))) }
 }
 
-/// What a snapshot at engine epoch `at` sees of tpch_q9_vgen (waiting up to
-/// `tries` checks for a pending commit), with the version and the window it
-/// was decided on.  0: a state, answering for its projection at that version,
-/// the version the snapshot rule selects; 1: that version's slot is invalid;
-/// 2: a commit in flight may be visible; 3: the version was evicted.
-pub fn read_9(store: &GStore, at: u64, tries: u64) -> (r: (i32, Option<Arc<S9>>, Ghost<u64>, Ghost<Window>))
+/// What a snapshot at engine epoch `at` sees of tpch_q9_vgen (waiting up to `tries`
+/// checks for a pending commit).  0: a reading narrowed to its slot (the kit's
+/// `answer` runs on it: Theorem 5.4); 1: that version's slot is invalid; 2: a
+/// commit in flight may be visible; 3: the version was evicted.
+pub fn read_9(store: &GStore, at: u64, tries: u64) -> (r: (i32, Option<Reading<D9, Slot<S9>>>))
     ensures
-        r.0 == 0 ==> (r.1 matches Some(a) && (*a).answers(db_9(store.db_at(r.2@ as nat))) && sees(r.3@, at, r.2@ as int)),
-        r.0 == 1 ==> sees(r.3@, at, r.2@ as int),
-        r.0 == 2 ==> in_flight(r.3@, at),
-        r.0 == 3 ==> none_current(r.3@, at),
+        r.0 == 0 ==> r.1 is Some,
         0 <= r.0 <= 3,
+        r.1 matches Some(g) ==> g.at() == at,
 {
-    let (res, win) = store.resolve_wait_seen(at, tries);
-    match res {
-        Resolved::Found(v, w) => {
-            let s = slot_9(&w, Ghost(store.db_at(v as nat)));
-            match s.get() {
-                Some(a) => (0, Some(a), Ghost(v), win),
-                None => (1, None, Ghost(v), win),
+    match store.read(at, tries) {
+        Read::Found(g) => {
+            let slot = <Slot<S9> as AuxWorld<D9>>::share(slot_9(g.world(), Ghost(g.db())));
+            match slot {
+                Slot::Invalid => (1, None),
+                Slot::Valid(_) => (0, Some(g.narrow(Ghost(|d: GDb| db_9(d)), slot))),
             }
         },
-        Resolved::Pending => (2, None, Ghost(0), win),
-        Resolved::NotVisible => (3, None, Ghost(0), win),
+        Read::Pending => (2, None),
+        Read::NotVisible => (3, None),
     }
-}
-
-/// tpch_q9_vgen's state in the newest version (what its next state is applied
-/// to), answering for its projection there; None if invalid.
-pub fn newest_9(store: &GStore) -> (r: (Option<Arc<S9>>, Ghost<u64>))
-    ensures
-        r.0 matches Some(a) ==> (*a).answers(db_9(store.db_at(r.1@ as nat))),
-{
-    let (e, w) = store.newest_world();
-    let s = slot_9(&w, Ghost(store.db_at(e as nat)));
-    (s.get(), Ghost(e))
 }
 
 /// Every kept version's tpch_q9_vgen slot becomes invalid (the others stay).
@@ -2171,6 +2962,7 @@ pub fn invalidate_9(store: &GStore) {
             i <= n,
             n == c.versions.len(),
             cell_ok(c, store.timeline()),
+            exact_ok(c, store.timeline(), store.engine()),
             g.store() == *store,
         decreases n - i,
     {
@@ -2185,12 +2977,32 @@ pub fn invalidate_9(store: &GStore) {
     g.end(c);
 }
 
-/// Replace tpch_q10_vgen's slot: `s`, a state answering for its projection of
-/// the database at e + 1 (the kernel's apply / build proof, from the commit's
-/// captured changes), or None (invalid: its queries fall back to SQL).
-pub fn batch_set_10(b: Batch, s: Option<S10>) -> (r: Batch)
-    requires
-        s matches Some(x) ==> x.answers(db_10(b.next_db())),
+/// Replace tpch_q10_vgen's slot by the one staged on this batch's base: true.  A slot
+/// staged on another base is not taken: the slot becomes invalid (false).
+pub fn put_10(b: Batch, st: Staged<D10, S10>) -> (r: (Batch, bool))
+    ensures
+        r.0.epoch() == b.epoch(),
+        r.0.timeline() == b.timeline(),
+        r.0.target() == with_10(b.target(), db_10(b.next_db())),
+{
+    proof {
+        use_type_invariant(&b);
+        use_type_invariant(&*b.base);
+    }
+    let same = st.head().same(&b.base.h10);
+    let ghost (se, stl) = (st.epoch(), st.timeline());
+    let slot = if same {
+        st.into_slot()
+    } else {
+        Slot::Invalid
+    };
+    assert(same ==> slot.ok(db_10(b.next_db())));
+    let next = replace_10(&b.next, slot, Ghost(b.target@), Ghost(db_10(b.next_db())));
+    (Batch { base: b.base, next, target: Ghost(with_10(b.target@, db_10(b.next_db()))) }, same)
+}
+
+/// Make tpch_q10_vgen's slot invalid in the batch.
+pub fn put_invalid_10(b: Batch) -> (r: Batch)
     ensures
         r.epoch() == b.epoch(),
         r.timeline() == b.timeline(),
@@ -2199,50 +3011,31 @@ pub fn batch_set_10(b: Batch, s: Option<S10>) -> (r: Batch)
     proof {
         use_type_invariant(&b);
     }
-    let slot = match s {
-        Some(x) => Slot::Valid(Arc::new(x)),
-        None => Slot::Invalid,
-    };
-    let next = replace_10(&b.next, slot, Ghost(b.target@), Ghost(db_10(b.next_db())));
-    Batch { e: b.e, next, target: Ghost(with_10(b.target@, db_10(b.next_db()))), timeline: b.timeline }
+    let next = replace_10(&b.next, Slot::Invalid, Ghost(b.target@), Ghost(db_10(b.next_db())));
+    Batch { base: b.base, next, target: Ghost(with_10(b.target@, db_10(b.next_db()))) }
 }
 
-/// What a snapshot at engine epoch `at` sees of tpch_q10_vgen (waiting up to
-/// `tries` checks for a pending commit), with the version and the window it
-/// was decided on.  0: a state, answering for its projection at that version,
-/// the version the snapshot rule selects; 1: that version's slot is invalid;
-/// 2: a commit in flight may be visible; 3: the version was evicted.
-pub fn read_10(store: &GStore, at: u64, tries: u64) -> (r: (i32, Option<Arc<S10>>, Ghost<u64>, Ghost<Window>))
+/// What a snapshot at engine epoch `at` sees of tpch_q10_vgen (waiting up to `tries`
+/// checks for a pending commit).  0: a reading narrowed to its slot (the kit's
+/// `answer` runs on it: Theorem 5.4); 1: that version's slot is invalid; 2: a
+/// commit in flight may be visible; 3: the version was evicted.
+pub fn read_10(store: &GStore, at: u64, tries: u64) -> (r: (i32, Option<Reading<D10, Slot<S10>>>))
     ensures
-        r.0 == 0 ==> (r.1 matches Some(a) && (*a).answers(db_10(store.db_at(r.2@ as nat))) && sees(r.3@, at, r.2@ as int)),
-        r.0 == 1 ==> sees(r.3@, at, r.2@ as int),
-        r.0 == 2 ==> in_flight(r.3@, at),
-        r.0 == 3 ==> none_current(r.3@, at),
+        r.0 == 0 ==> r.1 is Some,
         0 <= r.0 <= 3,
+        r.1 matches Some(g) ==> g.at() == at,
 {
-    let (res, win) = store.resolve_wait_seen(at, tries);
-    match res {
-        Resolved::Found(v, w) => {
-            let s = slot_10(&w, Ghost(store.db_at(v as nat)));
-            match s.get() {
-                Some(a) => (0, Some(a), Ghost(v), win),
-                None => (1, None, Ghost(v), win),
+    match store.read(at, tries) {
+        Read::Found(g) => {
+            let slot = <Slot<S10> as AuxWorld<D10>>::share(slot_10(g.world(), Ghost(g.db())));
+            match slot {
+                Slot::Invalid => (1, None),
+                Slot::Valid(_) => (0, Some(g.narrow(Ghost(|d: GDb| db_10(d)), slot))),
             }
         },
-        Resolved::Pending => (2, None, Ghost(0), win),
-        Resolved::NotVisible => (3, None, Ghost(0), win),
+        Read::Pending => (2, None),
+        Read::NotVisible => (3, None),
     }
-}
-
-/// tpch_q10_vgen's state in the newest version (what its next state is applied
-/// to), answering for its projection there; None if invalid.
-pub fn newest_10(store: &GStore) -> (r: (Option<Arc<S10>>, Ghost<u64>))
-    ensures
-        r.0 matches Some(a) ==> (*a).answers(db_10(store.db_at(r.1@ as nat))),
-{
-    let (e, w) = store.newest_world();
-    let s = slot_10(&w, Ghost(store.db_at(e as nat)));
-    (s.get(), Ghost(e))
 }
 
 /// Every kept version's tpch_q10_vgen slot becomes invalid (the others stay).
@@ -2255,6 +3048,7 @@ pub fn invalidate_10(store: &GStore) {
             i <= n,
             n == c.versions.len(),
             cell_ok(c, store.timeline()),
+            exact_ok(c, store.timeline(), store.engine()),
             g.store() == *store,
         decreases n - i,
     {
@@ -2269,12 +3063,32 @@ pub fn invalidate_10(store: &GStore) {
     g.end(c);
 }
 
-/// Replace tpch_q11_vgen's slot: `s`, a state answering for its projection of
-/// the database at e + 1 (the kernel's apply / build proof, from the commit's
-/// captured changes), or None (invalid: its queries fall back to SQL).
-pub fn batch_set_11(b: Batch, s: Option<S11>) -> (r: Batch)
-    requires
-        s matches Some(x) ==> x.answers(db_11(b.next_db())),
+/// Replace tpch_q11_vgen's slot by the one staged on this batch's base: true.  A slot
+/// staged on another base is not taken: the slot becomes invalid (false).
+pub fn put_11(b: Batch, st: Staged<D11, S11>) -> (r: (Batch, bool))
+    ensures
+        r.0.epoch() == b.epoch(),
+        r.0.timeline() == b.timeline(),
+        r.0.target() == with_11(b.target(), db_11(b.next_db())),
+{
+    proof {
+        use_type_invariant(&b);
+        use_type_invariant(&*b.base);
+    }
+    let same = st.head().same(&b.base.h11);
+    let ghost (se, stl) = (st.epoch(), st.timeline());
+    let slot = if same {
+        st.into_slot()
+    } else {
+        Slot::Invalid
+    };
+    assert(same ==> slot.ok(db_11(b.next_db())));
+    let next = replace_11(&b.next, slot, Ghost(b.target@), Ghost(db_11(b.next_db())));
+    (Batch { base: b.base, next, target: Ghost(with_11(b.target@, db_11(b.next_db()))) }, same)
+}
+
+/// Make tpch_q11_vgen's slot invalid in the batch.
+pub fn put_invalid_11(b: Batch) -> (r: Batch)
     ensures
         r.epoch() == b.epoch(),
         r.timeline() == b.timeline(),
@@ -2283,50 +3097,31 @@ pub fn batch_set_11(b: Batch, s: Option<S11>) -> (r: Batch)
     proof {
         use_type_invariant(&b);
     }
-    let slot = match s {
-        Some(x) => Slot::Valid(Arc::new(x)),
-        None => Slot::Invalid,
-    };
-    let next = replace_11(&b.next, slot, Ghost(b.target@), Ghost(db_11(b.next_db())));
-    Batch { e: b.e, next, target: Ghost(with_11(b.target@, db_11(b.next_db()))), timeline: b.timeline }
+    let next = replace_11(&b.next, Slot::Invalid, Ghost(b.target@), Ghost(db_11(b.next_db())));
+    Batch { base: b.base, next, target: Ghost(with_11(b.target@, db_11(b.next_db()))) }
 }
 
-/// What a snapshot at engine epoch `at` sees of tpch_q11_vgen (waiting up to
-/// `tries` checks for a pending commit), with the version and the window it
-/// was decided on.  0: a state, answering for its projection at that version,
-/// the version the snapshot rule selects; 1: that version's slot is invalid;
-/// 2: a commit in flight may be visible; 3: the version was evicted.
-pub fn read_11(store: &GStore, at: u64, tries: u64) -> (r: (i32, Option<Arc<S11>>, Ghost<u64>, Ghost<Window>))
+/// What a snapshot at engine epoch `at` sees of tpch_q11_vgen (waiting up to `tries`
+/// checks for a pending commit).  0: a reading narrowed to its slot (the kit's
+/// `answer` runs on it: Theorem 5.4); 1: that version's slot is invalid; 2: a
+/// commit in flight may be visible; 3: the version was evicted.
+pub fn read_11(store: &GStore, at: u64, tries: u64) -> (r: (i32, Option<Reading<D11, Slot<S11>>>))
     ensures
-        r.0 == 0 ==> (r.1 matches Some(a) && (*a).answers(db_11(store.db_at(r.2@ as nat))) && sees(r.3@, at, r.2@ as int)),
-        r.0 == 1 ==> sees(r.3@, at, r.2@ as int),
-        r.0 == 2 ==> in_flight(r.3@, at),
-        r.0 == 3 ==> none_current(r.3@, at),
+        r.0 == 0 ==> r.1 is Some,
         0 <= r.0 <= 3,
+        r.1 matches Some(g) ==> g.at() == at,
 {
-    let (res, win) = store.resolve_wait_seen(at, tries);
-    match res {
-        Resolved::Found(v, w) => {
-            let s = slot_11(&w, Ghost(store.db_at(v as nat)));
-            match s.get() {
-                Some(a) => (0, Some(a), Ghost(v), win),
-                None => (1, None, Ghost(v), win),
+    match store.read(at, tries) {
+        Read::Found(g) => {
+            let slot = <Slot<S11> as AuxWorld<D11>>::share(slot_11(g.world(), Ghost(g.db())));
+            match slot {
+                Slot::Invalid => (1, None),
+                Slot::Valid(_) => (0, Some(g.narrow(Ghost(|d: GDb| db_11(d)), slot))),
             }
         },
-        Resolved::Pending => (2, None, Ghost(0), win),
-        Resolved::NotVisible => (3, None, Ghost(0), win),
+        Read::Pending => (2, None),
+        Read::NotVisible => (3, None),
     }
-}
-
-/// tpch_q11_vgen's state in the newest version (what its next state is applied
-/// to), answering for its projection there; None if invalid.
-pub fn newest_11(store: &GStore) -> (r: (Option<Arc<S11>>, Ghost<u64>))
-    ensures
-        r.0 matches Some(a) ==> (*a).answers(db_11(store.db_at(r.1@ as nat))),
-{
-    let (e, w) = store.newest_world();
-    let s = slot_11(&w, Ghost(store.db_at(e as nat)));
-    (s.get(), Ghost(e))
 }
 
 /// Every kept version's tpch_q11_vgen slot becomes invalid (the others stay).
@@ -2339,6 +3134,7 @@ pub fn invalidate_11(store: &GStore) {
             i <= n,
             n == c.versions.len(),
             cell_ok(c, store.timeline()),
+            exact_ok(c, store.timeline(), store.engine()),
             g.store() == *store,
         decreases n - i,
     {
@@ -2353,12 +3149,32 @@ pub fn invalidate_11(store: &GStore) {
     g.end(c);
 }
 
-/// Replace tpch_q12_vgen's slot: `s`, a state answering for its projection of
-/// the database at e + 1 (the kernel's apply / build proof, from the commit's
-/// captured changes), or None (invalid: its queries fall back to SQL).
-pub fn batch_set_12(b: Batch, s: Option<S12>) -> (r: Batch)
-    requires
-        s matches Some(x) ==> x.answers(db_12(b.next_db())),
+/// Replace tpch_q12_vgen's slot by the one staged on this batch's base: true.  A slot
+/// staged on another base is not taken: the slot becomes invalid (false).
+pub fn put_12(b: Batch, st: Staged<D12, S12>) -> (r: (Batch, bool))
+    ensures
+        r.0.epoch() == b.epoch(),
+        r.0.timeline() == b.timeline(),
+        r.0.target() == with_12(b.target(), db_12(b.next_db())),
+{
+    proof {
+        use_type_invariant(&b);
+        use_type_invariant(&*b.base);
+    }
+    let same = st.head().same(&b.base.h12);
+    let ghost (se, stl) = (st.epoch(), st.timeline());
+    let slot = if same {
+        st.into_slot()
+    } else {
+        Slot::Invalid
+    };
+    assert(same ==> slot.ok(db_12(b.next_db())));
+    let next = replace_12(&b.next, slot, Ghost(b.target@), Ghost(db_12(b.next_db())));
+    (Batch { base: b.base, next, target: Ghost(with_12(b.target@, db_12(b.next_db()))) }, same)
+}
+
+/// Make tpch_q12_vgen's slot invalid in the batch.
+pub fn put_invalid_12(b: Batch) -> (r: Batch)
     ensures
         r.epoch() == b.epoch(),
         r.timeline() == b.timeline(),
@@ -2367,50 +3183,31 @@ pub fn batch_set_12(b: Batch, s: Option<S12>) -> (r: Batch)
     proof {
         use_type_invariant(&b);
     }
-    let slot = match s {
-        Some(x) => Slot::Valid(Arc::new(x)),
-        None => Slot::Invalid,
-    };
-    let next = replace_12(&b.next, slot, Ghost(b.target@), Ghost(db_12(b.next_db())));
-    Batch { e: b.e, next, target: Ghost(with_12(b.target@, db_12(b.next_db()))), timeline: b.timeline }
+    let next = replace_12(&b.next, Slot::Invalid, Ghost(b.target@), Ghost(db_12(b.next_db())));
+    Batch { base: b.base, next, target: Ghost(with_12(b.target@, db_12(b.next_db()))) }
 }
 
-/// What a snapshot at engine epoch `at` sees of tpch_q12_vgen (waiting up to
-/// `tries` checks for a pending commit), with the version and the window it
-/// was decided on.  0: a state, answering for its projection at that version,
-/// the version the snapshot rule selects; 1: that version's slot is invalid;
-/// 2: a commit in flight may be visible; 3: the version was evicted.
-pub fn read_12(store: &GStore, at: u64, tries: u64) -> (r: (i32, Option<Arc<S12>>, Ghost<u64>, Ghost<Window>))
+/// What a snapshot at engine epoch `at` sees of tpch_q12_vgen (waiting up to `tries`
+/// checks for a pending commit).  0: a reading narrowed to its slot (the kit's
+/// `answer` runs on it: Theorem 5.4); 1: that version's slot is invalid; 2: a
+/// commit in flight may be visible; 3: the version was evicted.
+pub fn read_12(store: &GStore, at: u64, tries: u64) -> (r: (i32, Option<Reading<D12, Slot<S12>>>))
     ensures
-        r.0 == 0 ==> (r.1 matches Some(a) && (*a).answers(db_12(store.db_at(r.2@ as nat))) && sees(r.3@, at, r.2@ as int)),
-        r.0 == 1 ==> sees(r.3@, at, r.2@ as int),
-        r.0 == 2 ==> in_flight(r.3@, at),
-        r.0 == 3 ==> none_current(r.3@, at),
+        r.0 == 0 ==> r.1 is Some,
         0 <= r.0 <= 3,
+        r.1 matches Some(g) ==> g.at() == at,
 {
-    let (res, win) = store.resolve_wait_seen(at, tries);
-    match res {
-        Resolved::Found(v, w) => {
-            let s = slot_12(&w, Ghost(store.db_at(v as nat)));
-            match s.get() {
-                Some(a) => (0, Some(a), Ghost(v), win),
-                None => (1, None, Ghost(v), win),
+    match store.read(at, tries) {
+        Read::Found(g) => {
+            let slot = <Slot<S12> as AuxWorld<D12>>::share(slot_12(g.world(), Ghost(g.db())));
+            match slot {
+                Slot::Invalid => (1, None),
+                Slot::Valid(_) => (0, Some(g.narrow(Ghost(|d: GDb| db_12(d)), slot))),
             }
         },
-        Resolved::Pending => (2, None, Ghost(0), win),
-        Resolved::NotVisible => (3, None, Ghost(0), win),
+        Read::Pending => (2, None),
+        Read::NotVisible => (3, None),
     }
-}
-
-/// tpch_q12_vgen's state in the newest version (what its next state is applied
-/// to), answering for its projection there; None if invalid.
-pub fn newest_12(store: &GStore) -> (r: (Option<Arc<S12>>, Ghost<u64>))
-    ensures
-        r.0 matches Some(a) ==> (*a).answers(db_12(store.db_at(r.1@ as nat))),
-{
-    let (e, w) = store.newest_world();
-    let s = slot_12(&w, Ghost(store.db_at(e as nat)));
-    (s.get(), Ghost(e))
 }
 
 /// Every kept version's tpch_q12_vgen slot becomes invalid (the others stay).
@@ -2423,6 +3220,7 @@ pub fn invalidate_12(store: &GStore) {
             i <= n,
             n == c.versions.len(),
             cell_ok(c, store.timeline()),
+            exact_ok(c, store.timeline(), store.engine()),
             g.store() == *store,
         decreases n - i,
     {
@@ -2437,12 +3235,32 @@ pub fn invalidate_12(store: &GStore) {
     g.end(c);
 }
 
-/// Replace tpch_q13_vgen's slot: `s`, a state answering for its projection of
-/// the database at e + 1 (the kernel's apply / build proof, from the commit's
-/// captured changes), or None (invalid: its queries fall back to SQL).
-pub fn batch_set_13(b: Batch, s: Option<S13>) -> (r: Batch)
-    requires
-        s matches Some(x) ==> x.answers(db_13(b.next_db())),
+/// Replace tpch_q13_vgen's slot by the one staged on this batch's base: true.  A slot
+/// staged on another base is not taken: the slot becomes invalid (false).
+pub fn put_13(b: Batch, st: Staged<D13, S13>) -> (r: (Batch, bool))
+    ensures
+        r.0.epoch() == b.epoch(),
+        r.0.timeline() == b.timeline(),
+        r.0.target() == with_13(b.target(), db_13(b.next_db())),
+{
+    proof {
+        use_type_invariant(&b);
+        use_type_invariant(&*b.base);
+    }
+    let same = st.head().same(&b.base.h13);
+    let ghost (se, stl) = (st.epoch(), st.timeline());
+    let slot = if same {
+        st.into_slot()
+    } else {
+        Slot::Invalid
+    };
+    assert(same ==> slot.ok(db_13(b.next_db())));
+    let next = replace_13(&b.next, slot, Ghost(b.target@), Ghost(db_13(b.next_db())));
+    (Batch { base: b.base, next, target: Ghost(with_13(b.target@, db_13(b.next_db()))) }, same)
+}
+
+/// Make tpch_q13_vgen's slot invalid in the batch.
+pub fn put_invalid_13(b: Batch) -> (r: Batch)
     ensures
         r.epoch() == b.epoch(),
         r.timeline() == b.timeline(),
@@ -2451,50 +3269,31 @@ pub fn batch_set_13(b: Batch, s: Option<S13>) -> (r: Batch)
     proof {
         use_type_invariant(&b);
     }
-    let slot = match s {
-        Some(x) => Slot::Valid(Arc::new(x)),
-        None => Slot::Invalid,
-    };
-    let next = replace_13(&b.next, slot, Ghost(b.target@), Ghost(db_13(b.next_db())));
-    Batch { e: b.e, next, target: Ghost(with_13(b.target@, db_13(b.next_db()))), timeline: b.timeline }
+    let next = replace_13(&b.next, Slot::Invalid, Ghost(b.target@), Ghost(db_13(b.next_db())));
+    Batch { base: b.base, next, target: Ghost(with_13(b.target@, db_13(b.next_db()))) }
 }
 
-/// What a snapshot at engine epoch `at` sees of tpch_q13_vgen (waiting up to
-/// `tries` checks for a pending commit), with the version and the window it
-/// was decided on.  0: a state, answering for its projection at that version,
-/// the version the snapshot rule selects; 1: that version's slot is invalid;
-/// 2: a commit in flight may be visible; 3: the version was evicted.
-pub fn read_13(store: &GStore, at: u64, tries: u64) -> (r: (i32, Option<Arc<S13>>, Ghost<u64>, Ghost<Window>))
+/// What a snapshot at engine epoch `at` sees of tpch_q13_vgen (waiting up to `tries`
+/// checks for a pending commit).  0: a reading narrowed to its slot (the kit's
+/// `answer` runs on it: Theorem 5.4); 1: that version's slot is invalid; 2: a
+/// commit in flight may be visible; 3: the version was evicted.
+pub fn read_13(store: &GStore, at: u64, tries: u64) -> (r: (i32, Option<Reading<D13, Slot<S13>>>))
     ensures
-        r.0 == 0 ==> (r.1 matches Some(a) && (*a).answers(db_13(store.db_at(r.2@ as nat))) && sees(r.3@, at, r.2@ as int)),
-        r.0 == 1 ==> sees(r.3@, at, r.2@ as int),
-        r.0 == 2 ==> in_flight(r.3@, at),
-        r.0 == 3 ==> none_current(r.3@, at),
+        r.0 == 0 ==> r.1 is Some,
         0 <= r.0 <= 3,
+        r.1 matches Some(g) ==> g.at() == at,
 {
-    let (res, win) = store.resolve_wait_seen(at, tries);
-    match res {
-        Resolved::Found(v, w) => {
-            let s = slot_13(&w, Ghost(store.db_at(v as nat)));
-            match s.get() {
-                Some(a) => (0, Some(a), Ghost(v), win),
-                None => (1, None, Ghost(v), win),
+    match store.read(at, tries) {
+        Read::Found(g) => {
+            let slot = <Slot<S13> as AuxWorld<D13>>::share(slot_13(g.world(), Ghost(g.db())));
+            match slot {
+                Slot::Invalid => (1, None),
+                Slot::Valid(_) => (0, Some(g.narrow(Ghost(|d: GDb| db_13(d)), slot))),
             }
         },
-        Resolved::Pending => (2, None, Ghost(0), win),
-        Resolved::NotVisible => (3, None, Ghost(0), win),
+        Read::Pending => (2, None),
+        Read::NotVisible => (3, None),
     }
-}
-
-/// tpch_q13_vgen's state in the newest version (what its next state is applied
-/// to), answering for its projection there; None if invalid.
-pub fn newest_13(store: &GStore) -> (r: (Option<Arc<S13>>, Ghost<u64>))
-    ensures
-        r.0 matches Some(a) ==> (*a).answers(db_13(store.db_at(r.1@ as nat))),
-{
-    let (e, w) = store.newest_world();
-    let s = slot_13(&w, Ghost(store.db_at(e as nat)));
-    (s.get(), Ghost(e))
 }
 
 /// Every kept version's tpch_q13_vgen slot becomes invalid (the others stay).
@@ -2507,6 +3306,7 @@ pub fn invalidate_13(store: &GStore) {
             i <= n,
             n == c.versions.len(),
             cell_ok(c, store.timeline()),
+            exact_ok(c, store.timeline(), store.engine()),
             g.store() == *store,
         decreases n - i,
     {
@@ -2521,12 +3321,32 @@ pub fn invalidate_13(store: &GStore) {
     g.end(c);
 }
 
-/// Replace tpch_q14_vgen's slot: `s`, a state answering for its projection of
-/// the database at e + 1 (the kernel's apply / build proof, from the commit's
-/// captured changes), or None (invalid: its queries fall back to SQL).
-pub fn batch_set_14(b: Batch, s: Option<S14>) -> (r: Batch)
-    requires
-        s matches Some(x) ==> x.answers(db_14(b.next_db())),
+/// Replace tpch_q14_vgen's slot by the one staged on this batch's base: true.  A slot
+/// staged on another base is not taken: the slot becomes invalid (false).
+pub fn put_14(b: Batch, st: Staged<D14, S14>) -> (r: (Batch, bool))
+    ensures
+        r.0.epoch() == b.epoch(),
+        r.0.timeline() == b.timeline(),
+        r.0.target() == with_14(b.target(), db_14(b.next_db())),
+{
+    proof {
+        use_type_invariant(&b);
+        use_type_invariant(&*b.base);
+    }
+    let same = st.head().same(&b.base.h14);
+    let ghost (se, stl) = (st.epoch(), st.timeline());
+    let slot = if same {
+        st.into_slot()
+    } else {
+        Slot::Invalid
+    };
+    assert(same ==> slot.ok(db_14(b.next_db())));
+    let next = replace_14(&b.next, slot, Ghost(b.target@), Ghost(db_14(b.next_db())));
+    (Batch { base: b.base, next, target: Ghost(with_14(b.target@, db_14(b.next_db()))) }, same)
+}
+
+/// Make tpch_q14_vgen's slot invalid in the batch.
+pub fn put_invalid_14(b: Batch) -> (r: Batch)
     ensures
         r.epoch() == b.epoch(),
         r.timeline() == b.timeline(),
@@ -2535,50 +3355,31 @@ pub fn batch_set_14(b: Batch, s: Option<S14>) -> (r: Batch)
     proof {
         use_type_invariant(&b);
     }
-    let slot = match s {
-        Some(x) => Slot::Valid(Arc::new(x)),
-        None => Slot::Invalid,
-    };
-    let next = replace_14(&b.next, slot, Ghost(b.target@), Ghost(db_14(b.next_db())));
-    Batch { e: b.e, next, target: Ghost(with_14(b.target@, db_14(b.next_db()))), timeline: b.timeline }
+    let next = replace_14(&b.next, Slot::Invalid, Ghost(b.target@), Ghost(db_14(b.next_db())));
+    Batch { base: b.base, next, target: Ghost(with_14(b.target@, db_14(b.next_db()))) }
 }
 
-/// What a snapshot at engine epoch `at` sees of tpch_q14_vgen (waiting up to
-/// `tries` checks for a pending commit), with the version and the window it
-/// was decided on.  0: a state, answering for its projection at that version,
-/// the version the snapshot rule selects; 1: that version's slot is invalid;
-/// 2: a commit in flight may be visible; 3: the version was evicted.
-pub fn read_14(store: &GStore, at: u64, tries: u64) -> (r: (i32, Option<Arc<S14>>, Ghost<u64>, Ghost<Window>))
+/// What a snapshot at engine epoch `at` sees of tpch_q14_vgen (waiting up to `tries`
+/// checks for a pending commit).  0: a reading narrowed to its slot (the kit's
+/// `answer` runs on it: Theorem 5.4); 1: that version's slot is invalid; 2: a
+/// commit in flight may be visible; 3: the version was evicted.
+pub fn read_14(store: &GStore, at: u64, tries: u64) -> (r: (i32, Option<Reading<D14, Slot<S14>>>))
     ensures
-        r.0 == 0 ==> (r.1 matches Some(a) && (*a).answers(db_14(store.db_at(r.2@ as nat))) && sees(r.3@, at, r.2@ as int)),
-        r.0 == 1 ==> sees(r.3@, at, r.2@ as int),
-        r.0 == 2 ==> in_flight(r.3@, at),
-        r.0 == 3 ==> none_current(r.3@, at),
+        r.0 == 0 ==> r.1 is Some,
         0 <= r.0 <= 3,
+        r.1 matches Some(g) ==> g.at() == at,
 {
-    let (res, win) = store.resolve_wait_seen(at, tries);
-    match res {
-        Resolved::Found(v, w) => {
-            let s = slot_14(&w, Ghost(store.db_at(v as nat)));
-            match s.get() {
-                Some(a) => (0, Some(a), Ghost(v), win),
-                None => (1, None, Ghost(v), win),
+    match store.read(at, tries) {
+        Read::Found(g) => {
+            let slot = <Slot<S14> as AuxWorld<D14>>::share(slot_14(g.world(), Ghost(g.db())));
+            match slot {
+                Slot::Invalid => (1, None),
+                Slot::Valid(_) => (0, Some(g.narrow(Ghost(|d: GDb| db_14(d)), slot))),
             }
         },
-        Resolved::Pending => (2, None, Ghost(0), win),
-        Resolved::NotVisible => (3, None, Ghost(0), win),
+        Read::Pending => (2, None),
+        Read::NotVisible => (3, None),
     }
-}
-
-/// tpch_q14_vgen's state in the newest version (what its next state is applied
-/// to), answering for its projection there; None if invalid.
-pub fn newest_14(store: &GStore) -> (r: (Option<Arc<S14>>, Ghost<u64>))
-    ensures
-        r.0 matches Some(a) ==> (*a).answers(db_14(store.db_at(r.1@ as nat))),
-{
-    let (e, w) = store.newest_world();
-    let s = slot_14(&w, Ghost(store.db_at(e as nat)));
-    (s.get(), Ghost(e))
 }
 
 /// Every kept version's tpch_q14_vgen slot becomes invalid (the others stay).
@@ -2591,6 +3392,7 @@ pub fn invalidate_14(store: &GStore) {
             i <= n,
             n == c.versions.len(),
             cell_ok(c, store.timeline()),
+            exact_ok(c, store.timeline(), store.engine()),
             g.store() == *store,
         decreases n - i,
     {
@@ -2605,12 +3407,32 @@ pub fn invalidate_14(store: &GStore) {
     g.end(c);
 }
 
-/// Replace tpch_q15_vgen's slot: `s`, a state answering for its projection of
-/// the database at e + 1 (the kernel's apply / build proof, from the commit's
-/// captured changes), or None (invalid: its queries fall back to SQL).
-pub fn batch_set_15(b: Batch, s: Option<S15>) -> (r: Batch)
-    requires
-        s matches Some(x) ==> x.answers(db_15(b.next_db())),
+/// Replace tpch_q15_vgen's slot by the one staged on this batch's base: true.  A slot
+/// staged on another base is not taken: the slot becomes invalid (false).
+pub fn put_15(b: Batch, st: Staged<D15, S15>) -> (r: (Batch, bool))
+    ensures
+        r.0.epoch() == b.epoch(),
+        r.0.timeline() == b.timeline(),
+        r.0.target() == with_15(b.target(), db_15(b.next_db())),
+{
+    proof {
+        use_type_invariant(&b);
+        use_type_invariant(&*b.base);
+    }
+    let same = st.head().same(&b.base.h15);
+    let ghost (se, stl) = (st.epoch(), st.timeline());
+    let slot = if same {
+        st.into_slot()
+    } else {
+        Slot::Invalid
+    };
+    assert(same ==> slot.ok(db_15(b.next_db())));
+    let next = replace_15(&b.next, slot, Ghost(b.target@), Ghost(db_15(b.next_db())));
+    (Batch { base: b.base, next, target: Ghost(with_15(b.target@, db_15(b.next_db()))) }, same)
+}
+
+/// Make tpch_q15_vgen's slot invalid in the batch.
+pub fn put_invalid_15(b: Batch) -> (r: Batch)
     ensures
         r.epoch() == b.epoch(),
         r.timeline() == b.timeline(),
@@ -2619,50 +3441,31 @@ pub fn batch_set_15(b: Batch, s: Option<S15>) -> (r: Batch)
     proof {
         use_type_invariant(&b);
     }
-    let slot = match s {
-        Some(x) => Slot::Valid(Arc::new(x)),
-        None => Slot::Invalid,
-    };
-    let next = replace_15(&b.next, slot, Ghost(b.target@), Ghost(db_15(b.next_db())));
-    Batch { e: b.e, next, target: Ghost(with_15(b.target@, db_15(b.next_db()))), timeline: b.timeline }
+    let next = replace_15(&b.next, Slot::Invalid, Ghost(b.target@), Ghost(db_15(b.next_db())));
+    Batch { base: b.base, next, target: Ghost(with_15(b.target@, db_15(b.next_db()))) }
 }
 
-/// What a snapshot at engine epoch `at` sees of tpch_q15_vgen (waiting up to
-/// `tries` checks for a pending commit), with the version and the window it
-/// was decided on.  0: a state, answering for its projection at that version,
-/// the version the snapshot rule selects; 1: that version's slot is invalid;
-/// 2: a commit in flight may be visible; 3: the version was evicted.
-pub fn read_15(store: &GStore, at: u64, tries: u64) -> (r: (i32, Option<Arc<S15>>, Ghost<u64>, Ghost<Window>))
+/// What a snapshot at engine epoch `at` sees of tpch_q15_vgen (waiting up to `tries`
+/// checks for a pending commit).  0: a reading narrowed to its slot (the kit's
+/// `answer` runs on it: Theorem 5.4); 1: that version's slot is invalid; 2: a
+/// commit in flight may be visible; 3: the version was evicted.
+pub fn read_15(store: &GStore, at: u64, tries: u64) -> (r: (i32, Option<Reading<D15, Slot<S15>>>))
     ensures
-        r.0 == 0 ==> (r.1 matches Some(a) && (*a).answers(db_15(store.db_at(r.2@ as nat))) && sees(r.3@, at, r.2@ as int)),
-        r.0 == 1 ==> sees(r.3@, at, r.2@ as int),
-        r.0 == 2 ==> in_flight(r.3@, at),
-        r.0 == 3 ==> none_current(r.3@, at),
+        r.0 == 0 ==> r.1 is Some,
         0 <= r.0 <= 3,
+        r.1 matches Some(g) ==> g.at() == at,
 {
-    let (res, win) = store.resolve_wait_seen(at, tries);
-    match res {
-        Resolved::Found(v, w) => {
-            let s = slot_15(&w, Ghost(store.db_at(v as nat)));
-            match s.get() {
-                Some(a) => (0, Some(a), Ghost(v), win),
-                None => (1, None, Ghost(v), win),
+    match store.read(at, tries) {
+        Read::Found(g) => {
+            let slot = <Slot<S15> as AuxWorld<D15>>::share(slot_15(g.world(), Ghost(g.db())));
+            match slot {
+                Slot::Invalid => (1, None),
+                Slot::Valid(_) => (0, Some(g.narrow(Ghost(|d: GDb| db_15(d)), slot))),
             }
         },
-        Resolved::Pending => (2, None, Ghost(0), win),
-        Resolved::NotVisible => (3, None, Ghost(0), win),
+        Read::Pending => (2, None),
+        Read::NotVisible => (3, None),
     }
-}
-
-/// tpch_q15_vgen's state in the newest version (what its next state is applied
-/// to), answering for its projection there; None if invalid.
-pub fn newest_15(store: &GStore) -> (r: (Option<Arc<S15>>, Ghost<u64>))
-    ensures
-        r.0 matches Some(a) ==> (*a).answers(db_15(store.db_at(r.1@ as nat))),
-{
-    let (e, w) = store.newest_world();
-    let s = slot_15(&w, Ghost(store.db_at(e as nat)));
-    (s.get(), Ghost(e))
 }
 
 /// Every kept version's tpch_q15_vgen slot becomes invalid (the others stay).
@@ -2675,6 +3478,7 @@ pub fn invalidate_15(store: &GStore) {
             i <= n,
             n == c.versions.len(),
             cell_ok(c, store.timeline()),
+            exact_ok(c, store.timeline(), store.engine()),
             g.store() == *store,
         decreases n - i,
     {
@@ -2689,12 +3493,32 @@ pub fn invalidate_15(store: &GStore) {
     g.end(c);
 }
 
-/// Replace tpch_q16_vgen's slot: `s`, a state answering for its projection of
-/// the database at e + 1 (the kernel's apply / build proof, from the commit's
-/// captured changes), or None (invalid: its queries fall back to SQL).
-pub fn batch_set_16(b: Batch, s: Option<S16>) -> (r: Batch)
-    requires
-        s matches Some(x) ==> x.answers(db_16(b.next_db())),
+/// Replace tpch_q16_vgen's slot by the one staged on this batch's base: true.  A slot
+/// staged on another base is not taken: the slot becomes invalid (false).
+pub fn put_16(b: Batch, st: Staged<D16, S16>) -> (r: (Batch, bool))
+    ensures
+        r.0.epoch() == b.epoch(),
+        r.0.timeline() == b.timeline(),
+        r.0.target() == with_16(b.target(), db_16(b.next_db())),
+{
+    proof {
+        use_type_invariant(&b);
+        use_type_invariant(&*b.base);
+    }
+    let same = st.head().same(&b.base.h16);
+    let ghost (se, stl) = (st.epoch(), st.timeline());
+    let slot = if same {
+        st.into_slot()
+    } else {
+        Slot::Invalid
+    };
+    assert(same ==> slot.ok(db_16(b.next_db())));
+    let next = replace_16(&b.next, slot, Ghost(b.target@), Ghost(db_16(b.next_db())));
+    (Batch { base: b.base, next, target: Ghost(with_16(b.target@, db_16(b.next_db()))) }, same)
+}
+
+/// Make tpch_q16_vgen's slot invalid in the batch.
+pub fn put_invalid_16(b: Batch) -> (r: Batch)
     ensures
         r.epoch() == b.epoch(),
         r.timeline() == b.timeline(),
@@ -2703,50 +3527,31 @@ pub fn batch_set_16(b: Batch, s: Option<S16>) -> (r: Batch)
     proof {
         use_type_invariant(&b);
     }
-    let slot = match s {
-        Some(x) => Slot::Valid(Arc::new(x)),
-        None => Slot::Invalid,
-    };
-    let next = replace_16(&b.next, slot, Ghost(b.target@), Ghost(db_16(b.next_db())));
-    Batch { e: b.e, next, target: Ghost(with_16(b.target@, db_16(b.next_db()))), timeline: b.timeline }
+    let next = replace_16(&b.next, Slot::Invalid, Ghost(b.target@), Ghost(db_16(b.next_db())));
+    Batch { base: b.base, next, target: Ghost(with_16(b.target@, db_16(b.next_db()))) }
 }
 
-/// What a snapshot at engine epoch `at` sees of tpch_q16_vgen (waiting up to
-/// `tries` checks for a pending commit), with the version and the window it
-/// was decided on.  0: a state, answering for its projection at that version,
-/// the version the snapshot rule selects; 1: that version's slot is invalid;
-/// 2: a commit in flight may be visible; 3: the version was evicted.
-pub fn read_16(store: &GStore, at: u64, tries: u64) -> (r: (i32, Option<Arc<S16>>, Ghost<u64>, Ghost<Window>))
+/// What a snapshot at engine epoch `at` sees of tpch_q16_vgen (waiting up to `tries`
+/// checks for a pending commit).  0: a reading narrowed to its slot (the kit's
+/// `answer` runs on it: Theorem 5.4); 1: that version's slot is invalid; 2: a
+/// commit in flight may be visible; 3: the version was evicted.
+pub fn read_16(store: &GStore, at: u64, tries: u64) -> (r: (i32, Option<Reading<D16, Slot<S16>>>))
     ensures
-        r.0 == 0 ==> (r.1 matches Some(a) && (*a).answers(db_16(store.db_at(r.2@ as nat))) && sees(r.3@, at, r.2@ as int)),
-        r.0 == 1 ==> sees(r.3@, at, r.2@ as int),
-        r.0 == 2 ==> in_flight(r.3@, at),
-        r.0 == 3 ==> none_current(r.3@, at),
+        r.0 == 0 ==> r.1 is Some,
         0 <= r.0 <= 3,
+        r.1 matches Some(g) ==> g.at() == at,
 {
-    let (res, win) = store.resolve_wait_seen(at, tries);
-    match res {
-        Resolved::Found(v, w) => {
-            let s = slot_16(&w, Ghost(store.db_at(v as nat)));
-            match s.get() {
-                Some(a) => (0, Some(a), Ghost(v), win),
-                None => (1, None, Ghost(v), win),
+    match store.read(at, tries) {
+        Read::Found(g) => {
+            let slot = <Slot<S16> as AuxWorld<D16>>::share(slot_16(g.world(), Ghost(g.db())));
+            match slot {
+                Slot::Invalid => (1, None),
+                Slot::Valid(_) => (0, Some(g.narrow(Ghost(|d: GDb| db_16(d)), slot))),
             }
         },
-        Resolved::Pending => (2, None, Ghost(0), win),
-        Resolved::NotVisible => (3, None, Ghost(0), win),
+        Read::Pending => (2, None),
+        Read::NotVisible => (3, None),
     }
-}
-
-/// tpch_q16_vgen's state in the newest version (what its next state is applied
-/// to), answering for its projection there; None if invalid.
-pub fn newest_16(store: &GStore) -> (r: (Option<Arc<S16>>, Ghost<u64>))
-    ensures
-        r.0 matches Some(a) ==> (*a).answers(db_16(store.db_at(r.1@ as nat))),
-{
-    let (e, w) = store.newest_world();
-    let s = slot_16(&w, Ghost(store.db_at(e as nat)));
-    (s.get(), Ghost(e))
 }
 
 /// Every kept version's tpch_q16_vgen slot becomes invalid (the others stay).
@@ -2759,6 +3564,7 @@ pub fn invalidate_16(store: &GStore) {
             i <= n,
             n == c.versions.len(),
             cell_ok(c, store.timeline()),
+            exact_ok(c, store.timeline(), store.engine()),
             g.store() == *store,
         decreases n - i,
     {
@@ -2773,12 +3579,32 @@ pub fn invalidate_16(store: &GStore) {
     g.end(c);
 }
 
-/// Replace tpch_q17_vgen's slot: `s`, a state answering for its projection of
-/// the database at e + 1 (the kernel's apply / build proof, from the commit's
-/// captured changes), or None (invalid: its queries fall back to SQL).
-pub fn batch_set_17(b: Batch, s: Option<S17>) -> (r: Batch)
-    requires
-        s matches Some(x) ==> x.answers(db_17(b.next_db())),
+/// Replace tpch_q17_vgen's slot by the one staged on this batch's base: true.  A slot
+/// staged on another base is not taken: the slot becomes invalid (false).
+pub fn put_17(b: Batch, st: Staged<D17, S17>) -> (r: (Batch, bool))
+    ensures
+        r.0.epoch() == b.epoch(),
+        r.0.timeline() == b.timeline(),
+        r.0.target() == with_17(b.target(), db_17(b.next_db())),
+{
+    proof {
+        use_type_invariant(&b);
+        use_type_invariant(&*b.base);
+    }
+    let same = st.head().same(&b.base.h17);
+    let ghost (se, stl) = (st.epoch(), st.timeline());
+    let slot = if same {
+        st.into_slot()
+    } else {
+        Slot::Invalid
+    };
+    assert(same ==> slot.ok(db_17(b.next_db())));
+    let next = replace_17(&b.next, slot, Ghost(b.target@), Ghost(db_17(b.next_db())));
+    (Batch { base: b.base, next, target: Ghost(with_17(b.target@, db_17(b.next_db()))) }, same)
+}
+
+/// Make tpch_q17_vgen's slot invalid in the batch.
+pub fn put_invalid_17(b: Batch) -> (r: Batch)
     ensures
         r.epoch() == b.epoch(),
         r.timeline() == b.timeline(),
@@ -2787,50 +3613,31 @@ pub fn batch_set_17(b: Batch, s: Option<S17>) -> (r: Batch)
     proof {
         use_type_invariant(&b);
     }
-    let slot = match s {
-        Some(x) => Slot::Valid(Arc::new(x)),
-        None => Slot::Invalid,
-    };
-    let next = replace_17(&b.next, slot, Ghost(b.target@), Ghost(db_17(b.next_db())));
-    Batch { e: b.e, next, target: Ghost(with_17(b.target@, db_17(b.next_db()))), timeline: b.timeline }
+    let next = replace_17(&b.next, Slot::Invalid, Ghost(b.target@), Ghost(db_17(b.next_db())));
+    Batch { base: b.base, next, target: Ghost(with_17(b.target@, db_17(b.next_db()))) }
 }
 
-/// What a snapshot at engine epoch `at` sees of tpch_q17_vgen (waiting up to
-/// `tries` checks for a pending commit), with the version and the window it
-/// was decided on.  0: a state, answering for its projection at that version,
-/// the version the snapshot rule selects; 1: that version's slot is invalid;
-/// 2: a commit in flight may be visible; 3: the version was evicted.
-pub fn read_17(store: &GStore, at: u64, tries: u64) -> (r: (i32, Option<Arc<S17>>, Ghost<u64>, Ghost<Window>))
+/// What a snapshot at engine epoch `at` sees of tpch_q17_vgen (waiting up to `tries`
+/// checks for a pending commit).  0: a reading narrowed to its slot (the kit's
+/// `answer` runs on it: Theorem 5.4); 1: that version's slot is invalid; 2: a
+/// commit in flight may be visible; 3: the version was evicted.
+pub fn read_17(store: &GStore, at: u64, tries: u64) -> (r: (i32, Option<Reading<D17, Slot<S17>>>))
     ensures
-        r.0 == 0 ==> (r.1 matches Some(a) && (*a).answers(db_17(store.db_at(r.2@ as nat))) && sees(r.3@, at, r.2@ as int)),
-        r.0 == 1 ==> sees(r.3@, at, r.2@ as int),
-        r.0 == 2 ==> in_flight(r.3@, at),
-        r.0 == 3 ==> none_current(r.3@, at),
+        r.0 == 0 ==> r.1 is Some,
         0 <= r.0 <= 3,
+        r.1 matches Some(g) ==> g.at() == at,
 {
-    let (res, win) = store.resolve_wait_seen(at, tries);
-    match res {
-        Resolved::Found(v, w) => {
-            let s = slot_17(&w, Ghost(store.db_at(v as nat)));
-            match s.get() {
-                Some(a) => (0, Some(a), Ghost(v), win),
-                None => (1, None, Ghost(v), win),
+    match store.read(at, tries) {
+        Read::Found(g) => {
+            let slot = <Slot<S17> as AuxWorld<D17>>::share(slot_17(g.world(), Ghost(g.db())));
+            match slot {
+                Slot::Invalid => (1, None),
+                Slot::Valid(_) => (0, Some(g.narrow(Ghost(|d: GDb| db_17(d)), slot))),
             }
         },
-        Resolved::Pending => (2, None, Ghost(0), win),
-        Resolved::NotVisible => (3, None, Ghost(0), win),
+        Read::Pending => (2, None),
+        Read::NotVisible => (3, None),
     }
-}
-
-/// tpch_q17_vgen's state in the newest version (what its next state is applied
-/// to), answering for its projection there; None if invalid.
-pub fn newest_17(store: &GStore) -> (r: (Option<Arc<S17>>, Ghost<u64>))
-    ensures
-        r.0 matches Some(a) ==> (*a).answers(db_17(store.db_at(r.1@ as nat))),
-{
-    let (e, w) = store.newest_world();
-    let s = slot_17(&w, Ghost(store.db_at(e as nat)));
-    (s.get(), Ghost(e))
 }
 
 /// Every kept version's tpch_q17_vgen slot becomes invalid (the others stay).
@@ -2843,6 +3650,7 @@ pub fn invalidate_17(store: &GStore) {
             i <= n,
             n == c.versions.len(),
             cell_ok(c, store.timeline()),
+            exact_ok(c, store.timeline(), store.engine()),
             g.store() == *store,
         decreases n - i,
     {
@@ -2857,12 +3665,32 @@ pub fn invalidate_17(store: &GStore) {
     g.end(c);
 }
 
-/// Replace tpch_q18_vgen's slot: `s`, a state answering for its projection of
-/// the database at e + 1 (the kernel's apply / build proof, from the commit's
-/// captured changes), or None (invalid: its queries fall back to SQL).
-pub fn batch_set_18(b: Batch, s: Option<S18>) -> (r: Batch)
-    requires
-        s matches Some(x) ==> x.answers(db_18(b.next_db())),
+/// Replace tpch_q18_vgen's slot by the one staged on this batch's base: true.  A slot
+/// staged on another base is not taken: the slot becomes invalid (false).
+pub fn put_18(b: Batch, st: Staged<D18, S18>) -> (r: (Batch, bool))
+    ensures
+        r.0.epoch() == b.epoch(),
+        r.0.timeline() == b.timeline(),
+        r.0.target() == with_18(b.target(), db_18(b.next_db())),
+{
+    proof {
+        use_type_invariant(&b);
+        use_type_invariant(&*b.base);
+    }
+    let same = st.head().same(&b.base.h18);
+    let ghost (se, stl) = (st.epoch(), st.timeline());
+    let slot = if same {
+        st.into_slot()
+    } else {
+        Slot::Invalid
+    };
+    assert(same ==> slot.ok(db_18(b.next_db())));
+    let next = replace_18(&b.next, slot, Ghost(b.target@), Ghost(db_18(b.next_db())));
+    (Batch { base: b.base, next, target: Ghost(with_18(b.target@, db_18(b.next_db()))) }, same)
+}
+
+/// Make tpch_q18_vgen's slot invalid in the batch.
+pub fn put_invalid_18(b: Batch) -> (r: Batch)
     ensures
         r.epoch() == b.epoch(),
         r.timeline() == b.timeline(),
@@ -2871,50 +3699,31 @@ pub fn batch_set_18(b: Batch, s: Option<S18>) -> (r: Batch)
     proof {
         use_type_invariant(&b);
     }
-    let slot = match s {
-        Some(x) => Slot::Valid(Arc::new(x)),
-        None => Slot::Invalid,
-    };
-    let next = replace_18(&b.next, slot, Ghost(b.target@), Ghost(db_18(b.next_db())));
-    Batch { e: b.e, next, target: Ghost(with_18(b.target@, db_18(b.next_db()))), timeline: b.timeline }
+    let next = replace_18(&b.next, Slot::Invalid, Ghost(b.target@), Ghost(db_18(b.next_db())));
+    Batch { base: b.base, next, target: Ghost(with_18(b.target@, db_18(b.next_db()))) }
 }
 
-/// What a snapshot at engine epoch `at` sees of tpch_q18_vgen (waiting up to
-/// `tries` checks for a pending commit), with the version and the window it
-/// was decided on.  0: a state, answering for its projection at that version,
-/// the version the snapshot rule selects; 1: that version's slot is invalid;
-/// 2: a commit in flight may be visible; 3: the version was evicted.
-pub fn read_18(store: &GStore, at: u64, tries: u64) -> (r: (i32, Option<Arc<S18>>, Ghost<u64>, Ghost<Window>))
+/// What a snapshot at engine epoch `at` sees of tpch_q18_vgen (waiting up to `tries`
+/// checks for a pending commit).  0: a reading narrowed to its slot (the kit's
+/// `answer` runs on it: Theorem 5.4); 1: that version's slot is invalid; 2: a
+/// commit in flight may be visible; 3: the version was evicted.
+pub fn read_18(store: &GStore, at: u64, tries: u64) -> (r: (i32, Option<Reading<D18, Slot<S18>>>))
     ensures
-        r.0 == 0 ==> (r.1 matches Some(a) && (*a).answers(db_18(store.db_at(r.2@ as nat))) && sees(r.3@, at, r.2@ as int)),
-        r.0 == 1 ==> sees(r.3@, at, r.2@ as int),
-        r.0 == 2 ==> in_flight(r.3@, at),
-        r.0 == 3 ==> none_current(r.3@, at),
+        r.0 == 0 ==> r.1 is Some,
         0 <= r.0 <= 3,
+        r.1 matches Some(g) ==> g.at() == at,
 {
-    let (res, win) = store.resolve_wait_seen(at, tries);
-    match res {
-        Resolved::Found(v, w) => {
-            let s = slot_18(&w, Ghost(store.db_at(v as nat)));
-            match s.get() {
-                Some(a) => (0, Some(a), Ghost(v), win),
-                None => (1, None, Ghost(v), win),
+    match store.read(at, tries) {
+        Read::Found(g) => {
+            let slot = <Slot<S18> as AuxWorld<D18>>::share(slot_18(g.world(), Ghost(g.db())));
+            match slot {
+                Slot::Invalid => (1, None),
+                Slot::Valid(_) => (0, Some(g.narrow(Ghost(|d: GDb| db_18(d)), slot))),
             }
         },
-        Resolved::Pending => (2, None, Ghost(0), win),
-        Resolved::NotVisible => (3, None, Ghost(0), win),
+        Read::Pending => (2, None),
+        Read::NotVisible => (3, None),
     }
-}
-
-/// tpch_q18_vgen's state in the newest version (what its next state is applied
-/// to), answering for its projection there; None if invalid.
-pub fn newest_18(store: &GStore) -> (r: (Option<Arc<S18>>, Ghost<u64>))
-    ensures
-        r.0 matches Some(a) ==> (*a).answers(db_18(store.db_at(r.1@ as nat))),
-{
-    let (e, w) = store.newest_world();
-    let s = slot_18(&w, Ghost(store.db_at(e as nat)));
-    (s.get(), Ghost(e))
 }
 
 /// Every kept version's tpch_q18_vgen slot becomes invalid (the others stay).
@@ -2927,6 +3736,7 @@ pub fn invalidate_18(store: &GStore) {
             i <= n,
             n == c.versions.len(),
             cell_ok(c, store.timeline()),
+            exact_ok(c, store.timeline(), store.engine()),
             g.store() == *store,
         decreases n - i,
     {
@@ -2941,12 +3751,32 @@ pub fn invalidate_18(store: &GStore) {
     g.end(c);
 }
 
-/// Replace tpch_q19_vgen's slot: `s`, a state answering for its projection of
-/// the database at e + 1 (the kernel's apply / build proof, from the commit's
-/// captured changes), or None (invalid: its queries fall back to SQL).
-pub fn batch_set_19(b: Batch, s: Option<S19>) -> (r: Batch)
-    requires
-        s matches Some(x) ==> x.answers(db_19(b.next_db())),
+/// Replace tpch_q19_vgen's slot by the one staged on this batch's base: true.  A slot
+/// staged on another base is not taken: the slot becomes invalid (false).
+pub fn put_19(b: Batch, st: Staged<D19, S19>) -> (r: (Batch, bool))
+    ensures
+        r.0.epoch() == b.epoch(),
+        r.0.timeline() == b.timeline(),
+        r.0.target() == with_19(b.target(), db_19(b.next_db())),
+{
+    proof {
+        use_type_invariant(&b);
+        use_type_invariant(&*b.base);
+    }
+    let same = st.head().same(&b.base.h19);
+    let ghost (se, stl) = (st.epoch(), st.timeline());
+    let slot = if same {
+        st.into_slot()
+    } else {
+        Slot::Invalid
+    };
+    assert(same ==> slot.ok(db_19(b.next_db())));
+    let next = replace_19(&b.next, slot, Ghost(b.target@), Ghost(db_19(b.next_db())));
+    (Batch { base: b.base, next, target: Ghost(with_19(b.target@, db_19(b.next_db()))) }, same)
+}
+
+/// Make tpch_q19_vgen's slot invalid in the batch.
+pub fn put_invalid_19(b: Batch) -> (r: Batch)
     ensures
         r.epoch() == b.epoch(),
         r.timeline() == b.timeline(),
@@ -2955,50 +3785,31 @@ pub fn batch_set_19(b: Batch, s: Option<S19>) -> (r: Batch)
     proof {
         use_type_invariant(&b);
     }
-    let slot = match s {
-        Some(x) => Slot::Valid(Arc::new(x)),
-        None => Slot::Invalid,
-    };
-    let next = replace_19(&b.next, slot, Ghost(b.target@), Ghost(db_19(b.next_db())));
-    Batch { e: b.e, next, target: Ghost(with_19(b.target@, db_19(b.next_db()))), timeline: b.timeline }
+    let next = replace_19(&b.next, Slot::Invalid, Ghost(b.target@), Ghost(db_19(b.next_db())));
+    Batch { base: b.base, next, target: Ghost(with_19(b.target@, db_19(b.next_db()))) }
 }
 
-/// What a snapshot at engine epoch `at` sees of tpch_q19_vgen (waiting up to
-/// `tries` checks for a pending commit), with the version and the window it
-/// was decided on.  0: a state, answering for its projection at that version,
-/// the version the snapshot rule selects; 1: that version's slot is invalid;
-/// 2: a commit in flight may be visible; 3: the version was evicted.
-pub fn read_19(store: &GStore, at: u64, tries: u64) -> (r: (i32, Option<Arc<S19>>, Ghost<u64>, Ghost<Window>))
+/// What a snapshot at engine epoch `at` sees of tpch_q19_vgen (waiting up to `tries`
+/// checks for a pending commit).  0: a reading narrowed to its slot (the kit's
+/// `answer` runs on it: Theorem 5.4); 1: that version's slot is invalid; 2: a
+/// commit in flight may be visible; 3: the version was evicted.
+pub fn read_19(store: &GStore, at: u64, tries: u64) -> (r: (i32, Option<Reading<D19, Slot<S19>>>))
     ensures
-        r.0 == 0 ==> (r.1 matches Some(a) && (*a).answers(db_19(store.db_at(r.2@ as nat))) && sees(r.3@, at, r.2@ as int)),
-        r.0 == 1 ==> sees(r.3@, at, r.2@ as int),
-        r.0 == 2 ==> in_flight(r.3@, at),
-        r.0 == 3 ==> none_current(r.3@, at),
+        r.0 == 0 ==> r.1 is Some,
         0 <= r.0 <= 3,
+        r.1 matches Some(g) ==> g.at() == at,
 {
-    let (res, win) = store.resolve_wait_seen(at, tries);
-    match res {
-        Resolved::Found(v, w) => {
-            let s = slot_19(&w, Ghost(store.db_at(v as nat)));
-            match s.get() {
-                Some(a) => (0, Some(a), Ghost(v), win),
-                None => (1, None, Ghost(v), win),
+    match store.read(at, tries) {
+        Read::Found(g) => {
+            let slot = <Slot<S19> as AuxWorld<D19>>::share(slot_19(g.world(), Ghost(g.db())));
+            match slot {
+                Slot::Invalid => (1, None),
+                Slot::Valid(_) => (0, Some(g.narrow(Ghost(|d: GDb| db_19(d)), slot))),
             }
         },
-        Resolved::Pending => (2, None, Ghost(0), win),
-        Resolved::NotVisible => (3, None, Ghost(0), win),
+        Read::Pending => (2, None),
+        Read::NotVisible => (3, None),
     }
-}
-
-/// tpch_q19_vgen's state in the newest version (what its next state is applied
-/// to), answering for its projection there; None if invalid.
-pub fn newest_19(store: &GStore) -> (r: (Option<Arc<S19>>, Ghost<u64>))
-    ensures
-        r.0 matches Some(a) ==> (*a).answers(db_19(store.db_at(r.1@ as nat))),
-{
-    let (e, w) = store.newest_world();
-    let s = slot_19(&w, Ghost(store.db_at(e as nat)));
-    (s.get(), Ghost(e))
 }
 
 /// Every kept version's tpch_q19_vgen slot becomes invalid (the others stay).
@@ -3011,6 +3822,7 @@ pub fn invalidate_19(store: &GStore) {
             i <= n,
             n == c.versions.len(),
             cell_ok(c, store.timeline()),
+            exact_ok(c, store.timeline(), store.engine()),
             g.store() == *store,
         decreases n - i,
     {
@@ -3025,12 +3837,32 @@ pub fn invalidate_19(store: &GStore) {
     g.end(c);
 }
 
-/// Replace tpch_q20_vgen's slot: `s`, a state answering for its projection of
-/// the database at e + 1 (the kernel's apply / build proof, from the commit's
-/// captured changes), or None (invalid: its queries fall back to SQL).
-pub fn batch_set_20(b: Batch, s: Option<S20>) -> (r: Batch)
-    requires
-        s matches Some(x) ==> x.answers(db_20(b.next_db())),
+/// Replace tpch_q20_vgen's slot by the one staged on this batch's base: true.  A slot
+/// staged on another base is not taken: the slot becomes invalid (false).
+pub fn put_20(b: Batch, st: Staged<D20, S20>) -> (r: (Batch, bool))
+    ensures
+        r.0.epoch() == b.epoch(),
+        r.0.timeline() == b.timeline(),
+        r.0.target() == with_20(b.target(), db_20(b.next_db())),
+{
+    proof {
+        use_type_invariant(&b);
+        use_type_invariant(&*b.base);
+    }
+    let same = st.head().same(&b.base.h20);
+    let ghost (se, stl) = (st.epoch(), st.timeline());
+    let slot = if same {
+        st.into_slot()
+    } else {
+        Slot::Invalid
+    };
+    assert(same ==> slot.ok(db_20(b.next_db())));
+    let next = replace_20(&b.next, slot, Ghost(b.target@), Ghost(db_20(b.next_db())));
+    (Batch { base: b.base, next, target: Ghost(with_20(b.target@, db_20(b.next_db()))) }, same)
+}
+
+/// Make tpch_q20_vgen's slot invalid in the batch.
+pub fn put_invalid_20(b: Batch) -> (r: Batch)
     ensures
         r.epoch() == b.epoch(),
         r.timeline() == b.timeline(),
@@ -3039,50 +3871,31 @@ pub fn batch_set_20(b: Batch, s: Option<S20>) -> (r: Batch)
     proof {
         use_type_invariant(&b);
     }
-    let slot = match s {
-        Some(x) => Slot::Valid(Arc::new(x)),
-        None => Slot::Invalid,
-    };
-    let next = replace_20(&b.next, slot, Ghost(b.target@), Ghost(db_20(b.next_db())));
-    Batch { e: b.e, next, target: Ghost(with_20(b.target@, db_20(b.next_db()))), timeline: b.timeline }
+    let next = replace_20(&b.next, Slot::Invalid, Ghost(b.target@), Ghost(db_20(b.next_db())));
+    Batch { base: b.base, next, target: Ghost(with_20(b.target@, db_20(b.next_db()))) }
 }
 
-/// What a snapshot at engine epoch `at` sees of tpch_q20_vgen (waiting up to
-/// `tries` checks for a pending commit), with the version and the window it
-/// was decided on.  0: a state, answering for its projection at that version,
-/// the version the snapshot rule selects; 1: that version's slot is invalid;
-/// 2: a commit in flight may be visible; 3: the version was evicted.
-pub fn read_20(store: &GStore, at: u64, tries: u64) -> (r: (i32, Option<Arc<S20>>, Ghost<u64>, Ghost<Window>))
+/// What a snapshot at engine epoch `at` sees of tpch_q20_vgen (waiting up to `tries`
+/// checks for a pending commit).  0: a reading narrowed to its slot (the kit's
+/// `answer` runs on it: Theorem 5.4); 1: that version's slot is invalid; 2: a
+/// commit in flight may be visible; 3: the version was evicted.
+pub fn read_20(store: &GStore, at: u64, tries: u64) -> (r: (i32, Option<Reading<D20, Slot<S20>>>))
     ensures
-        r.0 == 0 ==> (r.1 matches Some(a) && (*a).answers(db_20(store.db_at(r.2@ as nat))) && sees(r.3@, at, r.2@ as int)),
-        r.0 == 1 ==> sees(r.3@, at, r.2@ as int),
-        r.0 == 2 ==> in_flight(r.3@, at),
-        r.0 == 3 ==> none_current(r.3@, at),
+        r.0 == 0 ==> r.1 is Some,
         0 <= r.0 <= 3,
+        r.1 matches Some(g) ==> g.at() == at,
 {
-    let (res, win) = store.resolve_wait_seen(at, tries);
-    match res {
-        Resolved::Found(v, w) => {
-            let s = slot_20(&w, Ghost(store.db_at(v as nat)));
-            match s.get() {
-                Some(a) => (0, Some(a), Ghost(v), win),
-                None => (1, None, Ghost(v), win),
+    match store.read(at, tries) {
+        Read::Found(g) => {
+            let slot = <Slot<S20> as AuxWorld<D20>>::share(slot_20(g.world(), Ghost(g.db())));
+            match slot {
+                Slot::Invalid => (1, None),
+                Slot::Valid(_) => (0, Some(g.narrow(Ghost(|d: GDb| db_20(d)), slot))),
             }
         },
-        Resolved::Pending => (2, None, Ghost(0), win),
-        Resolved::NotVisible => (3, None, Ghost(0), win),
+        Read::Pending => (2, None),
+        Read::NotVisible => (3, None),
     }
-}
-
-/// tpch_q20_vgen's state in the newest version (what its next state is applied
-/// to), answering for its projection there; None if invalid.
-pub fn newest_20(store: &GStore) -> (r: (Option<Arc<S20>>, Ghost<u64>))
-    ensures
-        r.0 matches Some(a) ==> (*a).answers(db_20(store.db_at(r.1@ as nat))),
-{
-    let (e, w) = store.newest_world();
-    let s = slot_20(&w, Ghost(store.db_at(e as nat)));
-    (s.get(), Ghost(e))
 }
 
 /// Every kept version's tpch_q20_vgen slot becomes invalid (the others stay).
@@ -3095,6 +3908,7 @@ pub fn invalidate_20(store: &GStore) {
             i <= n,
             n == c.versions.len(),
             cell_ok(c, store.timeline()),
+            exact_ok(c, store.timeline(), store.engine()),
             g.store() == *store,
         decreases n - i,
     {
@@ -3109,12 +3923,32 @@ pub fn invalidate_20(store: &GStore) {
     g.end(c);
 }
 
-/// Replace tpch_q21_vgen's slot: `s`, a state answering for its projection of
-/// the database at e + 1 (the kernel's apply / build proof, from the commit's
-/// captured changes), or None (invalid: its queries fall back to SQL).
-pub fn batch_set_21(b: Batch, s: Option<S21>) -> (r: Batch)
-    requires
-        s matches Some(x) ==> x.answers(db_21(b.next_db())),
+/// Replace tpch_q21_vgen's slot by the one staged on this batch's base: true.  A slot
+/// staged on another base is not taken: the slot becomes invalid (false).
+pub fn put_21(b: Batch, st: Staged<D21, S21>) -> (r: (Batch, bool))
+    ensures
+        r.0.epoch() == b.epoch(),
+        r.0.timeline() == b.timeline(),
+        r.0.target() == with_21(b.target(), db_21(b.next_db())),
+{
+    proof {
+        use_type_invariant(&b);
+        use_type_invariant(&*b.base);
+    }
+    let same = st.head().same(&b.base.h21);
+    let ghost (se, stl) = (st.epoch(), st.timeline());
+    let slot = if same {
+        st.into_slot()
+    } else {
+        Slot::Invalid
+    };
+    assert(same ==> slot.ok(db_21(b.next_db())));
+    let next = replace_21(&b.next, slot, Ghost(b.target@), Ghost(db_21(b.next_db())));
+    (Batch { base: b.base, next, target: Ghost(with_21(b.target@, db_21(b.next_db()))) }, same)
+}
+
+/// Make tpch_q21_vgen's slot invalid in the batch.
+pub fn put_invalid_21(b: Batch) -> (r: Batch)
     ensures
         r.epoch() == b.epoch(),
         r.timeline() == b.timeline(),
@@ -3123,50 +3957,31 @@ pub fn batch_set_21(b: Batch, s: Option<S21>) -> (r: Batch)
     proof {
         use_type_invariant(&b);
     }
-    let slot = match s {
-        Some(x) => Slot::Valid(Arc::new(x)),
-        None => Slot::Invalid,
-    };
-    let next = replace_21(&b.next, slot, Ghost(b.target@), Ghost(db_21(b.next_db())));
-    Batch { e: b.e, next, target: Ghost(with_21(b.target@, db_21(b.next_db()))), timeline: b.timeline }
+    let next = replace_21(&b.next, Slot::Invalid, Ghost(b.target@), Ghost(db_21(b.next_db())));
+    Batch { base: b.base, next, target: Ghost(with_21(b.target@, db_21(b.next_db()))) }
 }
 
-/// What a snapshot at engine epoch `at` sees of tpch_q21_vgen (waiting up to
-/// `tries` checks for a pending commit), with the version and the window it
-/// was decided on.  0: a state, answering for its projection at that version,
-/// the version the snapshot rule selects; 1: that version's slot is invalid;
-/// 2: a commit in flight may be visible; 3: the version was evicted.
-pub fn read_21(store: &GStore, at: u64, tries: u64) -> (r: (i32, Option<Arc<S21>>, Ghost<u64>, Ghost<Window>))
+/// What a snapshot at engine epoch `at` sees of tpch_q21_vgen (waiting up to `tries`
+/// checks for a pending commit).  0: a reading narrowed to its slot (the kit's
+/// `answer` runs on it: Theorem 5.4); 1: that version's slot is invalid; 2: a
+/// commit in flight may be visible; 3: the version was evicted.
+pub fn read_21(store: &GStore, at: u64, tries: u64) -> (r: (i32, Option<Reading<D21, Slot<S21>>>))
     ensures
-        r.0 == 0 ==> (r.1 matches Some(a) && (*a).answers(db_21(store.db_at(r.2@ as nat))) && sees(r.3@, at, r.2@ as int)),
-        r.0 == 1 ==> sees(r.3@, at, r.2@ as int),
-        r.0 == 2 ==> in_flight(r.3@, at),
-        r.0 == 3 ==> none_current(r.3@, at),
+        r.0 == 0 ==> r.1 is Some,
         0 <= r.0 <= 3,
+        r.1 matches Some(g) ==> g.at() == at,
 {
-    let (res, win) = store.resolve_wait_seen(at, tries);
-    match res {
-        Resolved::Found(v, w) => {
-            let s = slot_21(&w, Ghost(store.db_at(v as nat)));
-            match s.get() {
-                Some(a) => (0, Some(a), Ghost(v), win),
-                None => (1, None, Ghost(v), win),
+    match store.read(at, tries) {
+        Read::Found(g) => {
+            let slot = <Slot<S21> as AuxWorld<D21>>::share(slot_21(g.world(), Ghost(g.db())));
+            match slot {
+                Slot::Invalid => (1, None),
+                Slot::Valid(_) => (0, Some(g.narrow(Ghost(|d: GDb| db_21(d)), slot))),
             }
         },
-        Resolved::Pending => (2, None, Ghost(0), win),
-        Resolved::NotVisible => (3, None, Ghost(0), win),
+        Read::Pending => (2, None),
+        Read::NotVisible => (3, None),
     }
-}
-
-/// tpch_q21_vgen's state in the newest version (what its next state is applied
-/// to), answering for its projection there; None if invalid.
-pub fn newest_21(store: &GStore) -> (r: (Option<Arc<S21>>, Ghost<u64>))
-    ensures
-        r.0 matches Some(a) ==> (*a).answers(db_21(store.db_at(r.1@ as nat))),
-{
-    let (e, w) = store.newest_world();
-    let s = slot_21(&w, Ghost(store.db_at(e as nat)));
-    (s.get(), Ghost(e))
 }
 
 /// Every kept version's tpch_q21_vgen slot becomes invalid (the others stay).
@@ -3179,6 +3994,7 @@ pub fn invalidate_21(store: &GStore) {
             i <= n,
             n == c.versions.len(),
             cell_ok(c, store.timeline()),
+            exact_ok(c, store.timeline(), store.engine()),
             g.store() == *store,
         decreases n - i,
     {
@@ -3193,12 +4009,32 @@ pub fn invalidate_21(store: &GStore) {
     g.end(c);
 }
 
-/// Replace tpch_q22_vgen's slot: `s`, a state answering for its projection of
-/// the database at e + 1 (the kernel's apply / build proof, from the commit's
-/// captured changes), or None (invalid: its queries fall back to SQL).
-pub fn batch_set_22(b: Batch, s: Option<S22>) -> (r: Batch)
-    requires
-        s matches Some(x) ==> x.answers(db_22(b.next_db())),
+/// Replace tpch_q22_vgen's slot by the one staged on this batch's base: true.  A slot
+/// staged on another base is not taken: the slot becomes invalid (false).
+pub fn put_22(b: Batch, st: Staged<D22, S22>) -> (r: (Batch, bool))
+    ensures
+        r.0.epoch() == b.epoch(),
+        r.0.timeline() == b.timeline(),
+        r.0.target() == with_22(b.target(), db_22(b.next_db())),
+{
+    proof {
+        use_type_invariant(&b);
+        use_type_invariant(&*b.base);
+    }
+    let same = st.head().same(&b.base.h22);
+    let ghost (se, stl) = (st.epoch(), st.timeline());
+    let slot = if same {
+        st.into_slot()
+    } else {
+        Slot::Invalid
+    };
+    assert(same ==> slot.ok(db_22(b.next_db())));
+    let next = replace_22(&b.next, slot, Ghost(b.target@), Ghost(db_22(b.next_db())));
+    (Batch { base: b.base, next, target: Ghost(with_22(b.target@, db_22(b.next_db()))) }, same)
+}
+
+/// Make tpch_q22_vgen's slot invalid in the batch.
+pub fn put_invalid_22(b: Batch) -> (r: Batch)
     ensures
         r.epoch() == b.epoch(),
         r.timeline() == b.timeline(),
@@ -3207,50 +4043,31 @@ pub fn batch_set_22(b: Batch, s: Option<S22>) -> (r: Batch)
     proof {
         use_type_invariant(&b);
     }
-    let slot = match s {
-        Some(x) => Slot::Valid(Arc::new(x)),
-        None => Slot::Invalid,
-    };
-    let next = replace_22(&b.next, slot, Ghost(b.target@), Ghost(db_22(b.next_db())));
-    Batch { e: b.e, next, target: Ghost(with_22(b.target@, db_22(b.next_db()))), timeline: b.timeline }
+    let next = replace_22(&b.next, Slot::Invalid, Ghost(b.target@), Ghost(db_22(b.next_db())));
+    Batch { base: b.base, next, target: Ghost(with_22(b.target@, db_22(b.next_db()))) }
 }
 
-/// What a snapshot at engine epoch `at` sees of tpch_q22_vgen (waiting up to
-/// `tries` checks for a pending commit), with the version and the window it
-/// was decided on.  0: a state, answering for its projection at that version,
-/// the version the snapshot rule selects; 1: that version's slot is invalid;
-/// 2: a commit in flight may be visible; 3: the version was evicted.
-pub fn read_22(store: &GStore, at: u64, tries: u64) -> (r: (i32, Option<Arc<S22>>, Ghost<u64>, Ghost<Window>))
+/// What a snapshot at engine epoch `at` sees of tpch_q22_vgen (waiting up to `tries`
+/// checks for a pending commit).  0: a reading narrowed to its slot (the kit's
+/// `answer` runs on it: Theorem 5.4); 1: that version's slot is invalid; 2: a
+/// commit in flight may be visible; 3: the version was evicted.
+pub fn read_22(store: &GStore, at: u64, tries: u64) -> (r: (i32, Option<Reading<D22, Slot<S22>>>))
     ensures
-        r.0 == 0 ==> (r.1 matches Some(a) && (*a).answers(db_22(store.db_at(r.2@ as nat))) && sees(r.3@, at, r.2@ as int)),
-        r.0 == 1 ==> sees(r.3@, at, r.2@ as int),
-        r.0 == 2 ==> in_flight(r.3@, at),
-        r.0 == 3 ==> none_current(r.3@, at),
+        r.0 == 0 ==> r.1 is Some,
         0 <= r.0 <= 3,
+        r.1 matches Some(g) ==> g.at() == at,
 {
-    let (res, win) = store.resolve_wait_seen(at, tries);
-    match res {
-        Resolved::Found(v, w) => {
-            let s = slot_22(&w, Ghost(store.db_at(v as nat)));
-            match s.get() {
-                Some(a) => (0, Some(a), Ghost(v), win),
-                None => (1, None, Ghost(v), win),
+    match store.read(at, tries) {
+        Read::Found(g) => {
+            let slot = <Slot<S22> as AuxWorld<D22>>::share(slot_22(g.world(), Ghost(g.db())));
+            match slot {
+                Slot::Invalid => (1, None),
+                Slot::Valid(_) => (0, Some(g.narrow(Ghost(|d: GDb| db_22(d)), slot))),
             }
         },
-        Resolved::Pending => (2, None, Ghost(0), win),
-        Resolved::NotVisible => (3, None, Ghost(0), win),
+        Read::Pending => (2, None),
+        Read::NotVisible => (3, None),
     }
-}
-
-/// tpch_q22_vgen's state in the newest version (what its next state is applied
-/// to), answering for its projection there; None if invalid.
-pub fn newest_22(store: &GStore) -> (r: (Option<Arc<S22>>, Ghost<u64>))
-    ensures
-        r.0 matches Some(a) ==> (*a).answers(db_22(store.db_at(r.1@ as nat))),
-{
-    let (e, w) = store.newest_world();
-    let s = slot_22(&w, Ghost(store.db_at(e as nat)));
-    (s.get(), Ghost(e))
 }
 
 /// Every kept version's tpch_q22_vgen slot becomes invalid (the others stay).
@@ -3263,6 +4080,7 @@ pub fn invalidate_22(store: &GStore) {
             i <= n,
             n == c.versions.len(),
             cell_ok(c, store.timeline()),
+            exact_ok(c, store.timeline(), store.engine()),
             g.store() == *store,
         decreases n - i,
     {

@@ -18,7 +18,9 @@ typedef struct tpchq11vgen_state tpchq11vgen_state;
 typedef struct tpchq11vgen_result tpchq11vgen_result;
 typedef struct tpchq11vgens_store tpchq11vgens_store;
 typedef struct tpchq11vgens_base tpchq11vgens_base;
-typedef struct tpchq11vgens_prepared tpchq11vgens_prepared;
+typedef struct tpchq11vgens_head tpchq11vgens_head;
+typedef struct tpchq11vgens_staged tpchq11vgens_staged;
+typedef struct tpchq11vgens_reading tpchq11vgens_reading;
 
 typedef struct {
   int64_t ps_partkey;
@@ -73,7 +75,7 @@ tpchq11vgens_store *tpchq11vgens_new(void);
 /* Free a store. */
 void tpchq11vgens_free(tpchq11vgens_store *st);
 
-/* The newest version's state, to prepare the next version from; NULL if
+/* The newest version's state, to stage the next version from; NULL if
    it is invalid. */
 tpchq11vgens_base *tpchq11vgens_newest_base(const tpchq11vgens_store *st);
 
@@ -81,22 +83,27 @@ tpchq11vgens_base *tpchq11vgens_newest_base(const tpchq11vgens_store *st);
 const tpchq11vgen_state *tpchq11vgens_base_state(const tpchq11vgens_base *b);
 
 /* Free a base. */
-void tpchq11vgens_base_free(tpchq11vgens_base *b);
+void tpchq11vgens_base_free(tpchq11vgens_base *x);
 
-/* The next version from the base and one commit's inputs (as for apply);
+/* The newest version, to stage a build on; NULL if no version can follow it. */
+tpchq11vgens_head *tpchq11vgens_newest_head(const tpchq11vgens_store *st);
+
+/* Free a head. */
+void tpchq11vgens_head_free(tpchq11vgens_head *x);
+
+/* The next version's slot from the base and one commit's inputs (as for apply);
    NULL with *err set if the kernel cannot apply them (the host rebuilds). */
-tpchq11vgens_prepared *tpchq11vgens_prepare_apply(const tpchq11vgens_store *st, const tpchq11vgens_base *b, size_t nation_delta__n, const int64_t *nation_delta__row__n_nationkey, const uint8_t *nation_delta__row__n_name, const size_t *nation_delta__row__n_name__off, const int64_t *nation_delta__sign, size_t partsupp_delta__n, const tpchq11vgen_partsupp_delta *partsupp_delta, size_t supplier_delta__n, const tpchq11vgen_supplier_delta *supplier_delta, int32_t *err);
+tpchq11vgens_staged *tpchq11vgens_stage_apply(const tpchq11vgens_base *b, size_t nation_delta__n, const int64_t *nation_delta__row__n_nationkey, const uint8_t *nation_delta__row__n_name, const size_t *nation_delta__row__n_name__off, const int64_t *nation_delta__sign, size_t partsupp_delta__n, const tpchq11vgen_partsupp_delta *partsupp_delta, size_t supplier_delta__n, const tpchq11vgen_supplier_delta *supplier_delta, int32_t *err);
 
-/* The next version built from scans (as for build) of the database as of
-   that version; its state is invalid if the kernel cannot build it.  NULL
-   only if no version can follow the newest. */
-tpchq11vgens_prepared *tpchq11vgens_prepare_build(const tpchq11vgens_store *st, size_t partsupp_profiles__n, const tpchq11vgen_partsupp_input *partsupp_profiles, size_t supplier_links__n, const tpchq11vgen_supplier_input *supplier_links, size_t nation_names__n, const int64_t *nation_names__n_nationkey, const uint8_t *nation_names__n_name, const size_t *nation_names__n_name__off);
+/* The next version's slot built from scans (as for build) of the database as of
+   that version; invalid if the kernel cannot build it. */
+tpchq11vgens_staged *tpchq11vgens_stage_build(const tpchq11vgens_head *h, size_t partsupp_profiles__n, const tpchq11vgen_partsupp_input *partsupp_profiles, size_t supplier_links__n, const tpchq11vgen_supplier_input *supplier_links, size_t nation_names__n, const int64_t *nation_names__n_nationkey, const uint8_t *nation_names__n_name, const size_t *nation_names__n_name__off);
 
-/* The next version with an invalid state (NULL: none can follow the newest). */
-tpchq11vgens_prepared *tpchq11vgens_prepare_invalid(const tpchq11vgens_store *st);
+/* The next version's slot, invalid. */
+tpchq11vgens_staged *tpchq11vgens_stage_invalid(const tpchq11vgens_head *h);
 
-/* Free a prepared version. */
-void tpchq11vgens_prepared_free(tpchq11vgens_prepared *p);
+/* Free a staged slot. */
+void tpchq11vgens_staged_free(tpchq11vgens_staged *x);
 
 /* Mark a commit in flight, visible from engine epoch `from`: 1, or 0 if one
    is already in flight. */
@@ -105,18 +112,23 @@ int32_t tpchq11vgens_begin(const tpchq11vgens_store *st, uint64_t from);
 /* The commit in flight ended without a new version. */
 void tpchq11vgens_abort(const tpchq11vgens_store *st);
 
-/* Append p (consumed), current from engine epoch `from`; keep the versions
-   snapshots at or after `floor` select; end_commit != 0 also ends the commit
-   in flight.  0: appended; 1: stale (the store now holds one invalid version). */
-int32_t tpchq11vgens_install(const tpchq11vgens_store *st, tpchq11vgens_prepared *p, uint64_t from, uint64_t floor, int32_t end_commit);
+/* Append the staged slot (consumed), current from engine epoch `from`; keep the
+   versions snapshots at or after `floor` select; end_commit != 0 also ends the
+   commit in flight.  0: appended; 1: stale (the store now holds one invalid version,
+   or, for a build during a commit, is unchanged).  HOST CONTRACT: staged on this store. */
+int32_t tpchq11vgens_install(const tpchq11vgens_store *st, tpchq11vgens_staged *p, uint64_t from, uint64_t floor, int32_t end_commit);
 
-/* The state a snapshot at engine epoch `at` sees (0: the newest), waiting up
-   to `tries` checks for a pending commit.  *status: 0 a state (returned;
-   release it), 1 invalid, 2 still pending, 3 not visible. */
-const tpchq11vgen_state *tpchq11vgens_read(const tpchq11vgens_store *st, uint64_t at, uint64_t tries, int32_t *status);
+/* The reading of a snapshot at engine epoch `at` (0: the newest), waiting up
+   to `tries` checks for a pending commit.  *status: 0 a reading (returned;
+   free it), 1 invalid, 2 still pending, 3 not visible. */
+tpchq11vgens_reading *tpchq11vgens_read(const tpchq11vgens_store *st, uint64_t at, uint64_t tries, int32_t *status);
 
-/* Release a state from read. */
-void tpchq11vgens_state_release(const tpchq11vgen_state *s);
+/* Free a reading. */
+void tpchq11vgens_reading_free(tpchq11vgens_reading *x);
+
+/* The query's answer on the reading (THEOREM 5.4, gen_world.rs), or NULL (the host then
+   answers with SQL). */
+tpchq11vgen_result *tpchq11vgens_answer(const tpchq11vgens_reading *r, const uint8_t *p1, size_t p1__len, int64_t p2);
 
 /* Every kept version's state becomes invalid. */
 void tpchq11vgens_invalidate_all(const tpchq11vgens_store *st);

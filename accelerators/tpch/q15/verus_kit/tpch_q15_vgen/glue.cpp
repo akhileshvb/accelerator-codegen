@@ -174,15 +174,14 @@ void *Apply(const void *state, const Changes &changes, Host &, int32_t *err) {
       err);
 }
 
-bool Execute(const void *state, const QueryArguments &args,
-             std::vector<AuxRow> &out) {
+template <class Call>
+bool Run(const QueryArguments &args, std::vector<AuxRow> &out, Call call) {
   int32_t start_date = 0;
   int32_t end_date = 0;
   if (!kit::ArgDate(args, 0, start_date) || !kit::ArgDate(args, 1, end_date)) {
     return false;
   }
-  tpchq15vgen_result *result = tpchq15vgen_execute(
-      static_cast<const tpchq15vgen_state *>(state), start_date, end_date);
+  tpchq15vgen_result *result = call(start_date, end_date);
   if (result == nullptr) {
     return false;
   }
@@ -228,12 +227,18 @@ bool Execute(const void *state, const QueryArguments &args,
   return true;
 }
 
-void *PrepareApply(const void *store, const void *base, const Changes &changes,
-                   Host &, int32_t *err) {
+bool Execute(const void *state, const QueryArguments &args, std::vector<AuxRow> &out) {
+  return Run(args, out, [&](auto... x) { return tpchq15vgen_execute(static_cast<const tpchq15vgen_state *>(state), x...); });
+}
+
+bool Answer(const void *state, const QueryArguments &args, std::vector<AuxRow> &out) {
+  return Run(args, out, [&](auto... x) { return tpchq15vgens_answer(static_cast<const tpchq15vgens_reading *>(state), x...); });
+}
+
+void *PrepareApply(const void *base, const Changes &changes, Host &, int32_t *err) {
   const LineDelta lines = ReadLineDelta(changes.at(0));
   const SupplierDelta suppliers = ReadSupplierDelta(changes.at(1));
-  return tpchq15vgens_prepare_apply(
-      static_cast<const tpchq15vgens_store *>(store),
+  return tpchq15vgens_stage_apply(
       static_cast<const tpchq15vgens_base *>(base),
       lines.rows.size(),
       lines.rows.data(),
@@ -249,11 +254,11 @@ void *PrepareApply(const void *store, const void *base, const Changes &changes,
       err);
 }
 
-void *PrepareBuild(const void *store, Host &h) {
+void *PrepareBuild(const kit::HeadFn &head_of, Host &h) {
   LineInput lines = ReadLines(h);
   SupplierInput suppliers = ReadSuppliers(h);
-  return tpchq15vgens_prepare_build(
-      static_cast<const tpchq15vgens_store *>(store),
+  return tpchq15vgens_stage_build(
+      static_cast<const tpchq15vgens_head *>(head_of()),
       lines.rows.size(),
       lines.rows.data(),
       suppliers.suppkey.size(),
@@ -264,65 +269,6 @@ void *PrepareBuild(const void *store, Host &h) {
       suppliers.address.off.data(),
       suppliers.phone.bytes.data(),
       suppliers.phone.off.data());
-}
-
-void *NewStore() {
-  return tpchq15vgens_new();
-}
-
-void FreeStore(void *store) {
-  tpchq15vgens_free(static_cast<tpchq15vgens_store *>(store));
-}
-
-void *NewestBase(const void *store) {
-  return tpchq15vgens_newest_base(static_cast<const tpchq15vgens_store *>(store));
-}
-
-const void *BaseState(const void *base) {
-  return tpchq15vgens_base_state(static_cast<const tpchq15vgens_base *>(base));
-}
-
-void BaseFree(void *base) {
-  tpchq15vgens_base_free(static_cast<tpchq15vgens_base *>(base));
-}
-
-void *PrepareInvalid(const void *store) {
-  return tpchq15vgens_prepare_invalid(static_cast<const tpchq15vgens_store *>(store));
-}
-
-void PreparedFree(void *prepared) {
-  tpchq15vgens_prepared_free(static_cast<tpchq15vgens_prepared *>(prepared));
-}
-
-int32_t Begin(const void *store, uint64_t from) {
-  return tpchq15vgens_begin(static_cast<const tpchq15vgens_store *>(store), from);
-}
-
-void Abort(const void *store) {
-  tpchq15vgens_abort(static_cast<const tpchq15vgens_store *>(store));
-}
-
-int32_t Install(const void *store, void *prepared, uint64_t from, uint64_t floor,
-                int32_t end_commit) {
-  return tpchq15vgens_install(
-      static_cast<const tpchq15vgens_store *>(store),
-      static_cast<tpchq15vgens_prepared *>(prepared), from, floor, end_commit);
-}
-
-const void *Read(const void *store, uint64_t at, uint64_t tries, int32_t *status) {
-  return tpchq15vgens_read(static_cast<const tpchq15vgens_store *>(store), at, tries, status);
-}
-
-void StateRelease(const void *state) {
-  tpchq15vgens_state_release(static_cast<const tpchq15vgen_state *>(state));
-}
-
-void InvalidateAll(const void *store) {
-  tpchq15vgens_invalidate_all(static_cast<const tpchq15vgens_store *>(store));
-}
-
-std::size_t VersionCount(const void *store) {
-  return tpchq15vgens_version_count(static_cast<const tpchq15vgens_store *>(store));
 }
 
 } // namespace
@@ -341,22 +287,31 @@ const Glue kGlue = {
     ::FreeState,
     ::Apply,
     ::Execute,
+    ::Answer,
     ::PrepareApply,
     ::PrepareBuild,
-    {::NewStore,
-     ::FreeStore,
-     ::NewestBase,
-     ::BaseState,
-     ::BaseFree,
-     ::PrepareInvalid,
-     ::PreparedFree,
-     ::Begin,
-     ::Abort,
-     ::Install,
-     ::Read,
-     ::StateRelease,
-     ::InvalidateAll,
-     ::VersionCount},
+    StoreOps{
+        []() -> void * { return tpchq15vgens_new(); },
+        [](void *store) { tpchq15vgens_free(static_cast<tpchq15vgens_store *>(store)); },
+        [](const void *store) -> void * { return tpchq15vgens_newest_base(static_cast<const tpchq15vgens_store *>(store)); },
+        [](const void *base) -> const void * { return tpchq15vgens_base_state(static_cast<const tpchq15vgens_base *>(base)); },
+        [](void *base) { tpchq15vgens_base_free(static_cast<tpchq15vgens_base *>(base)); },
+        [](const void *store) -> void * { return tpchq15vgens_newest_head(static_cast<const tpchq15vgens_store *>(store)); },
+        [](void *head) { tpchq15vgens_head_free(static_cast<tpchq15vgens_head *>(head)); },
+        [](const void *head) -> void * { return tpchq15vgens_stage_invalid(static_cast<const tpchq15vgens_head *>(head)); },
+        [](void *staged) { tpchq15vgens_staged_free(static_cast<tpchq15vgens_staged *>(staged)); },
+        [](const void *store, uint64_t from) -> int32_t { return tpchq15vgens_begin(static_cast<const tpchq15vgens_store *>(store), from); },
+        [](const void *store) { tpchq15vgens_abort(static_cast<const tpchq15vgens_store *>(store)); },
+        [](const void *store, void *staged, uint64_t from, uint64_t floor, int32_t end_commit) -> int32_t {
+            return tpchq15vgens_install(static_cast<const tpchq15vgens_store *>(store), static_cast<tpchq15vgens_staged *>(staged), from, floor, end_commit);
+        },
+        [](const void *store, uint64_t at, uint64_t tries, int32_t *status) -> const void * {
+            return tpchq15vgens_read(static_cast<const tpchq15vgens_store *>(store), at, tries, status);
+        },
+        [](const void *reading) { tpchq15vgens_reading_free(const_cast<tpchq15vgens_reading *>(static_cast<const tpchq15vgens_reading *>(reading))); },
+        [](const void *store) { tpchq15vgens_invalidate_all(static_cast<const tpchq15vgens_store *>(store)); },
+        [](const void *store) -> std::size_t { return tpchq15vgens_version_count(static_cast<const tpchq15vgens_store *>(store)); },
+    },
 };
 
 const Registrar kRegistrar(&kGlue);

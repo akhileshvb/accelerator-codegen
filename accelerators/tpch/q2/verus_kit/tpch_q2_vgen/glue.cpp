@@ -271,12 +271,12 @@ void FreeState(void *state) {
   tpchq2vgen_free(static_cast<tpchq2vgen_state *>(state));
 }
 
-void *PrepareBuild(const void *store, kit::Host &host) {
+void *PrepareBuild(const kit::HeadFn &head_of, kit::Host &host) {
   void *state = nullptr;
   {
     const ScanInputs scans(host);
     state = scans.Call([&](auto... args) {
-      return tpchq2vgens_prepare_build(static_cast<const tpchq2vgens_store *>(store), args...);
+      return tpchq2vgens_stage_build(static_cast<const tpchq2vgens_head *>(head_of()), args...);
     });
   }
   malloc_trim(0);
@@ -294,15 +294,14 @@ void *Apply(const void *state, const kit::Changes &changes, kit::Host &host, int
   });
 }
 
-void *PrepareApply(const void *store, const void *base, const kit::Changes &changes,
+void *PrepareApply(const void *base, const kit::Changes &changes,
                    kit::Host &host, int32_t *err) {
   const auto *kernel_base = static_cast<const tpchq2vgens_base *>(base);
   const DeltaInputs deltas(changes);
   const RescanInputs rescans(tpchq2vgens_base_state(kernel_base), deltas, host);
   return deltas.Call([&](auto... delta_args) {
     return rescans.Call([&](auto... rescan_args) {
-      return tpchq2vgens_prepare_apply(static_cast<const tpchq2vgens_store *>(store),
-                                      kernel_base, delta_args..., rescan_args..., err);
+      return tpchq2vgens_stage_apply(kernel_base, delta_args..., rescan_args..., err);
     });
   });
 }
@@ -319,8 +318,8 @@ core::AuxValue ResultText(const tpchq2vgen_result *result, std::size_t index,
   return kit::OutText(bytes, length);
 }
 
-bool Execute(const void *state, const core::QueryArguments &args,
-             std::vector<core::AuxRow> &out) {
+template <class Call>
+bool Run(const kit::core::QueryArguments &args, std::vector<kit::core::AuxRow> &out, Call call) {
   int64_t part_size = 0;
   std::string type_pattern;
   std::string region_name;
@@ -329,7 +328,7 @@ bool Execute(const void *state, const core::QueryArguments &args,
     return false;
   }
   std::unique_ptr<tpchq2vgen_result, decltype(&tpchq2vgen_result_free)> result(
-      tpchq2vgen_execute(static_cast<const tpchq2vgen_state *>(state), part_size,
+      call(part_size,
                          reinterpret_cast<const uint8_t *>(type_pattern.data()), type_pattern.size(),
                          reinterpret_cast<const uint8_t *>(region_name.data()), region_name.size()),
       tpchq2vgen_result_free);
@@ -365,6 +364,20 @@ bool Execute(const void *state, const core::QueryArguments &args,
   return true;
 }
 
+bool Execute(const void *state, const kit::core::QueryArguments &args,
+             std::vector<kit::core::AuxRow> &out) {
+  return Run(args, out, [&](auto... x) {
+    return tpchq2vgen_execute(static_cast<const tpchq2vgen_state *>(state), x...);
+  });
+}
+
+bool Answer(const void *state, const kit::core::QueryArguments &args,
+            std::vector<kit::core::AuxRow> &out) {
+  return Run(args, out, [&](auto... x) {
+    return tpchq2vgens_answer(static_cast<const tpchq2vgens_reading *>(state), x...);
+  });
+}
+
 const kit::Glue kGlue = {
     "tpch_q2_vgen", "tpch", 2, kQuerySql,
     {{"part", {"p_partkey"}},
@@ -373,37 +386,29 @@ const kit::Glue kGlue = {
      {"nation", {"n_nationkey", "n_name", "n_regionkey"}},
      {"region", {"r_regionkey", "r_name"}}},
     {kit::Kind::Int, kit::Kind::Text, kit::Kind::Text},
-    Build, FreeState, Apply, Execute, PrepareApply, PrepareBuild,
+    Build, FreeState, Apply, Execute, Answer, PrepareApply, PrepareBuild,
     kit::StoreOps{
         []() -> void * { return tpchq2vgens_new(); },
         [](void *store) { tpchq2vgens_free(static_cast<tpchq2vgens_store *>(store)); },
-        [](const void *store) -> void * {
-          return tpchq2vgens_newest_base(static_cast<const tpchq2vgens_store *>(store));
-        },
-        [](const void *base) -> const void * {
-          return tpchq2vgens_base_state(static_cast<const tpchq2vgens_base *>(base));
-        },
+        [](const void *store) -> void * { return tpchq2vgens_newest_base(static_cast<const tpchq2vgens_store *>(store)); },
+        [](const void *base) -> const void * { return tpchq2vgens_base_state(static_cast<const tpchq2vgens_base *>(base)); },
         [](void *base) { tpchq2vgens_base_free(static_cast<tpchq2vgens_base *>(base)); },
-        [](const void *store) -> void * {
-          return tpchq2vgens_prepare_invalid(static_cast<const tpchq2vgens_store *>(store));
-        },
-        [](void *prepared) { tpchq2vgens_prepared_free(static_cast<tpchq2vgens_prepared *>(prepared)); },
-        [](const void *store, uint64_t from) {
-          return tpchq2vgens_begin(static_cast<const tpchq2vgens_store *>(store), from);
-        },
+        [](const void *store) -> void * { return tpchq2vgens_newest_head(static_cast<const tpchq2vgens_store *>(store)); },
+        [](void *head) { tpchq2vgens_head_free(static_cast<tpchq2vgens_head *>(head)); },
+        [](const void *head) -> void * { return tpchq2vgens_stage_invalid(static_cast<const tpchq2vgens_head *>(head)); },
+        [](void *staged) { tpchq2vgens_staged_free(static_cast<tpchq2vgens_staged *>(staged)); },
+        [](const void *store, uint64_t from) -> int32_t { return tpchq2vgens_begin(static_cast<const tpchq2vgens_store *>(store), from); },
         [](const void *store) { tpchq2vgens_abort(static_cast<const tpchq2vgens_store *>(store)); },
-        [](const void *store, void *prepared, uint64_t from, uint64_t floor, int32_t end_commit) {
-          return tpchq2vgens_install(static_cast<const tpchq2vgens_store *>(store),
-                                    static_cast<tpchq2vgens_prepared *>(prepared), from, floor, end_commit);
+        [](const void *store, void *staged, uint64_t from, uint64_t floor, int32_t end_commit) -> int32_t {
+            return tpchq2vgens_install(static_cast<const tpchq2vgens_store *>(store), static_cast<tpchq2vgens_staged *>(staged), from, floor, end_commit);
         },
         [](const void *store, uint64_t at, uint64_t tries, int32_t *status) -> const void * {
-          return tpchq2vgens_read(static_cast<const tpchq2vgens_store *>(store), at, tries, status);
+            return tpchq2vgens_read(static_cast<const tpchq2vgens_store *>(store), at, tries, status);
         },
-        [](const void *state) { tpchq2vgens_state_release(static_cast<const tpchq2vgen_state *>(state)); },
+        [](const void *reading) { tpchq2vgens_reading_free(const_cast<tpchq2vgens_reading *>(static_cast<const tpchq2vgens_reading *>(reading))); },
         [](const void *store) { tpchq2vgens_invalidate_all(static_cast<const tpchq2vgens_store *>(store)); },
-        [](const void *store) {
-          return tpchq2vgens_version_count(static_cast<const tpchq2vgens_store *>(store));
-        }}};
+        [](const void *store) -> std::size_t { return tpchq2vgens_version_count(static_cast<const tpchq2vgens_store *>(store)); },
+    }};
 
 const kit::Registrar kRegistrar(&kGlue);
 

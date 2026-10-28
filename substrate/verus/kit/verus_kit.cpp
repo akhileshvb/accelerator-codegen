@@ -65,7 +65,8 @@ int64_t Rescale(int64_t v, int from, int to) {
 }
 
 // ---- payloads ----
-// A kernel state owned by the host store, or shared with a Verus store read.
+// A kernel state owned by the host store, or a reading of a Verus store (what its
+// verified `answer` runs on).
 struct KitImage {
   KitImage(const Glue &g, void *s, bool shared_p, void (*release_p)(const void *) = nullptr)
       : glue(g), state(s), shared(shared_p), release(release_p) {}
@@ -75,43 +76,75 @@ struct KitImage {
     if (shared && release)
       release(state);
     else if (shared)
-      glue.store.state_release(state);
+      glue.store.reading_free(state);
     else
       glue.free_state(state);
   }
   KitImage(const KitImage &) = delete;
   KitImage &operator=(const KitImage &) = delete;
-  // An owned state, handed over (to a world batch); null if shared or taken.
-  void *Take() const {
-    if (shared)
-      return nullptr;
-    void *s = state;
-    state = nullptr;
-    return s;
-  }
   const Glue &glue;
   mutable void *state;
   bool shared;
   void (*release)(const void *);
 };
 
-// A prepared next version, from the module to the Verus store (consumed).
-struct KitPrepared {
-  KitPrepared(const Glue &g, void *p) : glue(g), prepared(p) {}
-  ~KitPrepared() {
-    if (prepared)
-      glue.store.prepared_free(prepared);
+// The next version's slot of one accelerator, staged on the newest version by the
+// kernel (consumed by the Verus store).  `base`: the world base it was staged on.
+struct KitStaged {
+  KitStaged(const Glue &g, void *p, std::shared_ptr<void> base_p = {}) : glue(g), staged(p), base(std::move(base_p)) {}
+  ~KitStaged() {
+    if (staged)
+      glue.store.staged_free(staged);
   }
-  KitPrepared(const KitPrepared &) = delete;
-  KitPrepared &operator=(const KitPrepared &) = delete;
+  KitStaged(const KitStaged &) = delete;
+  KitStaged &operator=(const KitStaged &) = delete;
   void *Take() const {
-    void *p = prepared;
-    prepared = nullptr;
+    void *p = staged;
+    staged = nullptr;
     return p;
   }
   const Glue &glue;
-  mutable void *prepared;
+  mutable void *staged;
+  std::shared_ptr<void> base;
 };
+
+// What a Verus store gives the module to stage the next slot: apply (null: the slot is
+// invalid, rebuild) or build (a Declined scan stages an invalid slot).  The glue takes
+// the head after its scans, so the build is staged on the newest version at that point.
+class Staging {
+public:
+  virtual ~Staging() = default;
+  virtual const Glue &GlueOf() const = 0;
+  virtual std::shared_ptr<const KitStaged> StageApply(const Changes &, Host &, int32_t *err) const = 0;
+  virtual std::shared_ptr<const KitStaged> StageBuild(Host &) const = 0;
+};
+
+// A build staged through `glue`: `make_head` returns the newest version's head (or throws),
+// `free_head` releases it; `done` runs on the head once staged.
+template <class MakeHead, class FreeHead>
+void *StageBuildOn(const Glue &glue, Host &host, MakeHead make_head, FreeHead free_head) {
+  void *head = nullptr;
+  const HeadFn head_of = [&]() -> const void * {
+    head = make_head();
+    return head;
+  };
+  void *next = nullptr;
+  try {
+    try {
+      next = glue.prepare_build(head_of, host);
+    } catch (const Declined &) {
+      if (!head)
+        head_of();
+      next = glue.store.stage_invalid(head);
+    }
+  } catch (...) {
+    if (head)
+      free_head(head);
+    throw;
+  }
+  free_head(head);
+  return next;
+}
 
 constexpr core::PartitionId kState = 0;
 
@@ -135,7 +168,7 @@ const void *ReadAwaitingPublish(uint64_t pending_wait_micros, core::Version at, 
 }
 
 // ---- the Verus store ----
-class KitStore final : public VerusAuxStore {
+class KitStore final : public VerusAuxStore, public Staging {
 public:
   KitStore(const Glue &g, EpochProvider epoch_p, FloorProvider floor_p)
       : glue(g), epoch(std::move(epoch_p)), floor(std::move(floor_p)),
@@ -143,7 +176,35 @@ public:
   ~KitStore() override { glue.store.free_store(store); }
 
   const void *Handle() const { return store; }
-  const Glue &GlueOf() const { return glue; }
+  const Glue &GlueOf() const override { return glue; }
+
+  std::shared_ptr<const KitStaged> StageApply(const Changes &changes, Host &host, int32_t *err) const override {
+    void *base = glue.store.newest_base(store);
+    if (!base)
+      return nullptr;
+    void *next = nullptr;
+    try {
+      next = glue.prepare_apply(base, changes, host, err);
+    } catch (...) {
+      glue.store.base_free(base);
+      throw;
+    }
+    glue.store.base_free(base);
+    return next ? std::make_shared<const KitStaged>(glue, next) : nullptr;
+  }
+
+  std::shared_ptr<const KitStaged> StageBuild(Host &host) const override {
+    void *next = StageBuildOn(
+        glue, host,
+        [&] {
+          void *head = glue.store.newest_head(store);
+          if (!head)
+            throw std::runtime_error(std::string(glue.id) + ": no version can follow the newest");
+          return head;
+        },
+        [&](void *head) { glue.store.head_free(head); });
+    return std::make_shared<const KitStaged>(glue, next);
+  }
 
   core::StateSnapshot Read(const core::VisibilityToken &visibility) const override {
     core::StateSnapshot snapshot;
@@ -222,7 +283,7 @@ public:
     int32_t status = 0;
     const void *s = glue.store.read(store, 0, 0, &status);
     if (s)
-      glue.store.state_release(s);
+      glue.store.reading_free(s);
     return status == 0 ? 1 : 0;
   }
   std::size_t TotalPartitionCount() const override { return 1; }
@@ -254,15 +315,18 @@ private:
         invalid = true;
         continue;
       }
-      // In this store's mode the module's updates are prepared versions.
-      if (void *taken = image.As<KitPrepared>()->Take()) {
+      if (void *taken = image.As<KitStaged>()->Take()) {
         if (next)
-          glue.store.prepared_free(next);
+          glue.store.staged_free(next);
         next = taken;
       }
     }
-    if (!next && invalid)
-      next = glue.store.prepare_invalid(store);
+    if (!next && invalid) {
+      if (void *head = glue.store.newest_head(store)) {
+        next = glue.store.stage_invalid(head);
+        glue.store.head_free(head);
+      }
+    }
     if (!next) {
       if (end_commit)
         glue.store.abort(store);
@@ -281,13 +345,13 @@ private:
 };
 
 // ---- the world store (ACCEL_AUX_STORE=verus_global) ----
-// One verified store for every accelerator of a benchmark (world_glue.cpp).
-// A commit's accelerators each stage their new state (their kernel's apply,
-// from the newest version's state); the first to begin marks the commit in
-// flight, each finish puts its state in one batch, and the last one installs
-// the batch as ONE version (or, if any aborted, drops it).  This assembly is
-// host code (trusted); the store, the batch's world and every read are
-// verified (world.rs, store.rs).
+// One verified store for every accelerator of a benchmark (world_glue.cpp).  A commit's
+// accelerators each stage their new slot on the same base (the newest version's world,
+// `Base()`); the first to begin marks the commit in flight, each finish puts its slot in
+// one batch made from that base, and the last one installs the batch as ONE version (or,
+// if any aborted, drops it).  The batch takes a slot only if it was staged on its base
+// (verified, world.rs); the assembly here is host code, the store, the batch's world and
+// every reading are verified (world.rs, store.rs).
 std::vector<const World *> &Worlds() {
   static std::vector<const World *> worlds;
   return worlds;
@@ -308,6 +372,13 @@ public:
     return *slot;
   }
 
+  // The newest version as a base to stage on, shared by the commit's accelerators while
+  // the newest version and the world's slots are unchanged (null: no version can follow).
+  std::shared_ptr<void> Base() {
+    std::lock_guard<std::mutex> lock(mutex);
+    return BaseLocked();
+  }
+
   void Begin(VerusAuxStore::Epoch from) {
     std::lock_guard<std::mutex> lock(mutex);
     if (participants == 0 && !world.begin(store, from))
@@ -315,12 +386,13 @@ public:
     ++participants;
   }
 
-  // set: the accelerator's slot changes (state, or null for invalid);
+  // set: the accelerator's slot changes (the staged slot, or null for invalid);
   // otherwise it only took part.
-  void Finish(const WorldKitOps &kit, bool set, void *state, VerusAuxStore::Epoch from, VerusAuxStore::Epoch floor) {
+  void Finish(const WorldKitOps &kit, bool set, const KitStaged *staged, VerusAuxStore::Epoch from,
+              VerusAuxStore::Epoch floor) {
     std::lock_guard<std::mutex> lock(mutex);
     if (set)
-      Set(kit, state);
+      Put(kit, staged);
     if (++finished < participants)
       return;
     if (aborted || !batch) {
@@ -344,18 +416,29 @@ public:
     Reset();
   }
 
-  // A version outside a commit (a build): this accelerator's slot only.
-  void InstallNow(const WorldKitOps &kit, void *state, VerusAuxStore::Epoch from, VerusAuxStore::Epoch floor) {
+  // A version outside a commit (a build): this accelerator's slot only.  `from` is the
+  // epoch the build's scans read at.  A refused install (a commit in flight, or a newer
+  // version) drops the build, counted as stale.
+  void InstallNow(const WorldKitOps &kit, const KitStaged *staged, VerusAuxStore::Epoch from,
+                  VerusAuxStore::Epoch floor) {
     std::lock_guard<std::mutex> lock(mutex);
-    void *b = world.batch_new(store);
-    if (!b) {
-      if (state)
-        kit.release(state); // never reached: a build's state is owned (see Take)
+    std::shared_ptr<void> gb = staged && staged->base ? staged->base : BaseLocked();
+    ++generation;
+    void *b = gb ? world.batch_new(gb.get()) : nullptr;
+    if (!b)
       return;
-    }
-    kit.batch_set(b, state);
+    if (staged)
+      kit.put(b, staged->Take());
+    else
+      kit.put_invalid(b);
     if (world.install(store, b, from, floor, 0) != 0)
       ++stale;
+  }
+
+  // The slot's versions are invalidated: a cached base may carry the old slot.
+  void Invalidated() {
+    std::lock_guard<std::mutex> lock(mutex);
+    ++generation;
   }
 
   const World &world;
@@ -363,16 +446,39 @@ public:
   std::size_t stale = 0;
 
 private:
-  void Set(const WorldKitOps &kit, void *state) {
-    if (!batch)
-      batch = world.batch_new(store);
-    if (batch)
-      kit.batch_set(batch, state);
+  std::shared_ptr<void> BaseLocked() {
+    const uint64_t newest = world.newest(store);
+    if (!base || base_epoch != newest || base_generation != generation) {
+      void *gb = world.gbase_new(store);
+      if (!gb)
+        return nullptr;
+      base = std::shared_ptr<void>(gb, [w = &world](void *p) { w->gbase_free(p); });
+      base_epoch = newest;
+      base_generation = generation;
+    }
+    return base;
   }
+
+  // The slot staged on the batch's base is put; a slot staged elsewhere, or none, is invalid.
+  void Put(const WorldKitOps &kit, const KitStaged *staged) {
+    if (!batch) {
+      std::shared_ptr<void> gb = staged && staged->base ? staged->base : BaseLocked();
+      if (gb)
+        batch = world.batch_new(gb.get());
+    }
+    if (!batch)
+      return;
+    if (staged)
+      kit.put(batch, staged->Take());
+    else
+      kit.put_invalid(batch);
+  }
+
   void Reset() {
     batch = nullptr;
     participants = finished = 0;
     aborted = false;
+    ++generation;
   }
 
   // mutex guards the commit assembly below (shared by every accelerator of the
@@ -381,23 +487,46 @@ private:
   int participants = 0, finished = 0;
   bool aborted = false;
   void *batch = nullptr;
+  std::shared_ptr<void> base;
+  uint64_t base_epoch = 0, base_generation = 0, generation = 1;
 };
 
-class WorldKitStore final : public VerusAuxStore {
+class WorldKitStore final : public VerusAuxStore, public Staging {
 public:
   WorldKitStore(const Glue &g, const WorldKitOps &k, WorldShared &w, EpochProvider epoch_p, FloorProvider floor_p)
       : glue(g), kit(k), world(w), epoch(std::move(epoch_p)), floor(std::move(floor_p)),
         pending_wait_micros(core::PendingWaitMicrosFromEnv()) {}
 
-  const Glue &GlueOf() const { return glue; }
+  const Glue &GlueOf() const override { return glue; }
 
-  // The newest version's state: what this accelerator's next state is
-  // applied to (the batch is assembled from the newest version).
-  std::shared_ptr<const KitImage> Newest() const {
-    const void *s = kit.newest(world.store);
-    if (!s)
+  std::shared_ptr<const KitStaged> StageApply(const Changes &changes, Host &host, int32_t *err) const override {
+    std::shared_ptr<void> gb = world.Base();
+    void *base = gb ? kit.base(gb.get()) : nullptr;
+    if (!base)
       return nullptr;
-    return std::make_shared<const KitImage>(glue, const_cast<void *>(s), /*shared=*/true, kit.release);
+    void *next = nullptr;
+    try {
+      next = glue.prepare_apply(base, changes, host, err);
+    } catch (...) {
+      glue.store.base_free(base);
+      throw;
+    }
+    glue.store.base_free(base);
+    return next ? std::make_shared<const KitStaged>(glue, next, std::move(gb)) : nullptr;
+  }
+
+  std::shared_ptr<const KitStaged> StageBuild(Host &host) const override {
+    std::shared_ptr<void> gb;
+    void *next = StageBuildOn(
+        glue, host,
+        [&] {
+          gb = world.Base();
+          if (!gb)
+            throw std::runtime_error(std::string(glue.id) + ": no version can follow the newest");
+          return kit.head(gb.get());
+        },
+        [&](void *head) { glue.store.head_free(head); });
+    return std::make_shared<const KitStaged>(glue, next, std::move(gb));
   }
 
   core::StateSnapshot Read(const core::VisibilityToken &visibility) const override {
@@ -447,15 +576,17 @@ public:
   }
 
   void Invalidate(const core::InvalidationPlan &plan) override {
-    if (!plan.IsEmpty())
-      kit.invalidate(world.store);
+    if (plan.IsEmpty())
+      return;
+    kit.invalidate(world.store);
+    world.Invalidated();
   }
 
   bool TryPublish(const core::StagedMaintenanceOutcome &staged, core::Version) override {
     bool set = false;
-    void *state = Owned(staged.invalidations, staged.updates, set);
+    const auto slot = Slot(staged.invalidations, staged.updates, set);
     if (set)
-      world.InstallNow(kit, state, CurrentEpoch(), CurrentFloor());
+      world.InstallNow(kit, slot.get(), CurrentEpoch(), CurrentFloor());
     return true;
   }
 
@@ -466,17 +597,17 @@ public:
   void FinishCommit(const core::AcceleratorId &, const core::InvalidationPlan &invalidate,
                     const std::vector<core::StateImage> &updates, core::Version) override {
     bool set = false;
-    void *state = Owned(invalidate, updates, set);
-    world.Finish(kit, set, state, CurrentEpoch(), CurrentFloor());
+    const auto slot = Slot(invalidate, updates, set);
+    world.Finish(kit, set, slot.get(), CurrentEpoch(), CurrentFloor());
   }
 
   void AbortCommit(const core::AcceleratorId &) override { world.Abort(); }
 
   void Install(std::vector<core::StateImage> images, const core::AcceleratorId &, Epoch from_epoch) override {
     bool set = false;
-    void *state = Owned(core::InvalidationPlan{}, images, set);
+    const auto slot = Slot(core::InvalidationPlan{}, images, set);
     if (set)
-      world.InstallNow(kit, state, from_epoch, CurrentFloor());
+      world.InstallNow(kit, slot.get(), from_epoch, CurrentFloor());
   }
 
   std::size_t ValidPartitionCount() const override {
@@ -494,23 +625,18 @@ private:
   Epoch CurrentEpoch() const { return epoch ? epoch() : 0; }
   Epoch CurrentFloor() const { return floor ? floor() : std::numeric_limits<Epoch>::max(); }
 
-  // The slot's change: the last update's state (owned, handed over), or
-  // invalid; `set` false if the commit leaves the slot as it is.
-  static void *Owned(const core::InvalidationPlan &invalidate, const std::vector<core::StateImage> &updates,
-                     bool &set) {
-    void *state = nullptr;
+  // The slot's change: the last update's staged slot, or none (invalid); `set` false if
+  // the commit leaves the slot as it is.
+  static std::shared_ptr<const KitStaged> Slot(const core::InvalidationPlan &invalidate,
+                                               const std::vector<core::StateImage> &updates, bool &set) {
+    std::shared_ptr<const KitStaged> slot;
     set = !invalidate.IsEmpty();
     for (const auto &image : updates) {
       set = true;
-      if (!image.payload)
-        continue;
-      if (void *taken = image.As<KitImage>()->Take()) {
-        if (state)
-          image.As<KitImage>()->glue.free_state(state);
-        state = taken;
-      }
+      if (image.payload)
+        slot = std::shared_ptr<const KitStaged>(image.payload, image.As<KitStaged>());
     }
-    return state;
+    return slot;
   }
 
   // status: see ReadAwaitingPublish.
@@ -602,16 +728,8 @@ public:
   }
 
   void Build(core::AuxEngineServices &services, core::StateBuilder &builder) override {
-    if (const auto *vs = VerusStore(services)) {
-      void *next = nullptr;
-      try {
-        next = glue.prepare_build(vs->Handle(), host);
-      } catch (const Declined &) {
-        next = glue.store.prepare_invalid(vs->Handle());
-      }
-      if (!next)
-        throw std::runtime_error(std::string(glue.id) + ": no version can follow the newest");
-      builder.Write(core::StateImage::Make(glue.id, kState, 0, std::make_shared<const KitPrepared>(glue, next)));
+    if (const auto *staging = StagingStore(services)) {
+      builder.Write(core::StateImage::Make(glue.id, kState, 0, staging->StageBuild(host)));
       builder.Finish();
       return;
     }
@@ -714,32 +832,17 @@ public:
     Host &h = fault == "no_rescan" ? static_cast<Host &>(no_rescan) : host;
     int32_t err = 0;
     try {
-      if (const auto *vs = VerusStore(services)) {
-        void *base = glue.store.newest_base(vs->Handle());
-        if (!base) {
-          Rebuild(outcome);
-          return outcome;
-        }
-        void *next = nullptr;
-        try {
-          next = glue.prepare_apply(vs->Handle(), base, changes, h, &err);
-        } catch (...) {
-          glue.store.base_free(base);
-          throw;
-        }
-        glue.store.base_free(base);
-        if (!next) {
+      if (const auto *staging = StagingStore(services)) {
+        const auto staged = staging->StageApply(changes, h, &err);
+        if (!staged) {
           Rebuild(outcome);
           return outcome;
         }
         outcome.action = core::MaintenanceAction::ApplyDelta;
-        outcome.updates.push_back(
-            core::StateImage::Make(glue.id, kState, 0, std::make_shared<const KitPrepared>(glue, next)));
+        outcome.updates.push_back(core::StateImage::Make(glue.id, kState, 0, staged));
         return outcome;
       }
-      // the world's batch is assembled from the newest version: apply to its state
-      const auto *ws = WorldStore(services);
-      const auto image = ws ? ws->Newest() : ReadImage(services, services.CurrentVisibility());
+      const auto image = ReadImage(services, services.CurrentVisibility());
       if (!image || !image->state) {
         Rebuild(outcome);
         return outcome;
@@ -782,7 +885,7 @@ public:
       ExecuteFallback(services, arguments, sink);
       return;
     }
-    if (glue.execute_into) {
+    if (glue.execute_into && !image->shared) {
       // streamed: the glue emits (and may reuse) one row at a time
       bool begun = false;
       const RowFn emit = [&](const core::AuxRow &row) {
@@ -804,7 +907,7 @@ public:
     // A reused vector keeps its capacity across reads on this thread.
     thread_local std::vector<core::AuxRow> rows;
     rows.clear();
-    if (!glue.execute(image->state, arguments, rows)) {
+    if (!(image->shared ? glue.answer : glue.execute)(image->state, arguments, rows)) {
       rows.clear();
       ExecuteFallback(services, arguments, sink);
       return;
@@ -832,14 +935,10 @@ private:
     return table >= 1 && table <= glue.tables.size() ? static_cast<std::size_t>(table - 1) : glue.tables.size();
   }
 
-  const KitStore *VerusStore(core::AuxEngineServices &services) const {
-    const auto *vs = dynamic_cast<const KitStore *>(&services.StateStore());
-    return vs && &vs->GlueOf() == &glue ? vs : nullptr;
-  }
-
-  const WorldKitStore *WorldStore(core::AuxEngineServices &services) const {
-    const auto *ws = dynamic_cast<const WorldKitStore *>(&services.StateStore());
-    return ws && &ws->GlueOf() == &glue ? ws : nullptr;
+  // The Verus store staging this query's slots (its own, or its view of the world), if any.
+  const Staging *StagingStore(core::AuxEngineServices &services) const {
+    const auto *staging = dynamic_cast<const Staging *>(&services.StateStore());
+    return staging && &staging->GlueOf() == &glue ? staging : nullptr;
   }
 
   std::shared_ptr<const KitImage> ReadImage(core::AuxEngineServices &services,
@@ -1219,7 +1318,7 @@ std::unique_ptr<core::AuxQueryModule> MakeModule(const Glue &glue, Host &host) {
 
 std::unique_ptr<aux_state::VerusAuxStore> MakeStore(const Glue &glue, aux_state::VerusAuxStore::EpochProvider epoch,
                                                     aux_state::VerusAuxStore::FloorProvider floor) {
-  if (!glue.store.new_store || !glue.prepare_apply || !glue.prepare_build)
+  if (!glue.store.new_store || !glue.prepare_apply || !glue.prepare_build || !glue.answer)
     throw std::runtime_error(std::string("ACCEL_AUX_STORE=verus: ") + glue.id +
                              " has no per-accelerator store ABI; use ACCEL_AUX_STORE=verus_global");
   return std::make_unique<KitStore>(glue, std::move(epoch), std::move(floor));
@@ -1232,7 +1331,7 @@ std::unique_ptr<aux_state::VerusAuxStore> MakeWorldStore(const Glue &glue,
                                                          aux_state::VerusAuxStore::FloorProvider floor) {
   for (const auto *world : Worlds())
     for (const auto &kit : world->kits)
-      if (std::string(kit.accelerator) == glue.id)
+      if (std::string(kit.accelerator) == glue.id && glue.answer && glue.prepare_apply && glue.prepare_build)
         return std::make_unique<WorldKitStore>(glue, kit, WorldShared::Of(*world), std::move(epoch),
                                                std::move(floor));
   return nullptr;

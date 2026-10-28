@@ -1,0 +1,65 @@
+#!/usr/bin/env python3
+"""Regenerate the sql2verus-generated files of the TPC-H Verus kits: gen_world.rs, gen_ffi.rs
+and the C header.  gen_spec.rs and gen_obligations.rs are only compared (the spec is frozen):
+a difference is an error and nothing is written for that kit.
+
+    python3 scripts/regen_verus_kits.py <sql2verus binary> <schema.sql> <inputs dir> [q1 q2 ...]
+
+<inputs dir> holds the kernel inputs of each query as q<N>.inputs (the files the kits'
+gen_obligations.rs were generated from).  Host glue (glue.cpp) is written per kit, not
+generated.
+"""
+import pathlib
+import shutil
+import subprocess
+import sys
+import tempfile
+
+ROOT = pathlib.Path(__file__).resolve().parent.parent
+
+
+# A doc line sql2verus gained after the kits were generated; nothing else may differ.
+LATER_DOC = " (a NULL key matches none)."
+
+
+def same(generated: pathlib.Path, committed: pathlib.Path) -> bool:
+    return generated.read_text().replace(LATER_DOC, ".") == committed.read_text()
+
+
+def main() -> int:
+    binary, schema, inputs = sys.argv[1], pathlib.Path(sys.argv[2]), pathlib.Path(sys.argv[3])
+    qs = sys.argv[4:] or [f"q{n}" for n in range(1, 23)]
+    bad = 0
+    for q in qs:
+        n = q[1:]
+        name = f"tpch_{q}_vgen"
+        kit = ROOT / "accelerators" / "tpch" / q / "verus_kit" / name
+        src = kit / "crate" / "src"
+        with tempfile.TemporaryDirectory(dir="/dev/shm") as t:
+            t = pathlib.Path(t)
+            shutil.copy2(inputs / f"{q}.inputs", t / "q.inputs")  # the name gen_obligations.rs records
+            cmd = [binary, "--engine", "duckdb", "--schema", schema,
+                   "--query", ROOT / f"workloads/tpch/{q}.sql", "--out", t / "gen_spec.rs",
+                   "--obligations", t / "gen_obligations.rs", "--inputs", t / "q.inputs",
+                   "--kernel-stub", t / "kernel_stub.rs", "--world", t / "gen_world.rs",
+                   "--ffi", t / "gen_ffi.rs", "--ffi-header", t / f"{name}_verus.h",
+                   "--ffi-prefix", f"tpchq{n}vgen"]
+            r = subprocess.run([str(c) for c in cmd], capture_output=True, text=True)
+            if r.returncode != 0:
+                print(f"{q}: sql2verus failed\n{r.stderr[-1500:]}")
+                bad += 1
+                continue
+            frozen = [f for f in ("gen_spec.rs", "gen_obligations.rs") if not same(t / f, src / f)]
+            if frozen:
+                print(f"{q}: {', '.join(frozen)} differ from the committed ones; not written")
+                bad += 1
+                continue
+            shutil.copy2(t / "gen_world.rs", src / "gen_world.rs")
+            shutil.copy2(t / "gen_ffi.rs", src / "gen_ffi.rs")
+            shutil.copy2(t / f"{name}_verus.h", kit / f"{name}_verus.h")
+            print(f"{q}: ok")
+    return 1 if bad else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

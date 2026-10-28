@@ -18,7 +18,9 @@ typedef struct tpchq16vgen_state tpchq16vgen_state;
 typedef struct tpchq16vgen_result tpchq16vgen_result;
 typedef struct tpchq16vgens_store tpchq16vgens_store;
 typedef struct tpchq16vgens_base tpchq16vgens_base;
-typedef struct tpchq16vgens_prepared tpchq16vgens_prepared;
+typedef struct tpchq16vgens_head tpchq16vgens_head;
+typedef struct tpchq16vgens_staged tpchq16vgens_staged;
+typedef struct tpchq16vgens_reading tpchq16vgens_reading;
 
 typedef struct {
   int64_t ps_partkey;
@@ -93,7 +95,7 @@ tpchq16vgens_store *tpchq16vgens_new(void);
 /* Free a store. */
 void tpchq16vgens_free(tpchq16vgens_store *st);
 
-/* The newest version's state, to prepare the next version from; NULL if
+/* The newest version's state, to stage the next version from; NULL if
    it is invalid. */
 tpchq16vgens_base *tpchq16vgens_newest_base(const tpchq16vgens_store *st);
 
@@ -101,22 +103,27 @@ tpchq16vgens_base *tpchq16vgens_newest_base(const tpchq16vgens_store *st);
 const tpchq16vgen_state *tpchq16vgens_base_state(const tpchq16vgens_base *b);
 
 /* Free a base. */
-void tpchq16vgens_base_free(tpchq16vgens_base *b);
+void tpchq16vgens_base_free(tpchq16vgens_base *x);
 
-/* The next version from the base and one commit's inputs (as for apply);
+/* The newest version, to stage a build on; NULL if no version can follow it. */
+tpchq16vgens_head *tpchq16vgens_newest_head(const tpchq16vgens_store *st);
+
+/* Free a head. */
+void tpchq16vgens_head_free(tpchq16vgens_head *x);
+
+/* The next version's slot from the base and one commit's inputs (as for apply);
    NULL with *err set if the kernel cannot apply them (the host rebuilds). */
-tpchq16vgens_prepared *tpchq16vgens_prepare_apply(const tpchq16vgens_store *st, const tpchq16vgens_base *b, size_t part_delta__n, const int64_t *part_delta__row__p_partkey, const uint8_t *part_delta__row__p_brand, const size_t *part_delta__row__p_brand__off, const uint8_t *part_delta__row__p_type, const size_t *part_delta__row__p_type__off, const int64_t *part_delta__row__p_size, const int64_t *part_delta__sign, size_t partsupp_delta__n, const tpchq16vgen_edge_delta *partsupp_delta, size_t supplier_delta__n, const tpchq16vgen_supplier_delta *supplier_delta, size_t edges_for_parts_keys__n, const int64_t *edges_for_parts_keys, size_t edges_for_parts_rows__n, const tpchq16vgen_edge_input *edges_for_parts_rows, size_t edges_for_suppliers_keys__n, const int64_t *edges_for_suppliers_keys, size_t edges_for_suppliers_rows__n, const tpchq16vgen_edge_input *edges_for_suppliers_rows, size_t parts_for_neighbors_keys__n, const int64_t *parts_for_neighbors_keys, size_t parts_for_neighbors_rows__n, const int64_t *parts_for_neighbors_rows__p_partkey, const uint8_t *parts_for_neighbors_rows__p_brand, const size_t *parts_for_neighbors_rows__p_brand__off, const uint8_t *parts_for_neighbors_rows__p_type, const size_t *parts_for_neighbors_rows__p_type__off, const int64_t *parts_for_neighbors_rows__p_size, size_t blockers_for_suppliers_keys__n, const int64_t *blockers_for_suppliers_keys, size_t blockers_for_suppliers_rows__n, const tpchq16vgen_blocker_input *blockers_for_suppliers_rows, int32_t *err);
+tpchq16vgens_staged *tpchq16vgens_stage_apply(const tpchq16vgens_base *b, size_t part_delta__n, const int64_t *part_delta__row__p_partkey, const uint8_t *part_delta__row__p_brand, const size_t *part_delta__row__p_brand__off, const uint8_t *part_delta__row__p_type, const size_t *part_delta__row__p_type__off, const int64_t *part_delta__row__p_size, const int64_t *part_delta__sign, size_t partsupp_delta__n, const tpchq16vgen_edge_delta *partsupp_delta, size_t supplier_delta__n, const tpchq16vgen_supplier_delta *supplier_delta, size_t edges_for_parts_keys__n, const int64_t *edges_for_parts_keys, size_t edges_for_parts_rows__n, const tpchq16vgen_edge_input *edges_for_parts_rows, size_t edges_for_suppliers_keys__n, const int64_t *edges_for_suppliers_keys, size_t edges_for_suppliers_rows__n, const tpchq16vgen_edge_input *edges_for_suppliers_rows, size_t parts_for_neighbors_keys__n, const int64_t *parts_for_neighbors_keys, size_t parts_for_neighbors_rows__n, const int64_t *parts_for_neighbors_rows__p_partkey, const uint8_t *parts_for_neighbors_rows__p_brand, const size_t *parts_for_neighbors_rows__p_brand__off, const uint8_t *parts_for_neighbors_rows__p_type, const size_t *parts_for_neighbors_rows__p_type__off, const int64_t *parts_for_neighbors_rows__p_size, size_t blockers_for_suppliers_keys__n, const int64_t *blockers_for_suppliers_keys, size_t blockers_for_suppliers_rows__n, const tpchq16vgen_blocker_input *blockers_for_suppliers_rows, int32_t *err);
 
-/* The next version built from scans (as for build) of the database as of
-   that version; its state is invalid if the kernel cannot build it.  NULL
-   only if no version can follow the newest. */
-tpchq16vgens_prepared *tpchq16vgens_prepare_build(const tpchq16vgens_store *st, size_t parts__n, const int64_t *parts__p_partkey, const uint8_t *parts__p_brand, const size_t *parts__p_brand__off, const uint8_t *parts__p_type, const size_t *parts__p_type__off, const int64_t *parts__p_size, size_t edges__n, const tpchq16vgen_edge_input *edges, size_t blockers__n, const tpchq16vgen_blocker_input *blockers);
+/* The next version's slot built from scans (as for build) of the database as of
+   that version; invalid if the kernel cannot build it. */
+tpchq16vgens_staged *tpchq16vgens_stage_build(const tpchq16vgens_head *h, size_t parts__n, const int64_t *parts__p_partkey, const uint8_t *parts__p_brand, const size_t *parts__p_brand__off, const uint8_t *parts__p_type, const size_t *parts__p_type__off, const int64_t *parts__p_size, size_t edges__n, const tpchq16vgen_edge_input *edges, size_t blockers__n, const tpchq16vgen_blocker_input *blockers);
 
-/* The next version with an invalid state (NULL: none can follow the newest). */
-tpchq16vgens_prepared *tpchq16vgens_prepare_invalid(const tpchq16vgens_store *st);
+/* The next version's slot, invalid. */
+tpchq16vgens_staged *tpchq16vgens_stage_invalid(const tpchq16vgens_head *h);
 
-/* Free a prepared version. */
-void tpchq16vgens_prepared_free(tpchq16vgens_prepared *p);
+/* Free a staged slot. */
+void tpchq16vgens_staged_free(tpchq16vgens_staged *x);
 
 /* Mark a commit in flight, visible from engine epoch `from`: 1, or 0 if one
    is already in flight. */
@@ -125,18 +132,23 @@ int32_t tpchq16vgens_begin(const tpchq16vgens_store *st, uint64_t from);
 /* The commit in flight ended without a new version. */
 void tpchq16vgens_abort(const tpchq16vgens_store *st);
 
-/* Append p (consumed), current from engine epoch `from`; keep the versions
-   snapshots at or after `floor` select; end_commit != 0 also ends the commit
-   in flight.  0: appended; 1: stale (the store now holds one invalid version). */
-int32_t tpchq16vgens_install(const tpchq16vgens_store *st, tpchq16vgens_prepared *p, uint64_t from, uint64_t floor, int32_t end_commit);
+/* Append the staged slot (consumed), current from engine epoch `from`; keep the
+   versions snapshots at or after `floor` select; end_commit != 0 also ends the
+   commit in flight.  0: appended; 1: stale (the store now holds one invalid version,
+   or, for a build during a commit, is unchanged).  HOST CONTRACT: staged on this store. */
+int32_t tpchq16vgens_install(const tpchq16vgens_store *st, tpchq16vgens_staged *p, uint64_t from, uint64_t floor, int32_t end_commit);
 
-/* The state a snapshot at engine epoch `at` sees (0: the newest), waiting up
-   to `tries` checks for a pending commit.  *status: 0 a state (returned;
-   release it), 1 invalid, 2 still pending, 3 not visible. */
-const tpchq16vgen_state *tpchq16vgens_read(const tpchq16vgens_store *st, uint64_t at, uint64_t tries, int32_t *status);
+/* The reading of a snapshot at engine epoch `at` (0: the newest), waiting up
+   to `tries` checks for a pending commit.  *status: 0 a reading (returned;
+   free it), 1 invalid, 2 still pending, 3 not visible. */
+tpchq16vgens_reading *tpchq16vgens_read(const tpchq16vgens_store *st, uint64_t at, uint64_t tries, int32_t *status);
 
-/* Release a state from read. */
-void tpchq16vgens_state_release(const tpchq16vgen_state *s);
+/* Free a reading. */
+void tpchq16vgens_reading_free(tpchq16vgens_reading *x);
+
+/* The query's answer on the reading (THEOREM 5.4, gen_world.rs), or NULL (the host then
+   answers with SQL). */
+tpchq16vgen_result *tpchq16vgens_answer(const tpchq16vgens_reading *r, const uint8_t *p1, size_t p1__len, const uint8_t *p2, size_t p2__len, int64_t p3, int64_t p4, int64_t p5, int64_t p6, int64_t p7, int64_t p8, int64_t p9, int64_t p10);
 
 /* Every kept version's state becomes invalid. */
 void tpchq16vgens_invalidate_all(const tpchq16vgens_store *st);

@@ -101,32 +101,58 @@ impl AuxWorld<()> for Nothing {
     }
 }
 
-/// The newest version's state, to prepare the next version from.
-pub struct Base<D, S: AccelState<D>> {
+/// The newest version e of a store, as a writer sees it: the version and the
+/// timeline, with an identity.  Handles cloned from one head are `same`; that
+/// is how a staged state is tied to the batch assembled from the same base.
+pub struct Head<D> {
+    inner: Arc<HeadData<D>>,
+}
+
+struct HeadData<D> {
     e: u64,
-    state: Arc<S>,
     timeline: Ghost<spec_fn(nat) -> D>,
 }
 
-impl<D, S: AccelState<D>> Base<D, S> {
+impl<D> Head<D> {
     #[verifier::type_invariant]
     spec fn wf(self) -> bool {
-        &&& self.e < u64::MAX
-        &&& (*self.state).answers((self.timeline@)(self.e as nat))
+        (*self.inner).e < u64::MAX
     }
 
     /// The version it is.
     pub closed spec fn epoch(self) -> u64 {
-        self.e
+        (*self.inner).e
     }
 
     pub closed spec fn timeline(self) -> spec_fn(nat) -> D {
-        self.timeline@
+        (*self.inner).timeline@
     }
 
-    /// The state, as a value.
-    pub closed spec fn state_spec(self) -> S {
-        *self.state
+    /// The database at the next version.
+    pub open spec fn next_db(self) -> D {
+        (self.timeline())((self.epoch() + 1) as nat)
+    }
+
+    pub fn new(e: u64, Ghost(timeline): Ghost<spec_fn(nat) -> D>) -> (h: Self)
+        requires
+            e < u64::MAX,
+        ensures
+            h.epoch() == e,
+            h.timeline() == timeline,
+    {
+        Head { inner: Arc::new(HeadData { e, timeline: Ghost(timeline) }) }
+    }
+
+    /// Another handle on this head.
+    pub fn share(&self) -> (h: Self)
+        ensures
+            h.epoch() == self.epoch(),
+            h.timeline() == self.timeline(),
+    {
+        proof {
+            use_type_invariant(self);
+        }
+        Head { inner: self.inner.clone() }
     }
 
     pub fn version(&self) -> (e: u64)
@@ -137,7 +163,89 @@ impl<D, S: AccelState<D>> Base<D, S> {
         proof {
             use_type_invariant(self);
         }
-        self.e
+        self.inner.e
+    }
+
+    /// Both handles are on one head (pointer identity): same version and timeline.
+    #[verifier::external_body]
+    pub fn same(&self, other: &Head<D>) -> (b: bool)
+        ensures
+            b ==> self.epoch() == other.epoch() && self.timeline() == other.timeline(),
+    {
+        Arc::ptr_eq(&self.inner, &other.inner)
+    }
+
+    /// The next version's slot, ok for the next database.
+    pub fn stage<S: AccelState<D>>(&self, next: Option<S>) -> (st: Staged<D, S>)
+        requires
+            next matches Some(s) ==> s.answers(self.next_db()),
+        ensures
+            st.epoch() == self.epoch(),
+            st.timeline() == self.timeline(),
+    {
+        proof {
+            use_type_invariant(self);
+        }
+        let slot = match next {
+            Some(s) => Slot::Valid(Arc::new(s)),
+            None => Slot::Invalid,
+        };
+        Staged { head: self.share(), slot }
+    }
+}
+
+/// A kernel state and the proof that it answers for the newest version's state at that version.
+pub struct Base<D, S: AccelState<D>> {
+    head: Head<D>,
+    state: Arc<S>,
+}
+
+impl<D, S: AccelState<D>> Base<D, S> {
+    #[verifier::type_invariant]
+    spec fn wf(self) -> bool {
+        (*self.state).answers((self.head.timeline())(self.head.epoch() as nat))
+    }
+
+    /// The version it is.
+    pub closed spec fn epoch(self) -> u64 {
+        self.head.epoch()
+    }
+
+    pub closed spec fn timeline(self) -> spec_fn(nat) -> D {
+        self.head.timeline()
+    }
+
+    /// The state, as a value.
+    pub closed spec fn state_spec(self) -> S {
+        *self.state
+    }
+
+    pub fn new(head: Head<D>, state: Arc<S>) -> (b: Self)
+        requires
+            (*state).answers((head.timeline())(head.epoch() as nat)),
+        ensures
+            b.epoch() == head.epoch(),
+            b.timeline() == head.timeline(),
+            b.state_spec() == *state,
+    {
+        Base { head, state }
+    }
+
+    /// The head this base is the state of.
+    pub fn head(&self) -> (h: Head<D>)
+        ensures
+            h.epoch() == self.epoch(),
+            h.timeline() == self.timeline(),
+    {
+        self.head.share()
+    }
+
+    pub fn version(&self) -> (e: u64)
+        ensures
+            e == self.epoch(),
+            e < u64::MAX,
+    {
+        self.head.version()
     }
 
     /// The state: it answers for the database at its version.
@@ -163,7 +271,7 @@ pub fn base<D, S: AccelState<D>>(store: &Store<D, Slot<S>>) -> (r: Option<Base<D
     match w {
         Slot::Valid(a) => {
             if e < u64::MAX {
-                Some(Base { e, state: a, timeline: Ghost(store.timeline()) })
+                Some(Base::new(Head::new(e, Ghost(store.timeline())), a))
             } else {
                 None
             }
@@ -172,21 +280,76 @@ pub fn base<D, S: AccelState<D>>(store: &Store<D, Slot<S>>) -> (r: Option<Base<D
     }
 }
 
-/// Version e + 1 of the store: `next`'s state (answering for the database at
-/// e + 1), or an invalid slot.
-pub fn prepare<D, S: AccelState<D>>(store: &Store<D, Slot<S>>, e: u64, next: Option<S>) -> (p: Prepared<D, Slot<S>>)
-    requires
-        e < u64::MAX,
-        next matches Some(s) ==> s.answers(store.db_at((e + 1) as nat)),
+/// The newest version, if a version can follow it.
+pub fn head<D, W: AuxWorld<D>>(store: &Store<D, W>) -> (r: Option<Head<D>>)
     ensures
-        p.epoch() == e,
-        p.timeline() == store.timeline(),
+        r matches Some(h) ==> h.timeline() == store.timeline(),
 {
-    let w = match next {
-        Some(s) => Slot::Valid(Arc::new(s)),
-        None => Slot::Invalid,
-    };
-    Prepared::new(e, w, Ghost(store.timeline()))
+    let e = store.newest();
+    if e < u64::MAX {
+        Some(Head::new(e, Ghost(store.timeline())))
+    } else {
+        None
+    }
+}
+
+/// Version e + 1's slot for one accelerator, produced from its head (by the
+/// kernel's apply / build): ok for the database at e + 1.  It becomes a
+/// version of its own store (`into_prepared`) or of a world (its head ties it
+/// to the batch built on the same base).
+pub struct Staged<D, S: AccelState<D>> {
+    head: Head<D>,
+    slot: Slot<S>,
+}
+
+impl<D, S: AccelState<D>> Staged<D, S> {
+    #[verifier::type_invariant]
+    spec fn wf(self) -> bool {
+        self.slot.ok(self.head.next_db())
+    }
+
+    pub closed spec fn epoch(self) -> u64 {
+        self.head.epoch()
+    }
+
+    pub closed spec fn timeline(self) -> spec_fn(nat) -> D {
+        self.head.timeline()
+    }
+
+    pub fn head(&self) -> (h: &Head<D>)
+        ensures
+            h.epoch() == self.epoch(),
+            h.timeline() == self.timeline(),
+    {
+        &self.head
+    }
+
+    /// The slot: ok for the database at e + 1.
+    pub fn into_slot(self) -> (s: Slot<S>)
+        ensures
+            s.ok((self.timeline())((self.epoch() + 1) as nat)),
+    {
+        proof {
+            use_type_invariant(&self);
+        }
+        self.slot
+    }
+
+    /// The next version of `store`, from the store this was staged on
+    /// (HOST CONTRACT, TRUSTED: `requires`).
+    pub fn into_prepared(self, store: &Store<D, Slot<S>>) -> (p: Prepared<D, Slot<S>>)
+        requires
+            self.timeline() == store.timeline(),
+        ensures
+            p.epoch() == self.epoch(),
+            p.timeline() == store.timeline(),
+    {
+        proof {
+            use_type_invariant(&self);
+        }
+        let e = self.head.version();
+        Prepared::new(e, self.slot, Ghost(store.timeline()))
+    }
 }
 
 } // verus!

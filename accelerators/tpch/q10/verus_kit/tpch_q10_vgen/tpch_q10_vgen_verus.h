@@ -18,7 +18,9 @@ typedef struct tpchq10vgen_state tpchq10vgen_state;
 typedef struct tpchq10vgen_result tpchq10vgen_result;
 typedef struct tpchq10vgens_store tpchq10vgens_store;
 typedef struct tpchq10vgens_base tpchq10vgens_base;
-typedef struct tpchq10vgens_prepared tpchq10vgens_prepared;
+typedef struct tpchq10vgens_head tpchq10vgens_head;
+typedef struct tpchq10vgens_staged tpchq10vgens_staged;
+typedef struct tpchq10vgens_reading tpchq10vgens_reading;
 
 typedef struct {
   int64_t o_orderkey;
@@ -102,7 +104,7 @@ tpchq10vgens_store *tpchq10vgens_new(void);
 /* Free a store. */
 void tpchq10vgens_free(tpchq10vgens_store *st);
 
-/* The newest version's state, to prepare the next version from; NULL if
+/* The newest version's state, to stage the next version from; NULL if
    it is invalid. */
 tpchq10vgens_base *tpchq10vgens_newest_base(const tpchq10vgens_store *st);
 
@@ -110,22 +112,27 @@ tpchq10vgens_base *tpchq10vgens_newest_base(const tpchq10vgens_store *st);
 const tpchq10vgen_state *tpchq10vgens_base_state(const tpchq10vgens_base *b);
 
 /* Free a base. */
-void tpchq10vgens_base_free(tpchq10vgens_base *b);
+void tpchq10vgens_base_free(tpchq10vgens_base *x);
 
-/* The next version from the base and one commit's inputs (as for apply);
+/* The newest version, to stage a build on; NULL if no version can follow it. */
+tpchq10vgens_head *tpchq10vgens_newest_head(const tpchq10vgens_store *st);
+
+/* Free a head. */
+void tpchq10vgens_head_free(tpchq10vgens_head *x);
+
+/* The next version's slot from the base and one commit's inputs (as for apply);
    NULL with *err set if the kernel cannot apply them (the host rebuilds). */
-tpchq10vgens_prepared *tpchq10vgens_prepare_apply(const tpchq10vgens_store *st, const tpchq10vgens_base *b, size_t customer_delta__n, const int64_t *customer_delta__row__c_custkey, const uint8_t *customer_delta__row__c_name, const size_t *customer_delta__row__c_name__off, const uint8_t *customer_delta__row__c_address, const size_t *customer_delta__row__c_address__off, const int64_t *customer_delta__row__c_nationkey, const uint8_t *customer_delta__row__c_phone, const size_t *customer_delta__row__c_phone__off, const int64_t *customer_delta__row__c_acctbal, const uint8_t *customer_delta__row__c_comment, const size_t *customer_delta__row__c_comment__off, const int64_t *customer_delta__sign, size_t lineitem_delta__n, const tpchq10vgen_line_delta *lineitem_delta, size_t nation_delta__n, const int64_t *nation_delta__row__n_nationkey, const uint8_t *nation_delta__row__n_name, const size_t *nation_delta__row__n_name__off, const int64_t *nation_delta__sign, size_t orders_delta__n, const tpchq10vgen_order_delta *orders_delta, size_t orders_for_keys_keys__n, const int64_t *orders_for_keys_keys, size_t orders_for_keys_rows__n, const tpchq10vgen_order_input *orders_for_keys_rows, size_t returned_lines_for_keys_keys__n, const int64_t *returned_lines_for_keys_keys, size_t returned_lines_for_keys_rows__n, const tpchq10vgen_returned_line_input *returned_lines_for_keys_rows, int32_t *err);
+tpchq10vgens_staged *tpchq10vgens_stage_apply(const tpchq10vgens_base *b, size_t customer_delta__n, const int64_t *customer_delta__row__c_custkey, const uint8_t *customer_delta__row__c_name, const size_t *customer_delta__row__c_name__off, const uint8_t *customer_delta__row__c_address, const size_t *customer_delta__row__c_address__off, const int64_t *customer_delta__row__c_nationkey, const uint8_t *customer_delta__row__c_phone, const size_t *customer_delta__row__c_phone__off, const int64_t *customer_delta__row__c_acctbal, const uint8_t *customer_delta__row__c_comment, const size_t *customer_delta__row__c_comment__off, const int64_t *customer_delta__sign, size_t lineitem_delta__n, const tpchq10vgen_line_delta *lineitem_delta, size_t nation_delta__n, const int64_t *nation_delta__row__n_nationkey, const uint8_t *nation_delta__row__n_name, const size_t *nation_delta__row__n_name__off, const int64_t *nation_delta__sign, size_t orders_delta__n, const tpchq10vgen_order_delta *orders_delta, size_t orders_for_keys_keys__n, const int64_t *orders_for_keys_keys, size_t orders_for_keys_rows__n, const tpchq10vgen_order_input *orders_for_keys_rows, size_t returned_lines_for_keys_keys__n, const int64_t *returned_lines_for_keys_keys, size_t returned_lines_for_keys_rows__n, const tpchq10vgen_returned_line_input *returned_lines_for_keys_rows, int32_t *err);
 
-/* The next version built from scans (as for build) of the database as of
-   that version; its state is invalid if the kernel cannot build it.  NULL
-   only if no version can follow the newest. */
-tpchq10vgens_prepared *tpchq10vgens_prepare_build(const tpchq10vgens_store *st, size_t customers__n, const int64_t *customers__c_custkey, const uint8_t *customers__c_name, const size_t *customers__c_name__off, const uint8_t *customers__c_address, const size_t *customers__c_address__off, const int64_t *customers__c_nationkey, const uint8_t *customers__c_phone, const size_t *customers__c_phone__off, const int64_t *customers__c_acctbal, const uint8_t *customers__c_comment, const size_t *customers__c_comment__off, size_t nations__n, const int64_t *nations__n_nationkey, const uint8_t *nations__n_name, const size_t *nations__n_name__off, size_t orders__n, const tpchq10vgen_order_input *orders, size_t returned_lines__n, const tpchq10vgen_returned_line_input *returned_lines);
+/* The next version's slot built from scans (as for build) of the database as of
+   that version; invalid if the kernel cannot build it. */
+tpchq10vgens_staged *tpchq10vgens_stage_build(const tpchq10vgens_head *h, size_t customers__n, const int64_t *customers__c_custkey, const uint8_t *customers__c_name, const size_t *customers__c_name__off, const uint8_t *customers__c_address, const size_t *customers__c_address__off, const int64_t *customers__c_nationkey, const uint8_t *customers__c_phone, const size_t *customers__c_phone__off, const int64_t *customers__c_acctbal, const uint8_t *customers__c_comment, const size_t *customers__c_comment__off, size_t nations__n, const int64_t *nations__n_nationkey, const uint8_t *nations__n_name, const size_t *nations__n_name__off, size_t orders__n, const tpchq10vgen_order_input *orders, size_t returned_lines__n, const tpchq10vgen_returned_line_input *returned_lines);
 
-/* The next version with an invalid state (NULL: none can follow the newest). */
-tpchq10vgens_prepared *tpchq10vgens_prepare_invalid(const tpchq10vgens_store *st);
+/* The next version's slot, invalid. */
+tpchq10vgens_staged *tpchq10vgens_stage_invalid(const tpchq10vgens_head *h);
 
-/* Free a prepared version. */
-void tpchq10vgens_prepared_free(tpchq10vgens_prepared *p);
+/* Free a staged slot. */
+void tpchq10vgens_staged_free(tpchq10vgens_staged *x);
 
 /* Mark a commit in flight, visible from engine epoch `from`: 1, or 0 if one
    is already in flight. */
@@ -134,18 +141,23 @@ int32_t tpchq10vgens_begin(const tpchq10vgens_store *st, uint64_t from);
 /* The commit in flight ended without a new version. */
 void tpchq10vgens_abort(const tpchq10vgens_store *st);
 
-/* Append p (consumed), current from engine epoch `from`; keep the versions
-   snapshots at or after `floor` select; end_commit != 0 also ends the commit
-   in flight.  0: appended; 1: stale (the store now holds one invalid version). */
-int32_t tpchq10vgens_install(const tpchq10vgens_store *st, tpchq10vgens_prepared *p, uint64_t from, uint64_t floor, int32_t end_commit);
+/* Append the staged slot (consumed), current from engine epoch `from`; keep the
+   versions snapshots at or after `floor` select; end_commit != 0 also ends the
+   commit in flight.  0: appended; 1: stale (the store now holds one invalid version,
+   or, for a build during a commit, is unchanged).  HOST CONTRACT: staged on this store. */
+int32_t tpchq10vgens_install(const tpchq10vgens_store *st, tpchq10vgens_staged *p, uint64_t from, uint64_t floor, int32_t end_commit);
 
-/* The state a snapshot at engine epoch `at` sees (0: the newest), waiting up
-   to `tries` checks for a pending commit.  *status: 0 a state (returned;
-   release it), 1 invalid, 2 still pending, 3 not visible. */
-const tpchq10vgen_state *tpchq10vgens_read(const tpchq10vgens_store *st, uint64_t at, uint64_t tries, int32_t *status);
+/* The reading of a snapshot at engine epoch `at` (0: the newest), waiting up
+   to `tries` checks for a pending commit.  *status: 0 a reading (returned;
+   free it), 1 invalid, 2 still pending, 3 not visible. */
+tpchq10vgens_reading *tpchq10vgens_read(const tpchq10vgens_store *st, uint64_t at, uint64_t tries, int32_t *status);
 
-/* Release a state from read. */
-void tpchq10vgens_state_release(const tpchq10vgen_state *s);
+/* Free a reading. */
+void tpchq10vgens_reading_free(tpchq10vgens_reading *x);
+
+/* The query's answer on the reading (THEOREM 5.4, gen_world.rs), or NULL (the host then
+   answers with SQL). */
+tpchq10vgen_result *tpchq10vgens_answer(const tpchq10vgens_reading *r, int32_t p1, int32_t p2);
 
 /* Every kept version's state becomes invalid. */
 void tpchq10vgens_invalidate_all(const tpchq10vgens_store *st);

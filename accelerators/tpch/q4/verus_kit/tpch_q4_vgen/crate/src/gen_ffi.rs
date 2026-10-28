@@ -8,8 +8,8 @@
 use std::ptr;
 use std::sync::Arc;
 use vstd::prelude::Ghost;
-use verus_substrate::store::{Install, Resolved, Slot, Store};
-use verus_substrate::world::base;
+use verus_substrate::store::{Install, Read, Slot, Store};
+use verus_substrate::world::{base, head};
 use crate::gen_obligations::*;
 use crate::gen_world::*;
 use crate::kernel::State;
@@ -72,7 +72,7 @@ fn rec_keys() -> Vec<i64> {
 
 /// An answer handed to the host (read through the result accessors).
 pub struct FfiResult {
-    rows: Vec<(Vec<u8>, i64)>,
+    pub rows: Vec<(Vec<u8>, i64)>,
 }
 
 /// Build from the scans: a state, or NULL (the host then answers with SQL).
@@ -272,7 +272,7 @@ pub unsafe extern "C" fn tpchq4vgen_result_free(r: *mut FfiResult) {
 /// A store holding one invalid version, current for every snapshot.
 #[no_mangle]
 pub extern "C" fn tpchq4vgens_new() -> *mut QStore {
-    Box::into_raw(Box::new(Store::new(0, Slot::Invalid, 0, Ghost::assume_new())))
+    Box::into_raw(Box::new(Store::new(0, Slot::Invalid, 0, Ghost::assume_new(), Ghost::assume_new())))
 }
 
 /// Free a store.
@@ -283,7 +283,7 @@ pub unsafe extern "C" fn tpchq4vgens_free(st: *mut QStore) {
     }
 }
 
-/// The newest version's state, to prepare the next version from; NULL if
+/// The newest version's state, to stage the next version from; NULL if
 /// it is invalid.
 #[no_mangle]
 pub unsafe extern "C" fn tpchq4vgens_newest_base(st: *const QStore) -> *mut QBase {
@@ -301,16 +301,33 @@ pub unsafe extern "C" fn tpchq4vgens_base_state(b: *const QBase) -> *const State
 
 /// Free a base.
 #[no_mangle]
-pub unsafe extern "C" fn tpchq4vgens_base_free(b: *mut QBase) {
-    if !b.is_null() {
-        drop(Box::from_raw(b));
+pub unsafe extern "C" fn tpchq4vgens_base_free(x: *mut QBase) {
+    if !x.is_null() {
+        drop(Box::from_raw(x));
     }
 }
 
-/// The next version from the base and one commit's inputs (as for apply);
+/// The newest version, to stage a build on; NULL if no version can follow it.
+#[no_mangle]
+pub unsafe extern "C" fn tpchq4vgens_newest_head(st: *const QStore) -> *mut QHead {
+    match head(&*st) {
+        Some(h) => Box::into_raw(Box::new(h)),
+        None => ptr::null_mut(),
+    }
+}
+
+/// Free a head.
+#[no_mangle]
+pub unsafe extern "C" fn tpchq4vgens_head_free(x: *mut QHead) {
+    if !x.is_null() {
+        drop(Box::from_raw(x));
+    }
+}
+
+/// The next version's slot from the base and one commit's inputs (as for apply);
 /// NULL with *err set if the kernel cannot apply them (the host rebuilds).
 #[no_mangle]
-pub unsafe extern "C" fn tpchq4vgens_prepare_apply(st: *const QStore, b: *const QBase, lineitem_delta__n: usize, lineitem_delta: *const LineDelta, orders_delta__n: usize, orders_delta__row__o_orderkey: *const i64, orders_delta__row__o_orderdate: *const i32, orders_delta__row__o_orderpriority: *const u8, orders_delta__row__o_orderpriority__off: *const usize, orders_delta__sign: *const i64, orders_for_line_changes_keys__n: usize, orders_for_line_changes_keys: *const i64, orders_for_line_changes_rows__n: usize, orders_for_line_changes_rows__o_orderkey: *const i64, orders_for_line_changes_rows__o_orderdate: *const i32, orders_for_line_changes_rows__o_orderpriority: *const u8, orders_for_line_changes_rows__o_orderpriority__off: *const usize, qualifying_lines_for_keys_keys__n: usize, qualifying_lines_for_keys_keys: *const i64, qualifying_lines_for_keys_rows__n: usize, qualifying_lines_for_keys_rows: *const QualifyingLineKeyInput, err: *mut i32) -> *mut QPrepared {
+pub unsafe extern "C" fn tpchq4vgens_stage_apply(b: *const QBase, lineitem_delta__n: usize, lineitem_delta: *const LineDelta, orders_delta__n: usize, orders_delta__row__o_orderkey: *const i64, orders_delta__row__o_orderdate: *const i32, orders_delta__row__o_orderpriority: *const u8, orders_delta__row__o_orderpriority__off: *const usize, orders_delta__sign: *const i64, orders_for_line_changes_keys__n: usize, orders_for_line_changes_keys: *const i64, orders_for_line_changes_rows__n: usize, orders_for_line_changes_rows__o_orderkey: *const i64, orders_for_line_changes_rows__o_orderdate: *const i32, orders_for_line_changes_rows__o_orderpriority: *const u8, orders_for_line_changes_rows__o_orderpriority__off: *const usize, qualifying_lines_for_keys_keys__n: usize, qualifying_lines_for_keys_keys: *const i64, qualifying_lines_for_keys_rows__n: usize, qualifying_lines_for_keys_rows: *const QualifyingLineKeyInput, err: *mut i32) -> *mut QStaged {
     let orders_delta__v: Vec<OrderDelta> = (0..orders_delta__n).map(|i| OrderDelta { row: OrderInput { o_orderkey: *orders_delta__row__o_orderkey.add(i), o_orderdate: *orders_delta__row__o_orderdate.add(i), o_orderpriority: text(orders_delta__row__o_orderpriority, orders_delta__row__o_orderpriority__off, i) }, sign: *orders_delta__sign.add(i) }).collect();
     let orders_for_line_changes_rows__v: Vec<OrderInput> = (0..orders_for_line_changes_rows__n).map(|i| OrderInput { o_orderkey: *orders_for_line_changes_rows__o_orderkey.add(i), o_orderdate: *orders_for_line_changes_rows__o_orderdate.add(i), o_orderpriority: text(orders_for_line_changes_rows__o_orderpriority, orders_for_line_changes_rows__o_orderpriority__off, i) }).collect();
     if rec_on() {
@@ -347,7 +364,7 @@ pub unsafe extern "C" fn tpchq4vgens_prepare_apply(st: *const QStore, b: *const 
             ptr::null_mut()
         };
     }
-    match prepare_apply(&*st, &*b, slice(lineitem_delta, lineitem_delta__n), &orders_delta__v, slice(orders_for_line_changes_keys, orders_for_line_changes_keys__n), &orders_for_line_changes_rows__v, slice(qualifying_lines_for_keys_keys, qualifying_lines_for_keys_keys__n), slice(qualifying_lines_for_keys_rows, qualifying_lines_for_keys_rows__n)) {
+    match stage_apply(&*b, slice(lineitem_delta, lineitem_delta__n), &orders_delta__v, slice(orders_for_line_changes_keys, orders_for_line_changes_keys__n), &orders_for_line_changes_rows__v, slice(qualifying_lines_for_keys_keys, qualifying_lines_for_keys_keys__n), slice(qualifying_lines_for_keys_rows, qualifying_lines_for_keys_rows__n)) {
         Ok(p) => {
             if !err.is_null() {
                 *err = 0;
@@ -363,15 +380,10 @@ pub unsafe extern "C" fn tpchq4vgens_prepare_apply(st: *const QStore, b: *const 
     }
 }
 
-/// The next version built from scans (as for build) of the database as of
-/// that version; its state is invalid if the kernel cannot build it.  NULL
-/// only if no version can follow the newest.
+/// The next version's slot built from scans (as for build) of the database as of
+/// that version; invalid if the kernel cannot build it.
 #[no_mangle]
-pub unsafe extern "C" fn tpchq4vgens_prepare_build(st: *const QStore, qualifying_orders__n: usize, qualifying_orders__o_orderdate: *const i32, qualifying_orders__o_orderpriority: *const u8, qualifying_orders__o_orderpriority__off: *const usize) -> *mut QPrepared {
-    let e = (*st).newest();
-    if e == u64::MAX {
-        return ptr::null_mut();
-    }
+pub unsafe extern "C" fn tpchq4vgens_stage_build(h: *const QHead, qualifying_orders__n: usize, qualifying_orders__o_orderdate: *const i32, qualifying_orders__o_orderpriority: *const u8, qualifying_orders__o_orderpriority__off: *const usize) -> *mut QStaged {
     let qualifying_orders__v: Vec<DatePriorityInput> = (0..qualifying_orders__n).map(|i| DatePriorityInput { o_orderdate: *qualifying_orders__o_orderdate.add(i), o_orderpriority: text(qualifying_orders__o_orderpriority, qualifying_orders__o_orderpriority__off, i) }).collect();
     if rec_on() {
         rec_rows("build", "qualifying_orders", &["o_orderdate:date", "o_orderpriority:text"], &qualifying_orders__v, |r: &DatePriorityInput, o: &mut String| {
@@ -380,24 +392,20 @@ pub unsafe extern "C" fn tpchq4vgens_prepare_build(st: *const QStore, qualifying
         });
         return ptr::null_mut();
     }
-    Box::into_raw(Box::new(prepare_build(&*st, e, qualifying_orders__v)))
+    Box::into_raw(Box::new(stage_build(&*h, qualifying_orders__v)))
 }
 
-/// The next version with an invalid state (NULL: none can follow the newest).
+/// The next version's slot, invalid.
 #[no_mangle]
-pub unsafe extern "C" fn tpchq4vgens_prepare_invalid(st: *const QStore) -> *mut QPrepared {
-    let e = (*st).newest();
-    if e == u64::MAX {
-        return ptr::null_mut();
-    }
-    Box::into_raw(Box::new(prepare_invalid(&*st, e)))
+pub unsafe extern "C" fn tpchq4vgens_stage_invalid(h: *const QHead) -> *mut QStaged {
+    Box::into_raw(Box::new(stage_invalid(&*h)))
 }
 
-/// Free a prepared version.
+/// Free a staged slot.
 #[no_mangle]
-pub unsafe extern "C" fn tpchq4vgens_prepared_free(p: *mut QPrepared) {
-    if !p.is_null() {
-        drop(Box::from_raw(p));
+pub unsafe extern "C" fn tpchq4vgens_staged_free(x: *mut QStaged) {
+    if !x.is_null() {
+        drop(Box::from_raw(x));
     }
 }
 
@@ -414,12 +422,13 @@ pub unsafe extern "C" fn tpchq4vgens_abort(st: *const QStore) {
     (*st).abort()
 }
 
-/// Append p (consumed), current from engine epoch `from`; keep the versions
-/// snapshots at or after `floor` select; end_commit != 0 also ends the commit
-/// in flight.  0: appended; 1: stale (the store now holds one invalid version).
+/// Append the staged slot (consumed), current from engine epoch `from`; keep the
+/// versions snapshots at or after `floor` select; end_commit != 0 also ends the
+/// commit in flight.  0: appended; 1: stale (the store now holds one invalid version,
+/// or, for a build during a commit, is unchanged).  HOST CONTRACT: staged on this store.
 #[no_mangle]
-pub unsafe extern "C" fn tpchq4vgens_install(st: *const QStore, p: *mut QPrepared, from: u64, floor: u64, end_commit: i32) -> i32 {
-    let p = *Box::from_raw(p);
+pub unsafe extern "C" fn tpchq4vgens_install(st: *const QStore, p: *mut QStaged, from: u64, floor: u64, end_commit: i32) -> i32 {
+    let p = (*Box::from_raw(p)).into_prepared(&*st);
     let r = if end_commit != 0 { (*st).commit(p, from, floor) } else { (*st).install(p, from, floor) };
     match r {
         Install::Applied => 0,
@@ -427,28 +436,38 @@ pub unsafe extern "C" fn tpchq4vgens_install(st: *const QStore, p: *mut QPrepare
     }
 }
 
-/// The state a snapshot at engine epoch `at` sees (0: the newest), waiting up
-/// to `tries` checks for a pending commit.  *status: 0 a state (returned;
-/// release it), 1 invalid, 2 still pending, 3 not visible.
+/// The reading of a snapshot at engine epoch `at` (0: the newest), waiting up
+/// to `tries` checks for a pending commit.  *status: 0 a reading (returned;
+/// free it), 1 invalid, 2 still pending, 3 not visible.
 #[no_mangle]
-pub unsafe extern "C" fn tpchq4vgens_read(st: *const QStore, at: u64, tries: u64, status: *mut i32) -> *const State {
-    let (code, s) = match (*st).resolve_wait(at, tries) {
-        Resolved::Found(_, Slot::Valid(a)) => (0, Arc::into_raw(a)),
-        Resolved::Found(_, Slot::Invalid) => (1, ptr::null()),
-        Resolved::Pending => (2, ptr::null()),
-        Resolved::NotVisible => (3, ptr::null()),
+pub unsafe extern "C" fn tpchq4vgens_read(st: *const QStore, at: u64, tries: u64, status: *mut i32) -> *mut QReading {
+    let (code, r) = match (*st).read(at, tries) {
+        Read::Found(r) if r.state().is_some() => (0, Box::into_raw(Box::new(r))),
+        Read::Found(_) => (1, ptr::null_mut()),
+        Read::Pending => (2, ptr::null_mut()),
+        Read::NotVisible => (3, ptr::null_mut()),
     };
     if !status.is_null() {
         *status = code;
     }
-    s
+    r
 }
 
-/// Release a state from read.
+/// Free a reading.
 #[no_mangle]
-pub unsafe extern "C" fn tpchq4vgens_state_release(s: *const State) {
-    if !s.is_null() {
-        drop(Arc::from_raw(s));
+pub unsafe extern "C" fn tpchq4vgens_reading_free(x: *mut QReading) {
+    if !x.is_null() {
+        drop(Box::from_raw(x));
+    }
+}
+
+/// The query's answer on the reading (THEOREM 5.4, gen_world.rs), or NULL (the host then
+/// answers with SQL).
+#[no_mangle]
+pub unsafe extern "C" fn tpchq4vgens_answer(r: *const QReading, p1: i32, p2: i32) -> *mut FfiResult {
+    match answer(&*r, p1, p2) {
+        Some(rows) => Box::into_raw(Box::new(FfiResult { rows })),
+        None => ptr::null_mut(),
     }
 }
 

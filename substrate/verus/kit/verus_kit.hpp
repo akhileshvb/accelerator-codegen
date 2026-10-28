@@ -151,21 +151,28 @@ struct TableDecl {
   std::vector<const char *> columns; // captured columns, by name
 };
 
+// The head of the newest version, for a build to stage on: called by the glue after its
+// scans, once (the caller releases it); throws if no version can follow the newest.
+using HeadFn = std::function<const void *()>;
+
 // The kernel's per-accelerator Verus-store C ABI (<p>s_*), type-erased:
-// only for the legacy ACCEL_AUX_STORE=verus (Glue::store).
+// only for the legacy ACCEL_AUX_STORE=verus (Glue::store); the world's accelerators use
+// its base / head / staged / reading / answer functions too.
 struct StoreOps {
   void *(*new_store)();
   void (*free_store)(void *);
   void *(*newest_base)(const void *);
   const void *(*base_state)(const void *);
   void (*base_free)(void *);
-  void *(*prepare_invalid)(const void *);
-  void (*prepared_free)(void *);
+  void *(*newest_head)(const void *);
+  void (*head_free)(void *);
+  void *(*stage_invalid)(const void *head);
+  void (*staged_free)(void *);
   int32_t (*begin)(const void *, uint64_t);
   void (*abort)(const void *);
   int32_t (*install)(const void *, void *, uint64_t, uint64_t, int32_t);
   const void *(*read)(const void *, uint64_t, uint64_t, int32_t *);
-  void (*state_release)(const void *);
+  void (*reading_free)(const void *);
   void (*invalidate_all)(const void *);
   std::size_t (*version_count)(const void *);
 };
@@ -184,20 +191,21 @@ struct Glue {
   void (*free_state)(void *);
   void *(*apply)(const void *state, const Changes &, Host &, int32_t *err);
   bool (*execute)(const void *state, const core::QueryArguments &, std::vector<core::AuxRow> &);
-  // Optional, only for the legacy one-store-per-accelerator Verus store
-  // (ACCEL_AUX_STORE=verus): the next version from the newest (base) and one
-  // transaction, or from a build, and that store's C ABI.  The Verus store is
-  // the benchmark's world (ACCEL_AUX_STORE=verus_global, one store for every
-  // accelerator of the database), which needs none of them.
-  void *(*prepare_apply)(const void *store, const void *base, const Changes &, Host &, int32_t *err) = nullptr;
-  void *(*prepare_build)(const void *store, Host &) = nullptr;
+  // Verus stores (ACCEL_AUX_STORE=verus, verus_global).  answer: the query on a reading of
+  // the store (the verified Theorem 5.4 function; false: answer with SQL).  prepare_apply:
+  // the next slot from the newest version's base (the keys to rescan come from its state) and
+  // one transaction (null with *err: rebuild); prepare_build: the next slot built from the
+  // scans, on the head `head` returns (never null: an invalid slot if declined).
+  bool (*answer)(const void *reading, const core::QueryArguments &, std::vector<core::AuxRow> &) = nullptr;
+  void *(*prepare_apply)(const void *base, const Changes &, Host &, int32_t *err) = nullptr;
+  void *(*prepare_build)(const HeadFn &head, Host &) = nullptr;
   StoreOps store = {};
   // Optional streaming execute: calls `emit` once per answer row, in order,
   // without building the answer as a std::vector<AuxRow>; the row passed to
   // `emit` may be reused by the glue between calls (the sink copies cells out
   // before returning).  Same false-means-fallback contract as `execute`, and
   // false must be returned before the first emit.  When null the generic module
-  // uses `execute`.
+  // uses `execute`.  Host-owned states only.
   bool (*execute_into)(const void *state, const core::QueryArguments &, const RowFn &emit) = nullptr;
 };
 
@@ -230,10 +238,12 @@ std::unique_ptr<aux_state::VerusAuxStore> MakeStore(const Glue &glue,
 // (MakeWorldStore).
 struct WorldKitOps {
   const char *accelerator;
-  void (*batch_set)(void *batch, void *state); // consumes state; NULL: invalid
-  const void *(*read)(const void *store, uint64_t at, uint64_t tries, int32_t *status);
-  const void *(*newest)(const void *store);
-  void (*release)(const void *state);
+  void *(*base)(const void *gbase); // its state of the base, for prepare_apply (the kit's base_free); NULL: invalid
+  void *(*head)(const void *gbase); // its head of the base, for prepare_build (the kit's head_free)
+  int32_t (*put)(void *batch, void *staged); // consumes the staged slot; 0: staged on another base, invalid
+  void (*put_invalid)(void *batch);
+  const void *(*read)(const void *store, uint64_t at, uint64_t tries, int32_t *status); // a reading
+  void (*release)(const void *reading);
   void (*invalidate)(const void *store);
 };
 struct World {
@@ -242,7 +252,10 @@ struct World {
   void (*free_store)(void *store);
   int32_t (*begin)(const void *store, uint64_t from); // 1: marked; 0: one in flight
   void (*abort)(const void *store);
-  void *(*batch_new)(const void *store);
+  void *(*gbase_new)(const void *store); // the newest version as a base; NULL: none can follow
+  uint64_t (*newest)(const void *store);
+  void (*gbase_free)(void *gbase);
+  void *(*batch_new)(const void *gbase);
   void (*batch_free)(void *batch);
   int32_t (*install)(const void *store, void *batch, uint64_t from, uint64_t floor, int32_t end_commit);
   size_t (*version_count)(const void *store);
