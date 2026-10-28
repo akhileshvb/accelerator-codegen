@@ -20,7 +20,8 @@
 namespace {
 using Clock = std::chrono::steady_clock;
 
-constexpr const char *kReferenceSqlPath = "workloads/sec_edgar/q4.sql";
+// The base kernel keeps its own fixed binding: compared with the literal instance of the query.
+constexpr const char *kReferenceSqlPath = "workloads/sec_edgar/instances/seed_1/04.sql";
 
 int GetEnvInt(const char *name, int fallback) {
 	const char *value = std::getenv(name);

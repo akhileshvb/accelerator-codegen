@@ -678,14 +678,20 @@ struct Model {
   }
 };
 
-// The cell the generated data concentrates on: its stmt and uom, the SIC range its filings span.
-inline Params DenseParams(const Model &m) {
+// The dense (stmt, uom) cell over a SIC range.
+inline Params DenseCell(int64_t lo, int64_t hi) {
   Params p;
-  p.lo = *std::min_element(m.cfg.sics.begin(), m.cfg.sics.end());
-  p.hi = *std::max_element(m.cfg.sics.begin(), m.cfg.sics.end());
+  p.lo = lo;
+  p.hi = hi;
   p.stmt = std::string(kDenseStmt);
   p.uom = std::string(kDenseUom);
   return p;
+}
+
+// The dense cell over the SIC range the generated filings span.
+inline Params DenseParams(const Model &m) {
+  return DenseCell(*std::min_element(m.cfg.sics.begin(), m.cfg.sics.end()),
+                   *std::max_element(m.cfg.sics.begin(), m.cfg.sics.end()));
 }
 
 // Random parameters over the benchmark domain (the 10 SIC divisions, random

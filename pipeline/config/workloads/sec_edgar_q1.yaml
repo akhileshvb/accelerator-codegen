@@ -3,4 +3,4 @@ query_number: 1
 engines: [duckdb]
 reference_sql_path: workloads/sec_edgar/instances/seed_1/01.sql
 parameters:   # spec: eval/bench/sec_edgar/params/q1.json
-  - {name: stmt, type: VARCHAR, default: "BS", domain: ["BS", "IS", "CF", "EQ", "CI"]}
+  - {name: stmt, type: VARCHAR, domain: ["BS", "IS", "CF", "EQ", "CI"]}

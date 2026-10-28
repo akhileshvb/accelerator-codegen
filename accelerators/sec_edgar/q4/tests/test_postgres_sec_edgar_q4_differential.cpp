@@ -15,13 +15,16 @@
 //   incl. key and filter columns that move rows in and out of the result,
 //   NULL keys, boundary sics, duplicate pre rows, +-inf/NaN values), with
 //   commits and rollbacks, come from the same generator the DuckDB test uses.
-//   After every transaction (and for some, inside it) accel_sec_edgar_q4_aux()
-//   must equal workloads/sec_edgar/q4.sql, run on the same session.
+//   After every transaction (and for some, inside it) accel_sec_edgar_q4_aux(...)
+//   must equal workloads/sec_edgar/q4.sql prepared and executed with the same
+//   arguments on the same session, for each parameter set drawn by
+//   eval/harness/param_source (ACCEL_PARAM_SEED / _SETS / _FILE; "[params]" line).
 // file: the same invariants on the database named by PGDATABASE (e.g. the SF3
 //   load) with hand-picked high-impact writes, each committed then undone.
 //
 // The reference is q4.sql with a total ORDER BY (ties on total_value broken by
-// sic, tlabel as the module does) so that LIMIT 500 is deterministic.
+// sic, tlabel as the module does) so that LIMIT 500 is deterministic; Q4 has no
+// default binding, so every call passes its arguments.
 #ifdef NDEBUG
 #undef NDEBUG
 #endif
@@ -39,6 +42,7 @@
 #include <string>
 #include <vector>
 
+#include "eval/harness/param_source.hpp"
 #include "sec_edgar/q4/tests/sec_edgar_q4_txn_gen.hpp"
 
 #ifndef ACCEL_SRC_DIR
@@ -107,30 +111,28 @@ std::string ReadFile(const std::string &path) {
   return ss.str();
 }
 
-void ReplaceOnce(std::string &sql, const std::string &from, const std::string &to) {
-  const auto pos = sql.find(from);
-  Require(pos != std::string::npos, "q4.sql: '" + from + "' not found");
-  sql.replace(pos, from.size(), to);
-}
-
-// q4.sql with a total order (deterministic LIMIT 500) and the parameters inlined.
-std::string ReferenceSql(const q4gen::Params &params = q4gen::Params{}) {
+// PREPARE of q4.sql with a total order (deterministic LIMIT 500): $1..$4 are the arguments.
+std::string PrepareReference() {
   std::string sql = ReadFile(std::string(ACCEL_SRC_DIR) + "/workloads/sec_edgar/q4.sql");
   const std::string from = "ORDER BY total_value DESC";
   const auto pos = sql.rfind(from);
   Require(pos != std::string::npos, "q4.sql: ORDER BY not found");
   sql.replace(pos, from.size(), "ORDER BY total_value DESC, s.sic, t.tlabel COLLATE \"C\" NULLS FIRST");
   while (!sql.empty() && (sql.back() == '\n' || sql.back() == ';' || sql.back() == ' ')) sql.pop_back();
-  ReplaceOnce(sql, "n.uom = 'USD'", "n.uom = " + q4gen::Lit(params.uom));
-  ReplaceOnce(sql, "p.stmt = 'EQ'", "p.stmt = " + q4gen::Lit(params.stmt));
-  ReplaceOnce(sql, "s.sic BETWEEN 4000 AND 4999",
-              "s.sic BETWEEN " + q4gen::Lit(params.lo, true) + " AND " + q4gen::Lit(params.hi, true));
-  return sql + ";\n";
+  return "PREPARE q4_reference AS " + sql + ";\n";
 }
 
-const char *kAccelSql = "SELECT * FROM accel_sec_edgar_q4_aux();\n";
+std::string ReferenceSql(const q4gen::Params &params) {
+  return "EXECUTE q4_reference(" + q4gen::ArgsSql(params) + ");\n";
+}
+
 std::string AccelSql(const q4gen::Params &params) {
   return "SELECT * FROM accel_sec_edgar_q4_aux(" + q4gen::ArgsSql(params) + ");\n";
+}
+
+// The parameter sets of this run, as SQL literal lists.
+const std::vector<std::string> &DrawnSets() {
+  return accelerator_codegen::aux_state::harness::DrawArgumentLists("sec_edgar", 4);
 }
 
 // ---------------------------------------------------------------- compare
@@ -244,8 +246,14 @@ std::map<std::string, std::vector<std::string>> Blocks(const std::string &out) {
 
 std::string Mark(const std::string &label) { return "\\echo @@" + label + "\n"; }
 
-void EmitCompare(std::string &script, const std::string &label, const std::string &ref_sql) {
-  script += Mark("A " + label) + kAccelSql + Mark("R " + label) + ref_sql;
+// Every drawn set: the accelerator's rows, then the reference's, in one block each.
+void EmitCompare(std::string &script, const std::string &label) {
+  std::string accel, reference;
+  for (const auto &args : DrawnSets()) {
+    accel += "SELECT * FROM accel_sec_edgar_q4_aux(" + args + ");\n";
+    reference += "EXECUTE q4_reference(" + args + ");\n";
+  }
+  script += Mark("A " + label) + accel + Mark("R " + label) + reference;
 }
 
 void EmitCompareParams(std::string &script, const std::string &label, const q4gen::Params &params) {
@@ -253,21 +261,26 @@ void EmitCompareParams(std::string &script, const std::string &label, const q4ge
 }
 
 void CheckLabel(const std::map<std::string, std::vector<std::string>> &blocks,
-                const std::string &label) {
+                const std::string &label, bool loose = false) {
   const auto a = blocks.find("A " + label);
   const auto r = blocks.find("R " + label);
   Require(a != blocks.end() && r != blocks.end(), label + ": output missing (session aborted?)");
-  CompareRows(r->second, a->second, label);
+  if (loose) {
+    CompareLoose(r->second, a->second, label);
+  } else {
+    CompareRows(r->second, a->second, label);
+  }
 }
 
 // -------------------------------------------------------------- bootstrap
 // Scratch database: the extension (installed by pg/build_pg_ext.sh) and the
 // generic capture-trigger helper.
 void InstallExtension(const std::string &db) {
-  Run(Psql(db, "-v ON_ERROR_STOP=1 -q -c " +
-                   ShellQuote("CREATE EXTENSION IF NOT EXISTS accelerator_codegen_postgres")));
-  Run(Psql(db, "-v ON_ERROR_STOP=1 -q -f " +
-                   ShellQuote(std::string(ACCEL_SRC_DIR) + "/backends/postgres/host/capture_triggers.sql")));
+  // What `host.sh build` runs: the module's functions (and every query's), then the capture triggers.
+  for (const char *script : {"register.sql", "capture_triggers.sql"}) {
+    Run(Psql(db, "-v ON_ERROR_STOP=1 -q -f " +
+                     ShellQuote(std::string(ACCEL_SRC_DIR) + "/backends/postgres/host/" + script)));
+  }
 }
 
 std::string PgSql(std::string sql) {
@@ -288,7 +301,6 @@ std::string PgSql(std::string sql) {
 int RunSynthetic(int seeds, int steps) {
   const std::string admin_db = Env("PGDATABASE", "postgres");
   const std::string db = Env("Q4_SYNTH_DB", "accel_q4_synth");
-  const std::string ref_sql = ReferenceSql();
   long total_checks = 0;
   for (int seed = 1; seed <= seeds + 1; ++seed) {
     const bool limit_case = seed == seeds + 1;
@@ -315,8 +327,13 @@ int RunSynthetic(int seeds, int steps) {
               " create_accel_mutation_triggers('num','accel_codegen_sec_edgar'),"
               " create_accel_mutation_triggers('pre','accel_codegen_sec_edgar'),"
               " create_accel_mutation_triggers('tag','accel_codegen_sec_edgar');\n";
-    EmitCompare(script, "initial", ref_sql);
+    script += PrepareReference(); // after the tables exist
+    EmitCompare(script, "initial");
     std::vector<std::string> labels{"initial"};
+    if (limit_case) {
+      EmitCompareParams(script, "limit", q4gen::DenseParams(model));
+      labels.push_back("limit");
+    }
     for (int k = 0; k < 12; ++k) {
       const std::string pl = "initial p" + std::to_string(k);
       EmitCompareParams(script, pl, q4gen::RandomParams(model));
@@ -334,7 +351,7 @@ int RunSynthetic(int seeds, int steps) {
         for (const auto &sql : m.sql) script += PgSql(sql) + ";\n";
       }
       if (read_inside) {
-        EmitCompare(script, "in-txn " + std::to_string(step), ref_sql);
+        EmitCompare(script, "in-txn " + std::to_string(step));
         labels.push_back("in-txn " + std::to_string(step));
         const std::string pl = "in-txn-param " + std::to_string(step);
         EmitCompareParams(script, pl, q4gen::RandomParams(model));
@@ -351,7 +368,7 @@ int RunSynthetic(int seeds, int steps) {
       }
       const std::string label = "step " + std::to_string(step) + " " +
                                 (rollback ? "rollback" : model.last_what);
-      EmitCompare(script, label, ref_sql);
+      EmitCompare(script, label);
       labels.push_back(label);
       for (int k = 0; k < 2; ++k) { // random sic range / stmt / uom
         const std::string pl = label + " p" + std::to_string(k);
@@ -367,7 +384,7 @@ int RunSynthetic(int seeds, int steps) {
       ++total_checks;
     }
     if (limit_case) {
-      Require(blocks.at("A initial").size() == 500, "LIMIT 500 must truncate");
+      Require(blocks.at("A limit").size() == 500, "LIMIT 500 must truncate");
     }
     const auto counts = blocks.at("counts");
     Require(!counts.empty(), "no execute counts");
@@ -409,7 +426,7 @@ int RunSweep(int random_ranges) {
                                   {7000, 8999}, {9000, 9999}};
   static const char *kStmts[] = {"BS", "IS", "CF", "EQ", "CI", "ZZ"};
   static const char *kUoms[] = {"USD", "shares", "pure", "CAD", "CNY", "EUR"};
-  std::string script = "SET client_min_messages = warning;\n";
+  std::string script = "SET client_min_messages = warning;\n" + PrepareReference();
   script += Mark("setup") +
             "CREATE TEMP TABLE j AS SELECT s.sic AS sic, t.tlabel AS tlabel, p.stmt AS stmt, "
             "n.uom AS uom, s.cik AS cik, n.value AS value FROM num n JOIN sub s ON n.adsh = s.adsh "
@@ -453,27 +470,22 @@ int RunSweep(int random_ranges) {
   const int64_t edges[] = {INT32_MIN, -1, 0, 3999, 4000, 4999, 5000, INT32_MAX};
   for (const int64_t lo : edges) {
     for (const int64_t hi : edges) {
-      q4gen::Params p;
-      p.lo = lo;
-      p.hi = hi;
-      add(p, false);
+      add(q4gen::DenseCell(lo, hi), false);
     }
   }
   {
-    q4gen::Params p;
+    auto p = q4gen::DenseCell(0, 9999);
     p.lo.reset();
     add(p, false);
-    p = q4gen::Params{};
+    p = q4gen::DenseCell(0, 9999);
     p.stmt.reset();
     add(p, false);
-    p = q4gen::Params{};
+    p = q4gen::DenseCell(0, 9999);
     p.uom.reset();
     add(p, false);
   }
   for (const char *st : {"BS", "CF", "IS"}) {
-    q4gen::Params p;
-    p.lo = INT32_MIN;
-    p.hi = INT32_MAX;
+    auto p = q4gen::DenseCell(INT32_MIN, INT32_MAX);
     p.stmt = std::string(st);
     add(p, true);
   }
@@ -503,13 +515,17 @@ int RunSweep(int random_ranges) {
 // ------------------------------------------------------------------- file
 int RunFile(int rounds) {
   const std::string db = Env("PGDATABASE", "postgres");
-  const std::string ref_sql = ReferenceSql();
-  std::string script = "SET client_min_messages = warning;\n";
+  std::string script = "SET client_min_messages = warning;\n" + PrepareReference();
   std::vector<std::string> labels;
   q4gen::Params round_params;
   auto check = [&](const std::string &label) {
-    EmitCompare(script, label, ref_sql);
-    labels.push_back(label);
+    // One block per drawn set: real data has float-rounding ties the loose comparison tolerates per set.
+    for (size_t k = 0; k < DrawnSets().size(); ++k) {
+      const std::string set_label = label + " [set " + std::to_string(k) + "]";
+      script += Mark("A " + set_label) + "SELECT * FROM accel_sec_edgar_q4_aux(" + DrawnSets()[k] + ");\n" +
+                Mark("R " + set_label) + "EXECUTE q4_reference(" + DrawnSets()[k] + ");\n";
+      labels.push_back(set_label);
+    }
     const std::string pl = label + " [round params]";
     EmitCompareParams(script, pl, round_params);
     labels.push_back(pl);
@@ -530,15 +546,23 @@ int RunFile(int rounds) {
       "(SELECT p.tag FROM pre p JOIN sub s ON s.adsh = p.adsh AND s.sic BETWEEN %LO% AND %HI% "
       "JOIN tag t ON t.tag = p.tag AND t.version = p.version AND t.abstract = 0 "
       "WHERE p.stmt = '%ST%' ORDER BY p.adsh, p.tag LIMIT 1 OFFSET %OFF%)";
-  // Round r exercises another (stmt, uom, sic range) than the defaults.
+  // Round r exercises the r-th drawn (sic range, stmt, uom).
   struct Cell {
-    const char *stmt, *uom;
     int lo, hi;
+    std::string stmt, uom;
   };
-  static const Cell kCells[] = {{"EQ", "USD", 4000, 4999}, {"BS", "USD", 1000, 3999},
-                                {"CF", "USD", 5000, 9999}, {"IS", "shares", 100, 9999},
-                                {"EQ", "shares", 4000, 4999}, {"BS", "USD", 4000, 4999}};
-  const Cell *cell = &kCells[0];
+  const auto cell_of = [](const std::string &literals) {
+    std::vector<std::string> parts;
+    std::stringstream in(literals);
+    for (std::string part; std::getline(in, part, ',');) {
+      const auto first = part.find_first_not_of(" '"), last = part.find_last_not_of(" '");
+      parts.push_back(part.substr(first, last - first + 1));
+    }
+    Require(parts.size() == 4, "q4 arguments: " + literals);
+    return Cell{std::stoi(parts[0]), std::stoi(parts[1]), parts[2], parts[3]};
+  };
+  Cell cell_storage{};
+  const Cell *cell = &cell_storage;
   const auto fill = [&](std::string s) {
     const std::pair<std::string, std::string> subs[] = {
         {"%ST%", cell->stmt}, {"%UM%", cell->uom}, {"%LO%", std::to_string(cell->lo)},
@@ -553,11 +577,11 @@ int RunFile(int rounds) {
     return fill(s);
   };
   for (int round = 0; round < rounds; ++round) {
-    cell = &kCells[round % 6];
+    cell_storage = cell_of(DrawnSets()[static_cast<size_t>(round) % DrawnSets().size()]);
     round_params.lo = cell->lo;
     round_params.hi = cell->hi;
-    round_params.stmt = std::string(cell->stmt);
-    round_params.uom = std::string(cell->uom);
+    round_params.stmt = cell->stmt;
+    round_params.uom = cell->uom;
     const int off = round * 997;
     const std::string r = "round " + std::to_string(round) + " ";
     const std::string adsh = at(cohort_adsh, off), tagsel = at(cohort_tag, off);
@@ -590,7 +614,7 @@ int RunFile(int rounds) {
   script += Mark("counts") + "SELECT accel_get_execute_counts();\n";
   const auto out = RunScript(db, script);
   const auto blocks = Blocks(out);
-  for (const auto &label : labels) CheckLabel(blocks, label);
+  for (const auto &label : labels) CheckLabel(blocks, label, true);
   std::cerr << "file differential ok (" << labels.size() << " checks) " << blocks.at("counts")[0] << '\n';
   return 0;
 }
