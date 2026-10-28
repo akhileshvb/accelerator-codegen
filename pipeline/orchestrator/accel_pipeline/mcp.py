@@ -46,7 +46,7 @@ from sqlglot.tokens import Tokenizer, TokenType
 
 from accel_pipeline import data, repair as repair_mod
 from accel_pipeline.agent import keep_alive, record_check, budget_footer, write_blocker
-from accel_pipeline.layout import BACKEND, HARNESS, OWNERS, QUERY
+from accel_pipeline.layout import BACKEND, HARNESS, INFRA, OWNERS, PIPELINE, QUERY
 from accel_pipeline.config import (
     pipeline_root,
     PipelineConfig,
@@ -73,6 +73,8 @@ from accel_pipeline.data import (
     validate_aux_analysis_file,
 )
 from accel_pipeline.gates import (
+    background_dir,
+    background_gate_running,
     background_status,
     profile_hot_spots,
     render_quick_result,
@@ -262,6 +264,10 @@ def build_mcp_tool_callables(
         owner = owner or QUERY
         if owner not in OWNERS:
             return f"Unknown owner {owner!r}: one of {', '.join(OWNERS)}, or leave it empty. Call report_blocker again."
+        if owner in (PIPELINE, INFRA) and background_gate_running(background_dir(pipeline_config, workload, query)):
+            return ("Not recorded: your background gate is still running. A gate is not stalled while it runs: every "
+                    "run in it has a time limit, and it ends with a result or a reason (gate_status). A full-dataset "
+                    "phase can print nothing for many minutes. Keep working, or wait for its result.")
         write_blocker(art, summary, evidence, owner)
         if owner in (HARNESS, BACKEND) and workload.get("engine_name"):
             record(pipeline_config.repo_root, sanitize_engine_name(str(workload["engine_name"])), {

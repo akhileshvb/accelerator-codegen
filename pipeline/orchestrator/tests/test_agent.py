@@ -566,6 +566,18 @@ def test_a_blocker_names_its_owner_and_an_unknown_owner_is_refused(tmp_path):
     assert blocker_owner("no owner line") == "query"
 
 
+def test_a_pipeline_blocker_is_refused_while_the_agents_background_gate_runs(tmp_path, monkeypatch):
+    from accel_pipeline import mcp
+    from accel_pipeline.mcp import build_mcp_tool_callables
+
+    tools = build_mcp_tool_callables(_repo_config(tmp_path), {}, "w", 1, "implementation", 0, tmp_path)
+    monkeypatch.setattr(mcp, "background_dir", lambda *a: tmp_path)
+    monkeypatch.setattr(mcp, "background_gate_running", lambda bg_dir: True)
+    assert "still running" in tools["report_blocker"]("aux_exit stalled", "no output", "pipeline")
+    assert not (tmp_path / "blocker.md").exists()
+    assert "Stop now" in tools["report_blocker"]("my state is wrong", "evidence", "query")  # its own work: recorded
+
+
 def test_a_harness_blocker_is_recorded_as_a_request_to_host_bootstrap(tmp_path):
     from accel_pipeline.engine_backend import pending_harness_requests
     from accel_pipeline.mcp import build_mcp_tool_callables

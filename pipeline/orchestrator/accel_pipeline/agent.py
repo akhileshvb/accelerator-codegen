@@ -836,7 +836,7 @@ def agent_run(art: Path | None, stage: str, pipeline_config: Any) -> Iterator[No
                             "soft_deadline_sec": cfg.soft_deadline_for(stage), "hard_deadline_sec": cfg.hard_deadline_sec,
                             "no_progress": dict(zip(("nudge_sec", "redirect_sec"), cfg.no_progress.for_stage(stage)))})
     try:
-        with background_launcher(gates_dir_for_query(art) / BG_DIRNAME):
+        with background_launcher(gates_dir_for_query(art) / BG_DIRNAME, on_running=lambda: heartbeat(art)):
             yield
     finally:
         for name in (RUN_FILE, PROGRESS_FILE):

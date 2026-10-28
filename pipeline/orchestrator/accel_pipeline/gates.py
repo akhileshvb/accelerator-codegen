@@ -906,13 +906,13 @@ REQUESTED = "requested"  # filed by the agent's request_gate, not yet started by
 PACKAGE_ROOT = str(Path(__file__).resolve().parents[1])
 
 
-def _bg_dir(pipeline_config: PipelineConfig, workload: dict[str, Any], query: int) -> Path:
+def background_dir(pipeline_config: PipelineConfig, workload: dict[str, Any], query: int) -> Path:
     art = query_artifacts_dir(pipeline_config.repo_root, query, workload=workload)
     return gates_dir_for_query(art) / BG_DIRNAME
 
 
 def _state_path(pipeline_config: PipelineConfig, workload: dict[str, Any], query: int, gate: str) -> Path:
-    return _bg_dir(pipeline_config, workload, query) / f"{gate}.json"
+    return background_dir(pipeline_config, workload, query) / f"{gate}.json"
 
 
 def _read_state(path: Path) -> dict[str, Any]:
@@ -978,14 +978,22 @@ def launch_requested_gates(bg_dir: Path) -> None:
                 )
 
 
+def background_gate_running(bg_dir: Path) -> bool:
+    return any(_read_state(path).get("status") == "running" and _held(path) for path in bg_dir.glob("*.json"))
+
+
 @contextlib.contextmanager
-def background_launcher(bg_dir: Path, every_sec: float = 1.0) -> Iterator[None]:
-    """Launches the background gates requested while the block runs (an agent's turn)."""
+def background_launcher(bg_dir: Path, on_running: Callable[[], None] = lambda: None,
+                        every_sec: float = 1.0) -> Iterator[None]:
+    """Launches the background gates requested while the block runs (an agent's turn), and calls `on_running`
+    while one of them runs: an agent waiting for its gate is not idle."""
     done = threading.Event()
 
     def poll() -> None:
         while not done.is_set():
             launch_requested_gates(bg_dir)
+            if background_gate_running(bg_dir):
+                on_running()
             done.wait(every_sec)
 
     thread = threading.Thread(target=poll, daemon=True)

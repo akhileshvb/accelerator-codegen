@@ -447,6 +447,16 @@ def test_an_agent_requests_a_background_gate_and_the_orchestrator_starts_it_once
     assert background_status(stamp_config, STAMP_WORKLOAD, 5, "aux_unit")["status"] == "died"
 
 
+def test_an_agent_waiting_for_its_running_background_gate_is_not_idle(stamp_config):
+    state = start_background_gate(stamp_config, STAMP_WORKLOAD, 5, "aux_exit", workload_name="tpch_q5_aux")
+    path = gates._state_path(stamp_config, STAMP_WORKLOAD, 5, "aux_exit")
+    path.write_text(json.dumps({**state, "argv": [sys.executable, "-c", "import time; time.sleep(3)"]}))
+    beats = []
+    with gates.background_launcher(path.parent, on_running=lambda: beats.append(1), every_sec=0.1):
+        time.sleep(1.0)
+    assert len(beats) >= 3  # the runner holds the gate's lock: a beat each poll
+
+
 def test_a_timing_gate_is_reused_only_from_the_same_stages_acceptance_run(stamp_config):
     stamp = current_stamp(stamp_config, STAMP_WORKLOAD, 5)
     path = stamp_config.repo_root / "pipeline" / "artifacts" / "sweep.json"
