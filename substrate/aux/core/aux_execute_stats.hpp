@@ -3,6 +3,7 @@
 #pragma once
 
 #include <cstdint>
+#include <map>
 #include <string>
 
 namespace accelerator_codegen::aux_state::core {
@@ -24,6 +25,9 @@ struct AuxExecuteCounts {
 };
 AuxExecuteCounts ReadAuxExecuteCounts();
 void ResetAuxExecuteCounts();
+// Why queries fell back (a short cause name per reason site; recorded only on fallbacks).
+void RecordAuxFallbackCause(const std::string &cause);
+std::map<std::string, uint64_t> ReadAuxFallbackCauses();
 // "hit=H rebuilt_on_read=R fallback=F"
 std::string FormatAuxExecuteCounts(const AuxExecuteCounts &counts);
 

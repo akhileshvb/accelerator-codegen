@@ -1,5 +1,6 @@
 // SCAFFOLDING
 #include "substrate/aux/runtime/accelerator_runtime.hpp"
+#include "substrate/aux/core/aux_execute_stats.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -320,10 +321,12 @@ AcceleratorRuntime::ReadGuard AcceleratorRuntime::BeginRead(const ReadOptions &o
       options.epoch == VersionedAuxStore::kNewestSnapshot ? kNever - 1 : options.epoch;
   std::unique_lock<std::mutex> lock(impl->state_mutex);
   if (ForcedFallback()) {
+    core::RecordAuxFallbackCause("runtime:forced");
     impl->stats.reads_fallback++;
     return ReadGuard(false, nullptr);
   }
   if (Collapsed(epoch)) {
+    core::RecordAuxFallbackCause("runtime:collapsed");
     impl->stats.reads_fallback++;
     return ReadGuard(false, nullptr);
   }
@@ -347,12 +350,14 @@ AcceleratorRuntime::ReadGuard AcceleratorRuntime::BeginRead(const ReadOptions &o
     while (!done()) {
       const auto now = Clock::now();
       if (now >= deadline || !WaitWorthIt(epoch)) {
+        core::RecordAuxFallbackCause(now >= deadline ? "runtime:unsynced_wait_timeout" : "runtime:unsynced_not_worth_waiting");
         impl->stats.reads_fallback++;
         return ReadGuard(false, nullptr);
       }
       impl->state_cv.wait_until(lock, std::min(deadline, now + kReweigh), done);
     }
     if (Collapsed(epoch) || !Servable(epoch, options.require_applied_through)) {
+      core::RecordAuxFallbackCause(Collapsed(epoch) ? "runtime:collapsed" : "runtime:unsynced_build_ended");
       impl->stats.reads_fallback++;
       return ReadGuard(false, nullptr);
     }
@@ -453,6 +458,7 @@ bool AcceleratorRuntime::ApplyChange(const CommittedChange &change) {
 void AcceleratorRuntime::RecordStale(const std::string &reason) {
   impl->stats.commits_stale++;
   impl->stats.last_stale_reason = reason;
+  core::RecordAuxFallbackCause("event:stale:" + reason.substr(0, 40));
 }
 
 // Bookkeeping for an applied change (state_mutex held).

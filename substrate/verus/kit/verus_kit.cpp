@@ -148,6 +148,22 @@ void *StageBuildOn(const Glue &glue, Host &host, MakeHead make_head, FreeHead fr
 
 constexpr core::PartitionId kState = 0;
 
+// Why this thread's last Verus-store read found no state (see ReadAwaitingPublish's status).
+thread_local int32_t t_read_status = 0;
+
+void NoteMiss() {
+  static const char *const names[] = {"store:no_state", "store:invalid_slot", "store:pending", "store:not_visible"};
+  core::RecordAuxFallbackCause(names[t_read_status >= 1 && t_read_status <= 3 ? t_read_status : 0]);
+}
+
+// The kernel (or the host's conversion of the parameters) declined an answer from a valid state.
+void NoteDecline() {
+  const auto arg = LastArgFailure();
+  core::RecordAuxFallbackCause(arg.what.empty()      ? "kit:kernel_none"
+                               : arg.outside_type ? "kit:param_outside_type"
+                                                  : "kit:host_conversion");
+}
+
 // Reads the Verus store's version at `at` through `read(at, tries, &status)`.
 // A reader of a pending commit waits for the publish, or, with a bounded wait,
 // polls until it. Status: 0 state (returned), 1 invalid, 2 pending, 3 not visible.
@@ -301,6 +317,7 @@ private:
                                         [&](uint64_t epoch, uint64_t tries, int32_t *st) {
                                           return glue.store.read(store, epoch, tries, st);
                                         });
+    t_read_status = s ? 0 : status;
     if (!s)
       return nullptr;
     return std::make_shared<const KitImage>(glue, const_cast<void *>(s), /*shared=*/true);
@@ -333,7 +350,7 @@ private:
       return;
     }
     if (glue.store.install(store, next, from, CurrentFloor(), end_commit ? 1 : 0) != 0)
-      ++stale_installs;
+      ++stale_installs, core::RecordAuxFallbackCause("event:install_refused");
   }
 
   const Glue &glue;
@@ -400,7 +417,7 @@ public:
         world.batch_free(batch);
       world.abort(store);
     } else if (world.install(store, batch, from, floor, 1) != 0) {
-      ++stale;
+      NoteStale();
     }
     Reset();
   }
@@ -428,11 +445,11 @@ public:
     if (!b)
       return;
     if (staged)
-      kit.put(b, staged->Take());
+      NotePut(kit.put(b, staged->Take()));
     else
       kit.put_invalid(b);
     if (world.install(store, b, from, floor, 0) != 0)
-      ++stale;
+      NoteStale();
   }
 
   // The slot's versions are invalidated: a cached base may carry the old slot.
@@ -446,6 +463,14 @@ public:
   std::size_t stale = 0;
 
 private:
+  void NoteStale() {
+    ++stale;
+    core::RecordAuxFallbackCause("event:install_refused");
+  }
+  static void NotePut(int32_t taken) {
+    if (!taken)
+      core::RecordAuxFallbackCause("event:put_foreign_base");
+  }
   std::shared_ptr<void> BaseLocked() {
     const uint64_t newest = world.newest(store);
     if (!base || base_epoch != newest || base_generation != generation) {
@@ -469,7 +494,7 @@ private:
     if (!batch)
       return;
     if (staged)
-      kit.put(batch, staged->Take());
+      NotePut(kit.put(batch, staged->Take()));
     else
       kit.put_invalid(batch);
   }
@@ -646,6 +671,7 @@ private:
                                         [&](uint64_t epoch, uint64_t tries, int32_t *st) {
                                           return kit.read(world.store, epoch, tries, st);
                                         });
+    t_read_status = s ? 0 : status;
     if (!s)
       return nullptr;
     return std::make_shared<const KitImage>(glue, const_cast<void *>(s), /*shared=*/true, kit.release);
@@ -695,6 +721,7 @@ public:
 };
 
 void Rebuild(core::StagedMaintenanceOutcome &outcome) {
+  core::RecordAuxFallbackCause("event:rebuild_requested");
   outcome.action = core::MaintenanceAction::RebuildAll;
   outcome.invalidations = core::AllPartitionsPlan();
   outcome.pending_rebuild = outcome.invalidations;
@@ -781,6 +808,7 @@ public:
     auto &buffer = dynamic_cast<KitBuffer &>(base_buffer);
     core::StagedMaintenanceOutcome outcome;
     if (buffer.requires_rebuild) {
+      core::RecordAuxFallbackCause("event:rebuild_unconvertible_change");
       const auto decision = services.ChooseMaintenance(
           {0, 0, false, false, true, true, false, core::MaintenanceAction::NoOp,
            services.ExpectedQueriesBeforeNextWrite()});
@@ -811,10 +839,12 @@ public:
         {static_cast<uint64_t>(total), 1, true, false, true, false, false, core::MaintenanceAction::NoOp,
          services.ExpectedQueriesBeforeNextWrite()});
     if (decision.action == core::MaintenanceAction::RebuildPartition) {
+      core::RecordAuxFallbackCause("event:rebuild_cost_model");
       core::FinishRebuildAll(outcome);
       return outcome;
     }
     if (decision.action != core::MaintenanceAction::ApplyDelta) {
+      core::RecordAuxFallbackCause("event:rebuild_cost_model");
       outcome.action = decision.action;
       outcome.invalidations = core::AllPartitionsPlan();
       outcome.pending_rebuild = outcome.invalidations;
@@ -877,14 +907,17 @@ public:
     // decline_execute (a test switch): every read answered by the SQL fallback, which
     // must be as right as the kernel (the integration gate checks it)
     if (Fault() == "decline_execute") {
+      core::RecordAuxFallbackCause("kit:injected");
       ExecuteFallback(services, arguments, sink);
       return;
     }
     const auto image = ReadImage(services, services.CurrentVisibility());
     if (!image || !image->state) {
+      NoteMiss();
       ExecuteFallback(services, arguments, sink);
       return;
     }
+    ClearArgFailure();
     if (glue.execute_into && !image->shared) {
       // streamed: the glue emits (and may reuse) one row at a time
       bool begun = false;
@@ -896,6 +929,7 @@ public:
         sink.WriteRow(row);
       };
       if (!glue.execute_into(image->state, arguments, emit)) {
+        NoteDecline();
         ExecuteFallback(services, arguments, sink);
         return;
       }
@@ -909,6 +943,7 @@ public:
     rows.clear();
     if (!(image->shared ? glue.answer : glue.execute)(image->state, arguments, rows)) {
       rows.clear();
+      NoteDecline();
       ExecuteFallback(services, arguments, sink);
       return;
     }
@@ -1077,13 +1112,11 @@ const std::string &Text(const core::AuxRow &row, std::size_t i) {
 
 // ---- arguments ----
 namespace {
-std::mutex g_arg_failure_mutex;
-ArgFailure g_arg_failure;
+thread_local ArgFailure g_arg_failure;
 
 // outside_type: the value is not one of the parameter's type (NULL, more digits than its scale,
 // beyond its range), so SQL answers it; otherwise the host failed to convert an in-type value.
 bool ArgFailed(std::size_t i, const std::string &why, bool outside_type) {
-  std::lock_guard<std::mutex> lock(g_arg_failure_mutex);
   g_arg_failure = {"argument " + std::to_string(i) + ": " + why, outside_type};
   return false;
 }
@@ -1097,12 +1130,10 @@ const core::AuxValue *Arg(const core::QueryArguments &args, std::size_t i) {
 } // namespace
 
 void ClearArgFailure() {
-  std::lock_guard<std::mutex> lock(g_arg_failure_mutex);
   g_arg_failure = {};
 }
 
 ArgFailure LastArgFailure() {
-  std::lock_guard<std::mutex> lock(g_arg_failure_mutex);
   return g_arg_failure;
 }
 

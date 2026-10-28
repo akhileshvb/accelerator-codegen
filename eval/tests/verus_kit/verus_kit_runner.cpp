@@ -149,12 +149,23 @@ Setup Prepare(duckdb::Connection &setup, const std::string &id, const Spec &spec
   return s;
 }
 
+// Why queries fell back ("causes": runtime, store and kit reasons) and what the maintenance
+// did that can explain it ("events"): cause name -> count.
+std::string CauseFields() {
+  std::string causes, events;
+  for (const auto &[name, n] : core::ReadAuxFallbackCauses()) {
+    auto &out = name.rfind("event:", 0) == 0 ? events : causes;
+    out += (out.empty() ? "" : ",") + Json(name) + ":" + std::to_string(n);
+  }
+  return "\"causes\":{" + causes + "},\"events\":{" + events + "}";
+}
+
 std::string StoreFields(DuckdbRuntime &rt) {
   const auto counts = core::ReadAuxExecuteCounts();
   return "\"store\":" + Json(rt.UsesVerusStore() ? "verus" : "cpp") + ",\"versions\":" +
          std::to_string(rt.StateVersionCount()) + ",\"stale_installs\":" + std::to_string(rt.StaleInstallCount()) +
          ",\"executes\":{\"hit\":" + std::to_string(counts.hit) + ",\"fallback\":" + std::to_string(counts.fallback) +
-         "},\"reader_fallbacks\":" + std::to_string(rt.reader_fallbacks.load());
+         "},\"reader_fallbacks\":" + std::to_string(rt.reader_fallbacks.load()) + "," + CauseFields();
 }
 
 int Differential(const std::string &path, const std::string &id, const Spec &spec, int every) {
