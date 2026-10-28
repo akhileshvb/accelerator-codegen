@@ -8,6 +8,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <limits>
+#include <optional>
 #include <map>
 #include <set>
 #include <stdexcept>
@@ -262,40 +263,34 @@ const SecEdgarQ2StateImage *AsImage(const core::StateImage &image) {
 }
 
 struct QueryParams {
-  bool is_null = false;
-  int64_t fy = kSecEdgarQ2DefaultFy;
-  std::string uom = kSecEdgarQ2DefaultUom;
+  int64_t fy;
+  std::string uom;
 };
 
-QueryParams ParseArguments(const core::QueryArguments &args) {
+// nullopt: the arguments select no row (a NULL, or an fy no INTEGER equals).
+std::optional<QueryParams> ParseArguments(const core::QueryArguments &args) {
   QueryParams p;
-  if (args.values.empty()) {
-    return p;
-  }
   if (args.values.size() != 2) {
     throw std::invalid_argument(
-        "sec_edgar q2 aux expects () or (fy BIGINT, uom VARCHAR)");
+        "sec_edgar q2 aux expects (fy BIGINT, uom VARCHAR)");
   }
   const auto &fy = args.values[0];
   const auto &uom = args.values[1];
   if (fy.is_null || uom.is_null) {
-    p.is_null = true;
-    return p;
+    return std::nullopt;
   }
   if (std::holds_alternative<int64_t>(fy.payload)) {
     p.fy = std::get<int64_t>(fy.payload);
   } else if (std::holds_alternative<uint64_t>(fy.payload)) {
     const uint64_t v = std::get<uint64_t>(fy.payload);
     if (v > static_cast<uint64_t>(std::numeric_limits<int64_t>::max())) {
-      p.is_null = true; // no fiscal year (INTEGER) can equal it: empty result
-      return p;
+      return std::nullopt; // no fiscal year (INTEGER) can equal it: empty result
     }
     p.fy = static_cast<int64_t>(v);
   } else if (std::holds_alternative<double>(fy.payload)) {
     const double v = std::get<double>(fy.payload);
     if (!(v == std::floor(v)) || !(std::fabs(v) < 9.0e18)) {
-      p.is_null = true; // fractional / out of range: equals no integer fy
-      return p;
+      return std::nullopt; // fractional / out of range: equals no integer fy
     }
     p.fy = static_cast<int64_t>(v);
   } else if (std::holds_alternative<std::string>(fy.payload)) {
@@ -304,8 +299,7 @@ QueryParams ParseArguments(const core::QueryArguments &args) {
     errno = 0;
     const long long v = std::strtoll(text.c_str(), &end, 10);
     if (end == text.c_str() || *end != '\0' || errno == ERANGE) {
-      p.is_null = true; // not an int64: equals no fiscal year
-      return p;
+      return std::nullopt; // not an int64: equals no fiscal year
     }
     p.fy = v;
   } else {
@@ -1133,12 +1127,12 @@ public:
     wide_.push_back({key, u, a, t, static_cast<uint32_t>(rows)});
   }
 
-  // Applies the max_uom_rows opt-out (the default unit is always kept),
+  // Applies the max_uom_rows opt-out,
   // aggregates every partition and builds the sorted bases.
   void Finish(const core::AuxEngineServices &services, uint64_t max_uom_rows) {
     for (uint32_t u = 0; u < uom_rows_.size(); ++u) {
       dir_.excluded[u] =
-          dir_.names.Get(u) != kSecEdgarQ2DefaultUom && uom_rows_[u] > max_uom_rows ? 1 : 0;
+          uom_rows_[u] > max_uom_rows ? 1 : 0;
     }
     const size_t nuom = uom_rows_.size();
     // A unit has at most as many groups as rows: the capacity is only
@@ -1470,8 +1464,6 @@ SecEdgarQ2Module::BuildState(core::AuxEngineServices &services) const {
   }
   auto state = std::make_shared<SecEdgarQ2State>();
   BuildAggregator agg(*state);
-  // The default unit of measure always exists (an empty slice answers it).
-  agg.Uom(kSecEdgarQ2DefaultUom);
 
   // 1. Aggregate (group -> top-2 values) for every unit of measure: one native
   //    pass when the scan source supports it, else distinct value counts.
@@ -1488,7 +1480,7 @@ SecEdgarQ2Module::BuildState(core::AuxEngineServices &services) const {
     std::vector<std::string> wanted;
     initial_scan->ScanUomRowCounts([&](const std::string &uom, uint64_t rows) {
       agg.NoteRows(agg.Uom(uom), rows);
-      if (uom == kSecEdgarQ2DefaultUom || rows <= config.max_uom_rows) {
+      if (rows <= config.max_uom_rows) {
         wanted.push_back(uom);
       }
     });
@@ -1973,8 +1965,8 @@ bool SecEdgarQ2Module::CheckValidity(core::AuxEngineServices &services,
 void SecEdgarQ2Module::Execute(core::AuxEngineServices &services,
                                const core::QueryArguments &arguments,
                                core::AuxRowSink &sink) {
-  const QueryParams params = ParseArguments(arguments);
-  if (params.is_null) {
+  const auto params = ParseArguments(arguments);
+  if (!params) {
     EmitRows(sink, {});
     return;
   }
@@ -1997,7 +1989,7 @@ void SecEdgarQ2Module::Execute(core::AuxEngineServices &services,
     return;
   }
   thread_local std::vector<SecEdgarQ2OutputView> rows;
-  if (!FinalizeSecEdgarQ2Views(*typed->state, params.fy, params.uom, rows)) {
+  if (!FinalizeSecEdgarQ2Views(*typed->state, params->fy, params->uom, rows)) {
     ExecuteFallback(services, arguments, sink);
     return;
   }
@@ -2008,8 +2000,8 @@ void SecEdgarQ2Module::Execute(core::AuxEngineServices &services,
 void SecEdgarQ2Module::ExecuteFallback(core::AuxEngineServices &,
                                        const core::QueryArguments &arguments,
                                        core::AuxRowSink &sink) {
-  const QueryParams params = ParseArguments(arguments);
-  if (params.is_null) {
+  const auto params = ParseArguments(arguments);
+  if (!params) {
     EmitRows(sink, {});
     return;
   }
@@ -2018,7 +2010,7 @@ void SecEdgarQ2Module::ExecuteFallback(core::AuxEngineServices &,
   }
   SecEdgarQ2GlobalStats().direct_reads.fetch_add(1, std::memory_order_relaxed);
   std::vector<SecEdgarQ2OutputRow> rows;
-  initial_scan->ExecuteDirect(params.fy, params.uom,
+  initial_scan->ExecuteDirect(params->fy, params->uom,
                               [&](const SecEdgarQ2DirectRow &r) {
                                 rows.push_back({std::string(r.name),
                                                 r.name_is_null,

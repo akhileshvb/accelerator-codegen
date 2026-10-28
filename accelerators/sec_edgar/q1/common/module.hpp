@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -24,8 +25,8 @@ namespace accelerator_codegen::aux_state::query {
 // SEC EDGAR Q1:
 //   SELECT stmt, rfile, COUNT(*) cnt, COUNT(DISTINCT adsh) num_filings,
 //          AVG(line) avg_line_num
-//   FROM pre WHERE stmt IS NOT NULL GROUP BY stmt, rfile ORDER BY cnt DESC
-// The query has no parameters; the state is therefore parameter independent.
+//   FROM pre WHERE stmt = $1 GROUP BY stmt, rfile ORDER BY cnt DESC
+// The state holds the groups of every stmt; a read emits the groups of its stmt.
 //
 // State: per (stmt, rfile) group the row count, the line sum / non-null count
 // (AVG) and a refcount per distinct adsh (COUNT(DISTINCT adsh) = number of
@@ -185,7 +186,8 @@ struct OutputRow {
 // exact sum by the count, rounded to double.
 double AvgLine(Int128 sum, int64_t count);
 
-std::vector<OutputRow> BuildOutput(const State &);
+// The groups of `stmt` (NULL: none), ordered by cnt DESC.
+std::vector<OutputRow> BuildOutput(const State &, const std::optional<std::string> &stmt);
 std::vector<uint8_t> Encode(const State &);
 bool Decode(const std::vector<uint8_t> &, State &);
 
@@ -240,7 +242,8 @@ struct SecEdgarQ1StateImage {
 
 std::vector<uint8_t> EncodeSecEdgarQ1State(const SecEdgarQ1State &);
 bool DecodeSecEdgarQ1State(const std::vector<uint8_t> &, SecEdgarQ1State &);
-std::vector<SecEdgarQ1OutputRow> BuildSecEdgarQ1Output(const SecEdgarQ1State &);
+std::vector<SecEdgarQ1OutputRow> BuildSecEdgarQ1Output(const SecEdgarQ1State &,
+                                                       const std::optional<std::string> &stmt);
 
 class SecEdgarQ1TxnBuffer final : public core::AuxTxnBuffer {
 public:
@@ -331,16 +334,21 @@ public:
   std::shared_ptr<const SecEdgarQ1State>
   LoadState(core::AuxEngineServices &, core::Version *version = nullptr,
             const char *accelerator_id = nullptr) const;
-  static void EmitOutput(const SecEdgarQ1State &, core::AuxRowSink &);
+  // Parses (stmt VARCHAR); a NULL stmt selects no group.
+  static std::optional<std::string> StmtArgument(const core::QueryArguments &);
+  static void EmitOutput(const SecEdgarQ1State &, const std::optional<std::string> &stmt,
+                         core::AuxRowSink &);
   // AVG(line) as the numeric text `avg_text` gives.
-  static void EmitOutputNumeric(const SecEdgarQ1State &, core::AuxRowSink &,
-                                SecEdgarQ1Config::AvgTextFn avg_text);
+  static void EmitOutputNumeric(const SecEdgarQ1State &, const std::optional<std::string> &stmt,
+                                core::AuxRowSink &, SecEdgarQ1Config::AvgTextFn avg_text);
 
   SecEdgarQ1State BuildState(core::AuxEngineServices &) const;
 
 private:
-  void Emit(const SecEdgarQ1State &state, core::AuxRowSink &sink) const {
-    config.avg_text ? EmitOutputNumeric(state, sink, config.avg_text) : EmitOutput(state, sink);
+  void Emit(const SecEdgarQ1State &state, const std::optional<std::string> &stmt,
+            core::AuxRowSink &sink) const {
+    config.avg_text ? EmitOutputNumeric(state, stmt, sink, config.avg_text)
+                    : EmitOutput(state, stmt, sink);
   }
 
   SecEdgarQ1Config config;

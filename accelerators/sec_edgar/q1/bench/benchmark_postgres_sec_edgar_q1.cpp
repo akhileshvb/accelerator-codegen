@@ -5,9 +5,13 @@
 //                   session) / on with the accelerator active in the session, for
 //                   statements touching 1, 100 and 10000 rows; plus the read latency
 //                   right after a write
+// Reads and builds cycle through the stmt values drawn by eval/harness/param_source
+// (ACCEL_PARAM_SEED=<s> reproduces a run); the write mode updates rows of the first one.
 // Env: Q1_PG_CONN (default host=127.0.0.1 port=55401 user=postgres password=postgres dbname=sec_edgar)
 // The write mode leaves `pre` unchanged except for dead tuples (line is changed by +1/-1 alternately).
 #include <libpq-fe.h>
+
+#include "eval/harness/param_source.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -31,8 +35,11 @@ struct Conn {
     if (PQstatus(c) != CONNECTION_OK) throw std::runtime_error(PQerrorMessage(c));
   }
   ~Conn() { PQfinish(c); }
-  std::string Exec(const std::string &sql) {
-    PGresult *r = PQexec(c, sql.c_str());
+  std::string Exec(const std::string &sql, const std::vector<std::string> &params = {}) {
+    std::vector<const char *> values;
+    for (const auto &p : params) values.push_back(p.c_str());
+    PGresult *r = PQexecParams(c, sql.c_str(), static_cast<int>(values.size()), nullptr, values.data(), nullptr,
+                               nullptr, 0);
     const auto st = PQresultStatus(r);
     if (st != PGRES_TUPLES_OK && st != PGRES_COMMAND_OK) {
       std::string m = PQresultErrorMessage(r);
@@ -57,17 +64,31 @@ Stats Summarize(std::vector<double> v) {
   return {v[v.size() / 2], v[std::min(v.size() - 1, (std::size_t)(v.size() * 0.95))], v.front()};
 }
 
+// The drawn stmt values as the server reads their literals.
+const std::vector<std::string> &DrawnStmts() {
+  static const std::vector<std::string> stmts = [] {
+    Conn c;
+    std::vector<std::string> out;
+    for (const auto &literals : accelerator_codegen::aux_state::harness::DrawArgumentLists("sec_edgar", 1)) {
+      out.push_back(c.Exec("SELECT " + literals));
+    }
+    return out;
+  }();
+  return stmts;
+}
+const std::string &StmtFor(int i) { return DrawnStmts()[static_cast<std::size_t>(i) % DrawnStmts().size()]; }
+
 const char *kSql =
     "SELECT stmt, rfile, COUNT(*) AS cnt, COUNT(DISTINCT adsh) AS num_filings, AVG(line) AS avg_line_num "
-    "FROM pre WHERE stmt IS NOT NULL GROUP BY stmt, rfile ORDER BY cnt DESC";
-const char *kAccel = "SELECT * FROM accel_sec_edgar_q1_aux()";
+    "FROM pre WHERE stmt = $1 GROUP BY stmt, rfile ORDER BY cnt DESC";
+const char *kAccel = "SELECT * FROM accel_sec_edgar_q1_aux($1)";
 
 template <typename F>
 std::vector<double> Time(int reps, F &&f) {
   std::vector<double> t;
   for (int i = 0; i < reps; ++i) {
     const auto a = Clock::now();
-    f();
+    f(i);
     t.push_back(Ms(a, Clock::now()));
   }
   return t;
@@ -76,11 +97,11 @@ std::vector<double> Time(int reps, F &&f) {
 void Read(int reps) {
   Conn c;
   c.Exec("SET max_parallel_workers_per_gather = 0"); // single-process SQL baseline
-  c.Exec(kAccel);                                    // build
-  const auto acc = Summarize(Time(reps, [&] { c.Exec(kAccel); }));
-  const auto sql1 = Summarize(Time(std::max(3, reps / 10), [&] { c.Exec(kSql); }));
+  c.Exec(kAccel, {StmtFor(0)});                      // build
+  const auto acc = Summarize(Time(reps, [&](int i) { c.Exec(kAccel, {StmtFor(i)}); }));
+  const auto sql1 = Summarize(Time(std::max(3, reps / 10), [&](int i) { c.Exec(kSql, {StmtFor(i)}); }));
   c.Exec("SET max_parallel_workers_per_gather = 2");
-  const auto sqlp = Summarize(Time(std::max(3, reps / 10), [&] { c.Exec(kSql); }));
+  const auto sqlp = Summarize(Time(std::max(3, reps / 10), [&](int i) { c.Exec(kSql, {StmtFor(i)}); }));
   std::printf("read latency (ms)        p50        p95        min\n");
   std::printf("accelerator        %10.3f %10.3f %10.3f\n", acc.p50, acc.p95, acc.min);
   std::printf("SQL (no parallel)  %10.3f %10.3f %10.3f\n", sql1.p50, sql1.p95, sql1.min);
@@ -93,7 +114,7 @@ void Build(int reps) {
   for (int i = 0; i < reps; ++i) {
     Conn c;
     const auto a = Clock::now();
-    c.Exec(kAccel);
+    c.Exec(kAccel, {StmtFor(i)});
     first.push_back(Ms(a, Clock::now()));
   }
   const auto s = Summarize(first);
@@ -108,8 +129,8 @@ struct Writer {
   std::string ctids; // array literal of current ctids
   int delta = 1;
   Writer(Conn &conn, int rows) : c(conn) {
-    ctids = c.Exec("SELECT array_agg(ctid)::text FROM (SELECT ctid FROM pre WHERE stmt IS NOT NULL AND line IS NOT NULL "
-                   "LIMIT " + std::to_string(rows) + ") s");
+    ctids = c.Exec("SELECT array_agg(ctid)::text FROM (SELECT ctid FROM pre WHERE stmt = $1 AND line IS NOT NULL "
+                   "LIMIT " + std::to_string(rows) + ") s", {StmtFor(0)});
   }
   void Step() {
     ctids = c.Exec("WITH t AS (UPDATE pre SET line = line + (" + std::to_string(delta) + ") WHERE ctid = ANY('" + ctids +
@@ -130,7 +151,7 @@ void Write(int stmts) {
     for (const auto &cfg : cfgs) {
       Conn c;
       c.Exec(std::string("ALTER TABLE pre ") + (cfg.trigger ? "ENABLE" : "DISABLE") + " TRIGGER USER");
-      if (cfg.accel) c.Exec(kAccel);
+      if (cfg.accel) c.Exec(kAccel, {StmtFor(0)});
       Writer w(c, rows);
       for (int i = 0; i < 3; ++i) w.Step(); // warm-up (even count keeps net zero)
       std::vector<double> t, rd;
@@ -140,7 +161,7 @@ void Write(int stmts) {
         t.push_back(Ms(a, Clock::now()));
         if (cfg.accel && i % 5 == 0) {
           const auto b = Clock::now();
-          c.Exec(kAccel);
+          c.Exec(kAccel, {StmtFor(i)});
           rd.push_back(Ms(b, Clock::now()));
         }
       }

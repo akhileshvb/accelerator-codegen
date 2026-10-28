@@ -234,7 +234,12 @@ void ExecutePostgresSecEdgarQ1(FunctionCallInfo fcinfo) {
                              "created in this session; reconnect")));
     }
   }
-  detail::SecEdgarQ1RuntimeInstance(detail::g_attno).Execute(core::QueryArguments{}, fcinfo);
+  // Not STRICT: a NULL stmt reaches the module as NULL.
+  core::QueryArguments arguments;
+  arguments.values.push_back(PG_ARGISNULL(0) ? core::AuxValue::Null(core::AuxType::String)
+                                             : core::AuxValue::Of(core::AuxType::String,
+                                                                  detail::TextDatum(PG_GETARG_DATUM(0))));
+  detail::SecEdgarQ1RuntimeInstance(detail::g_attno).Execute(arguments, fcinfo);
 }
 
 const PostgresQueryExecutorRegistrar kAuxRegistrar(

@@ -1,8 +1,9 @@
 // Parameter sweep of accel_sec_edgar_q2_aux(fy, uom) against plain SQL on the
 // SF3 database of the instance addressed by the PG* environment (default
-// 127.0.0.1:55402 / sec_edgar): every unit of measure at fy 2022 (plus case /
-// whitespace variants and NULL), the largest units (USD, shares) at every
-// fiscal year and edge values, and a write phase on the large units
+// 127.0.0.1:55402 / sec_edgar): the (fy, uom) sets drawn by eval/harness/param_source
+// (ACCEL_PARAM_SEED=<s> reproduces a run), every unit of measure at the first drawn
+// fiscal year (plus case / whitespace variants and NULL), the largest units at every
+// fiscal year and edge values, and a write phase on the largest unit
 // (insert / update / delete of the current maxima, commit and rollback; the
 // table is restored afterwards).
 //
@@ -63,7 +64,8 @@ int main(int argc, char **argv) {
     c.Exec("SET max_parallel_workers_per_gather = 4");
     // Warm: first call builds the state.
     auto t0 = Clock::now();
-    c.Query(AccelSql(), {"2022", "pure"});
+    const std::string fy0 = DrawnParams(c).front().fy;
+    c.Query(AccelSql(), {fy0.c_str(), DrawnParams(c).front().uom.c_str()});
     std::cout << "first call (build) " << std::chrono::duration<double>(Clock::now() - t0).count()
               << " s\n";
 
@@ -80,17 +82,18 @@ int main(int argc, char **argv) {
     for (auto &l : large) std::cout << " " << l;
     std::cout << "\n";
 
-    // 1. Every unit at fy 2022 (+ variants).
+    // 1. The drawn sets, then every unit at the first drawn fy (+ variants).
+    for (const auto &set : DrawnParams(c)) Check(c, set.fy.c_str(), set.uom.c_str(), "drawn");
     for (const auto &u : names) {
-      Check(c, "2022", u.c_str(), "all-uoms");
+      Check(c, fy0.c_str(), u.c_str(), "all-uoms");
       std::string up = u + " ";
-      Check(c, "2022", up.c_str(), "padded");
+      Check(c, fy0.c_str(), up.c_str(), "padded");
     }
-    Check(c, "2022", nullptr, "null uom");
-    Check(c, nullptr, "USD", "null fy");
+    Check(c, fy0.c_str(), nullptr, "null uom");
+    if (!large.empty()) Check(c, nullptr, large[0].c_str(), "null fy");
     Check(c, nullptr, nullptr, "null both");
-    Check(c, "2022", "", "empty uom");
-    Check(c, "2022", "nonexistent", "unknown uom");
+    Check(c, fy0.c_str(), "", "empty uom");
+    Check(c, fy0.c_str(), "nonexistent", "unknown uom");
     std::cout << "all units: checked=" << checked << " failed=" << failed << "\n";
 
     // 2. Large units across fiscal years and edge values.
@@ -111,9 +114,9 @@ int main(int argc, char **argv) {
     if (writes && !large.empty()) {
       const std::string u = large[0];
       const Rows pick = c.Query("SELECT n.adsh, n.tag, n.ctid::text FROM num n JOIN sub s "
-                                "ON n.adsh = s.adsh WHERE n.uom = $1::text AND s.fy = 2022 "
+                                "ON n.adsh = s.adsh WHERE n.uom = $1::text AND s.fy = $2::bigint "
                                 "AND n.value IS NOT NULL ORDER BY n.value DESC LIMIT 1",
-                                {u.c_str()});
+                                {u.c_str(), fy0.c_str()});
       Require(!pick.empty(), "no row to write against");
       const std::string adsh = pick[0][0].text, tag = pick[0][1].text;
       const std::string uq = "'" + u + "'";
@@ -121,32 +124,32 @@ int main(int argc, char **argv) {
         return "INSERT INTO num (adsh, tag, version, ddate, qtrs, uom, value) VALUES ('" + adsh +
                "', '" + tg + "', 'w', 20220101, 4, " + uq + ", " + value + ")";
       };
-      const std::string baseline_tag = tag;
+      const std::string other = *std::find_if(names.begin(), names.end(), [&](const auto &n) { return n != u; });
       for (const char *probe : {"1e30", "'NaN'::float8", "'Infinity'::float8"}) {
         c.Exec("BEGIN");
         c.Exec(row(probe, "q2probe"));
-        Check(c, "2022", u.c_str(), "in-txn insert");   // own write: fallback path
+        Check(c, fy0.c_str(), u.c_str(), "in-txn insert");   // own write: fallback path
         c.Exec("ROLLBACK");
-        Check(c, "2022", u.c_str(), "after rollback");
+        Check(c, fy0.c_str(), u.c_str(), "after rollback");
         c.Exec(row(probe, "q2probe"));
-        Check(c, "2022", u.c_str(), "after insert");
-        Check(c, "2022", "pure", "other unit untouched");
+        Check(c, fy0.c_str(), u.c_str(), "after insert");
+        Check(c, fy0.c_str(), other.c_str(), "other unit untouched");
         c.Exec(std::string("UPDATE num SET value = -1 WHERE tag = 'q2probe' AND adsh = '") + adsh + "'");
-        Check(c, "2022", u.c_str(), "after update");
+        Check(c, fy0.c_str(), u.c_str(), "after update");
         c.Exec("DELETE FROM num WHERE tag = 'q2probe'");
-        Check(c, "2022", u.c_str(), "after delete");
+        Check(c, fy0.c_str(), u.c_str(), "after delete");
       }
       // Delete the current top rows of the unit, then put them back.
       const std::string top =
           "SELECT n.ctid FROM num n JOIN sub s ON n.adsh = s.adsh WHERE n.uom = " + uq +
-          " AND s.fy = 2022 AND n.value IS NOT NULL ORDER BY n.value DESC LIMIT 3";
+          " AND s.fy = " + fy0 + " AND n.value IS NOT NULL ORDER BY n.value DESC LIMIT 3";
       c.Exec("CREATE TEMP TABLE q2top AS SELECT * FROM num WHERE ctid = ANY(ARRAY(" + top + "))");
       c.Exec("BEGIN");
       c.Exec("DELETE FROM num WHERE ctid = ANY(ARRAY(" + top + "))");
       c.Exec("COMMIT");
-      Check(c, "2022", u.c_str(), "after deleting the top rows");
+      Check(c, fy0.c_str(), u.c_str(), "after deleting the top rows");
       c.Exec("INSERT INTO num SELECT * FROM q2top");
-      Check(c, "2022", u.c_str(), "after restoring the top rows");
+      Check(c, fy0.c_str(), u.c_str(), "after restoring the top rows");
       c.Exec("DROP TABLE q2top");
       std::cout << "writes: checked=" << checked << " failed=" << failed << "\n";
     }

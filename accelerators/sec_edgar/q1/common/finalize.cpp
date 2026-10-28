@@ -6,11 +6,13 @@
 namespace accelerator_codegen::aux_state::query {
 namespace q1 {
 
-std::vector<OutputRow> BuildOutput(const State &state) {
+std::vector<OutputRow> BuildOutput(const State &state, const std::optional<std::string> &stmt) {
 	std::vector<OutputRow> out;
-	out.reserve(state.groups.size());
+	if (!stmt) {
+		return out;
+	}
 	for (const auto &g : state.groups) {
-		if (g.cnt <= 0) {
+		if (g.cnt <= 0 || g.stmt != *stmt) {
 			continue;
 		}
 		OutputRow row;
@@ -45,17 +47,19 @@ std::vector<OutputRow> BuildOutput(const State &state) {
 
 } // namespace q1
 
-std::vector<SecEdgarQ1OutputRow> BuildSecEdgarQ1Output(const SecEdgarQ1State &state) {
-	return q1::BuildOutput(state);
+std::vector<SecEdgarQ1OutputRow> BuildSecEdgarQ1Output(const SecEdgarQ1State &state,
+                                                       const std::optional<std::string> &stmt) {
+	return q1::BuildOutput(state, stmt);
 }
 
-void SecEdgarQ1Module::EmitOutput(const SecEdgarQ1State &state, core::AuxRowSink &sink) {
+void SecEdgarQ1Module::EmitOutput(const SecEdgarQ1State &state, const std::optional<std::string> &stmt,
+                                  core::AuxRowSink &sink) {
 	sink.Begin({{{"stmt", core::AuxType::String, false},
 	             {"rfile", core::AuxType::String, true},
 	             {"cnt", core::AuxType::Int64, false},
 	             {"num_filings", core::AuxType::Int64, false},
 	             {"avg_line_num", core::AuxType::Double, true}}});
-	for (auto &row : BuildSecEdgarQ1Output(state)) {
+	for (auto &row : BuildSecEdgarQ1Output(state, stmt)) {
 		core::AuxRow out;
 		out.values.reserve(5);
 		out.values.push_back(core::AuxValue::Of(core::AuxType::String, std::move(row.stmt)));
@@ -70,14 +74,14 @@ void SecEdgarQ1Module::EmitOutput(const SecEdgarQ1State &state, core::AuxRowSink
 	sink.End();
 }
 
-void SecEdgarQ1Module::EmitOutputNumeric(const SecEdgarQ1State &state, core::AuxRowSink &sink,
-                                         SecEdgarQ1Config::AvgTextFn avg_text) {
+void SecEdgarQ1Module::EmitOutputNumeric(const SecEdgarQ1State &state, const std::optional<std::string> &stmt,
+                                         core::AuxRowSink &sink, SecEdgarQ1Config::AvgTextFn avg_text) {
 	sink.Begin({{{"stmt", core::AuxType::String, false},
 	             {"rfile", core::AuxType::String, true},
 	             {"cnt", core::AuxType::Int64, false},
 	             {"num_filings", core::AuxType::Int64, false},
 	             {"avg_line_num", core::AuxType::String, true}}});
-	for (auto &row : BuildSecEdgarQ1Output(state)) {
+	for (auto &row : BuildSecEdgarQ1Output(state, stmt)) {
 		core::AuxRow out;
 		out.values.reserve(5);
 		out.values.push_back(core::AuxValue::Of(core::AuxType::String, std::move(row.stmt)));
