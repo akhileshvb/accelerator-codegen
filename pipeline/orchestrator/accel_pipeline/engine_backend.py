@@ -166,9 +166,10 @@ def as_required_fixes(requests: list[dict[str, Any]]) -> str:
 
 def reopen_engine_backend(pipeline_config: PipelineConfig, model_config: ModelConfig, engine: str, *,
                           model_overrides: dict[str, str] | None = None, dry_run: bool = False) -> bool:
-    """Re-run the backend's validation with the pending backend requests as required fixes (its open findings);
-    True when it ran."""
-    requests = pending(pipeline_config.repo_root, engine, "backend")
+    """Re-run the backend's validation with the pending backend requests a failing check backs (`check`: the gate,
+    or a blocked agent) as required fixes; True when it ran. A request without one (a harness wishing for an API) is
+    the engine backend pipeline's to weigh, not a reason to reopen the backend inside a query run."""
+    requests = [r for r in pending(pipeline_config.repo_root, engine, "backend") if r.get("check")]
     if not requests:
         return False
     print(f"[pipeline] {len(requests)} backend defect(s) recorded for {engine}: re-running its validation", flush=True)
@@ -1377,7 +1378,7 @@ def check_conformance(pipeline_config: PipelineConfig, model_config: ModelConfig
               flush=True)
         record(pipeline_config.repo_root, engine, {
             "benchmark": str(workload.get("benchmark_name") or ""), "query": query, "scope": "harness",
-            "helper": "harness conformance", "reason": render_failure(failure)})
+            "helper": "harness conformance", "check": "harness_conformance", "reason": render_failure(failure)})
         run_host_bootstrap(pipeline_config, model_config, engine_name=engine, representative_workload=workload_name,
                            model_overrides=model_overrides)
     report = host_bootstrap_dir(pipeline_config.repo_root, engine) / "stop_report.md"

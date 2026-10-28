@@ -1046,3 +1046,17 @@ def test_the_bootstrap_registers_the_query_then_builds_then_checks_conformance(t
     results, bad = hb.run_bootstrap_gates(SimpleNamespace(repo_root=tmp_path), {"engine_name": "toydb"}, 3, iteration=0)
     assert steps == ["register", *ran] and [r.name for r in results] == ran
     assert (bad.name if bad else None) == failed
+
+
+def test_only_a_backend_request_a_failing_check_backs_reopens_the_backend(tmp_path, monkeypatch):
+    from accel_pipeline import engine_backend as eb
+
+    runs = []
+    monkeypatch.setattr(eb, "run_engine_pipeline", lambda *a, **k: runs.append(k["stage"]))
+    cfg = SimpleNamespace(repo_root=tmp_path)
+    (tmp_path / "pipeline" / "artifacts" / "engines" / "toydb").mkdir(parents=True)
+    wish = {"benchmark": "toybench", "query": 1, "scope": "backend", "helper": "an introspection api", "reason": "nice to have"}
+    eb.record(tmp_path, "toydb", wish)
+    assert not eb.reopen_engine_backend(cfg, None, "toydb") and runs == []
+    eb.record(tmp_path, "toydb", {**wish, "check": "aux_exit", "reason": "scan returns stale rows"})
+    assert eb.reopen_engine_backend(cfg, None, "toydb") and runs == ["validation"]

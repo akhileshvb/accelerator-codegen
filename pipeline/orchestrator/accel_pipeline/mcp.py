@@ -266,7 +266,7 @@ def build_mcp_tool_callables(
         if owner in (HARNESS, BACKEND) and workload.get("engine_name"):
             record(pipeline_config.repo_root, sanitize_engine_name(str(workload["engine_name"])), {
                 "benchmark": str(workload.get("benchmark_name") or ""), "query": query, "scope": owner,
-                "helper": summary.strip()[:200], "reason": evidence.strip()})
+                "helper": summary.strip()[:200], "check": f"report_blocker:{stage}", "reason": evidence.strip()})
         return "Blocker recorded. Stop now; the orchestrator takes over. Do not continue working."
 
     def ask_advisor(question: str) -> str:

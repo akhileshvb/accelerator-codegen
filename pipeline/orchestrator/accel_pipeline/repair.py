@@ -465,7 +465,8 @@ def report_defect(ctx: RepairCtx, failure: Failure) -> None:
     if engine := str(ctx.workload.get("engine_name") or ""):
         record(ctx.pipeline_config.repo_root, sanitize_engine_name(engine), {
             "benchmark": str(ctx.workload.get("benchmark_name") or ""), "query": ctx.query, "scope": failure.owner,
-            "helper": failure.source, "reason": render_failure(replace(failure, reproduce=f'request_gate("{gate}")'))})
+            "helper": failure.source, "check": gate,
+            "reason": render_failure(replace(failure, reproduce=f'request_gate("{gate}")'))})
 
 
 def record_elsewhere(ctx: RepairCtx, failure: Failure) -> None:
