@@ -1,4 +1,5 @@
 #include "eval/harness/cost_calibration.hpp"
+#include "eval/harness/param_sets.hpp"
 #include "backends/duckdb/api/shared_query_engine.hpp"
 
 #include <cstdlib>
@@ -71,7 +72,7 @@ int main(int argc, char **argv) {
       config.warmup_samples = static_cast<std::size_t>(std::stoul(warmups));
     }
 
-    const auto result = CalibrateSharedQueryCostModel(connection, entry, config);
+    const auto result = CalibrateSharedQueryCostModel(connection, entry, ArgumentSets(entry).front(), config);
     WriteSharedQueryCostModel(out_path, result, entry);
 
     std::cout << "calibrate_shared_aux_cost_model wrote " << out_path << '\n'

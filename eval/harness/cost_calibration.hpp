@@ -16,9 +16,10 @@ namespace aux_engine = ::accelerator_codegen::aux_state::engine;
 // policy (backends/duckdb/api/cost_model_path.hpp).
 using aux_engine::duckdb::SharedCostModelConfigPath;
 
+// Calibrated on the query bound to `arguments`.
 core::AuxCalibrationResult CalibrateSharedQueryCostModel(
     duckdb::Connection &connection, const aux_engine::SharedQueryCatalogEntry &entry,
-    const core::AuxCalibrationConfig &config = {});
+    const core::QueryArguments &arguments, const core::AuxCalibrationConfig &config = {});
 
 void WriteSharedQueryCostModel(const std::string &path,
                                const core::AuxCalibrationResult &result,

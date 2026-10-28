@@ -39,6 +39,8 @@ include(Backend)
 
 # TPC-H query instances (workloads/tpch/instances/seed_N/NN.sql) read by the accelerator tests and benchmarks.
 add_compile_definitions(ACCEL_TPCH_INSTANCES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/workloads/tpch/instances")
+# The tree the parameter generators (eval/bench/<workload>/gen_params.py) are run from; ACCEL_SRC_DIR in the environment overrides it.
+add_compile_definitions(ACCEL_SRC_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
 
 accel_collect_stateful_sources(ACCEL_STATEFUL_SOURCES)
 
