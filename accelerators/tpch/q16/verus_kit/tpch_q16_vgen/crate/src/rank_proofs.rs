@@ -46,7 +46,7 @@ pub proof fn lemma_empty_brands(brands: Index<BrandRanks>, counts: Counts, size:
     assert forall|key: KeyView| #[trigger] brands.at(key).is_some() implies false by {}
 }
 
-pub proof fn lemma_counts_step_positive(before: Counts, after: Counts, group: Arc<Group>, count: i64)
+pub proof fn lemma_counts_step_positive(before: Counts, after: Counts, group: Arc<Group>, count: i128)
     requires positive_counts(before), after.wf(), group.valid(), count >= 0, count_step(before, after, group, count),
     ensures positive_counts(after),
 {
@@ -57,7 +57,7 @@ pub proof fn lemma_counts_step_positive(before: Counts, after: Counts, group: Ar
     }
 }
 
-pub open spec fn count_step(before: Counts, after: Counts, group: Arc<Group>, count: i64) -> bool {
+pub open spec fn count_step(before: Counts, after: Counts, group: Arc<Group>, count: i128) -> bool {
     forall|key: KeyView| #[trigger] after.at(key) == if key == group.key() {
         if count > 0 { Some(Cell::of(group, count)) } else { None }
     } else { before.at(key) }
@@ -146,7 +146,7 @@ pub proof fn lemma_ranks_equal(before: &Ranks, after: &Ranks, old_counts: Counts
     }
 }
 
-pub open spec fn stream_step(before: Counts, after: Counts, group: Arc<Group>, previous: i64, next: i64, brand: Option<Seq<u8>>) -> bool {
+pub open spec fn stream_step(before: Counts, after: Counts, group: Arc<Group>, previous: i128, next: i128, brand: Option<Seq<u8>>) -> bool {
     forall|key: KeyView| #[trigger] after.at(key) ==
         if next > 0 && key == stream_key(*group, next as int, brand) { Some(Cell::of(group, next)) }
         else if previous > 0 && key == stream_key(*group, previous as int, brand) { None }
@@ -171,7 +171,7 @@ pub proof fn lemma_rank_put(before: &Counts, after: &Counts, key: KeyView, cell:
     verus_prooflib::lemma_sum_ones(after.entries());
 }
 
-pub proof fn lemma_rank_present(rows: Counts, counts: Counts, group: Arc<Group>, size: int, brand: Option<Seq<u8>>, count: i64)
+pub proof fn lemma_rank_present(rows: Counts, counts: Counts, group: Arc<Group>, size: int, brand: Option<Seq<u8>>, count: i128)
     requires stream_valid(rows, counts, size, brand), positive_counts(counts), group.valid(),
         stream_matches(*group, size, brand), count_at(counts, group.key()) == count as int, count > 0,
     ensures rows.at(stream_key(*group, count as int, brand)).is_some(),
@@ -184,7 +184,7 @@ pub proof fn lemma_rank_present(rows: Counts, counts: Counts, group: Arc<Group>,
     assert(rows.at(stream_key(*cell.group, cell.count as int, brand)) == Some(cell));
 }
 
-pub proof fn lemma_rank_fresh(rows: Counts, counts: Counts, group: Arc<Group>, size: int, brand: Option<Seq<u8>>, previous: i64, next: i64)
+pub proof fn lemma_rank_fresh(rows: Counts, counts: Counts, group: Arc<Group>, size: int, brand: Option<Seq<u8>>, previous: i128, next: i128)
     requires stream_valid(rows, counts, size, brand), positive_counts(counts), group.valid(),
         stream_matches(*group, size, brand), count_at(counts, group.key()) == previous as int,
         previous != next,
@@ -212,7 +212,7 @@ pub proof fn lemma_stream_collision(cell: Cell, group: Arc<Group>, size: int, br
 }
 
 pub proof fn lemma_stream_update(before: Counts, after: Counts, old_counts: Counts, counts: Counts,
-    group: Arc<Group>, previous: i64, next: i64, size: int, brand: Option<Seq<u8>>)
+    group: Arc<Group>, previous: i128, next: i128, size: int, brand: Option<Seq<u8>>)
     requires stream_valid(before, old_counts, size, brand), positive_counts(old_counts), positive_counts(counts),
         group.valid(), stream_matches(*group, size, brand), previous >= 0, next >= 0,
         count_at(old_counts, group.key()) == previous as int, count_step(old_counts, counts, group, next),
@@ -267,7 +267,7 @@ pub proof fn lemma_stream_update(before: Counts, after: Counts, old_counts: Coun
 }
 
 pub proof fn lemma_stream_unchanged(rows: Counts, old_counts: Counts, counts: Counts,
-    group: Arc<Group>, next: i64, size: int, brand: Option<Seq<u8>>)
+    group: Arc<Group>, next: i128, size: int, brand: Option<Seq<u8>>)
     requires stream_valid(rows, old_counts, size, brand), positive_counts(old_counts), positive_counts(counts),
         group.valid(), !stream_matches(*group, size, brand), next >= 0, count_step(old_counts, counts, group, next),
     ensures stream_valid(rows, counts, size, brand),
@@ -303,7 +303,7 @@ pub open spec fn brand_step(before: Index<BrandRanks>, after: Index<BrandRanks>,
 }
 
 pub proof fn lemma_brands_update(before: Index<BrandRanks>, after: Index<BrandRanks>, old_counts: Counts, counts: Counts,
-    group: Arc<Group>, next: i64, stream: Counts)
+    group: Arc<Group>, next: i128, stream: Counts)
     requires brands_valid(before, old_counts, group.size as int), positive_counts(old_counts), positive_counts(counts),
         group.valid(), next >= 0, count_step(old_counts, counts, group, next),
         stream_valid(stream, counts, group.size as int, Some((*group.brand)@)),
@@ -372,7 +372,7 @@ pub proof fn lemma_profile_nonempty(rows: SizeRanks, counts: Counts, size: int)
     }
 }
 
-pub proof fn lemma_size_unchanged(rows: SizeRanks, old_counts: Counts, counts: Counts, group: Arc<Group>, next: i64, size: int)
+pub proof fn lemma_size_unchanged(rows: SizeRanks, old_counts: Counts, counts: Counts, group: Arc<Group>, next: i128, size: int)
     requires size_valid(rows, old_counts, size), positive_counts(old_counts), positive_counts(counts),
         group.valid(), next >= 0, group.size != size, count_step(old_counts, counts, group, next),
     ensures size_valid(rows, counts, size),
@@ -399,7 +399,7 @@ pub open spec fn rank_step(before: Ranks, after: Ranks, size: int, rows: SizeRan
     } else { before.at(key) }
 }
 
-pub proof fn lemma_ranks_update(before: Ranks, after: Ranks, old_counts: Counts, counts: Counts, group: Arc<Group>, next: i64, rows: SizeRanks)
+pub proof fn lemma_ranks_update(before: Ranks, after: Ranks, old_counts: Counts, counts: Counts, group: Arc<Group>, next: i128, rows: SizeRanks)
     requires ranks_valid(before, old_counts), positive_counts(counts), group.valid(), next >= 0,
         count_step(old_counts, counts, group, next), size_profile_valid(rows, counts, group.size as int),
         after.wf(), rank_step(before, after, group.size as int, rows),
@@ -440,7 +440,7 @@ pub proof fn lemma_ranks_update(before: Ranks, after: Ranks, old_counts: Counts,
 pub proof fn lemma_rank_lookup(ranks: Ranks, counts: Counts, size: int, brand: Seq<u8>, count: int, kind: Seq<u8>)
     requires ranks_valid(ranks, counts),
     ensures rank_at(ranks, size, brand, count, kind) ==
-        if count > 0 && count_at(counts, group_key(brand, kind, size)) == count { Some(count as i64) } else { None },
+        if count > 0 && count_at(counts, group_key(brand, kind, size)) == count { Some(count as i128) } else { None },
 {
     let key = group_key(brand, kind, size);
     if count > 0 && count_at(counts, key) == count {

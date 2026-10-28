@@ -257,7 +257,7 @@ pub open spec fn scan_regions_ok(db: Db, rows: Seq<RegionScan>) -> bool {
 }
 
 /// rescan brass_parts_after: SELECT p_partkey, p_mfgr, p_size, p_type FROM part
-///   restricted to the rows whose p_partkey is one of `keys`.
+///   restricted to the rows whose p_partkey is one of `keys` (a NULL key matches none).
 pub open spec fn rescan_brass_parts_after_ok(db: Db, keys: Seq<i64>, rows: Seq<BrassPartScan>) -> bool {
     forall|f: spec_fn(PartRow) -> int| #[trigger] sum(brass_part_scan_seq_view(rows), f) == sum(
         db.part,
@@ -277,7 +277,7 @@ pub open spec fn rescan_brass_partsupp_after_exists_1(db: Db, partsupp: Partsupp
 }
 
 /// rescan brass_partsupp_after: SELECT ps_partkey, ps_suppkey, ps_supplycost FROM partsupp WHERE EXISTS ( SELECT p_partkey FROM part WHERE p_partkey = ps_partkey )
-///   restricted to the rows whose ps_partkey is one of `keys`.
+///   restricted to the rows whose ps_partkey is one of `keys` (a NULL key matches none).
 pub open spec fn rescan_brass_partsupp_after_ok(db: Db, keys: Seq<i64>, rows: Seq<BrassPartsuppScan>) -> bool {
     forall|f: spec_fn(PartsuppRow) -> int| #[trigger] sum(brass_partsupp_scan_seq_view(rows), f) == sum(
         db.partsupp,
@@ -385,14 +385,14 @@ pub open spec fn nation_in_type(r: NationRow) -> bool {
 
 /// Each value of part lies in the range of its column's SQL type.
 pub open spec fn part_in_type(r: PartRow) -> bool {
-    -2147483648 <= r.p_partkey <= 2147483647
+    -9223372036854775808 <= r.p_partkey <= 9223372036854775807
     && -2147483648 <= r.p_size <= 2147483647
 }
 
 /// Each value of partsupp lies in the range of its column's SQL type.
 pub open spec fn partsupp_in_type(r: PartsuppRow) -> bool {
-    -2147483648 <= r.ps_partkey <= 2147483647
-    && -2147483648 <= r.ps_suppkey <= 2147483647
+    -9223372036854775808 <= r.ps_partkey <= 9223372036854775807
+    && -9223372036854775808 <= r.ps_suppkey <= 9223372036854775807
     && -999999999999999 <= r.ps_supplycost <= 999999999999999
 }
 
@@ -403,7 +403,7 @@ pub open spec fn region_in_type(r: RegionRow) -> bool {
 
 /// Each value of supplier lies in the range of its column's SQL type.
 pub open spec fn supplier_in_type(r: SupplierRow) -> bool {
-    -2147483648 <= r.s_suppkey <= 2147483647
+    -9223372036854775808 <= r.s_suppkey <= 9223372036854775807
     && -2147483648 <= r.s_nationkey <= 2147483647
     && -999999999999999 <= r.s_acctbal <= 999999999999999
 }

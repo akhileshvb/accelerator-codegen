@@ -498,7 +498,7 @@ pub fn collect_changes(old_parts: &Parts, old_edges: &Edges, old_blockers: &Inde
                         assert(integer_at(*old_blockers, supplier.view()) == 0);
                     }
                     if within(db, db2) {
-                        assert forall|key: KeyView| !out_of_range(count_at(group_changes, key) + contribution(groups, key, -1i64)) by {
+                        assert forall|key: KeyView| !wide_out_of_range(count_at(group_changes, key) + contribution(groups, key, -1i64)) by {
                             lemma_old_call_fits(*old_parts, *old_edges, *old_blockers, *new_parts, *new_edges, *new_blockers, db, db2,
                                 suppliers.entries(), processed@, key);
                         }
@@ -537,7 +537,7 @@ pub fn collect_changes(old_parts: &Parts, old_edges: &Edges, old_blockers: &Inde
                         assert(integer_at(*new_blockers, supplier.view()) == 0);
                     }
                     if within(db, db2) {
-                        assert forall|key: KeyView| !out_of_range(count_at(group_changes, key) + contribution(groups, key, 1i64)) by {
+                        assert forall|key: KeyView| !wide_out_of_range(count_at(group_changes, key) + contribution(groups, key, 1i64)) by {
                             lemma_new_call_fits(*old_parts, *old_edges, *old_blockers, *new_parts, *new_edges, *new_blockers, db, db2,
                                 suppliers.entries(), processed@, key);
                         }
@@ -572,7 +572,8 @@ pub fn collect_changes(old_parts: &Parts, old_edges: &Edges, old_blockers: &Inde
 pub fn publish_changes(source: &Counts, base_ranks: &Ranks, group_changes: &Counts, Ghost(fits): Ghost<bool>) -> (out: Result<(Counts, Ranks), u32>)
     requires cell_keys_valid(*source), cell_keys_valid(*group_changes),
         fits ==> forall|brand: Seq<u8>, kind: Seq<u8>, size: int|
-            0 <= count_at(*source, #[trigger] group_key(brand, kind, size)) + count_at(*group_changes, group_key(brand, kind, size)) <= i64::MAX as int,
+            0 <= count_at(*source, #[trigger] group_key(brand, kind, size)) <= max_suppliers()
+                && 0 <= count_at(*source, group_key(brand, kind, size)) + count_at(*group_changes, group_key(brand, kind, size)) <= max_suppliers(),
     ensures out matches Ok(state) ==> cell_keys_valid(state.0),
         out matches Ok(state) ==> (positive_counts(*source) ==> positive_counts(state.0)),
         out matches Ok(state) ==> (ranks_valid(*base_ranks, *source) ==> ranks_valid(state.1, state.0)),
@@ -607,7 +608,8 @@ pub fn publish_changes(source: &Counts, base_ranks: &Ranks, group_changes: &Coun
             0 <= processed@ <= group_changes.entries().len(),
             cursor.remaining() == group_changes.entries().skip(processed@),
             fits ==> forall|brand: Seq<u8>, kind: Seq<u8>, size: int|
-                0 <= count_at(source_counts@, #[trigger] group_key(brand, kind, size)) + count_at(*group_changes, group_key(brand, kind, size)) <= i64::MAX as int,
+                0 <= count_at(source_counts@, #[trigger] group_key(brand, kind, size)) <= max_suppliers()
+                    && 0 <= count_at(source_counts@, group_key(brand, kind, size)) + count_at(*group_changes, group_key(brand, kind, size)) <= max_suppliers(),
             forall|position: int| 0 <= position < group_changes.entries().len() ==>
                 #[trigger] group_changes.at(group_changes.entries()[position].0) == Some(group_changes.entries()[position].1),
             forall|first: int, last: int| 0 <= first < last < group_changes.entries().len() ==>
@@ -861,8 +863,11 @@ pub fn maintain(counts: &Counts, ranks: &Ranks, parts: &Parts, edges: &Edges, bl
         lemma_changes_are_totals(db, db2, *suppliers, *parts, *edges, *blocked, new_parts, new_edges, new_blocked, changes);
         lemma_ranks_positive(*ranks, *counts);
         assert forall|brand: Seq<u8>, kind: Seq<u8>, size: int| fits@ implies
-            0 <= count_at(*counts, #[trigger] group_key(brand, kind, size)) + count_at(changes, group_key(brand, kind, size)) <= i64::MAX as int by {
+            0 <= count_at(*counts, #[trigger] group_key(brand, kind, size)) <= max_suppliers()
+                && 0 <= count_at(*counts, group_key(brand, kind, size)) + count_at(changes, group_key(brand, kind, size)) <= max_suppliers() by {
             if fits@ {
+                lemma_total_bound(db, brand, kind, size);
+                lemma_suppliers_in_type(db);
                 lemma_total_bound(db2, brand, kind, size);
                 lemma_suppliers_in_type(db2);
             }

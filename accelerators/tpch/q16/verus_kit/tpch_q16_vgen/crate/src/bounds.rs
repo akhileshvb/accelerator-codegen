@@ -68,6 +68,7 @@ pub proof fn lemma_database_suppliers_len(db: Db)
     ensures database_suppliers(db).len() <= db.partsupp.len(),
 {
     lemma_dedup_len(supplier_keys(db.partsupp));
+    assert(max_rows() == max_suppliers());
 }
 
 pub proof fn lemma_part_sum_bound(db: Db, part: int, key: KeyView)
@@ -178,26 +179,17 @@ pub proof fn lemma_rescan_blockers_len(db: Db, keys: Seq<i64>, rows: Seq<Blocker
     lemma_unit_sum(db.supplier, selected);
 }
 
-/// Supplier keys are 32-bit, so a state holds at most this many distinct suppliers.
+/// A state holds at most one distinct supplier per partsupp row.
 pub open spec fn max_suppliers() -> int {
-    4294967296
+    crate::counts::MAX_COUNT as int
 }
 
 pub proof fn lemma_suppliers_in_type(db: Db)
     requires envelope(db),
     ensures database_suppliers(db).len() <= max_suppliers(),
 {
-    lemma_dedup(supplier_keys(db.partsupp));
-    crate::maintenance_semantics::lemma_supplier_partition(db, Seq::empty(), Seq::empty(), 0);
-    let list = database_suppliers(db);
-    let range = vstd::set_lib::set_int_range(-2147483648, 2147483648);
-    vstd::set_lib::lemma_int_range(-2147483648, 2147483648);
-    assert forall|supplier: int| list.to_set().contains(supplier) implies range.contains(supplier) by {
-        let position = choose|position: int| 0 <= position < db.partsupp.len() && supplier_keys(db.partsupp)[position] == supplier;
-        assert(partsupp_in_type(db.partsupp[position]));
-    }
-    list.unique_seq_to_set();
-    vstd::set_lib::lemma_len_subset(list.to_set(), range);
+    lemma_dedup_len(supplier_keys(db.partsupp));
+    assert(max_rows() == max_suppliers());
 }
 
 pub proof fn lemma_total_bound(db: Db, brand: Seq<u8>, kind: Seq<u8>, size: int)

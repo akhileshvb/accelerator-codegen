@@ -21,14 +21,14 @@ pub struct Group {
 
 pub struct Cell {
     pub group: Arc<Group>,
-    pub count: i64,
+    pub count: i128,
     pub brand_id: u16,
     pub kind_id: u16,
     pub size: i64,
 }
 
 impl Cell {
-    pub open spec fn of(group: Arc<Group>, count: i64) -> Cell {
+    pub open spec fn of(group: Arc<Group>, count: i128) -> Cell {
         Cell { group, count, brand_id: group.brand_id, kind_id: group.kind_id, size: group.size }
     }
 
@@ -36,7 +36,7 @@ impl Cell {
         self == Cell::of(self.group, self.count)
     }
 
-    pub fn new(group: Arc<Group>, count: i64) -> (cell: Cell)
+    pub fn new(group: Arc<Group>, count: i128) -> (cell: Cell)
         ensures cell == Cell::of(group, count),
     {
         let brand_id = group.brand_id;
@@ -228,7 +228,7 @@ pub open spec fn edge_weight(row: PartsuppRow, supplier: int, part: int) -> int 
     if row.ps_suppkey == supplier && row.ps_partkey == part { 1 } else { 0 }
 }
 
-pub open spec fn rank_at(ranks: Ranks, size: int, brand: Seq<u8>, count: int, kind: Seq<u8>) -> Option<i64> {
+pub open spec fn rank_at(ranks: Ranks, size: int, brand: Seq<u8>, count: int, kind: Seq<u8>) -> Option<i128> {
     match ranks.at((size, Seq::empty())) {
         Some(size_rows) => match size_rows.brands.at((0int, brand)) {
             Some(stream) => match stream.rows.at((-count, kind)) {

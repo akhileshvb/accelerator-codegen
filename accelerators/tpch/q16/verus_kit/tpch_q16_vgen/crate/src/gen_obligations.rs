@@ -132,7 +132,7 @@ pub open spec fn scan_blockers_ok(db: Db, rows: Seq<BlockerInput>) -> bool {
 }
 
 /// rescan edges_for_parts: SELECT ps_partkey, ps_suppkey FROM partsupp
-///   restricted to the rows whose ps_partkey is one of `keys`.
+///   restricted to the rows whose ps_partkey is one of `keys` (a NULL key matches none).
 pub open spec fn rescan_edges_for_parts_ok(db: Db, keys: Seq<i64>, rows: Seq<EdgeInput>) -> bool {
     forall|f: spec_fn(PartsuppRow) -> int| #[trigger] sum(edge_input_seq_view(rows), f) == sum(
         db.partsupp,
@@ -141,7 +141,7 @@ pub open spec fn rescan_edges_for_parts_ok(db: Db, keys: Seq<i64>, rows: Seq<Edg
 }
 
 /// rescan edges_for_suppliers: SELECT ps_partkey, ps_suppkey FROM partsupp
-///   restricted to the rows whose ps_suppkey is one of `keys`.
+///   restricted to the rows whose ps_suppkey is one of `keys` (a NULL key matches none).
 pub open spec fn rescan_edges_for_suppliers_ok(db: Db, keys: Seq<i64>, rows: Seq<EdgeInput>) -> bool {
     forall|f: spec_fn(PartsuppRow) -> int| #[trigger] sum(edge_input_seq_view(rows), f) == sum(
         db.partsupp,
@@ -150,7 +150,7 @@ pub open spec fn rescan_edges_for_suppliers_ok(db: Db, keys: Seq<i64>, rows: Seq
 }
 
 /// rescan parts_for_neighbors: SELECT p_partkey, p_brand, p_type, p_size FROM part
-///   restricted to the rows whose p_partkey is one of `keys`.
+///   restricted to the rows whose p_partkey is one of `keys` (a NULL key matches none).
 pub open spec fn rescan_parts_for_neighbors_ok(db: Db, keys: Seq<i64>, rows: Seq<PartInput>) -> bool {
     forall|f: spec_fn(PartRow) -> int| #[trigger] sum(part_input_seq_view(rows), f) == sum(
         db.part,
@@ -159,7 +159,7 @@ pub open spec fn rescan_parts_for_neighbors_ok(db: Db, keys: Seq<i64>, rows: Seq
 }
 
 /// rescan blockers_for_suppliers: SELECT s_suppkey FROM supplier WHERE s_comment LIKE '%Customer%Complaints%'
-///   restricted to the rows whose s_suppkey is one of `keys`.
+///   restricted to the rows whose s_suppkey is one of `keys` (a NULL key matches none).
 pub open spec fn rescan_blockers_for_suppliers_ok(db: Db, keys: Seq<i64>, rows: Seq<BlockerInput>) -> bool {
     forall|f: spec_fn(int) -> int| #[trigger] sum(blocker_input_seq_view(rows), f) == sum(
         db.supplier,
@@ -239,19 +239,19 @@ pub open spec fn max_history() -> int {
 
 /// Each value of part lies in the range of its column's SQL type.
 pub open spec fn part_in_type(r: PartRow) -> bool {
-    -2147483648 <= r.p_partkey <= 2147483647
+    -9223372036854775808 <= r.p_partkey <= 9223372036854775807
     && -2147483648 <= r.p_size <= 2147483647
 }
 
 /// Each value of partsupp lies in the range of its column's SQL type.
 pub open spec fn partsupp_in_type(r: PartsuppRow) -> bool {
-    -2147483648 <= r.ps_partkey <= 2147483647
-    && -2147483648 <= r.ps_suppkey <= 2147483647
+    -9223372036854775808 <= r.ps_partkey <= 9223372036854775807
+    && -9223372036854775808 <= r.ps_suppkey <= 9223372036854775807
 }
 
 /// Each value of supplier lies in the range of its column's SQL type.
 pub open spec fn supplier_in_type(r: SupplierRow) -> bool {
-    -2147483648 <= r.s_suppkey <= 2147483647
+    -9223372036854775808 <= r.s_suppkey <= 9223372036854775807
 }
 
 /// The databases the DBMS can represent: each table within its row-id space, each

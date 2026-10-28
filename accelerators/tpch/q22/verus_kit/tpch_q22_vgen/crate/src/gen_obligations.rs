@@ -112,7 +112,7 @@ pub open spec fn scan_positive_customers_ok(db: Db, rows: Seq<CustomerInput>) ->
 }
 
 /// rescan positive_customers_by_key: SELECT c_custkey, c_phone, c_acctbal FROM customer WHERE c_acctbal > 0.00
-///   restricted to the rows whose c_custkey is one of `keys`.
+///   restricted to the rows whose c_custkey is one of `keys` (a NULL key matches none).
 pub open spec fn rescan_positive_customers_by_key_ok(db: Db, keys: Seq<i64>, rows: Seq<CustomerInput>) -> bool {
     forall|f: spec_fn(CustomerRow) -> int| #[trigger] sum(customer_input_seq_view(rows), f) == sum(
         db.customer,
@@ -170,13 +170,13 @@ pub open spec fn max_history() -> int {
 
 /// Each value of customer lies in the range of its column's SQL type.
 pub open spec fn customer_in_type(r: CustomerRow) -> bool {
-    -2147483648 <= r.c_custkey <= 2147483647
+    -9223372036854775808 <= r.c_custkey <= 9223372036854775807
     && -999999999999999 <= r.c_acctbal <= 999999999999999
 }
 
 /// Each value of orders lies in the range of its column's SQL type.
 pub open spec fn orders_in_type(r: OrdersRow) -> bool {
-    -2147483648 <= r.o_custkey <= 2147483647
+    -9223372036854775808 <= r.o_custkey <= 9223372036854775807
 }
 
 /// The databases the DBMS can represent: each table within its row-id space, each

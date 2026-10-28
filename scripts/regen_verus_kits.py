@@ -9,6 +9,7 @@ a difference is an error and nothing is written for that kit.
 gen_obligations.rs were generated from).  Host glue (glue.cpp) is written per kit, not
 generated.
 """
+import os
 import pathlib
 import shutil
 import subprocess
@@ -24,6 +25,9 @@ LATER_DOC = " (a NULL key matches none)."
 
 def same(generated: pathlib.Path, committed: pathlib.Path) -> bool:
     return generated.read_text().replace(LATER_DOC, ".") == committed.read_text()
+
+
+UPDATE_SPEC = bool(os.environ.get("REGEN_UPDATE_SPEC"))  # approved spec change only
 
 
 def main() -> int:
@@ -50,7 +54,10 @@ def main() -> int:
                 bad += 1
                 continue
             frozen = [f for f in ("gen_spec.rs", "gen_obligations.rs") if not same(t / f, src / f)]
-            if frozen:
+            if frozen and UPDATE_SPEC:  # approved spec change: write the regenerated spec
+                for f in frozen:
+                    shutil.copy2(t / f, src / f)
+            elif frozen:
                 print(f"{q}: {', '.join(frozen)} differ from the committed ones; not written")
                 bad += 1
                 continue

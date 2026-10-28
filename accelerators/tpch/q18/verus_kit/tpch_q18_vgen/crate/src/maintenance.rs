@@ -190,23 +190,10 @@ pub proof fn lemma_clean_ready_customer(db: Db, customer: int, row: &CustomerDat
     }
 }
 
-/// Within the envelope an order key with lines is an i32.
-pub proof fn lemma_line_key_range(db: Db, key: int)
-    requires envelope(db), sum(db.lineitem, nw(key)) > 0,
-    ensures -2147483648 <= key <= 2147483647,
-{
-    if key < -2147483648 || key > 2147483647 {
-        assert forall|i: int| 0 <= i < db.lineitem.len() implies nw(key)(#[trigger] db.lineitem[i]) == 0 by {
-            assert(lineitem_in_type(db.lineitem[i]));
-        }
-        lemma_sum_zero(db.lineitem, nw(key));
-    }
-}
-
-/// A duplicate-free list of keys in the i32 range has at most 2^32 entries.
-pub proof fn lemma_distinct_keys_few(keys: Seq<i64>)
-    requires keys.no_duplicates(), forall|k: i64| keys.contains(k) ==> -2147483648 <= k <= 2147483647,
-    ensures keys.len() <= 4294967296,
+/// A duplicate-free list of order keys that all have lines has at most one entry per line.
+pub proof fn lemma_distinct_keys_few(db: Db, keys: Seq<i64>)
+    requires keys.no_duplicates(), forall|k: i64| keys.contains(k) ==> sum(db.lineitem, nw(k as int)) > 0,
+    ensures keys.len() <= db.lineitem.len(),
 {
     broadcast use vstd::seq_lib::group_seq_properties;
     let widen = |k: i64| k as int;
@@ -214,13 +201,20 @@ pub proof fn lemma_distinct_keys_few(keys: Seq<i64>)
     keys.lemma_no_duplicates_injective(widen);
     let wide = keys.map_values(widen);
     wide.unique_seq_to_set();
-    vstd::set_lib::lemma_int_range(-2147483648, 2147483648);
-    assert forall|v: int| wide.to_set().contains(v) implies vstd::set_lib::set_int_range(-2147483648, 2147483648).contains(v) by {
+    let ordered = db.lineitem.map_values(|row: LineitemRow| row.l_orderkey);
+    ordered.lemma_cardinality_of_set();
+    assert forall|v: int| wide.to_set().contains(v) implies ordered.to_set().contains(v) by {
         assert(wide.contains(v));
         let at = choose|at: int| 0 <= at < wide.len() && wide[at] == v;
         assert(keys.contains(keys[at]));
+        if !ordered.contains(v) {
+            assert forall|i: int| 0 <= i < db.lineitem.len() implies nw(v)(#[trigger] db.lineitem[i]) == 0 by {
+                assert(ordered[i] == db.lineitem[i].l_orderkey);
+            }
+            lemma_sum_zero(db.lineitem, nw(v));
+        }
     }
-    vstd::set_lib::lemma_len_subset(wide.to_set(), vstd::set_lib::set_int_range(-2147483648, 2147483648));
+    vstd::set_lib::lemma_len_subset(wide.to_set(), ordered.to_set());
 }
 
 }
