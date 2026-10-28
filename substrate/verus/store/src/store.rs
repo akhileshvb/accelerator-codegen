@@ -24,23 +24,35 @@
 // current for every snapshot.  This is the C++ VersionedAuxStore's protocol
 // (substrate/aux/state).
 //
-// Proved about epochs (the snapshot theorem, `resolve_seen`): epochs increase
-// with version numbers (lock invariant), and what a snapshot at E gets is
-// decided on the window as it is under the read lock: Found(v) only if v is
-// the newest kept version current at E (`sees`: every newer kept version is
-// current only after E) and no commit in flight may be visible at E;
-// Pending if one may be; NotVisible if every kept version is newer than E.
-// Nothing is newer than the window's newest version, so v is the newest of
-// all installed versions current at E.
+// Proved about epochs (`resolve_seen`): epochs increase with version numbers
+// (lock invariant), and what a snapshot at E gets is decided on the window as
+// it is under the read lock: Found(v) only if v is the newest kept version
+// current at E (`sees`) and no commit in flight may be visible at E; Pending
+// if one may be; NotVisible if every kept version is newer than E.
 //
-// Still the host's contract (TRUSTED, world.rs): each version is installed in
-// the engine's commit order with `from` = the epoch its commit becomes
-// visible at; `begin` runs before that commit is visible to any snapshot;
-// commits no accelerator depends on need no version; `floor` is at most the
-// oldest open snapshot.  Under that contract, the version a snapshot at E
-// gets is the database it sees.  With one store for every accelerator (a
-// world: one slot each, world.rs `Both`), one install per commit makes the
-// same hold for all of them at once.
+// Lemma 5.2 (extended).  A ghost log records the `from` of every install ever
+// made (never truncated); the window's `from` is its suffix (`window_ok`), so
+// v is the newest of ALL installs with from <= E, pruned ones included
+// (`newest_installed`).  `append` keeps the log non-decreasing: an install
+// earlier than the last one (a stale epoch behind a later install) keeps only
+// an invalid placeholder; a build is refused while a commit is in flight.
+//
+// Lemma 5.3 (`lemma_snapshot`, via `Reading::world`).  Against the host's
+// ghost engine model (`Engine`: snap(E), the database a snapshot sees, and
+// stamp(E), when the newest relevant commit visible at E became visible), the
+// version a snapshot at E != 0 gets holds snap(E), given the commit-order
+// contract: (i) installs in commit order (enforced by `append`, above);
+// (ii) each install is the database a snapshot at its `from` sees
+// (`visible_from`, TRUSTED `requires` of install / commit / new); (iii) the
+// newest relevant commit visible at E is installed or marked pending when the
+// read happens (`read_instant`, TRUSTED, a fact about the engine at that
+// instant, so a predicate, not an invariant).  Nothing else is assumed.
+//
+// Still trusted (world.rs, the FFI): the engine model and the clauses above;
+// that the state a writer prepares answers for the database at its version
+// (the capture and scan contracts); `floor` is at most the oldest open
+// snapshot.  With one store for every accelerator (a world: one slot each,
+// world.rs `Both`), one install per commit makes the same hold for all.
 //
 // Concurrency.
 //   * A reader resolves its snapshot and clones the state pointers (`Arc`)
@@ -136,6 +148,12 @@ pub struct Cell<W> {
     pub from: Vec<u64>,
     /// A commit in flight, visible from this engine epoch on (host data).
     pub pending: Option<u64>,
+    /// The `from` of every version ever installed, in install order; `from`
+    /// is always its suffix (ghost).
+    pub log: Ghost<Seq<u64>>,
+    /// Per kept version: its world is the database a snapshot at its `from`
+    /// sees (false for the invalid placeholder of an out-of-order install).
+    pub exact: Ghost<Seq<bool>>,
 }
 
 impl<W> Cell<W> {
@@ -146,7 +164,7 @@ impl<W> Cell<W> {
 
     /// What a snapshot's selection depends on (ghost).
     pub open spec fn window(self) -> Window {
-        Window { base: self.base as int, from: self.from@, pending: self.pending }
+        Window { base: self.base as int, from: self.from@, pending: self.pending, log: self.log@, exact: self.exact@ }
     }
 }
 
@@ -157,12 +175,120 @@ pub ghost struct Window {
     pub base: int,
     pub from: Seq<u64>,
     pub pending: Option<u64>,
+    pub log: Seq<u64>,
+    pub exact: Seq<bool>,
 }
 
 impl Window {
     pub open spec fn newest(self) -> int {
         self.base + self.from.len() - 1
     }
+}
+
+/// Install epochs never go backwards.
+pub open spec fn nondecreasing(log: Seq<u64>) -> bool {
+    forall|i: int, j: int| 0 <= i <= j < log.len() ==> #[trigger] log[i] <= #[trigger] log[j]
+}
+
+/// The window's `from` is the suffix of the install log, one `exact` per version.
+pub open spec fn window_ok(w: Window) -> bool {
+    &&& w.exact.len() == w.from.len()
+    &&& w.from.len() <= w.log.len()
+    &&& nondecreasing(w.log)
+    &&& forall|i: int| 0 <= i < w.from.len() ==> #[trigger] w.from[i] == w.log[w.log.len() - w.from.len() + i]
+}
+
+/// Log position of kept version v.
+pub open spec fn log_index(w: Window, v: int) -> int {
+    w.log.len() - w.from.len() + (v - w.base)
+}
+
+/// LEMMA 5.2, EXTENDED.  Log position k is the newest install current at
+/// `at`: its `from` is at most `at` and every later install's is after it
+/// (at = 0: the last install).  Pruned versions are included.
+pub open spec fn newest_installed(log: Seq<u64>, at: u64, k: int) -> bool {
+    &&& 0 <= k < log.len()
+    &&& if at == 0 {
+        k == log.len() - 1
+    } else {
+        &&& log[k] <= at
+        &&& forall|j: int| k < j < log.len() ==> #[trigger] log[j] > at
+    }
+}
+
+/// The host's ghost model of the engine: what a snapshot sees, and when
+/// relevant commits become visible.
+pub ghost struct Engine<D> {
+    /// The database a snapshot at engine epoch `at` sees (as far as any
+    /// accelerator depends on it).
+    pub snap: spec_fn(u64) -> D,
+    /// The epoch at which the newest relevant commit visible to a snapshot at
+    /// `at` became visible.
+    pub stamp: spec_fn(u64) -> u64,
+}
+
+impl<D> Engine<D> {
+    /// Well-formed: the stamp is a monotone projection below its argument and
+    /// snapshots between two relevant commits see the same database.
+    pub open spec fn wf(self) -> bool {
+        &&& forall|a: u64| #[trigger] (self.stamp)(a) <= a
+        &&& forall|a: u64, b: u64| a <= b ==> #[trigger] (self.stamp)(a) <= #[trigger] (self.stamp)(b)
+        &&& forall|a: u64| #[trigger] (self.stamp)((self.stamp)(a)) == (self.stamp)(a)
+        &&& forall|a: u64| #[trigger] (self.snap)(a) == (self.snap)((self.stamp)(a))
+    }
+}
+
+/// COMMIT-ORDER CONTRACT (iii), first half (TRUSTED, host-supplied; a fact
+/// about the engine at the instant of a read).  The newest relevant commit
+/// visible to the snapshot at `at` has been installed.
+pub open spec fn commit_installed<D>(w: Window, eng: Engine<D>, at: u64) -> bool {
+    exists|k: int| 0 <= k < w.log.len() && #[trigger] w.log[k] == (eng.stamp)(at)
+}
+
+/// COMMIT-ORDER CONTRACT (iii), second half (TRUSTED, same instant).  Or it
+/// is marked pending, from an epoch not after it became visible.
+pub open spec fn commit_marked<D>(w: Window, eng: Engine<D>, at: u64) -> bool {
+    w.pending matches Some(p) && p <= (eng.stamp)(at)
+}
+
+/// THE READ-INSTANT PREDICATE (TRUSTED).  A snapshot at `at` != 0 sees no
+/// relevant commit that is neither installed nor marked pending.
+pub open spec fn read_instant<D>(w: Window, eng: Engine<D>, at: u64) -> bool {
+    &&& at != 0
+    &&& (commit_installed(w, eng, at) || commit_marked(w, eng, at))
+}
+
+/// LEMMA 5.3.  The version a snapshot at `at` is given (`sees`, newest
+/// install current at `at`) holds the database that snapshot sees, if it was
+/// installed for the database at its `from` (`exact`) and the read-instant
+/// predicate holds.  Uses (i): installs have non-decreasing `from`
+/// (`window_ok`, enforced by `append`).
+pub proof fn lemma_snapshot<D>(eng: Engine<D>, w: Window, at: u64, v: int)
+    requires
+        eng.wf(),
+        window_ok(w),
+        sees(w, at, v),
+        newest_installed(w.log, at, log_index(w, v)),
+        read_instant(w, eng, at),
+    ensures
+        (eng.snap)(at) == (eng.snap)(w.from[v - w.base]),
+{
+    let k = log_index(w, v);
+    let s = (eng.stamp)(at);
+    let f = w.from[v - w.base];
+    assert(f == w.log[k]);
+    if commit_installed(w, eng, at) {
+        let j = choose|j: int| 0 <= j < w.log.len() && #[trigger] w.log[j] == s;
+        assert(s <= at);
+        assert(j <= k);
+        assert(w.log[j] <= w.log[k]);
+    } else {
+        let p = w.pending.unwrap();
+        assert(s <= at);
+        assert(false);
+    }
+    assert((eng.stamp)(f) <= s);
+    assert((eng.stamp)(s) <= (eng.stamp)(f));
 }
 
 /// Engine epochs increase with the version number.
@@ -219,8 +345,15 @@ pub open spec fn cell_ok<D, W: AuxWorld<D>>(c: Cell<W>, timeline: spec_fn(nat) -
     &&& c.newest() <= u64::MAX
     &&& c.from.len() == c.versions.len()
     &&& increasing(c.from@)
+    &&& window_ok(c.window())
     &&& forall|i: int|
         0 <= i < c.versions.len() ==> #[trigger] c.versions@[i].ok(timeline((c.base + i) as nat))
+}
+
+/// Every `exact` version holds the database a snapshot at its `from` sees.
+pub open spec fn exact_ok<D, W>(c: Cell<W>, timeline: spec_fn(nat) -> D, eng: Engine<D>) -> bool {
+    forall|i: int|
+        0 <= i < c.from@.len() && c.exact@[i] ==> #[trigger] timeline((c.base + i) as nat) == (eng.snap)(c.from@[i])
 }
 
 impl<W> Cell<W> {
@@ -269,6 +402,8 @@ impl<W> Cell<W> {
             final(self).versions.len() == old(self).versions.len(),
             final(self).from == old(self).from,
             final(self).pending == old(self).pending,
+            final(self).log == old(self).log,
+            final(self).exact == old(self).exact,
     {
         let i = (v - self.base) as usize;
         self.versions[i] = w;
@@ -282,22 +417,46 @@ impl<W> Cell<W> {
     }
 
     /// Append the version after the newest, current from engine epoch `from`.
-    pub fn push<D>(&mut self, w: W, from: u64, Ghost(timeline): Ghost<spec_fn(nat) -> D>) where
+    pub fn push<D>(&mut self, w: W, from: u64, Ghost(timeline): Ghost<spec_fn(nat) -> D>, Ghost(eng): Ghost<Engine<D>>) where
         W: AuxWorld<D>,
         requires
             cell_ok(*old(self), timeline),
+            exact_ok(*old(self), timeline, eng),
             old(self).newest() < u64::MAX,
             w.ok(timeline((old(self).newest() + 1) as nat)),
+            timeline((old(self).newest() + 1) as nat) == (eng.snap)(from),
             old(self).from@.last() < from,
         ensures
             cell_ok(*final(self), timeline),
+            exact_ok(*final(self), timeline, eng),
             final(self).base == old(self).base,
             final(self).newest() == old(self).newest() + 1,
             final(self).pending == old(self).pending,
+            final(self).log@ == old(self).log@.push(from),
     {
         let ghost old_from = self.from@;
+        let ghost old_log = self.log@;
+        let ghost old_exact = self.exact@;
         self.versions.push(w);
         self.from.push(from);
+        self.log = Ghost(old_log.push(from));
+        self.exact = Ghost(old_exact.push(true));
+        assert(old_log.last() == old_from.last());
+        assert(window_ok(self.window())) by {
+            let w = self.window();
+            assert forall|i: int, j: int| 0 <= i <= j < w.log.len() implies #[trigger] w.log[i] <= #[trigger] w.log[j] by {
+                if j == old_log.len() {
+                    if i < j {
+                        assert(old_log[i] <= old_log[old_log.len() - 1]);
+                    }
+                }
+            }
+            assert forall|i: int| 0 <= i < w.from.len() implies #[trigger] w.from[i] == w.log[w.log.len() - w.from.len() + i] by {
+                if i < old_from.len() {
+                    assert(old_from[i] == old_log[old_log.len() - old_from.len() + i]);
+                }
+            }
+        }
         assert(self.from@ == old_from.push(from));
         assert forall|i: int, j: int| 0 <= i < j < self.from@.len() implies #[trigger] self.from@[i] < #[trigger] self.from@[j] by {
             if j == old_from.len() {
@@ -313,17 +472,26 @@ impl<W> Cell<W> {
                 assert(self.versions@[j] == old(self).versions@[j]);
             }
         }
+        assert forall|i: int| 0 <= i < self.from@.len() && self.exact@[i] implies #[trigger] timeline((self.base + i) as nat)
+            == (eng.snap)(self.from@[i]) by {
+            if i < old_from.len() {
+                assert(old_exact[i] == self.exact@[i]);
+            }
+        }
     }
 
     /// Drop the versions older than min_v (the newest is always kept).
-    pub fn evict<D>(&mut self, min_v: u64, Ghost(timeline): Ghost<spec_fn(nat) -> D>) where
+    pub fn evict<D>(&mut self, min_v: u64, Ghost(timeline): Ghost<spec_fn(nat) -> D>, Ghost(eng): Ghost<Engine<D>>) where
         W: AuxWorld<D>,
         requires
             cell_ok(*old(self), timeline),
+            exact_ok(*old(self), timeline, eng),
         ensures
             cell_ok(*final(self), timeline),
+            exact_ok(*final(self), timeline, eng),
             final(self).newest() == old(self).newest(),
             final(self).pending == old(self).pending,
+            final(self).log == old(self).log,
     {
         let newest = self.newest_epoch(Ghost(timeline));
         let keep_from = if min_v > newest {
@@ -341,7 +509,20 @@ impl<W> Cell<W> {
             let rest_from = self.from.split_off(k);
             self.from = rest_from;
             self.base = keep_from;
+            let ghost old_exact = self.exact@;
+            self.exact = Ghost(old_exact.subrange(k as int, old_exact.len() as int));
             assert(self.from@ == old_from.subrange(k as int, old_from.len() as int));
+            assert forall|i: int| 0 <= i < self.from@.len() implies #[trigger] self.from@[i]
+                == self.log@[self.log@.len() - self.from@.len() + i] by {
+                assert(self.from@[i] == old_from[k + i]);
+            }
+            assert forall|i: int| 0 <= i < self.from@.len() && self.exact@[i] implies #[trigger] timeline((self.base + i) as nat)
+                == (eng.snap)(self.from@[i]) by {
+                assert(self.from@[i] == old_from[k + i]);
+                assert(old_exact[k + i] == self.exact@[i]);
+                assert(old(self).base + (k + i) == self.base + i);
+                assert(timeline((old(self).base + (k + i)) as nat) == (eng.snap)(old_from[k + i]));
+            }
             assert forall|i: int, j: int| 0 <= i < j < self.from@.len() implies #[trigger] self.from@[i] < #[trigger] self.from@[j] by {
                 assert(self.from@[i] == old_from[k + i]);
                 assert(self.from@[j] == old_from[k + j]);
@@ -365,6 +546,9 @@ impl<W> Cell<W> {
             final(self).base == old(self).base,
             final(self).newest() == old(self).newest(),
             final(self).pending == old(self).pending,
+            final(self).from == old(self).from,
+            final(self).log == old(self).log,
+            final(self).exact == old(self).exact,
     {
         let n = self.versions.len();
         let mut i: usize = 0;
@@ -374,6 +558,9 @@ impl<W> Cell<W> {
                 n == self.versions.len(),
                 self.base == old(self).base,
                 self.pending == old(self).pending,
+                self.from == old(self).from,
+                self.log == old(self).log,
+                self.exact == old(self).exact,
                 cell_ok(*self, timeline),
             decreases n - i,
         {
@@ -430,14 +617,17 @@ impl<W> Cell<W> {
 
     /// Drop the versions no snapshot at or after engine epoch `floor` can
     /// select: keep the one a snapshot at `floor` selects, and every newer.
-    pub fn prune<D>(&mut self, floor: u64, Ghost(timeline): Ghost<spec_fn(nat) -> D>) where
+    pub fn prune<D>(&mut self, floor: u64, Ghost(timeline): Ghost<spec_fn(nat) -> D>, Ghost(eng): Ghost<Engine<D>>) where
         W: AuxWorld<D>,
         requires
             cell_ok(*old(self), timeline),
+            exact_ok(*old(self), timeline, eng),
         ensures
             cell_ok(*final(self), timeline),
+            exact_ok(*final(self), timeline, eng),
             final(self).newest() == old(self).newest(),
             final(self).pending == old(self).pending,
+            final(self).log == old(self).log,
     {
         let mut keep: usize = 0;
         let mut i: usize = 0;
@@ -445,6 +635,7 @@ impl<W> Cell<W> {
         while i < n
             invariant
                 cell_ok(*self, timeline),
+                exact_ok(*self, timeline, eng),
                 n == self.from.len(),
                 i <= n,
                 keep < n,
@@ -456,38 +647,64 @@ impl<W> Cell<W> {
             i += 1;
         }
         let min_v = self.base + keep as u64;
-        self.evict(min_v, Ghost(timeline));
+        self.evict(min_v, Ghost(timeline), Ghost(eng));
     }
 }
 
 /// A one-version cell: version e, with world w, current from engine epoch
-/// `from`, nothing pending.
-pub fn single<D, W: AuxWorld<D>>(e: u64, w: W, from: u64, Ghost(timeline): Ghost<spec_fn(nat) -> D>) -> (c: Cell<W>)
+/// `from`, nothing pending, after the installs `prior`.
+pub fn single<D, W: AuxWorld<D>>(
+    e: u64,
+    w: W,
+    from: u64,
+    Ghost(prior): Ghost<Seq<u64>>,
+    Ghost(exact): Ghost<bool>,
+    Ghost(timeline): Ghost<spec_fn(nat) -> D>,
+    Ghost(eng): Ghost<Engine<D>>,
+) -> (c: Cell<W>)
     requires
         w.ok(timeline(e as nat)),
+        nondecreasing(prior),
+        prior.len() > 0 ==> prior.last() <= from,
+        exact ==> timeline(e as nat) == (eng.snap)(from),
     ensures
         cell_ok(c, timeline),
+        exact_ok(c, timeline, eng),
         c.base == e,
         c.newest() == e,
         c.pending is None,
+        c.log@ == prior.push(from),
+        c.from@ == seq![from],
+        c.exact@ == seq![exact],
 {
     let mut versions = Vec::new();
     versions.push(w);
     let mut fv = Vec::new();
     fv.push(from);
-    let c = Cell { base: e, versions, from: fv, pending: None };
+    let ghost log = prior.push(from);
+    let ghost ex = seq![exact];
+    let c = Cell { base: e, versions, from: fv, pending: None, log: Ghost(log), exact: Ghost(ex) };
     assert(c.versions@[0] == w);
+    assert(nondecreasing(prior.push(from))) by {
+        assert forall|i: int, j: int| 0 <= i <= j < prior.push(from).len() implies prior.push(from)[i] <= prior.push(from)[j] by {
+            if j == prior.len() && i < j {
+                assert(prior[i] <= prior[prior.len() - 1]);
+            }
+        }
+    }
     c
 }
 
 /// The lock invariant, as the lock's predicate.
 pub ghost struct AtEpoch<D> {
     pub timeline: spec_fn(nat) -> D,
+    pub engine: Engine<D>,
 }
 
 impl<D, W: AuxWorld<D>> RwLockPredicate<Cell<W>> for AtEpoch<D> {
     open spec fn inv(self, c: Cell<W>) -> bool {
-        cell_ok(c, self.timeline)
+        &&& cell_ok(c, self.timeline)
+        &&& exact_ok(c, self.timeline, self.engine)
     }
 }
 
@@ -551,8 +768,10 @@ impl<D, W: AuxWorld<D>> Prepared<D, W> {
 pub enum Install {
     /// Version e + 1 was appended.
     Applied,
-    /// The newest version was not e (commits out of sequence): the store now
-    /// holds only version e + 1, with every slot invalid.
+    /// Not appended as prepared: the newest version was not e, or the install
+    /// is earlier in engine epochs than the last one (commits out of order),
+    /// and the store now holds only version e + 1, with every slot invalid;
+    /// or a build was refused while a commit is in flight (store unchanged).
     Stale,
 }
 
@@ -566,15 +785,146 @@ pub enum Resolved<W> {
     NotVisible,
 }
 
+/// What a read of version v at `at` in window w established.
+pub open spec fn found_ok<D>(w: Window, timeline: spec_fn(nat) -> D, eng: Engine<D>, at: u64, v: int) -> bool {
+    &&& window_ok(w)
+    &&& sees(w, at, v)
+    &&& newest_installed(w.log, at, log_index(w, v))
+    &&& w.exact[v - w.base] ==> timeline(v as nat) == (eng.snap)(w.from[v - w.base])
+}
+
+proof fn lemma_newest_installed(w: Window, at: u64, v: int)
+    requires
+        window_ok(w),
+        sees(w, at, v),
+    ensures
+        newest_installed(w.log, at, log_index(w, v)),
+{
+    let k = log_index(w, v);
+    assert(w.from[v - w.base] == w.log[k]);
+    if at != 0 {
+        assert forall|j: int| k < j < w.log.len() implies #[trigger] w.log[j] > at by {
+            let i = j - (w.log.len() - w.from.len());
+            assert(w.from[i] == w.log[j]);
+        }
+    }
+}
+
+/// A version a snapshot was given, with its world (shared): the one handle
+/// through which a host reads, carrying what the store proved about it.
+pub struct Reading<D, W: AuxWorld<D>> {
+    v: u64,
+    at: u64,
+    world: W,
+    timeline: Ghost<spec_fn(nat) -> D>,
+    engine: Ghost<Engine<D>>,
+    window: Ghost<Window>,
+}
+
+impl<D, W: AuxWorld<D>> Reading<D, W> {
+    #[verifier::type_invariant]
+    spec fn wf(self) -> bool {
+        &&& self.world.ok((self.timeline@)(self.v as nat))
+        &&& self.engine@.wf()
+        &&& found_ok(self.window@, self.timeline@, self.engine@, self.at, self.v as int)
+    }
+
+    /// The store version read.
+    pub closed spec fn version(self) -> u64 {
+        self.v
+    }
+
+    /// The engine epoch of the snapshot (0: the newest, no snapshot).
+    pub closed spec fn at(self) -> u64 {
+        self.at
+    }
+
+    /// The database the version answers for: timeline(version).
+    pub closed spec fn db(self) -> D {
+        (self.timeline@)(self.v as nat)
+    }
+
+    /// The database the snapshot sees, per the engine model.
+    pub closed spec fn snapshot_db(self) -> D {
+        (self.engine@.snap)(self.at)
+    }
+
+    /// The host's contract holds for this read: a snapshot (at != 0), the
+    /// version was installed for its epoch (not an out-of-order placeholder),
+    /// and `read_instant` held when it was read.
+    pub closed spec fn contract(self) -> bool {
+        &&& self.at != 0
+        &&& self.window@.exact[self.v - self.window@.base]
+        &&& read_instant(self.window@, self.engine@, self.at)
+    }
+
+    /// LEMMA 5.2 EXTENDED: the version is the newest install current at `at`,
+    /// pruned ones included.
+    pub closed spec fn newest(self) -> bool {
+        newest_installed(self.window@.log, self.at, log_index(self.window@, self.v as int))
+    }
+
+    /// The world: it answers for the database at its version, and, if the
+    /// contract holds, for the snapshot's database.  LEMMA 5.3.
+    pub fn world(&self) -> (w: &W)
+        ensures
+            w.ok(self.db()),
+            self.newest(),
+            self.contract() ==> self.db() == self.snapshot_db(),
+    {
+        proof {
+            use_type_invariant(self);
+            let (w, eng, at, v) = (self.window@, self.engine@, self.at, self.v as int);
+            if self.contract() {
+                lemma_snapshot(eng, w, at, v);
+            }
+        }
+        &self.world
+    }
+}
+
+/// What reading at an epoch gave.
+pub enum Read<D, W: AuxWorld<D>> {
+    Found(Reading<D, W>),
+    /// A commit the snapshot may include is still in flight.
+    Pending,
+    /// Every kept version is newer than the snapshot.
+    NotVisible,
+}
+
 /// The store.  Shared by all host threads (`&Store` is `Sync`).
 pub struct Store<D, W: AuxWorld<D>> {
     lock: RwLock<Cell<W>, AtEpoch<D>>,
 }
 
 impl<D, W: AuxWorld<D>> Store<D, W> {
+    #[verifier::type_invariant]
+    spec fn wf(self) -> bool {
+        self.engine().wf()
+    }
+
     /// The database at each version (ghost, fixed at creation).
     pub closed spec fn timeline(self) -> spec_fn(nat) -> D {
         self.lock.pred().timeline
+    }
+
+    /// The host's engine model (ghost, fixed at creation).
+    pub closed spec fn engine(self) -> Engine<D> {
+        self.lock.pred().engine
+    }
+
+    /// The database a snapshot at engine epoch `at` sees.
+    pub open spec fn snap_db(self, at: u64) -> D {
+        (self.engine().snap)(at)
+    }
+
+    /// COMMIT-ORDER CONTRACT (ii) (TRUSTED, `requires` of `install` /
+    /// `commit`): the version prepared by `p` is the database a snapshot at
+    /// `from` sees, `from` being the epoch its commit becomes visible (a
+    /// build: the epoch of its scan).  (i), that installs are in commit
+    /// order, is enforced by `append`; (iii) is `read_instant`.
+    pub open spec fn visible_from(self, p: Prepared<D, W>, from: u64) -> bool {
+        self.db_at((p.epoch() + 1) as nat) == self.snap_db(from)
     }
 
     /// The database at version e.
@@ -583,15 +933,18 @@ impl<D, W: AuxWorld<D>> Store<D, W> {
     }
 
     /// A store holding only version `epoch`, with `world`, current from
-    /// engine epoch `from`.
-    pub fn new(epoch: u64, world: W, from: u64, Ghost(timeline): Ghost<spec_fn(nat) -> D>) -> (s: Self)
+    /// engine epoch `from` (the database a snapshot there sees).
+    pub fn new(epoch: u64, world: W, from: u64, Ghost(timeline): Ghost<spec_fn(nat) -> D>, Ghost(engine): Ghost<Engine<D>>) -> (s: Self)
         requires
             world.ok(timeline(epoch as nat)),
+            engine.wf(),
+            timeline(epoch as nat) == (engine.snap)(from),
         ensures
             s.timeline() == timeline,
+            s.engine() == engine,
     {
-        let ghost pred = AtEpoch::<D> { timeline };
-        let c = single(epoch, world, from, Ghost(timeline));
+        let ghost pred = AtEpoch::<D> { timeline, engine };
+        let c = single(epoch, world, from, Ghost(Seq::empty()), Ghost(true), Ghost(timeline), Ghost(engine));
         let lock = RwLock::new(c, Ghost(pred));
         Store { lock }
     }
@@ -601,6 +954,7 @@ impl<D, W: AuxWorld<D>> Store<D, W> {
         ensures
             g.store() == *self,
             cell_ok(g.cell(), self.timeline()),
+            exact_ok(g.cell(), self.timeline(), self.engine()),
     {
         let h = self.lock.acquire_read();
         ReadGuard { h, store: self }
@@ -612,6 +966,7 @@ impl<D, W: AuxWorld<D>> Store<D, W> {
         ensures
             r.1.store() == *self,
             cell_ok(r.0, self.timeline()),
+            exact_ok(r.0, self.timeline(), self.engine()),
     {
         let (c, h) = self.lock.acquire_write();
         (c, WriteGuard { h, store: self })
@@ -680,6 +1035,7 @@ impl<D, W: AuxWorld<D>> Store<D, W> {
     pub fn install(&self, p: Prepared<D, W>, from: u64, floor: u64) -> (r: Install)
         requires
             p.timeline() == self.timeline(),
+            self.visible_from(p, from),
     {
         self.append(p, from, floor, false)
     }
@@ -688,6 +1044,7 @@ impl<D, W: AuxWorld<D>> Store<D, W> {
     pub fn commit(&self, p: Prepared<D, W>, from: u64, floor: u64) -> (r: Install)
         requires
             p.timeline() == self.timeline(),
+            self.visible_from(p, from),
     {
         self.append(p, from, floor, true)
     }
@@ -695,33 +1052,48 @@ impl<D, W: AuxWorld<D>> Store<D, W> {
     fn append(&self, p: Prepared<D, W>, from: u64, floor: u64, end_pending: bool) -> (r: Install)
         requires
             p.timeline() == self.timeline(),
+            self.visible_from(p, from),
     {
+        let ghost eng = self.engine();
         let (e, next) = p.into_parts();
         let (mut c, g) = self.begin_write();
+        if !end_pending && c.pending.is_some() {
+            // a build is not serialized by `begin`: it would take the version
+            // number the commit in flight is about to install
+            g.end(c);
+            return Install::Stale;
+        }
         if end_pending {
             c.pending = None;
         }
         let newest = c.newest_epoch(Ghost(self.timeline()));
-        if newest == e {
-            // Epochs must increase along the window; a version from epoch 0
-            // (every snapshot), or one not after the newest, replaces it.
-            let last = c.from[c.from.len() - 1];
-            let replaces = from == 0 || from <= last;
-            if replaces {
-                // only version e + 1 is kept (what evicting every older one leaves)
-                let pending = c.pending;
-                let mut s = single(e + 1, next, from, Ghost(self.timeline()));
+        let last = c.from[c.from.len() - 1];
+        let pending = c.pending;
+        let ghost prior = c.log@;
+        assert(prior.last() == last);
+        if from < last {
+            // Out of order (a stale epoch behind a later install): no version
+            // may claim an epoch it was not built for; only version e + 1 is
+            // kept, invalid, from the last epoch.
+            let mut s = single(e + 1, W::invalid(), last, Ghost(prior), Ghost(false), Ghost(self.timeline()), Ghost(eng));
+            s.pending = pending;
+            g.end(s);
+            Install::Stale
+        } else if newest == e {
+            if from == last {
+                // the same epoch as the newest: it replaces it, and only
+                // version e + 1 is kept (what evicting every older one leaves)
+                let mut s = single(e + 1, next, from, Ghost(prior), Ghost(true), Ghost(self.timeline()), Ghost(eng));
                 s.pending = pending;
                 g.end(s);
             } else {
-                c.push(next, from, Ghost(self.timeline()));
-                c.prune(floor, Ghost(self.timeline()));
+                c.push(next, from, Ghost(self.timeline()), Ghost(eng));
+                c.prune(floor, Ghost(self.timeline()), Ghost(eng));
                 g.end(c);
             }
             Install::Applied
         } else {
-            let pending = c.pending;
-            let mut s = single(e + 1, W::invalid(), from, Ghost(self.timeline()));
+            let mut s = single(e + 1, W::invalid(), from, Ghost(prior), Ghost(true), Ghost(self.timeline()), Ghost(eng));
             s.pending = pending;
             g.end(s);
             Install::Stale
@@ -739,13 +1111,15 @@ impl<D, W: AuxWorld<D>> Store<D, W> {
     pub fn resolve_seen(&self, at: u64) -> (r: (Resolved<W>, Ghost<Window>))
         ensures
             increasing(r.1@.from),
-            r.0 matches Resolved::Found(v, w) ==> w.ok(self.db_at(v as nat)) && sees(r.1@, at, v as int),
+            r.0 matches Resolved::Found(v, w) ==> w.ok(self.db_at(v as nat))
+                && found_ok(r.1@, self.timeline(), self.engine(), at, v as int),
             r.0 is Pending ==> in_flight(r.1@, at),
             r.0 is NotVisible ==> none_current(r.1@, at),
     {
         let g = self.begin_read();
         let c = g.borrow();
         let ghost win = c.window();
+        assert(window_ok(win));
         let waits = match c.pending {
             Some(p) => at == 0 || at >= p,
             None => false,
@@ -756,7 +1130,18 @@ impl<D, W: AuxWorld<D>> Store<D, W> {
             match c.select(at, Ghost(self.timeline())) {
                 None => Resolved::NotVisible,
                 Some(v) => match c.at(v, Ghost(self.timeline())) {
-                    Lookup::Found(w) => Resolved::Found(v, w.share()),
+                    Lookup::Found(w) => {
+                        proof {
+                            assert(sees(win, at, v as int));
+                            lemma_newest_installed(win, at, v as int);
+                            let i = v - win.base;
+                            assert(0 <= i < c.from@.len());
+                            assert((c.base + i) as nat == v as nat);
+                            assert(c.exact@[i] ==> self.timeline()((c.base + i) as nat) == (self.engine().snap)(c.from@[i]));
+                            assert(win.exact[i] ==> self.db_at(v as nat) == self.snap_db(win.from[i]));
+                        }
+                        Resolved::Found(v, w.share())
+                    },
                     Lookup::Evicted => {
                         assert(false);
                         Resolved::NotVisible
@@ -786,7 +1171,8 @@ impl<D, W: AuxWorld<D>> Store<D, W> {
     pub fn resolve_wait_seen(&self, at: u64, tries: u64) -> (r: (Resolved<W>, Ghost<Window>))
         ensures
             increasing(r.1@.from),
-            r.0 matches Resolved::Found(v, w) ==> w.ok(self.db_at(v as nat)) && sees(r.1@, at, v as int),
+            r.0 matches Resolved::Found(v, w) ==> w.ok(self.db_at(v as nat))
+                && found_ok(r.1@, self.timeline(), self.engine(), at, v as int),
             r.0 is Pending ==> in_flight(r.1@, at),
             r.0 is NotVisible ==> none_current(r.1@, at),
     {
@@ -813,6 +1199,31 @@ impl<D, W: AuxWorld<D>> Store<D, W> {
             r matches Resolved::Found(v, w) ==> w.ok(self.db_at(v as nat)),
     {
         self.resolve_wait_seen(at, tries).0
+    }
+
+    /// `resolve_wait_seen`, packaged as a `Reading`.
+    #[verifier::exec_allows_no_decreases_clause]
+    pub fn read(&self, at: u64, tries: u64) -> (r: Read<D, W>)
+        ensures
+            r matches Read::Found(g) ==> g.db() == self.db_at(g.version() as nat) && g.at() == at
+                && g.snapshot_db() == self.snap_db(at),
+    {
+        proof {
+            use_type_invariant(self);
+        }
+        let (res, win) = self.resolve_wait_seen(at, tries);
+        match res {
+            Resolved::Found(v, world) => Read::Found(Reading {
+                v,
+                at,
+                world,
+                timeline: Ghost(self.timeline()),
+                engine: Ghost(self.engine()),
+                window: win,
+            }),
+            Resolved::Pending => Read::Pending,
+            Resolved::NotVisible => Read::NotVisible,
+        }
     }
 
     /// The newest version, with its world (shared): what the next version is
@@ -844,7 +1255,7 @@ impl<D, W: AuxWorld<D>> Store<D, W> {
     /// version any open snapshot can still ask for.
     pub fn evict(&self, min_v: u64) {
         let (mut c, g) = self.begin_write();
-        c.evict(min_v, Ghost(self.timeline()));
+        c.evict(min_v, Ghost(self.timeline()), Ghost(self.engine()));
         g.end(c);
     }
 
@@ -893,6 +1304,7 @@ impl<'a, D, W: AuxWorld<D>> ReadGuard<'a, D, W> {
         ensures
             *c == self.cell(),
             cell_ok(*c, self.store().timeline()),
+            exact_ok(*c, self.store().timeline(), self.store().engine()),
     {
         proof {
             use_type_invariant(self);
@@ -925,6 +1337,7 @@ impl<'a, D, W: AuxWorld<D>> WriteGuard<'a, D, W> {
     pub fn end(self, c: Cell<W>)
         requires
             cell_ok(c, self.store().timeline()),
+            exact_ok(c, self.store().timeline(), self.store().engine()),
     {
         proof {
             use_type_invariant(&self);

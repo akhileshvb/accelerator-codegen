@@ -11,9 +11,10 @@
 // Host contract (TRUSTED, stated at each query's prepare functions): the
 // inputs a writer prepares version e + 1 from (the commit's captured changes,
 // or a build's scans) are those of the database the store's timeline has at
-// e + 1, and the host installs the commits in the engine's commit order.
-// The store checks that version e is still the newest at install; it cannot
-// check that the host's changes are those of the next commit.
+// e + 1, and the host installs the commits in the engine's commit order
+// (store.rs states the contract).  The store checks that version e is still
+// the newest at install; it cannot check that the host's changes are those of
+// the next commit.
 use vstd::prelude::*;
 use std::sync::Arc;
 use crate::store::*;
@@ -41,6 +42,20 @@ impl<D, S: AccelState<D>> AuxWorld<D> for Slot<S> {
         match self {
             Slot::Invalid => Slot::Invalid,
             Slot::Valid(a) => Slot::Valid(a.clone()),
+        }
+    }
+}
+
+impl<D, S: AccelState<D>> Reading<D, Slot<S>> {
+    /// The slot's state, if valid: it answers for the database at the
+    /// version read, and, if the host's contract holds, for the snapshot's.
+    pub fn state(&self) -> (r: Option<&S>)
+        ensures
+            r matches Some(s) ==> (*s).answers(self.db()) && (self.contract() ==> (*s).answers(self.snapshot_db())),
+    {
+        match self.world() {
+            Slot::Valid(a) => Some(&**a),
+            Slot::Invalid => None,
         }
     }
 }
