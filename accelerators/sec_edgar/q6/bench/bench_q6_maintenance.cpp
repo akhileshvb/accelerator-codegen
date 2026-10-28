@@ -1,12 +1,17 @@
 // Pure aux-side cost of Q6 maintenance and reads (no SQL write): applies the
 // catalog's value-update probe as a MutationBatch through the coordinator and
-// times ApplyMutationBatch (stage + publish) and ExecuteCollect.
+// times ApplyMutationBatch (stage + publish) and ExecuteCollect. The writes
+// target the first drawn parameter set (eval/harness/param_sets.hpp) whose
+// answer has rows; the reads run every drawn set in turn.
 // usage: bench_q6_maintenance <db_path> [iterations] [threads]
 #include <chrono>
+#include <exception>
 #include <iostream>
 #include <vector>
 #include <algorithm>
 #include "backends/duckdb/api/duckdb_runtime.hpp"
+#include "backends/duckdb/api/sql_fallback.hpp"
+#include "eval/harness/param_sets.hpp"
 #include "catalog/query_catalog.hpp"
 #include "duckdb.hpp"
 #include "sec_edgar/q6/duckdb/aux/state.hpp"
@@ -21,7 +26,21 @@ int main(int argc, char **argv) {
   con.Query(std::string("PRAGMA threads=") + (argc > 3 ? argv[3] : "4"));
   const int iters = argc > 2 ? std::stoi(argv[2]) : 2000;
   const auto &entry = catalog::LookupSharedQuery("sec_edgar", 6);
-  auto probe = catalog::FindSharedProbe(con, entry);
+  const auto sets = accelerator_codegen::aux_state::harness::ArgumentSets(entry);
+  const accelerator_codegen::aux_state::core::QueryArguments *target = nullptr;
+  catalog::SharedProbe probe;
+  for (const auto &args : sets) {
+    try {
+      probe = catalog::FindSharedProbe(con, entry, args);
+      target = &args;
+      break;
+    } catch (const std::exception &) { // this set's answer has no rows
+    }
+  }
+  if (!target) {
+    std::cerr << "no drawn parameter set has an answer on this database\n";
+    return 1;
+  }
   DuckdbRuntime rt(con, entry, 10.0);
   rt.UseManualCapture(); // changes are hand-built below
   rt.Build();
@@ -32,13 +51,15 @@ int main(int argc, char **argv) {
     rt.ApplyMutationBatch(m);
     w.push_back(Us(t));
     t = Clock::now();
-    rt.ExecuteCollect();
+    rt.ExecuteCollect(sets[static_cast<std::size_t>(i) % sets.size()]);
     r.push_back(Us(t));
     std::swap(m.old_rows, m.new_rows); // flip back and forth
   }
-  // bulk: insert then delete 200k real USD cohort facts
+  // bulk: insert then delete 200k real facts of the target set's cohort
   {
-    auto res = con.Query("SELECT adsh,tag,version,ddate,qtrs,uom,coreg,value FROM num WHERE uom='USD' AND value IS NOT NULL AND adsh IN (SELECT adsh FROM sub WHERE fy=2023) LIMIT 200000");
+    auto res = con.Query(catalog::BindArguments(
+        "SELECT adsh,tag,version,ddate,qtrs,uom,coreg,value FROM num WHERE uom=$3 AND value IS NOT NULL AND adsh IN (SELECT adsh FROM sub WHERE fy=$1) LIMIT 200000",
+        *target));
     namespace core = accelerator_codegen::aux_state::core;
     core::MutationBatch ins; ins.table = 1; ins.kind = core::MutationKind::Insert;
     for (duckdb::idx_t i = 0; i < res->RowCount(); ++i) {

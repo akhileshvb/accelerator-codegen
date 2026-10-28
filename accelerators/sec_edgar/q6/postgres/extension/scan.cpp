@@ -297,20 +297,17 @@ Q6Runtime() {
 namespace {
 
 void ExecutePostgresSecEdgarQ6(FunctionCallInfo fcinfo) {
-  // accel_sec_edgar_q6_aux() uses the defaults; the three-argument overload is
-  // not STRICT: a NULL argument reaches the module as NULL.
+  // Not STRICT: a NULL argument reaches the module as NULL.
   core::QueryArguments arguments;
-  if (PG_NARGS() >= 3) {
+  arguments.values.push_back(
+      PG_ARGISNULL(0) ? core::AuxValue::Null(core::AuxType::Int64)
+                      : core::AuxValue::Of(core::AuxType::Int64,
+                                           static_cast<int64_t>(PG_GETARG_INT64(0))));
+  for (int i = 1; i <= 2; ++i) {
     arguments.values.push_back(
-        PG_ARGISNULL(0) ? core::AuxValue::Null(core::AuxType::Int64)
-                        : core::AuxValue::Of(core::AuxType::Int64,
-                                             static_cast<int64_t>(PG_GETARG_INT64(0))));
-    for (int i = 1; i <= 2; ++i) {
-      arguments.values.push_back(
-          PG_ARGISNULL(i) ? core::AuxValue::Null(core::AuxType::String)
-                          : core::AuxValue::Of(core::AuxType::String,
-                                               detail::TextDatum(PG_GETARG_DATUM(i))));
-    }
+        PG_ARGISNULL(i) ? core::AuxValue::Null(core::AuxType::String)
+                        : core::AuxValue::Of(core::AuxType::String,
+                                             detail::TextDatum(PG_GETARG_DATUM(i))));
   }
   detail::Q6Runtime().Execute(arguments, fcinfo);
 }

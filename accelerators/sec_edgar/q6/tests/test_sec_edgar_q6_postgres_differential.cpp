@@ -1,12 +1,13 @@
 // PostgreSQL differential / check / benchmark for the SEC EDGAR Q6 aux
-// accelerator (accel_sec_edgar_q6_aux() and accel_sec_edgar_q6_aux(fy, stmt,
-// uom)) against plain PostgreSQL SQL (workloads/sec_edgar/q6.sql with
-// the three parameters substituted). Every comparison also draws random
-// parameters (benchmark domain plus edges: NULL, unknown, look-alike values).
+// accelerator (accel_sec_edgar_q6_aux(fy, stmt, uom)) against plain PostgreSQL
+// SQL (workloads/sec_edgar/q6.sql, prepared and executed with the same
+// arguments on the same session). Every comparison runs the parameter sets drawn
+// by eval/harness/param_source (ACCEL_PARAM_SEED / _SETS / _FILE; "[params]"
+// line) and random parameters (the drawn values plus edges: NULL, unknown,
+// look-alike values).
 //
 // Talks to a running server through libpq only (the accelerator lives in the
-// server's accelerator_codegen_postgres module, installed by the pg helper
-// scripts). Modes:
+// server's accelerator_codegen_pg module, installed by backends/postgres/host.sh build). Modes:
 //
 //   synthetic [seed] [steps]
 //       Creates the scratch database q6_synth (C collation, extension,
@@ -23,15 +24,14 @@
 //       then committed + rolled-back writes of every kind, each undone, with a
 //       match after every step (sums compared to a relative 1e-9: plain
 //       SUM(float8) is order dependent).
-//   sweep [db] [percent=100]
-//       The full (fy, stmt, uom) domain (fy 2021..2024 x BS/IS/CF/EQ/CI x
-//       USD/shares/pure/CAD/CNY/EUR, sampled by `percent`) plus edge values on
-//       the full data of `db` against plain SQL; also times the reads.
+//   sweep [db]
+//       The drawn sets plus edge values (one argument replaced) on the full data
+//       of `db` against plain SQL; also times the reads.
 //   bench [db]
 //       Read p50 (accel vs plain SQL), build time and write overhead.
 //
 // Connection: libpq environment (PGHOST, PGPORT, PGUSER, PGPASSWORD).
-// ACCEL_Q6_TRIGGER_SQL = path of backends/postgres/host/capture_triggers.sql.
+// ACCEL_Q6_TRIGGER_SQL = path of backends/postgres/host/capture_triggers.sql (register.sql is read next to it).
 
 #include <libpq-fe.h>
 
@@ -51,39 +51,89 @@
 #include <string>
 #include <vector>
 
+#include "eval/harness/param_source.hpp"
+
+#ifndef ACCEL_SRC_DIR
+#error "ACCEL_SRC_DIR must name the repository root"
+#endif
+
 namespace {
 
 using Cell = std::optional<std::string>;
 using Row = std::vector<Cell>;
 using Rows = std::vector<Row>;
 
-const char *kBaseSql =
-    "SELECT s.name, p.stmt, n.tag, p.plabel, SUM(n.value) AS total_value, COUNT(*) AS cnt "
-    "FROM num n JOIN sub s ON n.adsh = s.adsh "
-    "JOIN pre p ON n.adsh = p.adsh AND n.tag = p.tag AND n.version = p.version "
-    "WHERE n.uom = 'USD' AND p.stmt = 'IS' AND s.fy = 2023 AND n.value IS NOT NULL "
-    "GROUP BY s.name, p.stmt, n.tag, p.plabel "
-    "ORDER BY total_value DESC, s.name, n.tag, p.plabel LIMIT 200";
-const char *kAccelSql = "SELECT * FROM accel_sec_edgar_q6_aux()";
-
+// One argument of the query as an SQL literal ("NULL" allowed).
 struct Params {
-  std::string fy = "2023";      // SQL literal ("NULL" allowed)
-  std::string stmt = "'IS'";    // SQL literal
-  std::string uom = "'USD'";    // SQL literal
+  std::string fy, stmt, uom;
   std::string AccelSql() const {
     return "SELECT * FROM accel_sec_edgar_q6_aux(" + (fy == "NULL" ? std::string("NULL::bigint") : fy + "::bigint") +
            "," + stmt + "::text," + uom + "::text)";
   }
-  std::string BaseSql() const {
-    return "SELECT s.name, p.stmt, n.tag, p.plabel, SUM(n.value) AS total_value, COUNT(*) AS cnt "
-           "FROM num n JOIN sub s ON n.adsh = s.adsh "
-           "JOIN pre p ON n.adsh = p.adsh AND n.tag = p.tag AND n.version = p.version "
-           "WHERE n.uom = " + uom + " AND p.stmt = " + stmt + " AND s.fy = " + fy +
-           " AND n.value IS NOT NULL GROUP BY s.name, p.stmt, n.tag, p.plabel "
-           "ORDER BY total_value DESC, s.name, n.tag, p.plabel LIMIT 200";
-  }
+  // Needs the connection's PREPARE (Conn::Reference).
+  std::string BaseSql() const { return "EXECUTE q6_reference(" + fy + "," + stmt + "," + uom + ")"; }
   std::string Text() const { return "(" + fy + "," + stmt + "," + uom + ")"; }
 };
+
+std::string Unquoted(const std::string &literal) {
+  return literal.size() >= 2 && literal.front() == '\'' ? literal.substr(1, literal.size() - 2) : literal;
+}
+
+// The generator's literal list (fy, stmt, uom); no commas inside a literal.
+Params ParamsOf(const std::string &literals) {
+  std::vector<std::string> parts;
+  std::stringstream in(literals);
+  for (std::string part; std::getline(in, part, ',');) {
+    const auto first = part.find_first_not_of(' '), last = part.find_last_not_of(' ');
+    parts.push_back(part.substr(first, last - first + 1));
+  }
+  if (parts.size() != 3) {
+    std::cerr << "FAIL: q6 arguments: " << literals << std::endl;
+    std::exit(1);
+  }
+  return {parts[0], parts[1], parts[2]};
+}
+
+const std::vector<Params> &DrawnParams() {
+  static const std::vector<Params> drawn = [] {
+    std::vector<Params> out;
+    for (const auto &literals : accelerator_codegen::aux_state::harness::DrawArgumentLists("sec_edgar", 6))
+      out.push_back(ParamsOf(literals));
+    return out;
+  }();
+  return drawn;
+}
+
+std::string Quoted(const std::string &s) {
+  std::string out = "'";
+  for (char ch : s) out += ch == '\'' ? std::string("''") : std::string(1, ch);
+  return out + "'";
+}
+std::string Lowered(std::string s) {
+  std::transform(s.begin(), s.end(), s.begin(), [](unsigned char ch) { return std::tolower(ch); });
+  return s;
+}
+
+// The drawn values, and arguments that match nothing: out-of-domain years,
+// look-alike (case, trailing blank, quote) and unknown texts, NULL.
+std::vector<std::string> FyValues() {
+  std::vector<std::string> out;
+  for (const auto &p : DrawnParams()) out.push_back(p.fy);
+  return out;
+}
+std::vector<std::string> FyEdges() {
+  const auto lo = std::stol(DrawnParams().front().fy);
+  return {std::to_string(lo - 4), std::to_string(lo + 40), "0", "-1", "2147483648", "NULL"};
+}
+std::vector<std::string> TextValues(std::string Params::*member) {
+  std::vector<std::string> out;
+  for (const auto &p : DrawnParams()) out.push_back(p.*member);
+  return out;
+}
+std::vector<std::string> TextEdges(const std::string &drawn) {
+  const auto name = Unquoted(drawn);
+  return {"'zz'", Quoted(Lowered(name)), Quoted(name + " "), Quoted(name + "'"), "''", "NULL"};
+}
 
 [[noreturn]] void Fail(const std::string &msg) {
   std::cerr << "FAIL: " << msg << std::endl;
@@ -138,6 +188,19 @@ public:
     if (!Try(sql, &rows, &err)) Fail(sql.substr(0, 300) + "\n  -> " + err);
     return rows;
   }
+  // The reference query for `p`: q6.sql prepared once per connection (the tables exist by the first use).
+  Rows Reference(const Params &p) {
+    if (!prepared_) {
+      std::ifstream in(std::string(ACCEL_SRC_DIR) + "/workloads/sec_edgar/q6.sql");
+      std::stringstream ss;
+      ss << in.rdbuf();
+      std::string sql = ss.str();
+      while (!sql.empty() && (sql.back() == '\n' || sql.back() == ';' || sql.back() == ' ')) sql.pop_back();
+      Exec("PREPARE q6_reference(bigint, text, text) AS " + sql);
+      prepared_ = true;
+    }
+    return Exec(p.BaseSql());
+  }
   std::string Scalar(const std::string &sql) {
     auto rows = Exec(sql);
     return rows.empty() || rows[0].empty() || !rows[0][0] ? "" : *rows[0][0];
@@ -145,6 +208,7 @@ public:
 
 private:
   PGconn *conn_;
+  bool prepared_ = false;
 };
 
 double Seconds(std::chrono::steady_clock::time_point a) {
@@ -243,32 +307,31 @@ struct Checker {
   std::mt19937_64 param_rng{0x5EED};
   int param_checks = 2; // random parameter triples per Check
   Params RandomParams() {
-    static const char *fys[] = {"2021", "2022", "2023", "2023", "2024", "2019", "2025", "0", "NULL"};
-    static const char *stmts[] = {"'BS'", "'IS'", "'IS'", "'CF'", "'EQ'", "'CI'", "'ZZ'", "'is'", "NULL"};
-    static const char *uoms[] = {"'USD'", "'USD'", "'shares'", "'pure'", "'CAD'", "'CNY'", "'EUR'", "'zz'", "'usd'", "NULL"};
+    const auto pick = [&](const std::vector<std::string> &values, const std::vector<std::string> &edges) {
+      const auto n = values.size() + edges.size();
+      const auto k = param_rng() % n;
+      return k < values.size() ? values[k] : edges[k - values.size()];
+    };
+    const auto &focus = DrawnParams()[param_rng() % DrawnParams().size()];
     Params p;
-    p.fy = fys[param_rng() % (sizeof fys / sizeof *fys)];
-    p.stmt = stmts[param_rng() % (sizeof stmts / sizeof *stmts)];
-    p.uom = uoms[param_rng() % (sizeof uoms / sizeof *uoms)];
+    p.fy = pick(FyValues(), FyEdges());
+    p.stmt = pick(TextValues(&Params::stmt), TextEdges(focus.stmt));
+    p.uom = pick(TextValues(&Params::uom), TextEdges(focus.uom));
     return p;
   }
-  void CheckOne(Conn &c, const std::string &where, const std::string &accel_sql,
-                const std::string &base_sql, const std::string &params) {
-    Rows accel = c.Exec(accel_sql), base = c.Exec(base_sql);
+  void CheckOne(Conn &c, const std::string &where, const Params &p) {
+    Rows accel = c.Exec(p.AccelSql()), base = c.Reference(p);
     std::string why;
     ++checks;
     if (!Equal(accel, base, rel_tol, &why)) {
-      std::cerr << "MISMATCH at " << where << " params " << params << ": " << why << "\nrecent ops:\n"
+      std::cerr << "MISMATCH at " << where << " params " << p.Text() << ": " << why << "\nrecent ops:\n"
                 << last_ops << "accel:\n" << Show(accel) << "base:\n" << Show(base);
       std::exit(1);
     }
   }
   void Check(Conn &c, const std::string &where) {
-    CheckOne(c, where, kAccelSql, kBaseSql, "default");
-    for (int i = 0; i < param_checks; ++i) {
-      const Params p = RandomParams();
-      CheckOne(c, where, p.AccelSql(), p.BaseSql(), p.Text());
-    }
+    for (const auto &p : DrawnParams()) CheckOne(c, where, p);
+    for (int i = 0; i < param_checks; ++i) CheckOne(c, where, RandomParams());
   }
   void Note(const std::string &op) {
     last_ops += "  " + op + "\n";
@@ -292,19 +355,19 @@ public:
   std::string AdshRaw() { return Pick(adshs_); }
   std::string Tag() { return Q(Pick(tags_)); }
   std::string Version() { return Q(Pick(versions_)); }
-  std::string Uom() {
-    static const std::vector<std::string> u = {"'USD'", "'USD'", "'USD'", "'USD'", "'usd'",
-                                               "'USD '", "'EUR'", "NULL", "'shares'", "'pure'", "'CAD'", "'CNY'"};
-    return Pick(u);
+  // The drawn values (three times as likely) and arguments that match nothing, NULL.
+  std::string Around(const std::vector<std::string> &values, const std::vector<std::string> &edges) {
+    const int n = Int(0, 3 * (int)values.size() + (int)edges.size() - 1);
+    return n < 3 * (int)values.size() ? values[n % values.size()] : edges[n - 3 * values.size()];
   }
+  std::string Uom() { return Around(TextValues(&Params::uom), TextEdges(Pick(DrawnParams()).uom)); }
+  // sub.stmt is VARCHAR(2): the look-alike is the lower-cased statement.
   std::string Stmt() {
-    static const std::vector<std::string> s = {"'IS'", "'IS'", "'IS'", "'BS'", "'is'", "'CF'", "NULL", "'EQ'", "'CI'"};
-    return Pick(s);
+    return Around(TextValues(&Params::stmt), {Quoted(Lowered(Unquoted(Pick(DrawnParams()).stmt))), "NULL"});
   }
-  std::string Fy() {
-    static const std::vector<std::string> f = {"2023", "2023", "2023", "2022", "2024", "NULL", "2021", "2019", "0"};
-    return Pick(f);
-  }
+  std::string Fy() { return Around(FyValues(), FyEdges()); }
+  // A unit / statement / year the drawn sets select.
+  const Params &Drawn() { return Pick(DrawnParams()); }
   std::string Name() {
     static const std::vector<std::string> n = {"'Alpha'", "'Alpha'", "'Beta'", "'Gamma'",
                                                "''", "NULL", "'alpha'", "'Zeta'"};
@@ -378,8 +441,11 @@ std::string RandomOp(Gen &g) {
   case 15: return "UPDATE sub SET name = " + g.Name() + " WHERE " + Pred(g, 2);
   case 16: return g.Chance(60) ? "DELETE FROM sub WHERE " + Pred(g, 2)
                                : "UPDATE sub SET adsh = " + Q(g.FreshAdsh()) + " WHERE adsh = " + g.Adsh();
-  default: return g.Chance(70) ? "UPDATE sub SET fy = 2023 WHERE fy IS DISTINCT FROM 2023 AND random() < 0.3"
-                               : "UPDATE sub SET fy = 2022 WHERE fy = 2023 AND random() < 0.3";
+  default: {
+    const std::string fy = g.Drawn().fy;
+    return g.Chance(70) ? "UPDATE sub SET fy = " + fy + " WHERE fy IS DISTINCT FROM " + fy + " AND random() < 0.3"
+                        : "UPDATE sub SET fy = " + fy + " + 1 WHERE fy = " + fy + " AND random() < 0.3";
+  }
   }
 }
 
@@ -404,7 +470,9 @@ void SetupSynthetic() {
   }
   Conn c("q6_synth");
   c.Exec("SET client_min_messages = error");
-  c.Exec("CREATE EXTENSION accelerator_codegen_postgres");
+  std::string register_sql;
+  ReadFileOrFail(std::string(trig).substr(0, std::string(trig).rfind('/')) + "/register.sql", register_sql);
+  c.Exec(register_sql);
   c.Exec(trigger_sql);
   // Full-width tables: capture projects physical attribute numbers.
   c.Exec("CREATE TABLE sub (adsh VARCHAR(20) PRIMARY KEY, cik INTEGER, name VARCHAR(150), sic INTEGER, "
@@ -437,7 +505,7 @@ int RunSynthetic(uint64_t seed, int steps) {
   for (int i = 0; i < 24; ++i)
     a.Exec("INSERT INTO sub (adsh, name, fy) VALUES (" + Q(g.adshs_[i]) + "," + g.Name() + "," + g.Fy() + ")");
   for (int i = 0; i < 80; ++i)
-    a.Exec("INSERT INTO num (adsh,tag,version,uom,value) VALUES (" + g.Adsh() + "," + g.Tag() + "," + g.Version() + ",'USD'," + g.Value() + ")");
+    a.Exec("INSERT INTO num (adsh,tag,version,uom,value) VALUES (" + g.Adsh() + "," + g.Tag() + "," + g.Version() + "," + g.Drawn().uom + "," + g.Value() + ")");
   for (int i = 0; i < 70; ++i)
     a.Exec("INSERT INTO pre (adsh,report,line,stmt,tag,version,plabel) VALUES (" + g.Adsh() + ",1,1," + g.Stmt() + "," + g.Tag() + "," + g.Version() + "," + g.Plabel() + ")");
   chk.Check(a, "initial (rebuild)");
@@ -501,7 +569,7 @@ int RunSynthetic(uint64_t seed, int steps) {
         chk.Check(a, where + " after truncate");
         for (int i = 0; i < 60; ++i) {
           std::string sql = std::string(t) == "num"
-              ? "INSERT INTO num (adsh,tag,version,uom,value) VALUES (" + g.Adsh() + "," + g.Tag() + "," + g.Version() + ",'USD'," + g.Value() + ")"
+              ? "INSERT INTO num (adsh,tag,version,uom,value) VALUES (" + g.Adsh() + "," + g.Tag() + "," + g.Version() + "," + g.Drawn().uom + "," + g.Value() + ")"
               : "INSERT INTO pre (adsh,report,line,stmt,tag,version,plabel) VALUES (" + g.Adsh() + ",1,1," + g.Stmt() + "," + g.Tag() + "," + g.Version() + "," + g.Plabel() + ")";
           a.Exec(sql);
         }
@@ -537,19 +605,29 @@ struct Target {
   std::string adsh, tag, version;
 };
 
-Target PickTarget(Conn &c) {
-  // A (adsh, tag, version) that contributes to the top group.
-  Rows r = c.Exec(
-      "WITH top AS (SELECT s.name, n.tag, p.plabel FROM num n JOIN sub s ON n.adsh = s.adsh "
-      "JOIN pre p ON n.adsh = p.adsh AND n.tag = p.tag AND n.version = p.version "
-      "WHERE n.uom = 'USD' AND p.stmt = 'IS' AND s.fy = 2023 AND n.value IS NOT NULL "
-      "GROUP BY s.name, n.tag, p.plabel ORDER BY SUM(n.value) DESC, s.name, n.tag, p.plabel LIMIT 1) "
-      "SELECT n.adsh, n.tag, n.version FROM num n JOIN sub s ON n.adsh = s.adsh "
-      "JOIN pre p ON n.adsh = p.adsh AND n.tag = p.tag AND n.version = p.version "
-      "JOIN top t ON s.name IS NOT DISTINCT FROM t.name AND n.tag = t.tag AND p.plabel IS NOT DISTINCT FROM t.plabel "
-      "WHERE n.uom = 'USD' AND p.stmt = 'IS' AND s.fy = 2023 AND n.value IS NOT NULL ORDER BY n.adsh LIMIT 1");
-  if (r.empty()) Fail("no contributing row found");
-  return {*r[0][0], *r[0][1], *r[0][2]};
+// The first drawn set with an answer on the database, and a (adsh, tag, version) contributing to its top group.
+struct Focus {
+  Params p;
+  Target target;
+  std::string stmt_other; // a statement the cohort does not select
+  std::string fy_other;   // a fiscal year the cohort does not select
+};
+
+Focus PickFocus(Conn &c) {
+  for (const auto &p : DrawnParams()) {
+    const std::string cond = "n.uom = " + p.uom + " AND p.stmt = " + p.stmt + " AND s.fy = " + p.fy + " AND n.value IS NOT NULL";
+    Rows r = c.Exec(
+        "WITH top AS (SELECT s.name, n.tag, p.plabel FROM num n JOIN sub s ON n.adsh = s.adsh "
+        "JOIN pre p ON n.adsh = p.adsh AND n.tag = p.tag AND n.version = p.version "
+        "WHERE " + cond + " GROUP BY s.name, n.tag, p.plabel ORDER BY SUM(n.value) DESC, s.name, n.tag, p.plabel LIMIT 1) "
+        "SELECT n.adsh, n.tag, n.version FROM num n JOIN sub s ON n.adsh = s.adsh "
+        "JOIN pre p ON n.adsh = p.adsh AND n.tag = p.tag AND n.version = p.version "
+        "JOIN top t ON s.name IS NOT DISTINCT FROM t.name AND n.tag = t.tag AND p.plabel IS NOT DISTINCT FROM t.plabel "
+        "WHERE " + cond + " ORDER BY n.adsh LIMIT 1");
+    if (!r.empty())
+      return {p, {*r[0][0], *r[0][1], *r[0][2]}, Quoted(Unquoted(p.stmt) + "~"), "(" + p.fy + " + 1)"};
+  }
+  Fail("no drawn parameter set has a contributing row");
 }
 
 int RunSf3(const std::string &db) {
@@ -562,7 +640,9 @@ int RunSf3(const std::string &db) {
   std::cerr << "  first accel+base check (includes build): " << Seconds(t) << " s\n";
   chk.Check(a, "pristine (hit)");
   chk.Check(b, "pristine other connection");
-  const Target tg = PickTarget(a);
+  const Focus focus = PickFocus(a);
+  const Target &tg = focus.target;
+  const std::string &uom = focus.p.uom, &stmt = focus.p.stmt;
   std::cerr << "  target adsh=" << tg.adsh << " tag=" << tg.tag << " version=" << tg.version << "\n";
   const std::string key = "adsh = " + Q(tg.adsh) + " AND tag = " + Q(tg.tag) + " AND version = " + Q(tg.version);
   const std::string adsh = Q(tg.adsh);
@@ -573,7 +653,7 @@ int RunSf3(const std::string &db) {
     if (also_b) chk.Check(b, label + " (other connection)");
   };
   // num write: insert / update / delete, autocommit
-  step("INSERT INTO num (adsh, tag, version, uom, value) VALUES (" + Q(tg.adsh) + "," + Q(tg.tag) + "," + Q(tg.version) + ",'USD', 123456789.25)", "num insert");
+  step("INSERT INTO num (adsh, tag, version, uom, value) VALUES (" + Q(tg.adsh) + "," + Q(tg.tag) + "," + Q(tg.version) + "," + uom + ", 123456789.25)", "num insert");
   step("UPDATE num SET value = value + 1000000 WHERE " + key + " AND value = 123456789.25", "num update");
   step("DELETE FROM num WHERE " + key + " AND value = 123456789.25 + 1000000", "num delete");
   // rolled back and in-transaction
@@ -584,25 +664,25 @@ int RunSf3(const std::string &db) {
   a.Exec("ROLLBACK");
   chk.Check(a, "after rollback");
   // sub: cohort exit / entry, name change
-  step("UPDATE sub SET fy = 2022 WHERE adsh = " + adsh, "sub cohort exit");
-  step("UPDATE sub SET fy = 2023 WHERE adsh = " + adsh, "sub cohort entry");
+  step("UPDATE sub SET fy = " + focus.fy_other + " WHERE adsh = " + adsh, "sub cohort exit");
+  step("UPDATE sub SET fy = " + focus.p.fy + " WHERE adsh = " + adsh, "sub cohort entry");
   const std::string old_name = a.Scalar("SELECT coalesce(name, '<<NULL>>') FROM sub WHERE adsh = " + adsh);
   step("UPDATE sub SET name = 'Zz renamed' WHERE adsh = " + adsh, "sub rename");
   step(old_name == "<<NULL>>" ? "UPDATE sub SET name = NULL WHERE adsh = " + adsh
                               : "UPDATE sub SET name = " + Q(old_name) + " WHERE adsh = " + adsh,
        "sub rename back");
   // pre: IS <-> BS flip of the bridge row
-  step("UPDATE pre SET stmt = 'BS' WHERE adsh = " + adsh + " AND tag = " + Q(tg.tag) + " AND version = " + Q(tg.version) + " AND stmt = 'IS'", "pre IS->BS");
-  step("UPDATE pre SET stmt = 'IS' WHERE adsh = " + adsh + " AND tag = " + Q(tg.tag) + " AND version = " + Q(tg.version) + " AND stmt = 'BS'", "pre BS->IS");
+  step("UPDATE pre SET stmt = " + focus.stmt_other + " WHERE adsh = " + adsh + " AND tag = " + Q(tg.tag) + " AND version = " + Q(tg.version) + " AND stmt = " + stmt, "pre flip out");
+  step("UPDATE pre SET stmt = " + stmt + " WHERE adsh = " + adsh + " AND tag = " + Q(tg.tag) + " AND version = " + Q(tg.version) + " AND stmt = " + focus.stmt_other, "pre flip back");
   // multi-table transaction with a savepoint and a rollback
   a.Exec("BEGIN");
-  a.Exec("UPDATE sub SET fy = 2022 WHERE adsh = " + adsh);
-  a.Exec("INSERT INTO num (adsh, tag, version, uom, value) VALUES (" + Q(tg.adsh) + "," + Q(tg.tag) + "," + Q(tg.version) + ",'USD', 5.5)");
+  a.Exec("UPDATE sub SET fy = " + focus.fy_other + " WHERE adsh = " + adsh);
+  a.Exec("INSERT INTO num (adsh, tag, version, uom, value) VALUES (" + Q(tg.adsh) + "," + Q(tg.tag) + "," + Q(tg.version) + "," + uom + ", 5.5)");
   a.Exec("SAVEPOINT s");
-  a.Exec("UPDATE pre SET stmt = 'CF' WHERE adsh = " + adsh);
+  a.Exec("UPDATE pre SET stmt = " + focus.stmt_other + " WHERE adsh = " + adsh);
   chk.Check(a, "in-txn multi-table");
   a.Exec("ROLLBACK TO SAVEPOINT s");
-  a.Exec("UPDATE sub SET fy = 2023 WHERE adsh = " + adsh);
+  a.Exec("UPDATE sub SET fy = " + focus.p.fy + " WHERE adsh = " + adsh);
   a.Exec("COMMIT");
   chk.Check(a, "multi-table commit");
   chk.Check(b, "multi-table commit (other connection)");
@@ -615,43 +695,20 @@ int RunSf3(const std::string &db) {
   return 0;
 }
 
-int RunSweep(const std::string &db, int percent) {
+int RunSweep(const std::string &db) {
   Conn a(db);
   Checker chk;
   chk.rel_tol = 1e-9;
   auto t = std::chrono::steady_clock::now();
-  a.Exec(kAccelSql); // builds the state
+  a.Exec(DrawnParams().front().AccelSql()); // builds the state
   std::cout << "build_s=" << Seconds(t) << "\n";
-  std::vector<Params> cases;
-  for (const char *f : {"2021", "2022", "2023", "2024"})
-    for (const char *st : {"'BS'", "'IS'", "'CF'", "'EQ'", "'CI'"})
-      for (const char *u : {"'USD'", "'shares'", "'pure'", "'CAD'", "'CNY'", "'EUR'"}) {
-        Params p;
-        p.fy = f;
-        p.stmt = st;
-        p.uom = u;
-        cases.push_back(p);
-      }
-  std::mt19937_64 rng(7);
-  if (percent < 100) {
-    std::shuffle(cases.begin(), cases.end(), rng);
-    cases.resize(std::max<std::size_t>(1, cases.size() * percent / 100));
+  // Each drawn set, then with one argument replaced by an edge value.
+  std::vector<Params> cases = DrawnParams();
+  for (const auto &drawn : DrawnParams()) {
+    for (const auto &fy : FyEdges()) cases.push_back({fy, drawn.stmt, drawn.uom});
+    for (const auto &stmt : TextEdges(drawn.stmt)) cases.push_back({drawn.fy, stmt, drawn.uom});
+    for (const auto &uom : TextEdges(drawn.uom)) cases.push_back({drawn.fy, drawn.stmt, uom});
   }
-  auto edge = [&](const char *f, const char *st, const char *u) {
-    Params p;
-    p.fy = f;
-    p.stmt = st;
-    p.uom = u;
-    cases.push_back(p);
-  };
-  for (const char *f : {"2019", "2025", "0", "-1", "2147483648", "NULL"}) edge(f, "'IS'", "'USD'");
-  edge("2023", "'ZZ'", "'USD'");
-  edge("2023", "'is'", "'USD'");
-  edge("2023", "NULL", "'USD'");
-  edge("2023", "'IS'", "'zz'");
-  edge("2023", "'IS'", "'usd'");
-  edge("2023", "'IS'", "NULL");
-  edge("2022", "'BS'", "'us''d'");
   std::vector<double> aux_ms, base_ms;
   long nonempty = 0;
   for (const auto &p : cases) {
@@ -659,7 +716,7 @@ int RunSweep(const std::string &db, int percent) {
     Rows accel = a.Exec(p.AccelSql());
     aux_ms.push_back(Seconds(t) * 1e3);
     t = std::chrono::steady_clock::now();
-    Rows base = a.Exec(p.BaseSql());
+    Rows base = a.Reference(p);
     base_ms.push_back(Seconds(t) * 1e3);
     nonempty += !base.empty();
     std::string why;
@@ -693,24 +750,27 @@ int RunBench(const std::string &db) {
   std::cout << "bench db=" << db << " reps=" << reps << "\n";
   // Build time: the first aux call in a fresh session builds the state.
   auto t = std::chrono::steady_clock::now();
-  a.Exec(kAccelSql);
+  a.Exec(DrawnParams().front().AccelSql());
   const double build_s = Seconds(t);
   std::vector<double> accel_ms, base_ms;
   for (int i = 0; i < reps; ++i) {
+    const auto &p = DrawnParams()[static_cast<std::size_t>(i) % DrawnParams().size()];
     t = std::chrono::steady_clock::now();
-    a.Exec(kAccelSql);
+    a.Exec(p.AccelSql());
     accel_ms.push_back(Seconds(t) * 1e3);
   }
   for (int i = 0; i < base_reps; ++i) {
+    const auto &p = DrawnParams()[static_cast<std::size_t>(i) % DrawnParams().size()];
     t = std::chrono::steady_clock::now();
-    a.Exec(kBaseSql);
+    a.Reference(p);
     base_ms.push_back(Seconds(t) * 1e3);
   }
   std::cout << "build_s=" << build_s << "\n";
   std::cout << "read_accel_p50_ms=" << Median(accel_ms) << " read_base_p50_ms=" << Median(base_ms)
             << " (base reps=" << base_reps << ")\n";
 
-  const Target tg = PickTarget(a);
+  const Focus focus = PickFocus(a);
+  const Target &tg = focus.target;
   const std::string key = "adsh = " + Q(tg.adsh) + " AND tag = " + Q(tg.tag) + " AND version = " + Q(tg.version);
   const std::string adsh = Q(tg.adsh);
   struct Op {
@@ -719,15 +779,15 @@ int RunBench(const std::string &db) {
   };
   std::vector<Op> ops = {
       {"num write (insert+delete, 1 row)",
-       "INSERT INTO num (adsh, tag, version, uom, value) VALUES (" + Q(tg.adsh) + "," + Q(tg.tag) + "," + Q(tg.version) + ",'USD', 7.25)",
+       "INSERT INTO num (adsh, tag, version, uom, value) VALUES (" + Q(tg.adsh) + "," + Q(tg.tag) + "," + Q(tg.version) + "," + focus.p.uom + ", 7.25)",
        "DELETE FROM num WHERE " + key + " AND value = 7.25"},
       {"num write (update value)", "UPDATE num SET value = value + 1 WHERE ctid = (SELECT ctid FROM num WHERE " + key + " LIMIT 1)",
        "UPDATE num SET value = value - 1 WHERE ctid = (SELECT ctid FROM num WHERE " + key + " LIMIT 1)"},
-      {"sub structural (fy 2023->2022->2023)", "UPDATE sub SET fy = 2022 WHERE adsh = " + adsh,
-       "UPDATE sub SET fy = 2023 WHERE adsh = " + adsh},
-      {"pre structural (IS->BS->IS)",
-       "UPDATE pre SET stmt = 'BS' WHERE adsh = " + adsh + " AND tag = " + Q(tg.tag) + " AND version = " + Q(tg.version) + " AND stmt = 'IS'",
-       "UPDATE pre SET stmt = 'IS' WHERE adsh = " + adsh + " AND tag = " + Q(tg.tag) + " AND version = " + Q(tg.version) + " AND stmt = 'BS'"}};
+      {"sub structural (cohort year out and back)", "UPDATE sub SET fy = " + focus.fy_other + " WHERE adsh = " + adsh,
+       "UPDATE sub SET fy = " + focus.p.fy + " WHERE adsh = " + adsh},
+      {"pre structural (statement out and back)",
+       "UPDATE pre SET stmt = " + focus.stmt_other + " WHERE adsh = " + adsh + " AND tag = " + Q(tg.tag) + " AND version = " + Q(tg.version) + " AND stmt = " + focus.p.stmt,
+       "UPDATE pre SET stmt = " + focus.p.stmt + " WHERE adsh = " + adsh + " AND tag = " + Q(tg.tag) + " AND version = " + Q(tg.version) + " AND stmt = " + focus.stmt_other}};
   // Plain writes: capture triggers disabled on num / sub / pre.
   const char *tables[] = {"num", "sub", "pre"};
   auto trig = [&](bool on) {
@@ -740,7 +800,7 @@ int RunBench(const std::string &db) {
   std::vector<Res> res(ops.size());
   for (int mode = 0; mode < 2; ++mode) { // 0 plain, 1 accelerated
     trig(mode == 1);
-    if (mode == 1) a.Exec(kAccelSql); // state (re)built before measuring
+    if (mode == 1) a.Exec(focus.p.AccelSql()); // state (re)built before measuring
     for (std::size_t o = 0; o < ops.size(); ++o) {
       std::vector<double> fwd, back;
       for (int i = 0; i < writes; ++i) {
@@ -756,7 +816,7 @@ int RunBench(const std::string &db) {
       (mode ? res[o].accel : res[o].plain) = Median(all);
       if (mode == 1) {
         t = std::chrono::steady_clock::now();
-        a.Exec(kAccelSql);
+        a.Exec(focus.p.AccelSql());
         res[o].first = Seconds(t) * 1e3; // read after the writes (state maintained)
       }
     }
@@ -764,7 +824,7 @@ int RunBench(const std::string &db) {
   trig(true);
   Conn v(db);
   std::string why;
-  Rows ac = v.Exec(kAccelSql), bs = v.Exec(kBaseSql);
+  Rows ac = v.Exec(focus.p.AccelSql()), bs = v.Reference(focus.p);
   if (!Equal(ac, bs, 1e-9, &why)) Fail("bench end state mismatch: " + why);
   for (std::size_t o = 0; o < ops.size(); ++o)
     std::cout << "write p50_ms: " << ops[o].label << ": plain=" << res[o].plain
@@ -783,7 +843,7 @@ int main(int argc, char **argv) {
                         argc > 3 ? std::atoi(argv[3]) : 300);
   if (mode == "sf3") return RunSf3(argc > 2 ? argv[2] : "sec_edgar");
   if (mode == "bench") return RunBench(argc > 2 ? argv[2] : "sec_edgar");
-  if (mode == "sweep") return RunSweep(argc > 2 ? argv[2] : "sec_edgar", argc > 3 ? std::atoi(argv[3]) : 100);
-  std::cerr << "usage: test_sec_edgar_q6_postgres_differential synthetic [seed] [steps] | sf3 [db] | sweep [db] [percent] | bench [db]\n";
+  if (mode == "sweep") return RunSweep(argc > 2 ? argv[2] : "sec_edgar");
+  std::cerr << "usage: test_sec_edgar_q6_postgres_differential synthetic [seed] [steps] | sf3 [db] | sweep [db] | bench [db]\n";
   return 2;
 }

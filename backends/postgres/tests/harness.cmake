@@ -17,7 +17,8 @@ find_package(Threads REQUIRED)
 # libpq clients of a running server with the extension installed.
 include(accelerators/sec_edgar/q2/tests/PostgresSecEdgarQ2Tests.cmake)
 accel_add_backend_exe(postgres test_sec_edgar_q6_postgres_differential CLIENT
-    accelerators/sec_edgar/q6/tests/test_sec_edgar_q6_postgres_differential.cpp)
+    accelerators/sec_edgar/q6/tests/test_sec_edgar_q6_postgres_differential.cpp
+    eval/harness/param_source.cpp)
 accel_add_backend_exe(postgres test_postgres_sec_edgar_q1_differential CLIENT
     accelerators/sec_edgar/q1/tests/test_postgres_sec_edgar_q1_differential.cpp
     eval/harness/param_source.cpp)
