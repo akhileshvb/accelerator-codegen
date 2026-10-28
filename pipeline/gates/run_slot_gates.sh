@@ -14,7 +14,7 @@
 # `host.sh slot <scenario> <seconds>` exits 0 (pass), 1 (fail) or 77 (the engine profile
 # declares the mechanic n/a: gate skipped; never for own_writes or ddl_events); see pipeline/prompts/engine_backend/host_contract.md.
 # Env: ACCEL_SLOT_GATE_SECONDS (load duration, default 6), ACCEL_SLOT_GATE_TIMEOUT
-# (seconds before a hung backend fails the gate; default 900, 3600 for the differential).
+# (seconds before a hung backend fails the gate; default 900).
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"

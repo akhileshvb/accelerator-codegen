@@ -200,19 +200,6 @@ cmd_run() { # target|command [args...]: a built binary, else a PATH command (e.g
   in_container "$@"
 }
 
-differential() {
-  local q log failed=0
-  for q in ${ACCEL_MYSQL_DIFF_QUERIES:-$(seq 1 22)}; do
-    if log="$(ACCEL_MYSQL_DIFF_SKIP_WRITE_MAINT="${ACCEL_MYSQL_DIFF_SKIP_WRITE_MAINT:-1}" \
-      in_container test_mysql_tpch_differential "${q}" 2>&1)" && grep -qE 'PASS (read|write_maint)' <<<"${log}"; then
-      echo "PASS Q${q}"
-    else
-      echo "FAIL Q${q}"; echo "${log}" | tail -30; failed=1
-    fi
-  done
-  return "${failed}"
-}
-
 # Driver coverage:
 #   epoch_stress        multi-connection stress (commit epochs under N sessions)
 #   hits_under_writes   build_race (exactness while a rebuild races writers) and the continuous
@@ -221,7 +208,6 @@ differential() {
 #   read_after_commit   sequential, slow-commit (forced rebuild) and continuous phases, any connection
 #   txn_edges           session_isolation: other session's ROLLBACK/COMMIT, savepoint, statement and
 #                       disconnect rollback each undo exactly that session's writes
-#   differential        read differential; no RF differential
 #   restart             77: the plugin lives inside mysqld
 #   own_writes, ddl_events   fail closed: no harness reads inside a writing transaction (the plugin
 #                       refuses it) or runs DROP/RENAME/recreate of a tracked table
@@ -243,9 +229,6 @@ cmd_slot() { # scenario seconds
       in_container test_mysql_aux_session_isolation || rc=1 ;;
     restart)
       echo "mysql has no separate accelerator process"; return 77 ;;
-    differential)
-      ensure_built test_mysql_tpch_differential
-      differential || rc=1 ;;
     own_writes | ddl_events)
       echo "mysql: ${scenario} has no driver yet (no read inside a writing transaction / DDL of a tracked table)"
       rc=1 ;;

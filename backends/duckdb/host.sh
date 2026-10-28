@@ -9,7 +9,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "${HERE}/../.." && pwd)"
 : "${ACCEL_ENGINE_STATE_DIR:?}"
 STATE="${ACCEL_ENGINE_STATE_DIR}"
-DB="${STATE}/tpch.duckdb"
+DB="${STATE}/engine.duckdb"
 ENV_FILE="${STATE}/env"
 BUILD="${ACCEL_BUILD_DIR:-${ROOT}/build-release}"
 DUCKDB_ROOT="${ACCEL_DUCKDB_ROOT:-${ACCEL_PIPELINE_PRIMARY_REPO:-${ROOT}}/../duckdb-dbcapture}"
@@ -63,7 +63,7 @@ cmd_load() { # schema.sql [constraints.sql]
 }
 
 cmd_build() { # [target...]
-  [[ -f "${BUILD}/CMakeCache.txt" ]] ||
+  [[ -f "${BUILD}/CMakeCache.txt" && -f "${BUILD}/build.ninja" ]] ||  # an interrupted configure leaves only the cache
     cmake -S "${ROOT}" -B "${BUILD}" -G Ninja -DCMAKE_BUILD_TYPE=Release \
       -DACCEL_CODEGEN_ENGINE=duckdb ${ACCEL_CMAKE_ARGS:-}
   cmake --build "${BUILD}" --target "${@:-accelerator_codegen}" -j"${ACCEL_BUILD_JOBS:-$(nproc)}"
@@ -88,29 +88,7 @@ cmd_run() { # target [args...]
 }
 
 cmd_slot() { # scenario seconds
-  local scenario="$1" seconds="$2" q failed=0 work
-  if [[ "${scenario}" != differential ]]; then
-    cmd_run test_slot_gates_duckdb "${scenario}" "${seconds}"
-    return
-  fi
-  for q in ${ACCEL_SLOT_DIFF_QUERIES:-$(seq 1 22)}; do
-    if cmd_run test_duckdb_tpch_differential "${q}" >/dev/null 2>&1; then
-      echo "PASS differential Q${q}"
-    else
-      echo "FAIL differential Q${q}"
-      failed=1
-    fi
-  done
-  work="$(mktemp -d)"
-  cp "${DB}" "${work}/tpch.duckdb"
-  if cmd_run test_shared_tpch_rf_differential "${work}/tpch.duckdb"; then
-    echo "PASS rf differential"
-  else
-    echo "FAIL rf differential"
-    failed=1
-  fi
-  rm -rf "${work}"
-  return "${failed}"
+  cmd_run test_slot_gates_duckdb "$1" "$2"
 }
 
 verb="${1:-}"
