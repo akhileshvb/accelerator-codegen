@@ -311,19 +311,16 @@ Q24Runtime() {
 namespace {
 
 void ExecutePostgresSecEdgarQ24(FunctionCallInfo fcinfo) {
-  // accel_sec_edgar_q24_aux() uses the defaults (2023, 'USD'); the two-argument
-  // overload is not STRICT: a NULL argument reaches the module as NULL.
+  // Not STRICT: a NULL argument reaches the module as NULL.
   core::QueryArguments arguments;
-  if (PG_NARGS() >= 2) {
-    arguments.values.push_back(
-        PG_ARGISNULL(0) ? core::AuxValue::Null(core::AuxType::Int64)
-                        : core::AuxValue::Of(core::AuxType::Int64,
-                                             static_cast<int64_t>(PG_GETARG_INT64(0))));
-    arguments.values.push_back(
-        PG_ARGISNULL(1) ? core::AuxValue::Null(core::AuxType::String)
-                        : core::AuxValue::Of(core::AuxType::String,
-                                             detail::TextDatum(PG_GETARG_DATUM(1))));
-  }
+  arguments.values.push_back(
+      PG_ARGISNULL(0) ? core::AuxValue::Null(core::AuxType::Int64)
+                      : core::AuxValue::Of(core::AuxType::Int64,
+                                           static_cast<int64_t>(PG_GETARG_INT64(0))));
+  arguments.values.push_back(
+      PG_ARGISNULL(1) ? core::AuxValue::Null(core::AuxType::String)
+                      : core::AuxValue::Of(core::AuxType::String,
+                                           detail::TextDatum(PG_GETARG_DATUM(1))));
   detail::Q24Runtime().Execute(arguments, fcinfo);
 }
 

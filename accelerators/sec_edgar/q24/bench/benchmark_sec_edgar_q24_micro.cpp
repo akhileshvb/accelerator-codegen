@@ -3,6 +3,9 @@
 // "SQL only", "aux maintenance only" and the combined DuckdbRuntime::Apply.
 //
 // usage: benchmark_sec_edgar_q24_micro <db_path> [reads] [writes]
+// Reads cycle through the parameter sets drawn from the parameter source
+// (ACCEL_PARAM_SEED / ACCEL_PARAM_SETS / ACCEL_PARAM_FILE); writes use the first set
+// that has an invalidating probe.
 // env:   ACCEL_BENCH_THREADS (default 1), ACCEL_AUX_PARALLEL=1 selects the
 //        parallel module when built with ACCEL_ENABLE_PARALLEL_AUX.
 #include <algorithm>
@@ -17,10 +20,13 @@
 
 #include "backends/duckdb/api/duckdb_runtime.hpp"
 #include "backends/duckdb/api/register.hpp"
+#include "backends/duckdb/api/sql_fallback.hpp"
 #include "catalog/query_catalog.hpp"
+#include "eval/harness/param_sets.hpp"
 #include "duckdb.hpp"
 
 namespace catalog = accelerator_codegen::aux_state::engine;
+namespace harness = accelerator_codegen::aux_state::harness;
 using catalog::duckdb::DuckdbRuntime;
 using Clock = std::chrono::steady_clock;
 
@@ -112,19 +118,20 @@ int main(int argc, char **argv) {
 
   if (reads <= 0 && writes <= 0) return 0; // build-only (for profiling)
   // Reads.
+  const auto sets = harness::ArgumentSets(entry);
+  std::vector<std::string> aux_sqls;
+  for (const auto &args : sets) aux_sqls.push_back(catalog::BindArguments(entry.duckdb_aux_sql, args));
   std::vector<double> mod, tf;
-  for (int i = 0; i < 20; ++i) (void)runtime.ExecuteCollect();
+  for (int i = 0; i < 20; ++i) (void)runtime.ExecuteCollect(sets[i % sets.size()]);
   for (int i = 0; i < reads; ++i) {
     t0 = Clock::now();
-    auto rows = runtime.ExecuteCollect();
+    auto rows = runtime.ExecuteCollect(sets[i % sets.size()]);
     mod.push_back(Us(t0));
-    if (rows.empty() && i == 0) std::cerr << "warning: empty result\n";
   }
-  const std::string aux_sql = entry.duckdb_aux_sql;
-  for (int i = 0; i < 20; ++i) Exec(con, aux_sql);
+  for (int i = 0; i < 20; ++i) Exec(con, aux_sqls[i % sets.size()]);
   for (int i = 0; i < reads; ++i) {
     t0 = Clock::now();
-    auto r = con.Query(aux_sql);
+    auto r = con.Query(aux_sqls[i % sets.size()]);
     if (!r || r->HasError()) return 1;
     for (duckdb::idx_t row = 0; row < r->RowCount(); ++row)
       for (duckdb::idx_t c = 0; c < r->ColumnCount(); ++c) (void)r->GetValue(c, row);
@@ -134,7 +141,22 @@ int main(int argc, char **argv) {
   Report("read: SQL table function", Summarize(tf));
 
   if (writes > 0) {
-    auto probe = catalog::FindInvalidatingSharedProbe(con, entry);
+    accelerator_codegen::aux_state::core::QueryArguments write_args;
+    catalog::SharedProbe probe;
+    bool found = false;
+    for (const auto &args : sets) {
+      try {
+        probe = catalog::FindInvalidatingSharedProbe(con, entry, args);
+        write_args = args;
+        found = true;
+        break;
+      } catch (const std::exception &) {
+      }
+    }
+    if (!found) {
+      std::cerr << "no drawn parameter set has an invalidating probe\n";
+      return 1;
+    }
     std::vector<double> sql_only, aux_only, both, both_then_read;
     for (int i = 0; i < writes; ++i) {
       t0 = Clock::now();
@@ -167,7 +189,7 @@ int main(int argc, char **argv) {
     }
     // Re-sync aux with the restored table, then time the combined path.
     runtime.Build();
-    auto probe2 = catalog::FindInvalidatingSharedProbe(con, entry);
+    auto probe2 = catalog::FindInvalidatingSharedProbe(con, entry, write_args);
     for (int i = 0; i < writes; ++i) {
       t0 = Clock::now();
       runtime.Apply(probe2);
@@ -179,12 +201,12 @@ int main(int argc, char **argv) {
     Report("write: aux maintenance only", Summarize(aux_only));
     Report("write: Apply (SQL + aux)", Summarize(both));
     // Read after a write: first read pays lazy top-k recompute.
-    auto probe3 = catalog::FindInvalidatingSharedProbe(con, entry);
+    auto probe3 = catalog::FindInvalidatingSharedProbe(con, entry, write_args);
     std::vector<double> rw;
     for (int i = 0; i < std::min(writes, 200); ++i) {
       runtime.Apply(probe3);
       t0 = Clock::now();
-      (void)runtime.ExecuteCollect();
+      (void)runtime.ExecuteCollect(write_args);
       rw.push_back(Us(t0));
     }
     Exec(con, probe3.restore_sql);

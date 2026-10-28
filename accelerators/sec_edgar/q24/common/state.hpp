@@ -4,7 +4,7 @@
 //
 //   SELECT n.tag, n.version, COUNT(*), SUM(n.value)
 //   FROM num n LEFT JOIN pre p USING (adsh, tag, version)
-//   WHERE n.uom='USD' AND n.ddate BETWEEN 20230101 AND 20231231
+//   WHERE n.uom=$2 AND n.ddate BETWEEN $1*10000+101 AND $1*10000+1231
 //     AND n.value IS NOT NULL AND p.adsh IS NULL
 //   GROUP BY n.tag, n.version HAVING COUNT(*) > 10
 //   ORDER BY cnt DESC LIMIT 100
@@ -38,9 +38,7 @@
 
 namespace accelerator_codegen::aux_state::query {
 
-// Query constants (the query has no template parameters).
-inline constexpr int64_t kSecEdgarQ24DefaultYear = 2023;
-inline constexpr const char *kSecEdgarQ24DefaultUom = "USD";
+// Query constants.
 inline constexpr int64_t kSecEdgarQ24MinimumCount = 11; // HAVING COUNT(*) > 10
 inline constexpr std::size_t kSecEdgarQ24OutputLimit = 100;
 

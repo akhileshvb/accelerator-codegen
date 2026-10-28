@@ -277,20 +277,6 @@ std::vector<uint8_t> EncodeSecEdgarQ24Aggregates(const SecEdgarQ24State &s) {
   return out;
 }
 
-std::vector<SecEdgarQ24OutputRow>
-BuildSecEdgarQ24Output(const SecEdgarQ24State &state) {
-  std::vector<SecEdgarQ24OutputRow> rows;
-  if (!state.groups) return rows;
-  // The default parameter values' bucket.
-  const std::string bucket = Q24BucketKey(
-      static_cast<int32_t>(kSecEdgarQ24DefaultYear),
-      Q24Str::Of(kSecEdgarQ24DefaultUom, std::strlen(kSecEdgarQ24DefaultUom)));
-  for (const auto &r : *state.groups->Result(bucket))
-    rows.push_back({r.tag, r.version, r.tag_null, r.version_null, r.count,
-                    r.total});
-  return rows;
-}
-
 // ── txn buffer ─────────────────────────────────────────────────────────────
 
 bool SecEdgarQ24TxnBuffer::HasPendingChanges() const {
@@ -862,42 +848,36 @@ SecEdgarQ24Module::StageMaintenance(core::AuxEngineServices &services,
 
 bool SecEdgarQ24Module::ParseArguments(const core::QueryArguments &args,
                                        std::string &bucket_key) {
-  int64_t year = kSecEdgarQ24DefaultYear;
-  Q24Str uom = Q24Str::Of(kSecEdgarQ24DefaultUom, std::strlen(kSecEdgarQ24DefaultUom));
-  std::string uom_storage;
-  if (!args.values.empty()) {
-    if (args.values.size() != 2)
-      throw std::invalid_argument(
-          "sec_edgar q24 aux expects () or (year BIGINT, uom VARCHAR)");
-    const auto &y = args.values[0];
-    const auto &u = args.values[1];
-    if (y.is_null || u.is_null) return false; // NULL never compares equal
-    if (const auto *i = std::get_if<int64_t>(&y.payload)) {
-      year = *i;
-    } else if (const auto *ui = std::get_if<uint64_t>(&y.payload)) {
-      if (*ui > static_cast<uint64_t>(INT32_MAX)) return false;
-      year = static_cast<int64_t>(*ui);
-    } else if (const auto *d = std::get_if<double>(&y.payload)) {
-      if (!(*d == std::floor(*d)) || !(std::fabs(*d) < 9.0e18)) return false;
-      year = static_cast<int64_t>(*d);
-    } else if (const auto *s = std::get_if<std::string>(&y.payload)) {
-      char *end = nullptr;
-      errno = 0;
-      const long long v = std::strtoll(s->c_str(), &end, 10);
-      if (end == s->c_str() || *end != '\0' || errno == ERANGE) return false;
-      year = v;
-    } else {
-      throw std::invalid_argument("sec_edgar q24 aux: unsupported year argument");
-    }
-    const auto *us = std::get_if<std::string>(&u.payload);
-    if (!us) throw std::invalid_argument("sec_edgar q24 aux: uom must be a string");
-    uom_storage = *us;
-    uom = Q24Str::Of(uom_storage);
+  if (args.values.size() != 2)
+    throw std::invalid_argument(
+        "sec_edgar q24 aux expects (year BIGINT, uom VARCHAR)");
+  const auto &y = args.values[0];
+  const auto &u = args.values[1];
+  if (y.is_null || u.is_null) return false; // NULL never compares equal
+  int64_t year;
+  if (const auto *i = std::get_if<int64_t>(&y.payload)) {
+    year = *i;
+  } else if (const auto *ui = std::get_if<uint64_t>(&y.payload)) {
+    if (*ui > static_cast<uint64_t>(INT32_MAX)) return false;
+    year = static_cast<int64_t>(*ui);
+  } else if (const auto *d = std::get_if<double>(&y.payload)) {
+    if (!(*d == std::floor(*d)) || !(std::fabs(*d) < 9.0e18)) return false;
+    year = static_cast<int64_t>(*d);
+  } else if (const auto *s = std::get_if<std::string>(&y.payload)) {
+    char *end = nullptr;
+    errno = 0;
+    const long long v = std::strtoll(s->c_str(), &end, 10);
+    if (end == s->c_str() || *end != '\0' || errno == ERANGE) return false;
+    year = v;
+  } else {
+    throw std::invalid_argument("sec_edgar q24 aux: unsupported year argument");
   }
+  const auto *uom = std::get_if<std::string>(&u.payload);
+  if (!uom) throw std::invalid_argument("sec_edgar q24 aux: uom must be a string");
   // ddate is an INTEGER: no row can lie in the window of a year whose
   // bucket does not fit int32 (this also bounds Y*10000+1231 in 64 bits).
   if (year < INT32_MIN || year > INT32_MAX) return false;
-  bucket_key = Q24BucketKey(static_cast<int32_t>(year), uom);
+  bucket_key = Q24BucketKey(static_cast<int32_t>(year), Q24Str::Of(*uom));
   return true;
 }
 
