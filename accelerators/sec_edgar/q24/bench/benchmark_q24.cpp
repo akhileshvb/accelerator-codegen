@@ -19,7 +19,7 @@
 namespace {
 using Clock = std::chrono::steady_clock;
 
-constexpr const char *kReferenceSqlPath = "workloads/sec_edgar/q24.sql";
+constexpr const char *kReferenceSqlPath = "workloads/sec_edgar/instances/seed_1/24.sql";
 
 int GetEnvInt(const char *name, int fallback) {
 	const char *value = std::getenv(name);

@@ -58,10 +58,6 @@ constexpr std::array<const char *, 12> kAdsh = {
 constexpr std::array<const char *, 5> kTags = {"Rev", "Cost", "Assets", "Cash", "Debt"};
 constexpr std::array<const char *, 3> kVers = {"us-gaap/2023", "us-gaap/2024", "custom"};
 
-// Parameter domain of the parameterised accelerator (plus edges).
-constexpr std::array<int64_t, 6> kYears = {2019, 2020, 2021, 2022, 2023, 2024};
-constexpr std::array<const char *, 6> kUoms = {"USD", "shares", "pure", "CAD", "CNY", "EUR"};
-
 struct Gen {
   std::mt19937_64 rng;
   bool nulls;
@@ -99,22 +95,15 @@ struct Gen {
     if (p < 97) return std::string("usd");
     return std::string("XYZ");
   }
-  // A random (year, uom) query: the domain plus edges.
-  std::pair<std::optional<int64_t>, OptStr> Params() {
-    const int p = R(100);
-    std::optional<int64_t> y;
-    if (p < 5) y = std::nullopt;
-    else if (p < 10) y = int64_t{2017};
-    else if (p < 15) y = int64_t{2025};
-    else if (p < 18) y = int64_t{0};
-    else if (p < 20) y = int64_t{4000000000000000000LL};
-    else if (p < 22) y = int64_t{-1};
-    else y = kYears[R(6)];
-    OptStr u;
-    const int q = R(100);
-    if (q < 4) u = std::nullopt;
-    else if (q < 10) u = std::string("unknown_uom");
-    else u = std::string(kUoms[R(6)]);
+  // A (year, uom) cell the generated rows concentrate in: HAVING > 10 groups form here.
+  std::pair<int64_t, std::string> DenseCell() {
+    return {R(2) ? 2023 : 2024, R(3) ? "USD" : "EUR"};
+  }
+  // Arguments outside the query's domain: NULLs, unknown uom, years no ddate can match.
+  std::pair<std::optional<int64_t>, OptStr> EdgeParams() {
+    static const int64_t years[] = {2017, 2025, 0, -1, 4000000000000000000LL};
+    std::optional<int64_t> y = R(5) == 0 ? std::nullopt : std::optional<int64_t>(years[R(5)]);
+    OptStr u = R(5) == 0 ? std::nullopt : OptStr(std::string("unknown_uom"));
     return {y, u};
   }
   NumRow Num() {

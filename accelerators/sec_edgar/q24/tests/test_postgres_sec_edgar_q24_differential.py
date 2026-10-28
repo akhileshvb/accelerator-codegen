@@ -19,12 +19,14 @@ Phases
            then real writes: a rolled-back transaction, a committed value
            update and a committed pre delete of the top group (restored)
 
-Every comparison also draws random (year, uom) parameters (the benchmark domain
-plus edges: NULLs, unknown uom, years 0 / 2017 / 2025 / huge) and compares
-accel_sec_edgar_q24_aux(year, uom) with the plain query bound to them.
---sweep runs a parameter sweep on an existing (SF3) database.
+Every comparison checks accel_sec_edgar_q24_aux(year, uom) against the plain query
+bound to the same parameters: the sets drawn from the parameter source
+(eval/harness/param_sets.py: ACCEL_PARAM_SEED / ACCEL_PARAM_SETS / ACCEL_PARAM_FILE),
+the cell the scenario data concentrates in, and random edges (NULLs, unknown uom,
+years 0 / 2017 / 2025 / huge).
+--sweep runs the drawn sets plus edges on an existing (SF3) database.
 
-The reference is the plain query (workloads/sec_edgar/q24.sql) with a
+The reference is the query template (workloads/sec_edgar/q24.sql) bound with a
 deterministic tie-break appended to ORDER BY (cnt DESC leaves ties unordered;
 the aux result breaks them by tag, version in byte order, NULLs first).
 
@@ -46,41 +48,35 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, "..", "..", "..", ".."))
 SCRIPTS = os.path.join(ROOT, "scripts")
 
-ACCEL_SQL = "SELECT tag, version, cnt, total FROM accel_sec_edgar_q24_aux()"
-PLAIN_SQL = (
-    "SELECT n.tag, n.version, COUNT(*) AS cnt, SUM(n.value) AS total "
-    "FROM num n LEFT JOIN pre p ON n.tag = p.tag AND n.version = p.version AND "
-    "n.adsh = p.adsh "
-    "WHERE n.uom = 'USD' AND n.ddate BETWEEN 20230101 AND 20231231 "
-    "AND n.value IS NOT NULL AND p.adsh IS NULL "
-    "GROUP BY n.tag, n.version HAVING COUNT(*) > 10 "
-    "ORDER BY cnt DESC, n.tag COLLATE \"C\" NULLS FIRST, "
-    "n.version COLLATE \"C\" NULLS FIRST LIMIT 100"
-)
+sys.path.insert(0, os.path.join(ROOT, "eval", "harness"))
+import param_sets  # noqa: E402
+
+with open(os.path.join(ROOT, "workloads", "sec_edgar", "q24.sql")) as _f:
+    TEMPLATE = _f.read().rstrip().rstrip(";")
 NULLTXT = "<NULL>"
-YEARS = [2019, 2020, 2021, 2022, 2023, 2024]
-UOMS = ["USD", "shares", "pure", "CAD", "CNY", "EUR"]
-# Buckets that hold HAVING > 10 groups in the synthetic data.
+# The cell the scenario data (edges_phase) and the random writes concentrate in.
+SCENARIO = (2023, "USD")
+# Cells that hold HAVING > 10 groups in the synthetic data.
 HOT = [(2023, "USD"), (2024, "USD"), (2023, "EUR"), (2022, "shares"), (2024, "EUR"),
        (2019, "pure")]
 
 
+def drawn_cells():
+    """The (year, uom) pairs of the parameter source."""
+    return [(d["params"]["year"], d["params"]["uom"]) for d in param_sets.draw_sets("sec_edgar", 24)]
+
+
 def plain_sql(year, uom):
-    """q24 with :year / :uom bound; a huge year (BIGINT overflow in the
-    reference) is clamped: no INTEGER ddate lies there, both are empty."""
+    """The template bound to (year, uom), with a deterministic tie-break appended to
+    ORDER BY; a huge year (BIGINT overflow in the reference) is clamped: no INTEGER
+    ddate lies there, both are empty."""
     if year is not None:
         year = max(-10 ** 9, min(10 ** 9, year))
-    ys = "NULL" if year is None else str(year)
-    return (
-        "SELECT n.tag, n.version, COUNT(*) AS cnt, SUM(n.value) AS total "
-        "FROM num n LEFT JOIN pre p ON n.tag = p.tag AND n.version = p.version AND "
-        "n.adsh = p.adsh "
-        "WHERE n.uom = %s AND n.ddate BETWEEN %s::bigint*10000+101 AND %s::bigint*10000+1231 "
-        "AND n.value IS NOT NULL AND p.adsh IS NULL "
-        "GROUP BY n.tag, n.version HAVING COUNT(*) > 10 "
-        "ORDER BY cnt DESC, n.tag COLLATE \"C\" NULLS FIRST, "
-        "n.version COLLATE \"C\" NULLS FIRST LIMIT 100"
-    ) % (lit(uom), ys, ys)
+    ys = "NULL::bigint" if year is None else "%d::bigint" % year
+    sql = TEMPLATE.replace("$1", ys).replace("$2", lit(uom))
+    return sql.replace(
+        "ORDER BY cnt DESC",
+        'ORDER BY cnt DESC, n.tag COLLATE "C" NULLS FIRST, n.version COLLATE "C" NULLS FIRST')
 
 
 def accel_sql(year, uom):
@@ -166,21 +162,22 @@ class Checker:
         self.param_nonempty = 0
 
     gen = None  # set by main(): enables random parameter comparisons
+    cells = ()  # (year, uom) pairs every compare() checks
 
-    def compare(self, sess, ctx, exp=None):
-        self.compare_params(sess, ctx, None, None, exp, default=True)
-        if self.gen is not None and exp is None:
+    def compare(self, sess, ctx):
+        for year, uom in self.cells:
+            self.compare_params(sess, ctx, year, uom)
+        if self.gen is not None:
             for year, uom in self.gen.params(2):
                 self.compare_params(sess, ctx, year, uom)
 
-    def compare_params(self, sess, ctx, year, uom, exp=None, default=False):
-        got = sess.rows(ACCEL_SQL if default else accel_sql(year, uom))
+    def compare_params(self, sess, ctx, year, uom, exp=None):
+        got = sess.rows(accel_sql(year, uom))
         if exp is None:
-            exp = sess.rows(PLAIN_SQL if default else plain_sql(year, uom))
-        if not default:
-            ctx = "%s [year=%s uom=%s]" % (ctx, year, uom)
-            self.param_compares += 1
-            self.param_nonempty += len(exp) > 0
+            exp = sess.rows(plain_sql(year, uom))
+        ctx = "%s [year=%s uom=%s]" % (ctx, year, uom)
+        self.param_compares += 1
+        self.param_nonempty += len(exp) > 0
         self.compares += 1
         self.max_rows = max(self.max_rows, len(exp))
         self.limit_hits += len(exp) == 100
@@ -237,26 +234,17 @@ class Gen:
             [55, 12, 8, 6, 4, 3, 4, 4, 2])[0]
 
     def params(self, k):
-        """k random (year, uom) pairs: hot buckets, the domain and the edges."""
+        """k random (year, uom) pairs: the hot cells and the edges."""
         out = []
         for _ in range(k):
-            x = self.r.random()
-            if x < 0.55:
-                out.append(self.r.choice(HOT))
-                continue
-            y = self.r.choice(YEARS)
+            year, uom = self.r.choice(HOT)
             e = self.r.random()
-            if e < 0.06:
-                y = None
-            elif e < 0.12:
-                y = self.r.choice([2017, 2025, 0, -1, 201 // 10000, 4 * 10 ** 18, -(4 * 10 ** 18)])
-            u = self.r.choice(UOMS)
+            if e < 0.12:
+                year = None if e < 0.06 else self.r.choice([2017, 2025, 0, -1, 4 * 10 ** 18, -(4 * 10 ** 18)])
             e = self.r.random()
-            if e < 0.04:
-                u = None
-            elif e < 0.1:
-                u = "nosuchuom"
-            out.append((y, u))
+            if e < 0.1:
+                uom = None if e < 0.04 else "nosuchuom"
+            out.append((year, uom))
         return out
 
     def value(self):
@@ -559,61 +547,64 @@ def random_phase(sa, sb, chk, g, steps):
 
 def existing_db_phase(sa, sb, chk, g):
     """Read check + real writes on a loaded database, undone afterwards.
-    The plain query takes minutes at SF3, so each database state is
-    evaluated by plain SQL once and the aux result is compared with it from
-    both backends (and again after state-restoring rollbacks)."""
+    The plain query takes minutes at SF3, so the checks use one drawn cell (the first with an
+    answer), each database state is evaluated by plain SQL once and the aux result is compared
+    with it from both backends (and again after state-restoring rollbacks)."""
     def timed(label, fn):
         t0 = time.time()
         r = fn()
         print("  existing db: %s %.1fs" % (label, time.time() - t0), flush=True)
         return r
 
-    p0 = timed("plain (initial)", lambda: sa.rows(PLAIN_SQL))
-    timed("A first read (build) + compare", lambda: chk.compare(sa, "existing db: build + read", p0))
-    timed("A second read + compare", lambda: chk.compare(sa, "existing db: second read", p0))
-    timed("B read (own build) + compare", lambda: chk.compare(sb, "existing db: other backend read", p0))
+    for year, uom in chk.cells:
+        p0 = timed("plain (initial) %s/%s" % (year, uom), lambda: sa.rows(plain_sql(year, uom)))
+        if p0:
+            break
+    in_cell = "uom=%s AND ddate BETWEEN %d*10000+101 AND %d*10000+1231" % (lit(uom), year, year)
+
+    def compare(sess, ctx, exp=None):
+        chk.compare_params(sess, ctx, year, uom, exp)
+
+    timed("A first read (build) + compare", lambda: compare(sa, "existing db: build + read", p0))
+    timed("A second read + compare", lambda: compare(sa, "existing db: second read", p0))
+    timed("B read (own build) + compare", lambda: compare(sb, "existing db: other backend read", p0))
     # A rolled-back transaction: its own dirty state vs plain, then back to p0.
     sa.run("BEGIN")
     sa.run("UPDATE num SET value = value + 1 WHERE ctid = ANY(ARRAY(SELECT ctid FROM num "
-           "WHERE uom='USD' AND ddate BETWEEN 20230101 AND 20231231 LIMIT 50))")
+           "WHERE %s LIMIT 50))" % in_cell)
     sa.run("DELETE FROM pre WHERE ctid = ANY(ARRAY(SELECT ctid FROM pre LIMIT 20 OFFSET 5000))")
-    timed("dirty txn compare", lambda: chk.compare(sa, "existing db: dirty txn"))
+    timed("dirty txn compare", lambda: compare(sa, "existing db: dirty txn"))
     sa.run("ROLLBACK")
-    chk.compare(sa, "existing db: after rollback", p0)
-    chk.compare(sb, "existing db: B after rollback", p0)
+    compare(sa, "existing db: after rollback", p0)
+    compare(sb, "existing db: B after rollback", p0)
     # Committed value update on result rows (maintained incrementally).
     top = p0[0] if p0 else None
     where = ("tag = %s AND version = %s" % (lit(top[0]), lit(top[1]))) if top else "TRUE"
     sa.run("UPDATE num SET value = value + 0.5 WHERE ctid = ANY(ARRAY(SELECT ctid FROM num "
-           "WHERE uom='USD' AND ddate BETWEEN 20230101 AND 20231231 AND %s LIMIT 5))" % where)
-    p1 = timed("plain after value update", lambda: sa.rows(PLAIN_SQL))
-    chk.compare(sa, "existing db: committed value update", p1)
-    chk.compare(sb, "existing db: B after value update", p1)
+           "WHERE %s AND %s LIMIT 5))" % (in_cell, where))
+    p1 = timed("plain after value update", lambda: sa.rows(plain_sql(year, uom)))
+    compare(sa, "existing db: committed value update", p1)
+    compare(sb, "existing db: B after value update", p1)
     # Committed pre delete of the top group's matched triples (turns matched
     # num rows into orphans: the targeted triple lookups), then restore.
     sa.run("CREATE TEMP TABLE pre_bak AS SELECT * FROM pre WHERE %s" % where)
     n = sa.rows("SELECT count(*) FROM pre_bak")[0][0]
     sa.run("DELETE FROM pre WHERE %s" % where)
-    p2 = timed("plain after pre delete (%s rows)" % n, lambda: sa.rows(PLAIN_SQL))
-    chk.compare(sa, "existing db: committed pre delete", p2)
-    chk.compare(sb, "existing db: B after pre delete", p2)
+    p2 = timed("plain after pre delete (%s rows)" % n, lambda: sa.rows(plain_sql(year, uom)))
+    compare(sa, "existing db: committed pre delete", p2)
+    compare(sb, "existing db: B after pre delete", p2)
     sa.run("INSERT INTO pre SELECT * FROM pre_bak")
-    chk.compare(sa, "existing db: pre restored", p1)
+    compare(sa, "existing db: pre restored", p1)
     # (The +0.5 on five top-group rows is left in place: no row identity to undo it.)
 
 
 def sweep_phase(sa, chk, g, n):
     """Read-only parameter sweep on a loaded (SF3) database. The accelerator
     answers every (year, uom) from one state; the plain query (about 100 s at
-    SF3) is evaluated on parallel backends for the sampled pairs."""
+    SF3) is evaluated on parallel backends for the drawn sets and some edges."""
     import threading
-    combos = [(2023, "USD"), (2024, "USD"), (2022, "USD"), (2023, "shares"),
-              (2019, "pure"), (2021, "CAD"), (2020, "CNY"), (2024, "EUR"),
-              (2025, "USD"), (None, "USD"), (2023, None), (2023, "nosuchuom")]
-    rnd = random.Random(7)
-    pool = [(y, u) for y in YEARS for u in UOMS if (y, u) not in combos]
-    rnd.shuffle(pool)
-    combos = (combos + pool)[:n]
+    edges = [(2025, "USD"), (None, "USD"), (2023, None), (2023, "nosuchuom")]
+    combos = list(dict.fromkeys(list(chk.cells) + edges))
     t0 = time.time()
     reads = {}
     for y, u in combos:  # first call builds the state; the rest are reads
@@ -673,12 +664,17 @@ def main():
     ap.add_argument("--seed", type=int, default=int(os.environ.get("Q24_SEED", "20240101")))
     ap.add_argument("--create-only", action="store_true")
     ap.add_argument("--sweep", type=int, default=0,
-                    help="with --existing-db: compare N sampled (year, uom) "
-                         "parameter pairs against plain SQL (read-only)")
+                    help="with --existing-db: compare N drawn (year, uom) parameter "
+                         "pairs (ACCEL_PARAM_SETS) and some edges against plain SQL (read-only)")
     args = ap.parse_args()
     g = Gen(args.seed)
     chk = Checker()
     chk.gen = None if args.existing_db else g
+    if args.sweep:
+        os.environ["ACCEL_PARAM_SETS"] = str(args.sweep)
+    chk.cells = drawn_cells()
+    if not args.existing_db:
+        chk.cells.append(SCENARIO)
     db = args.existing_db or os.environ.get("Q24_PG_DB", "q24_diff")
     admin = Session("postgres", "admin")
     sessions = []

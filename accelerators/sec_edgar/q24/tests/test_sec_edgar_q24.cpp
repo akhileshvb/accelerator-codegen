@@ -9,7 +9,7 @@
 
 namespace {
 
-constexpr const char *kReferenceSqlPath = "workloads/sec_edgar/q24.sql";
+constexpr const char *kReferenceSqlPath = "workloads/sec_edgar/instances/seed_1/24.sql";
 
 } // namespace
 
