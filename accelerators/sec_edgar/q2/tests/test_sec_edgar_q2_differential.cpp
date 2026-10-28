@@ -10,6 +10,11 @@
 //    int32 extremes, NaN / +-inf / -0.0 / duplicate values, uncovered uoms)
 //  * the DuckDB table-function entry points accel_sec_edgar_q2_aux[_parallel]
 //
+// The parameter sets are drawn by eval/harness/param_sets (ACCEL_PARAM_SEED=<s>
+// reproduces a run, the draw is printed to stderr); the generated data covers
+// the drawn units and fiscal years. The reference is the entry's query
+// template bound to the same arguments.
+//
 // Usage: test_sec_edgar_q2_differential [seed] [steps]   (seed also from
 //        $ACCEL_TEST_SEED; every failure prints the replay command line)
 // Env:   ACCEL_FORCE_MAINTENANCE_ACTION=ApplyDelta|RebuildAll|InvalidateAndFallback|NoOp
@@ -38,6 +43,8 @@
 
 #include "backends/duckdb/api/duckdb_runtime.hpp"
 #include "backends/duckdb/api/register.hpp"
+#include "backends/duckdb/api/sql_fallback.hpp"
+#include "eval/harness/param_sets.hpp"
 #include "substrate/aux/core/aux_calibration.hpp"
 #include "substrate/aux/core/aux_types.hpp"
 #include "backends/duckdb/api/duckdb_aux_backend.hpp"
@@ -53,9 +60,42 @@
 
 namespace core = accelerator_codegen::aux_state::core;
 namespace engine = accelerator_codegen::aux_state::engine;
+namespace harness = accelerator_codegen::aux_state::harness;
 using namespace accelerator_codegen::aux_state::query;
 
 namespace {
+
+const engine::SharedQueryCatalogEntry &Entry() {
+  static const auto &entry = engine::LookupSharedQuery("sec_edgar", 2);
+  return entry;
+}
+
+// The sets this run checks (fy BIGINT, uom VARCHAR).
+const std::vector<core::QueryArguments> &DrawnSets() {
+  static const auto sets = harness::ArgumentSets(Entry());
+  return sets;
+}
+
+int64_t FyOf(const core::QueryArguments &args) { return std::get<int64_t>(args.values[0].payload); }
+const std::string &UomOf(const core::QueryArguments &args) { return std::get<std::string>(args.values[1].payload); }
+
+// The generated data spans the drawn fiscal years (and the year before them).
+int64_t FirstDataFy() {
+  int64_t first = FyOf(DrawnSets().front());
+  for (const auto &args : DrawnSets()) {
+    first = std::min(first, FyOf(args));
+  }
+  return first - 1;
+}
+constexpr int kDataFyCount = 6;
+
+// A unit differing from `uom` only in case or by a trailing blank.
+std::vector<std::string> NearMisses(std::string uom) {
+  std::string flipped = uom;
+  flipped[0] = static_cast<char>(std::isupper(static_cast<unsigned char>(uom[0])) ? std::tolower(uom[0])
+                                                                                  : std::toupper(uom[0]));
+  return {flipped, uom + " "};
+}
 
 constexpr double kInf = std::numeric_limits<double>::infinity();
 
@@ -234,13 +274,27 @@ struct Gen {
   std::vector<std::string> adshs;     // all sub.adsh ever created
   std::vector<std::string> tags;
   std::vector<std::string> uoms;
+  std::string big_uom; // the unit given more than 10000 rows
+  std::vector<std::string> fys;
   int next_adsh = 0;
 
   explicit Gen(uint64_t seed) : rng(seed) {
     tags = {"Assets", "Liabilities", "Revenue", "tag'quote", "EPS", "Shares",
             "A", "B", "ProfitLoss", std::string(200, 'x')};
-    uoms = {"pure", "pure", "pure", "pure", "USD", "USD", "shares", "EUR", "x'y",
-            "Pure", "pure "};
+    uoms = {"x'y"};
+    for (const auto &args : DrawnSets()) {
+      for (int copies = 0; copies < 3; ++copies) {
+        uoms.push_back(UomOf(args));
+      }
+      for (const auto &near : NearMisses(UomOf(args))) {
+        uoms.push_back(near);
+      }
+    }
+    big_uom = UomOf(DrawnSets().front());
+    for (int i = 0; i < kDataFyCount; ++i) {
+      fys.push_back(std::to_string(FirstDataFy() + i));
+    }
+    fys.push_back("NULL");
   }
   size_t Pick(size_t n) { return static_cast<size_t>(rng() % n); }
   // ORDER BY expression drawing a pseudo-random, seed-determined sample (USING
@@ -259,8 +313,7 @@ struct Gen {
     return buf;
   }
   std::string FySql() {
-    static const char *fys[] = {"2022", "2022", "2022", "2021", "2023", "2012", "NULL"};
-    return fys[Pick(7)];
+    return fys[Pick(fys.size())];
   }
   std::string NameSql() {
     static const char *names[] = {"'Acme'", "'Beta Corp'", "'Acme'", "'zeta'",
@@ -289,14 +342,13 @@ std::vector<core::AuxRow> UpdateNum(duckdb::Connection &con, const std::string &
                             " RETURNING adsh, tag, version, ddate, qtrs, uom, coreg, value, footnote");
 }
 
-std::string QuerySql(const std::string &fy_sql, const std::string &uom_sql) {
-  return "SELECT s.name, n.tag, n.value FROM num n JOIN sub s ON n.adsh = s.adsh "
-         "JOIN (SELECT adsh, tag, MAX(value) AS max_value FROM num WHERE uom = " +
-         uom_sql +
-         " AND value IS NOT NULL GROUP BY adsh, tag) m ON n.adsh = m.adsh AND "
-         "n.tag = m.tag AND n.value = m.max_value WHERE n.uom = " +
-         uom_sql + " AND s.fy = " + fy_sql +
-         " AND n.value IS NOT NULL ORDER BY n.value DESC, s.name, n.tag LIMIT 100";
+core::QueryArguments Arguments(bool fy_null, int64_t fy, bool uom_null, const std::string &uom) {
+  core::QueryArguments args;
+  args.values.push_back(fy_null ? core::AuxValue::Null(core::AuxType::Int64)
+                                : core::AuxValue::Of(core::AuxType::Int64, fy));
+  args.values.push_back(uom_null ? core::AuxValue::Null(core::AuxType::String)
+                                 : core::AuxValue::Of(core::AuxType::String, uom));
+  return args;
 }
 
 bool SameDouble(double a, double b) {
@@ -328,6 +380,7 @@ struct Harness {
   std::vector<core::MutationBatch> pending; // the open transaction's changes
   bool parallel = false;
   uint64_t reads = 0;
+  uint64_t nonempty_drawn_reads = 0; // reads of a drawn set that returned rows
 
   explicit Harness(bool parallel_p) : parallel(parallel_p) {
     Exec(con, kSchema);
@@ -338,7 +391,7 @@ struct Harness {
     scan = std::make_unique<SecEdgarQ2DuckdbScan>(con);
     // Test knobs: Q2_TEST_OVERLAY_LIMIT forces compactions on small data,
     // Q2_TEST_MAX_UOM_ROWS=N is the opt-out limit (default: every unit of
-    // measure is materialised; N=10000 sends the large unit "USD" to SQL).
+    // measure is materialised; N=10000 sends the big unit to SQL).
     SecEdgarQ2Config cfg{1, 2};
     if (const char *v = std::getenv("Q2_TEST_OVERLAY_LIMIT")) {
       cfg.overlay_limit = std::strtoull(v, nullptr, 10);
@@ -382,30 +435,14 @@ struct Harness {
     return sink.rows;
   }
 
-  // Compares the aux answer for (fy, uom) with plain SQL.
-  void Verify(const std::string &label, bool fy_null, int64_t fy, bool uom_null,
-              const std::string &uom, bool use_defaults = false) {
-    core::QueryArguments args;
-    std::string fy_sql = std::to_string(fy), uom_sql = Quote(uom);
-    if (use_defaults) {
-      fy_sql = "2022";
-      uom_sql = "'pure'";
-    } else {
-      args.values.push_back(fy_null ? core::AuxValue::Null(core::AuxType::Int64)
-                                    : core::AuxValue::Of(core::AuxType::Int64, fy));
-      args.values.push_back(uom_null ? core::AuxValue::Null(core::AuxType::String)
-                                     : core::AuxValue::Of(core::AuxType::String, uom));
-      if (fy_null) {
-        fy_sql = "NULL";
-      }
-      if (uom_null) {
-        uom_sql = "NULL";
-      }
-    }
+  // Compares the aux answer for the arguments with the query template bound to them.
+  // Returns whether the answer has rows.
+  bool Verify(const std::string &label, const core::QueryArguments &args) {
+    const std::string sql = engine::BindArguments(Entry().base_sql, args);
     const auto got = Run(args);
-    auto expect = con.Query(QuerySql(fy_sql, uom_sql));
+    auto expect = con.Query(sql);
     Require(expect && !expect->HasError(), "reference query failed");
-    const std::string ctx = label + " fy=" + fy_sql + " uom=" + uom_sql;
+    const std::string ctx = label + " (" + harness::ArgumentLiterals(args) + ")";
     const auto dump = [&](const std::string &what) {
       std::ostringstream os;
       os << what << "\n  aux rows / sql rows:";
@@ -451,13 +488,24 @@ struct Harness {
         Fail(dump(ctx + ": value row " + std::to_string(i)));
       }
     }
+    return expect->RowCount() > 0;
   }
 
+  // Every drawn set, then `draws` random ones: the drawn fiscal years and units,
+  // edge values, NULLs and units that do not exist.
   void VerifyRandom(Gen &g, const std::string &label, int draws) {
-    Verify(label, false, 2022, false, "pure", true);
+    for (const auto &args : DrawnSets()) {
+      nonempty_drawn_reads += Verify(label, args) ? 1 : 0;
+    }
+    std::vector<int64_t> fys = {0, -1, 2147483647, -2147483647 - 1};
+    for (const auto &args : DrawnSets()) {
+      fys.push_back(FyOf(args));
+      fys.push_back(FyOf(args));
+    }
+    for (int i = 0; i < kDataFyCount; ++i) {
+      fys.push_back(FirstDataFy() + i);
+    }
     for (int d = 0; d < draws; ++d) {
-      static const int64_t fys[] = {2022, 2022, 2022, 2021, 2023, 2012, 0, -1,
-                                    2147483647, -2147483647 - 1, 1999};
       const bool fy_null = g.Chance(3);
       const bool uom_null = g.Chance(3);
       std::string uom;
@@ -468,7 +516,7 @@ struct Harness {
       } else {
         uom = g.Uom();
       }
-      Verify(label, fy_null, fys[g.Pick(11)], uom_null, uom);
+      Verify(label, Arguments(fy_null, fys[g.Pick(fys.size())], uom_null, uom));
     }
   }
 };
@@ -478,7 +526,7 @@ void Seed(Harness &h, Gen &g, int adsh_count, int num_rows) {
     g.adshs.push_back(g.NewAdsh());
     InsertSub(h.con, g, g.adshs.back());
   }
-  // Bulk: USD gets > 10000 rows so it is an uncovered ("excluded") uom.
+  // Bulk: the big unit gets > 10000 rows so it is an uncovered ("excluded") uom.
   std::string batch;
   int pending = 0;
   const auto flush = [&] {
@@ -491,7 +539,7 @@ void Seed(Harness &h, Gen &g, int adsh_count, int num_rows) {
   for (int i = 0; i < num_rows; ++i) {
     std::string uom = g.Uom();
     if (i % 2 == 0 && i < 24000) {
-      uom = "USD";
+      uom = g.big_uom;
     }
     const std::string adsh = g.Chance(2) ? "NULL" : Quote(g.adshs[g.Pick(g.adshs.size())]);
     const std::string tag = g.Chance(2) ? "NULL" : Quote(g.Tag());
@@ -637,7 +685,7 @@ void RandomTransaction(Harness &h, Gen &g, int &rollbacks) {
     case 12: { // DELETE the top-k distinct values of one group (forces list shrink / loss)
       auto r = h.con.Query(
           "SELECT adsh, tag, uom FROM num WHERE value IS NOT NULL AND adsh IS NOT NULL AND "
-          "tag IS NOT NULL AND uom IN ('pure', 'shares', 'EUR') ORDER BY " +
+          "tag IS NOT NULL AND uom <> " + Quote(g.big_uom) + " ORDER BY " +
           g.SampleOrder("rowid") + " LIMIT 1");
       Require(r && !r->HasError(), "pick query failed: " + (r ? r->GetError() : std::string("null")));
       if (r->RowCount() == 0) {
@@ -659,7 +707,7 @@ void RandomTransaction(Harness &h, Gen &g, int &rollbacks) {
     case 13: { // lower the maximum of one group (update of the max rows)
       auto r = h.con.Query(
           "SELECT adsh, tag, uom, max(value) FROM num WHERE value IS NOT NULL AND adsh IS NOT "
-          "NULL AND tag IS NOT NULL AND uom IN ('pure', 'shares') GROUP BY adsh, tag, uom ORDER BY " +
+          "NULL AND tag IS NOT NULL AND uom <> " + Quote(g.big_uom) + " GROUP BY adsh, tag, uom ORDER BY " +
           g.SampleOrder("adsh, tag, uom") + " LIMIT 1");
       Require(r && !r->HasError(), "pick query failed: " + (r ? r->GetError() : std::string("null")));
       if (r->RowCount() == 0 || r->GetValue(3, 0).IsNull()) {
@@ -738,6 +786,7 @@ void RunRandomized(uint64_t seed, int steps, bool parallel) {
   // Rebuilding from scratch must agree with the incrementally maintained state.
   h.Build();
   h.VerifyRandom(g, "rebuilt", 20);
+  Require(h.nonempty_drawn_reads > 0, "no drawn set had a non-empty answer");
   const auto &st = SecEdgarQ2GlobalStats();
   if (!std::getenv("Q2_TEST_MAX_UOM_ROWS") && st.direct_reads.load() != direct_before) {
     std::cerr << "FAIL: SQL fallback used although every uom is materialised\n";
@@ -760,14 +809,14 @@ void TestBogusStream(uint64_t seed) {
   Seed(h, g, 30, 2000);
   h.Build();
   auto rows = FetchRows(h.con, "SELECT adsh, tag, version, ddate, qtrs, uom, coreg, value, "
-                               "footnote FROM num WHERE uom = 'pure' AND adsh IS NOT NULL AND "
+                               "footnote FROM num WHERE uom = " + Quote(g.big_uom) + " AND adsh IS NOT NULL AND "
                                "tag IS NOT NULL AND value IS NOT NULL AND NOT EXISTS (SELECT 1 FROM num m "
-                               "WHERE m.adsh = num.adsh AND m.tag = num.tag AND m.uom = 'pure' "
-                               "AND m.value >= 1e30) ORDER BY rowid LIMIT 1");
+                               "WHERE m.adsh = num.adsh AND m.tag = num.tag AND m.uom = " + Quote(g.big_uom) +
+                               " AND m.value >= 1e30) ORDER BY rowid LIMIT 1");
   // (a group whose maximum is below 1e30, NaN counting as greatest: deleting
   // 1e30 from it is detectably inconsistent; under a NaN / +inf maximum with
   // unlisted values it would be indistinguishable from a real unlisted row)
-  Require(!rows.empty(), "need a pure row");
+  Require(!rows.empty(), "need a row of the drawn unit");
   core::MutationBatch bogus;
   bogus.table = 1;
   bogus.kind = core::MutationKind::Delete;
@@ -790,14 +839,16 @@ void TestBogusStream(uint64_t seed) {
 void TestLargeCounts(uint64_t seed, bool parallel) {
   Gen g(seed);
   Harness h(parallel);
+  const auto &scenario = DrawnSets().front();
   g.adshs.push_back(g.NewAdsh());
   g.adshs.push_back(g.NewAdsh());
   Exec(h.con, "INSERT INTO sub (adsh, cik, name, fy) VALUES (" + Quote(g.adshs[0]) +
-                  ", 1, 'Big', 2022), (" + Quote(g.adshs[1]) + ", 1, 'Small', 2022)");
+                  ", 1, 'Big', " + std::to_string(FyOf(scenario)) + "), (" + Quote(g.adshs[1]) +
+                  ", 1, 'Small', " + std::to_string(FyOf(scenario)) + ")");
   const auto insert = [&](const std::string &adsh, const char *value, int rows) {
     std::string values;
     for (int i = 0; i < rows; ++i) {
-      values += std::string(i ? "," : "") + "(" + Quote(adsh) + ",'T','v',20220101,4,'USD',NULL," +
+      values += std::string(i ? "," : "") + "(" + Quote(adsh) + ",'T','v',20220101,4," + Quote(UomOf(scenario)) + ",NULL," +
                 value + ",NULL)";
     }
     Exec(h.con, "INSERT INTO num VALUES " + values);
@@ -809,7 +860,7 @@ void TestLargeCounts(uint64_t seed, bool parallel) {
   insert(g.adshs[1], "4.0", 126);
   h.Build();
   h.VerifyRandom(g, "large initial", 6);
-  h.Verify("large 2022 USD", false, 2022, false, "USD");
+  h.Verify("large", scenario);
   for (int round = 0; round < 6; ++round) {
     h.con.BeginTransaction();
     core::MutationBatch batch;
@@ -827,10 +878,10 @@ void TestLargeCounts(uint64_t seed, bool parallel) {
     }
     h.Capture(batch);
     h.Commit();
-    h.Verify("large round " + std::to_string(round), false, 2022, false, "USD");
+    h.Verify("large round " + std::to_string(round), scenario);
   }
   h.Build();
-  h.Verify("large rebuilt", false, 2022, false, "USD");
+  h.Verify("large rebuilt", scenario);
   std::cout << "large counts ok\n";
 }
 
@@ -846,8 +897,9 @@ void TestCodec(uint64_t seed) {
   for (int i = 0; i < 20; ++i) {
     std::vector<SecEdgarQ2OutputRow> a, b;
     const std::string uom = g.Uom();
-    const bool ra = FinalizeSecEdgarQ2(*state, 2022, uom, a);
-    const bool rb = FinalizeSecEdgarQ2(decoded, 2022, uom, b);
+    const int64_t fy = FyOf(DrawnSets()[g.Pick(DrawnSets().size())]);
+    const bool ra = FinalizeSecEdgarQ2(*state, fy, uom, a);
+    const bool rb = FinalizeSecEdgarQ2(decoded, fy, uom, b);
     Require(ra == rb && a.size() == b.size(), "decoded state answers differently");
     for (size_t k = 0; k < a.size(); ++k) {
       Require(a[k].name == b[k].name && a[k].tag == b[k].tag &&
@@ -861,7 +913,7 @@ void TestCodec(uint64_t seed) {
   std::cout << "codec ok (" << bytes.size() << " bytes, heap " << state->HeapBytes() << ")\n";
 }
 
-// accel_sec_edgar_q2_aux[_parallel]() / (fy, uom) through SQL.
+// accel_sec_edgar_q2_aux[_parallel](fy, uom) through SQL.
 void TestTableFunctions(uint64_t seed, bool parallel) {
   Gen g(seed);
   duckdb::DuckDB db(nullptr);
@@ -879,21 +931,20 @@ void TestTableFunctions(uint64_t seed, bool parallel) {
                   DoubleSql(g.Value()) + ",NULL)");
   }
 #ifdef ACCEL_ENABLE_PARALLEL_AUX
-  const auto &entry = parallel ? engine::LookupSharedQueryParallel("sec_edgar", 2)
-                               : engine::LookupSharedQuery("sec_edgar", 2);
+  const auto &entry = parallel ? engine::LookupSharedQueryParallel("sec_edgar", 2) : Entry();
 #else
   if (parallel) {
     return;
   }
-  const auto &entry = engine::LookupSharedQuery("sec_edgar", 2);
+  const auto &entry = Entry();
 #endif
   engine::duckdb::DuckdbRuntime runtime(con, entry, 10.0);
   runtime.Build();
   const std::string fn = parallel ? "accel_sec_edgar_q2_aux_parallel" : "accel_sec_edgar_q2_aux";
-  const auto compare = [&](const std::string &call, const std::string &fy,
-                           const std::string &uom) {
+  const auto compare = [&](const core::QueryArguments &args) {
+    const std::string call = fn + "(" + harness::ArgumentLiterals(args) + ")";
     auto got = con.Query("SELECT * FROM " + call);
-    auto want = con.Query(QuerySql(fy, uom));
+    auto want = con.Query(engine::BindArguments(Entry().base_sql, args));
     Require(got && !got->HasError(), "table function failed: " + (got ? got->GetError() : ""));
     Require(want && !want->HasError(), "reference failed");
     Require(got->RowCount() == want->RowCount(), call + ": row count");
@@ -912,16 +963,17 @@ void TestTableFunctions(uint64_t seed, bool parallel) {
       }
     }
   };
-  compare(fn + "()", "2022", "'pure'");
-  compare(fn + "(2022, 'pure')", "2022", "'pure'");
-  compare(fn + "(2021, 'USD')", "2021", "'USD'");
-  compare(fn + "(2023, 'x''y')", "2023", "'x''y'");
-  compare(fn + "(CAST(NULL AS INTEGER), 'pure')", "NULL", "'pure'");
-  compare(fn + "(2022, NULL)", "2022", "NULL");
+  const auto &scenario = DrawnSets().front();
+  for (const auto &args : DrawnSets()) {
+    compare(args);
+  }
+  compare(Arguments(false, FyOf(scenario), false, "x'y"));
+  compare(Arguments(true, 0, false, UomOf(scenario)));
+  compare(Arguments(false, FyOf(scenario), true, ""));
   // a write through the runtime keeps the table function consistent
   auto rows = FetchRows(con, "SELECT adsh, tag, version, ddate, qtrs, uom, coreg, value, "
-                             "footnote FROM num WHERE uom = 'pure' AND value IS NOT NULL "
-                             "ORDER BY value DESC LIMIT 1");
+                             "footnote FROM num WHERE uom = " + Quote(UomOf(scenario)) +
+                             " AND value IS NOT NULL ORDER BY value DESC LIMIT 1");
   if (!rows.empty() && !std::isinf(std::get<double>(rows[0].values[7].payload)) &&
       !std::isnan(std::get<double>(rows[0].values[7].payload))) {
     core::MutationBatch m;
@@ -930,14 +982,15 @@ void TestTableFunctions(uint64_t seed, bool parallel) {
     m.updated_columns = {7};
     m.old_rows = rows;
     Exec(con, "UPDATE num SET value = value + 5 WHERE rowid = (SELECT rowid FROM num WHERE "
-              "uom = 'pure' AND value IS NOT NULL AND value = " +
+              "uom = " + Quote(UomOf(scenario)) + " AND value IS NOT NULL AND value = " +
                   DoubleSql(std::get<double>(rows[0].values[7].payload)) + " LIMIT 1)");
     m.new_rows = {rows[0]};
     m.new_rows[0].values[7] =
         core::AuxValue::Of(core::AuxType::Double, std::get<double>(rows[0].values[7].payload) + 5);
     runtime.ApplyMutationBatch(m);
-    compare(fn + "()", "2022", "'pure'");
-    compare(fn + "(2023, 'pure')", "2023", "'pure'");
+    for (const auto &args : DrawnSets()) {
+      compare(args);
+    }
   }
   std::cout << "table functions " << (parallel ? "(parallel) " : "") << "ok\n";
 }
@@ -977,19 +1030,27 @@ void TestNativeScan(uint64_t seed) {
     duckdb::Connection con(db);
     Exec(con, kSchema);
     const std::string s = std::to_string(seed % 1000);
-    // 600 filings (a few non-canonical accession numbers), 4000 tags, 6 units,
-    // NULLs in every key column and in value, many duplicate values.
+    // 600 filings (a few non-canonical accession numbers), 4000 tags, the drawn
+    // units (the first twice as often) and one more, NULLs in every key column
+    // and in value, many duplicate values.
+    std::string units = "'x''y'";
+    for (const auto &args : DrawnSets()) {
+      units += ",'" + UomOf(args) + "'";
+    }
+    units += ",'" + UomOf(DrawnSets().front()) + "'";
+    const auto unit_count = DrawnSets().size() + 2;
     Exec(con, "INSERT INTO sub (adsh, cik, name, fy) SELECT CASE WHEN i % 97 = 0 THEN 'odd-' || i "
               "ELSE printf('%010d-22-%06d', 1000000 + i % 50, i) END, 1, "
               "CASE WHEN i % 13 = 0 THEN NULL ELSE 'Co ' || (i % 41) END, "
-              "CASE WHEN i % 11 = 0 THEN NULL ELSE 2020 + i % 4 END FROM range(600) t(i)");
+              "CASE WHEN i % 11 = 0 THEN NULL ELSE " + std::to_string(FirstDataFy()) + " + i % " +
+              std::to_string(kDataFyCount) + " END FROM range(600) t(i)");
     Exec(con, "CREATE TEMP TABLE ids AS SELECT row_number() OVER () - 1 AS k, adsh FROM sub");
     Exec(con,
          "INSERT INTO num (adsh, tag, version, ddate, qtrs, uom, coreg, value) "
          "SELECT CASE WHEN h % 251 = 0 THEN NULL ELSE ids.adsh END, "
          "CASE WHEN h % 263 = 0 THEN NULL ELSE 'Tag' || ((h // 7) % 4000) END, 'v', 20220101, 4, "
-         "CASE WHEN h % 271 = 0 THEN NULL ELSE list_extract(['pure','USD','USD','shares','EUR','x''y'], "
-         "((h // 3) % 6 + 1)::BIGINT) END, "
+         "CASE WHEN h % 271 = 0 THEN NULL ELSE list_extract([" + units + "], "
+         "((h // 3) % " + std::to_string(unit_count) + " + 1)::BIGINT) END, "
          "NULL, CASE WHEN h % 17 = 0 THEN NULL WHEN h % 5 = 0 THEN 1.0 ELSE ((h * 7919) % 1000) / 4.0 - 50 END "
          "FROM (SELECT (hash(i + " + s + ") % 1000003)::BIGINT AS h, i FROM range(300000) t(i)) r "
          "JOIN ids ON ids.k = r.h % 600 ORDER BY r.i");
@@ -1003,9 +1064,10 @@ void TestNativeScan(uint64_t seed) {
             "test data is dictionary-compressed");
     Exec(con, "BEGIN");
     Exec(con, "INSERT INTO num (adsh, tag, version, ddate, qtrs, uom, coreg, value) "
-              "SELECT ids.adsh, 'Local' || (i % 10), 'v', 1, 1, 'pure', NULL, i "
+              "SELECT ids.adsh, 'Local' || (i % 10), 'v', 1, 1, " + Quote(UomOf(DrawnSets().front())) + ", NULL, i "
               "FROM range(5000) t(i) JOIN ids ON ids.k = i % 600");
-    Exec(con, "UPDATE num SET value = value + 1000 WHERE uom = 'EUR' AND value < 0");
+    Exec(con, "UPDATE num SET value = value + 1000 WHERE uom = " + Quote(UomOf(DrawnSets().back())) +
+              " AND value < 0");
 
     SecEdgarQ2Config cfg{1, 2};
     SecEdgarQ2DuckdbScan native(con);
@@ -1019,8 +1081,13 @@ void TestNativeScan(uint64_t seed) {
     Require(ga.size() > 1000, "native scan built groups");
     Require(ga == gb, "native scan state == SQL path state (" + std::to_string(ga.size()) +
                           " vs " + std::to_string(gb.size()) + " groups)");
-    for (const char *uom : {"pure", "USD", "EUR", "x'y", "shares", "none"}) {
-      for (int64_t fy : {2020, 2021, 2022, 2023}) {
+    std::vector<std::string> uoms = {"none"};
+    for (uint32_t u = 0; u < a->uoms->names.size(); ++u) {
+      uoms.emplace_back(a->uoms->names.Get(u));
+    }
+    for (const auto &uom : uoms) {
+      for (int fy_offset = 0; fy_offset < kDataFyCount; ++fy_offset) {
+        const int64_t fy = FirstDataFy() + fy_offset;
         std::vector<SecEdgarQ2OutputRow> ra, rb;
         Require(FinalizeSecEdgarQ2(*a, fy, uom, ra) && FinalizeSecEdgarQ2(*b, fy, uom, rb),
                 "covered");
@@ -1032,15 +1099,30 @@ void TestNativeScan(uint64_t seed) {
         }
       }
     }
-    // The opt-out keeps its meaning on the native path.
+    // The opt-out keeps its meaning on the native path: units with more rows than
+    // the limit (set to the median unit size) are excluded, the others covered.
+    auto counts = con.Query("SELECT uom, count(*) FROM num WHERE value IS NOT NULL AND uom IS NOT NULL "
+                          "AND adsh IS NOT NULL AND tag IS NOT NULL GROUP BY uom");
+    Require(counts && !counts->HasError(), "unit row counts");
+    std::vector<int64_t> sizes;
+    for (duckdb::idx_t i = 0; i < counts->RowCount(); ++i) {
+      sizes.push_back(counts->GetValue(1, i).GetValue<int64_t>());
+    }
+    std::sort(sizes.begin(), sizes.end());
     SecEdgarQ2Config small = cfg;
-    small.max_uom_rows = 10000;
+    small.max_uom_rows = static_cast<uint64_t>(sizes[sizes.size() / 2]);
     const auto mx = std::make_shared<SecEdgarQ2Module>(small, &native);
     accelerator_codegen::aux_state::test::ModuleRuntime mx_runtime(con, mx);
     const auto x = mx->BuildState(mx_runtime.Backend());
     std::vector<SecEdgarQ2OutputRow> rx;
-    Require(!FinalizeSecEdgarQ2(*x, 2022, "USD", rx), "USD is excluded by max_uom_rows");
-    Require(FinalizeSecEdgarQ2(*x, 2022, "pure", rx), "default unit stays covered");
+    bool excluded_any = false, covered_any = false;
+    for (duckdb::idx_t i = 0; i < counts->RowCount(); ++i) {
+      const bool excluded = counts->GetValue(1, i).GetValue<int64_t>() > static_cast<int64_t>(small.max_uom_rows);
+      Require(FinalizeSecEdgarQ2(*x, FirstDataFy(), counts->GetValue(0, i).ToString(), rx) != excluded,
+              "max_uom_rows opt-out of " + counts->GetValue(0, i).ToString());
+      (excluded ? excluded_any : covered_any) = true;
+    }
+    Require(excluded_any && covered_any, "the data has units on both sides of max_uom_rows");
     Exec(con, "ROLLBACK");
   }
   std::remove(path.c_str());

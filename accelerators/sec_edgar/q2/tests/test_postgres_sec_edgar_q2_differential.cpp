@@ -6,8 +6,10 @@
 // triggers, then runs randomized write transactions (INSERT / DELETE /
 // UPDATE on num and sub, savepoints, rollbacks, failing statements, reads
 // inside the writing transaction) and after each one compares
-// accel_sec_edgar_q2_aux(fy, uom) with the plain SQL of benchmarks/sec_edgar/
-// queries/q2.sql for random (fy, uom) draws including NULL and edge values.
+// accel_sec_edgar_q2_aux(fy, uom) with the plain SQL of workloads/sec_edgar/q2.sql
+// for the (fy, uom) sets drawn by eval/harness/param_source (ACCEL_PARAM_SEED=<s>
+// reproduces a run; the generated data covers the drawn units and years) and for
+// random draws including NULL and edge values.
 //
 //   test_postgres_sec_edgar_q2_differential [seed=1] [transactions=150] [keep]
 // Run from the repository root (reads backends/postgres/host/capture_triggers.sql).
@@ -30,15 +32,15 @@ const std::vector<std::string> kValueSql = {
 const std::vector<std::string> kTags = {
     "Assets", "Liabilities", "Revenue", "tag'quote", "EPS", "Shares", "A", "B", "ProfitLoss",
     "caf\xc3\xa9", "back\\slash", "", " lead", "Assets "};
-const std::vector<std::string> kUoms = {"pure", "pure", "pure", "pure", "USD", "USD", "shares",
-                                        "EUR", "x'y", "Pure", "pure ", "", "CAD", "back\\slash"};
 const std::vector<std::string> kNames = {"'Acme'", "'Beta Corp'", "'Acme'", "'zeta'",
                                          "'a\"b''c'", "NULL", "'Delta'", "''",
                                          "'\xc3\x89t\xc3\xa9'", "'back\\\\slash'", "'acme'"};
-const char *kFys[] = {"2022", "2022", "2022", "2021", "2023", "2012", "NULL"};
 
 struct Gen {
   std::mt19937_64 rng;
+  std::vector<std::string> uoms; // the data's units: the drawn ones, near misses, edge spellings
+  std::vector<std::string> fys;  // SQL literals of sub.fy: the drawn years, their neighbours, NULL
+  long long fy_lo = 0, fy_hi = 0;  // range of the drawn years
   explicit Gen(uint64_t seed) : rng(seed) {}
   size_t Pick(size_t n) { return static_cast<size_t>(rng() % n); }
   bool Chance(int pct) { return static_cast<int>(rng() % 100) < pct; }
@@ -53,7 +55,27 @@ struct Gen {
   }
   std::string Value() { return kValueSql[Pick(kValueSql.size())]; }
   std::string Tag() { return Lit(kTags[Pick(kTags.size())]); }
-  std::string Uom() { return Lit(kUoms[Pick(kUoms.size())]); }
+  std::string Uom() { return Lit(uoms[Pick(uoms.size())]); }
+
+  // Fills the pools from the drawn sets.
+  void Cover(const std::vector<Params> &sets) {
+    uoms = {"", "x'y", "back\\slash"};
+    fy_lo = std::stoll(sets.front().fy);
+    fy_hi = fy_lo;
+    for (const auto &set : sets) {
+      std::string flipped = set.uom;
+      flipped[0] = static_cast<char>(std::isupper(static_cast<unsigned char>(flipped[0])) ? std::tolower(flipped[0])
+                                                                                           : std::toupper(flipped[0]));
+      for (int copies = 0; copies < 3; ++copies) uoms.push_back(set.uom);
+      uoms.push_back(flipped);
+      uoms.push_back(set.uom + " ");
+      fy_lo = std::min(fy_lo, std::stoll(set.fy));
+      fy_hi = std::max(fy_hi, std::stoll(set.fy));
+    }
+    for (long long fy = fy_lo - 1; fy <= fy_hi + 1; ++fy) fys.push_back(std::to_string(fy));
+    fys.push_back("NULL");
+  }
+  std::string Fy() { return fys[Pick(fys.size())]; }
 };
 
 std::string NumRow(Gen &g, const std::vector<std::string> &adshs) {
@@ -70,10 +92,10 @@ struct Test {
   std::unique_ptr<Conn> w, r;
   std::vector<std::string> adshs;
   int next_adsh = 0;
-  uint64_t reads = 0, txns = 0, rollbacks = 0, errors = 0;
+  uint64_t reads = 0, txns = 0, rollbacks = 0, errors = 0, nonempty_drawn_reads = 0;
   bool failed = false;
 
-  explicit Test(uint64_t seed) : g(seed) {}
+  explicit Test(uint64_t seed) : g(seed) { g.Cover(DrawnParams(admin)); }
 
   void Setup() {
     admin.Exec(std::string("DROP DATABASE IF EXISTS ") + kScratchDb + " WITH (FORCE)");
@@ -111,7 +133,7 @@ struct Test {
     }
     // A group with many equal values (exercises the count paths).
     w->Exec("INSERT INTO num SELECT adsh, tag, version, ddate, qtrs, uom, coreg, value, footnote "
-            "FROM num WHERE uom = 'pure' AND value IS NOT NULL LIMIT 200");
+            "FROM num WHERE uom = " + g.Lit(DrawnParams(admin).front().uom) + " AND value IS NOT NULL LIMIT 200");
   }
 
   std::string AddSub(Conn &c) {
@@ -120,25 +142,32 @@ struct Test {
                   next_adsh++);
     adshs.push_back(buf);
     c.Exec("INSERT INTO sub (adsh, cik, name, fy) VALUES ('" + adshs.back() + "', 1, " +
-           kNames[g.Pick(kNames.size())] + ", " + kFys[g.Pick(7)] + ")");
+           kNames[g.Pick(kNames.size())] + ", " + g.Fy() + ")");
     return adshs.back();
   }
 
-  void Check(Conn &c, const char *fy, const char *uom, const std::string &label) {
+  // Returns whether the answer has rows.
+  bool Check(Conn &c, const char *fy, const char *uom, const std::string &label) {
     ++reads;
-    const std::string diff = Compare(c, c, fy, uom);
+    size_t answer_rows = 0;
+    const std::string diff = Compare(c, c, fy, uom, &answer_rows);
     if (!diff.empty()) {
       std::cerr << "MISMATCH after " << label << ": " << diff << "\n";
       failed = true;
     }
+    return answer_rows > 0;
   }
 
   void RandomReads(Conn &c, const std::string &label, int draws) {
-    Check(c, "2022", "pure", label);
+    for (const auto &set : DrawnParams(admin)) {
+      nonempty_drawn_reads += Check(c, set.fy.c_str(), set.uom.c_str(), label) ? 1 : 0;
+    }
+    std::vector<std::string> fys = {"0", "-1", "2147483647", "-2147483648", "9223372036854775807"};
+    for (const auto &fy : g.fys) {
+      if (fy != "NULL") fys.push_back(fy);
+    }
     for (int d = 0; d < draws; ++d) {
-      static const char *fys[] = {"2022", "2022", "2021", "2023", "2012", "0", "-1",
-                                  "2147483647", "-2147483648", "1999", "9223372036854775807"};
-      const char *fy = g.Chance(3) ? nullptr : fys[g.Pick(11)];
+      const char *fy = g.Chance(3) ? nullptr : fys[g.Pick(fys.size())].c_str();
       std::string uom_s;
       const char *uom;
       if (g.Chance(3)) {
@@ -147,7 +176,7 @@ struct Test {
         uom_s = "nonexistent";
         uom = uom_s.c_str();
       } else {
-        uom_s = kUoms[g.Pick(kUoms.size())];
+        uom_s = g.uoms[g.Pick(g.uoms.size())];
         uom = uom_s.c_str();
       }
       Check(c, fy, uom, label);
@@ -193,11 +222,11 @@ struct Test {
         return "UPDATE num SET version = 'w' WHERE " + pick_rows(5);
       case 13:
         if (g.Chance(40)) { // multi-row sub update (old/new transition rows of several filers)
-          return "UPDATE sub SET fy = CASE WHEN fy IS NULL THEN 2022 WHEN fy > 2023 THEN 2021 "
-                 "ELSE fy + 1 END, name = CASE WHEN name IS NULL THEN 'n' ELSE NULL END "
+          return "UPDATE sub SET fy = CASE WHEN fy IS NULL OR fy >= " + std::to_string(g.fy_hi) + " THEN " +
+                 std::to_string(g.fy_lo) + " ELSE fy + 1 END, name = CASE WHEN name IS NULL THEN 'n' ELSE NULL END "
                  "WHERE adsh IN (SELECT adsh FROM sub ORDER BY random() LIMIT 6)";
         }
-        return "UPDATE sub SET fy = " + std::string(kFys[g.Pick(7)]) + ", name = " +
+        return "UPDATE sub SET fy = " + g.Fy() + ", name = " +
                kNames[g.Pick(kNames.size())] + " WHERE adsh = " +
                g.Lit(adshs[g.Pick(adshs.size())]);
       case 14: // new filer + rows for it in one statement chain
@@ -264,6 +293,7 @@ struct Test {
     RandomReads(fresh, "fresh session", 15);
     const std::string counts = r->Scalar("SELECT accel_get_execute_counts()");
     std::cout << "execute counts (reader): " << counts << "\n";
+    Require(nonempty_drawn_reads > 0, "no drawn set had a non-empty answer");
     std::cout << "txns=" << txns << " rollbacks=" << rollbacks << " failing_stmts=" << errors
               << " reads=" << reads << (failed ? " FAILED" : " ok") << "\n";
     return failed ? 1 : 0;

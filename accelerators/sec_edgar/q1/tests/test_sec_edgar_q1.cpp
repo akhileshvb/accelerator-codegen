@@ -9,7 +9,10 @@
 
 namespace {
 
-constexpr const char *kReferenceSqlPath = "workloads/sec_edgar/q1.sql";
+// The base kernel's fixed query: Q1 over every non-NULL stmt (the aux accelerator takes stmt as $1).
+constexpr const char *kReferenceSql =
+    "SELECT stmt, rfile, COUNT(*) AS cnt, COUNT(DISTINCT adsh) AS num_filings, AVG(line) AS avg_line_num "
+    "FROM pre WHERE stmt IS NOT NULL GROUP BY stmt, rfile ORDER BY cnt DESC";
 
 } // namespace
 
@@ -24,9 +27,8 @@ int main() {
 		duckdb::Connection connection(database);
 		accelerator_codegen::RegisterAcceleratorFunctions(connection);
 
-		const auto reference_sql = accelerator_codegen::test_support::ReadFile(kReferenceSqlPath);
 		accelerator_codegen::test_support::RequireResultsEqualOrdered(
-		    connection, "sec_edgar_q1_manifest", reference_sql, "SELECT * FROM accel_sec_edgar_q1()");
+		    connection, "sec_edgar_q1_manifest", kReferenceSql, "SELECT * FROM accel_sec_edgar_q1()");
 		std::cout << "sec_edgar_q1 smoke test passed\n";
 		return 0;
 	} catch (const std::exception &ex) {

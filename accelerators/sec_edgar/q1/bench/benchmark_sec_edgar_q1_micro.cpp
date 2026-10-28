@@ -4,6 +4,8 @@
 //
 // usage: benchmark_sec_edgar_q1_micro <db_path> [single|parallel] [threads=1]
 // The database is opened read-only. Run from the repository root.
+// Reads cycle through the drawn stmt sets (eval/harness/param_sets); the maintenance
+// batches write rows of the first drawn stmt.
 #include <algorithm>
 #include <chrono>
 #include <cstdlib>
@@ -14,7 +16,9 @@
 
 #include "backends/duckdb/api/duckdb_runtime.hpp"
 #include "backends/duckdb/api/register.hpp"
+#include "backends/duckdb/api/sql_fallback.hpp"
 #include "catalog/query_catalog.hpp"
+#include "eval/harness/param_sets.hpp"
 #include "sec_edgar/q1/common/module.hpp"
 #include "sec_edgar/q1/duckdb/aux/native_scan.hpp"
 #include "duckdb.hpp"
@@ -35,10 +39,10 @@ double Median(std::vector<double> v) {
   return v[v.size() / 2];
 }
 
-core::AuxRow Row(const char *stmt, const char *rfile, const std::string &adsh, int64_t line) {
+core::AuxRow Row(const std::string &stmt, const std::string &rfile, const std::string &adsh, int64_t line) {
   core::AuxRow row;
-  row.values.push_back(core::AuxValue::Of(core::AuxType::String, std::string(stmt)));
-  row.values.push_back(core::AuxValue::Of(core::AuxType::String, std::string(rfile)));
+  row.values.push_back(core::AuxValue::Of(core::AuxType::String, stmt));
+  row.values.push_back(core::AuxValue::Of(core::AuxType::String, rfile));
   row.values.push_back(core::AuxValue::Of(core::AuxType::String, adsh));
   row.values.push_back(core::AuxValue::Of(core::AuxType::Int64, line));
   return row;
@@ -74,6 +78,10 @@ int main(int argc, char **argv) {
 #endif
   std::cout << std::unitbuf << "module=" << entry.accelerator_id << " threads=" << threads << "\n";
 
+  const auto sets = accelerator_codegen::aux_state::harness::ArgumentSets(entry);
+  const auto stmt = std::get<std::string>(sets[0].values[0].payload);
+  std::cout << "stmt=" << stmt << " (reads cycle through " << sets.size() << " drawn sets)\n";
+
   DuckdbRuntime runtime(c, entry, 10.0);
   runtime.UseManualCapture(); // changes are hand-built below
   {
@@ -102,7 +110,7 @@ int main(int argc, char **argv) {
     std::vector<double> s;
     for (int i = 0; i < 2000; ++i) {
       const auto t = Clock::now();
-      auto rows = runtime.ExecuteCollect();
+      auto rows = runtime.ExecuteCollect(sets[i % sets.size()]);
       s.push_back(Us(t));
     }
     Report("ExecuteCollect() [module read]", s);
@@ -111,7 +119,7 @@ int main(int argc, char **argv) {
     std::vector<double> s;
     for (int i = 0; i < 300; ++i) {
       const auto t = Clock::now();
-      auto r = c.Query(entry.duckdb_aux_sql);
+      auto r = c.Query(catalog::BindArguments(entry.duckdb_aux_sql, sets[i % sets.size()]));
       if (r->HasError()) {
         std::cerr << r->GetError() << "\n";
         return 1;
@@ -123,7 +131,7 @@ int main(int argc, char **argv) {
 
   if (const char *loops = std::getenv("Q1_MICRO_SQL_LOOP")) { // for perf: hammer the SQL read path
     for (int i = 0, n = std::atoi(loops); i < n; ++i) {
-      auto r = c.Query(entry.duckdb_aux_sql);
+      auto r = c.Query(catalog::BindArguments(entry.duckdb_aux_sql, sets[i % sets.size()]));
     }
     return 0;
   }
@@ -132,7 +140,7 @@ int main(int argc, char **argv) {
     for (int i = 0; i < 10000; ++i) {
       char buf[32];
       std::snprintf(buf, sizeof(buf), "%010d-22-%06d", 1000000 + (i % 4000), i % 7);
-      rows.push_back(Row(i % 3 ? "BS" : "IS", "H", buf, i % 300));
+      rows.push_back(Row(stmt, "H", buf, i % 300));
     }
     for (int i = 0, n = std::atoi(loops); i < n; ++i) {
       core::MutationBatch m;
@@ -159,54 +167,61 @@ int main(int argc, char **argv) {
     }
     Report(name, s);
   };
-  // A real accession present in BS/H so refcounts stay consistent with the data.
-  auto seed = c.Query("SELECT adsh FROM pre WHERE stmt = 'BS' AND rfile = 'H' LIMIT 1");
+  // A real accession of the stmt's group so refcounts stay consistent with the data.
+  auto seed = c.Query(catalog::BindArguments(
+      "SELECT adsh, rfile FROM pre WHERE stmt = $1 AND adsh IS NOT NULL AND rfile IS NOT NULL LIMIT 1", sets[0]));
+  if (seed->HasError() || seed->RowCount() == 0) {
+    std::cerr << "no pre row with stmt " << stmt << "\n";
+    return 1;
+  }
   const std::string existing = seed->GetValue(0, 0).ToString();
+  const std::string rfile = seed->GetValue(1, 0).ToString();
   apply("update line only (1 row)", core::MutationKind::Update,
         [&](core::MutationBatch &m, int) {
-          m.old_rows.push_back(Row("BS", "H", existing, 10));
-          m.new_rows.push_back(Row("BS", "H", existing, 1010));
+          m.old_rows.push_back(Row(stmt, rfile, existing, 10));
+          m.new_rows.push_back(Row(stmt, rfile, existing, 1010));
         },
         1, 500);
   apply("insert 1 row existing adsh", core::MutationKind::Insert,
-        [&](core::MutationBatch &m, int) { m.new_rows.push_back(Row("BS", "H", existing, 5)); }, 1, 500);
+        [&](core::MutationBatch &m, int) { m.new_rows.push_back(Row(stmt, rfile, existing, 5)); }, 1, 500);
   apply("delete 1 row (same adsh)", core::MutationKind::Delete,
-        [&](core::MutationBatch &m, int) { m.old_rows.push_back(Row("BS", "H", existing, 5)); }, 1, 500);
+        [&](core::MutationBatch &m, int) { m.old_rows.push_back(Row(stmt, rfile, existing, 5)); }, 1, 500);
   apply("insert 1 row NEW adsh", core::MutationKind::Insert,
         [&](core::MutationBatch &m, int i) {
           char buf[32];
           std::snprintf(buf, sizeof(buf), "%010d-23-%06d", 5000000 + i, 1);
-          m.new_rows.push_back(Row("IS", "H", buf, 3));
+          m.new_rows.push_back(Row(stmt, rfile, buf, 3));
         },
         1, 500);
-  apply("update group move BS->CF (1 row)", core::MutationKind::Update,
+  const std::string moved = stmt + "_moved";
+  apply("update group move stmt->other (1 row)", core::MutationKind::Update,
         [&](core::MutationBatch &m, int i) { // alternate so refcounts never underflow
-          const char *from = i % 2 ? "CF" : "BS";
-          const char *to = i % 2 ? "BS" : "CF";
-          m.old_rows.push_back(Row(from, "H", existing, 10));
-          m.new_rows.push_back(Row(to, "H", existing, 10));
+          const auto &from = i % 2 ? moved : stmt;
+          const auto &to = i % 2 ? stmt : moved;
+          m.old_rows.push_back(Row(from, rfile, existing, 10));
+          m.new_rows.push_back(Row(to, rfile, existing, 10));
         },
         1, 500);
   apply("insert batch 100 rows (existing adsh)", core::MutationKind::Insert,
         [&](core::MutationBatch &m, int i) {
           char buf[32];
           std::snprintf(buf, sizeof(buf), "%010d-22-%06d", 1000000 + (i % 400), i % 7);
-          m.new_rows.push_back(Row("BS", "H", buf, i % 300));
+          m.new_rows.push_back(Row(stmt, rfile, buf, i % 300));
         },
         100, 100);
   apply("insert batch 10000 rows", core::MutationKind::Insert,
         [&](core::MutationBatch &m, int i) {
           char buf[32];
           std::snprintf(buf, sizeof(buf), "%010d-22-%06d", 1000000 + (i % 4000), i % 7);
-          m.new_rows.push_back(Row("BS", "H", buf, i % 300));
+          m.new_rows.push_back(Row(stmt, rfile, buf, i % 300));
         },
         10000, 10);
   {
     std::vector<double> s;
     for (int i = 0; i < 300; ++i) {
-      auto rows = runtime.ExecuteCollect();
+      auto rows = runtime.ExecuteCollect(sets[i % sets.size()]);
       const auto t = Clock::now();
-      rows = runtime.ExecuteCollect();
+      rows = runtime.ExecuteCollect(sets[i % sets.size()]);
       s.push_back(Us(t));
     }
     Report("ExecuteCollect() after writes", s);

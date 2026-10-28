@@ -2,7 +2,8 @@
 
 // Shared libpq helpers of the SEC-EDGAR Q2 PostgreSQL tests: connection from
 // the PG* environment (default: the q2 sandbox instance), parameterised
-// queries, and the accelerator-vs-plain-SQL comparison.
+// queries, the parameter sets drawn by eval/harness/param_source
+// (ACCEL_PARAM_SEED=<s> reproduces a run) and the accelerator-vs-plain-SQL comparison.
 
 #include <libpq-fe.h>
 
@@ -14,6 +15,8 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
+
+#include "eval/harness/param_source.hpp"
 
 namespace q2pg {
 
@@ -102,6 +105,23 @@ private:
   PGconn *conn;
 };
 
+// A drawn (fy, uom) as the server reads their literals.
+struct Params {
+  std::string fy, uom;
+};
+
+inline const std::vector<Params> &DrawnParams(Conn &c) {
+  static const std::vector<Params> sets = [&] {
+    std::vector<Params> out;
+    for (const auto &literals : accelerator_codegen::aux_state::harness::DrawArgumentLists("sec_edgar", 2)) {
+      const Rows row = c.Query("SELECT " + literals);
+      out.push_back({row[0][0].text, row[0][1].text});
+    }
+    return out;
+  }();
+  return sets;
+}
+
 inline double ParseDouble(const std::string &s) { return std::strtod(s.c_str(), nullptr); }
 
 inline bool SameDouble(const std::string &a, const std::string &b) {
@@ -126,10 +146,15 @@ inline const char *AccelSql() { return "SELECT name, tag, value FROM accel_sec_e
 
 // Compares accel and plain answers; returns "" on a match, else a description.
 // `plain_conn` may differ from `accel_conn` (e.g. to keep accel off a snapshot).
-inline std::string Compare(Conn &accel_conn, Conn &plain_conn, const char *fy, const char *uom) {
+// `answer_rows`, if given, receives the number of rows of the answer.
+inline std::string Compare(Conn &accel_conn, Conn &plain_conn, const char *fy, const char *uom,
+                           size_t *answer_rows = nullptr) {
   const std::vector<const char *> params{fy, uom};
   const Rows want = plain_conn.Query(PlainSql(), params);
   const Rows got = accel_conn.Query(AccelSql(), params);
+  if (answer_rows) {
+    *answer_rows = want.size();
+  }
   const std::string ctx = std::string("fy=") + (fy ? fy : "NULL") + " uom=" +
                           (uom ? uom : "NULL");
   if (want.size() != got.size()) {

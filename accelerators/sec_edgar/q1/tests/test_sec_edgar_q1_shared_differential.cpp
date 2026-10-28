@@ -8,6 +8,7 @@
 #include <string>
 
 #include "eval/harness/differential.hpp"
+#include "eval/harness/param_sets.hpp"
 #include "catalog/query_catalog.hpp"
 
 namespace fs = std::filesystem;
@@ -15,10 +16,12 @@ namespace harness = accelerator_codegen::aux_state::harness;
 namespace engine = accelerator_codegen::aux_state::engine;
 
 static void RunAll(const engine::SharedQueryCatalogEntry &entry, const std::string &src, const std::string &work) {
-  std::cerr << "q1 differential: " << entry.accelerator_id << "\n";
-  harness::RunDifferentialCheck(src, entry);
-  harness::RunIncrementalDifferentialCheck(work, entry);
-  harness::RunAdversarialWriteDifferentialCheck(work, entry, /*max_probes=*/5, /*min_chunks=*/1, false);
+  for (const auto &arguments : harness::ArgumentSets(entry)) {
+    std::cerr << "q1 differential: " << entry.accelerator_id << " (" << harness::ArgumentLiterals(arguments) << ")\n";
+    harness::RunDifferentialCheck(src, entry, arguments);
+    harness::RunIncrementalDifferentialCheck(work, entry, arguments);
+    harness::RunAdversarialWriteDifferentialCheck(work, entry, arguments, /*max_probes=*/5, /*min_chunks=*/1, false);
+  }
   std::cerr << "PASS " << entry.accelerator_id << "\n";
 }
 

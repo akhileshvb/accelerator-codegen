@@ -187,14 +187,19 @@ void TestBuilderMerge() {
   a.Merge(std::move(b));
   const auto s1 = whole.Finish();
   const auto s2 = a.Finish();
-  const auto o1 = BuildSecEdgarQ1Output(s1);
-  const auto o2 = BuildSecEdgarQ1Output(s2);
-  assert(o1.size() == o2.size());
-  for (std::size_t i = 0; i < o1.size(); ++i) {
-    assert(o1[i].stmt == o2[i].stmt && o1[i].rfile == o2[i].rfile && o1[i].rfile_is_null == o2[i].rfile_is_null);
-    assert(o1[i].cnt == o2[i].cnt && o1[i].num_filings == o2[i].num_filings);
-    assert(o1[i].avg_is_null == o2[i].avg_is_null && o1[i].avg_line_num == o2[i].avg_line_num);
+  assert(s1.groups.size() == s2.groups.size());
+  for (const auto &group : s1.groups) {
+    const auto o1 = BuildSecEdgarQ1Output(s1, group.stmt);
+    const auto o2 = BuildSecEdgarQ1Output(s2, group.stmt);
+    assert(!o1.empty() && o1.size() == o2.size());
+    for (std::size_t i = 0; i < o1.size(); ++i) {
+      assert(o1[i].stmt == group.stmt && o1[i].stmt == o2[i].stmt && o1[i].rfile == o2[i].rfile &&
+             o1[i].rfile_is_null == o2[i].rfile_is_null);
+      assert(o1[i].cnt == o2[i].cnt && o1[i].num_filings == o2[i].num_filings);
+      assert(o1[i].avg_is_null == o2[i].avg_is_null && o1[i].avg_line_num == o2[i].avg_line_num);
+    }
   }
+  assert(BuildSecEdgarQ1Output(s1, std::nullopt).empty());
   std::cout << "builder merge ok\n";
 }
 
@@ -304,7 +309,7 @@ void TestExactLineSum() {
   SecEdgarQ1State decoded;
   assert(DecodeSecEdgarQ1State(bytes, decoded));
   assert(decoded.groups[0].line_sum == expected);
-  const auto out = BuildSecEdgarQ1Output(decoded);
+  const auto out = BuildSecEdgarQ1Output(decoded, decoded.groups[0].stmt);
   assert(out.size() == 1 && out[0].avg_line_num == 4e18);
 
   // AvgLine == long double division; plain double division can differ.

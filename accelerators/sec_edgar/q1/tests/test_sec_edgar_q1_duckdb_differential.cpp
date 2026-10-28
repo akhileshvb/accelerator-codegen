@@ -4,7 +4,8 @@
 // non-canonical adsh strings, empty strings) is maintained with real SQL
 // INSERT / DELETE / UPDATE statements; each statement's compact-row mutation
 // is fed to the DuckdbRuntime (coordinator + DuckDB state store) and the aux
-// answer is compared with plain DuckDB SQL (base_sql) after every step. Both
+// answer for each drawn stmt (eval/harness/param_sets) is compared with the
+// query template bound to it, after every step. Both
 // the single-threaded and (when compiled) the parallel aux accelerator run.
 //
 // usage: test_sec_edgar_q1_duckdb_differential [steps=150] [seed=1] [rows=300000] [work_db]
@@ -26,6 +27,8 @@
 #include <vector>
 
 #include "eval/harness/differential.hpp"
+#include "eval/harness/param_sets.hpp"
+#include "backends/duckdb/api/sql_fallback.hpp"
 #include "backends/duckdb/api/duckdb_runtime.hpp"
 #include "backends/duckdb/api/register.hpp"
 #include "catalog/query_catalog.hpp"
@@ -138,11 +141,12 @@ CompactRow FromDb(duckdb::MaterializedQueryResult &res, duckdb::idx_t row) {
 // compares rows as text with 6 decimals; an average that is exactly a 7-decimal
 // tie, e.g. 613804/2560 = 239.7671875, is rounded differently when rendered from
 // DuckDB's decimal text and from the double, though both doubles are identical.)
-void RequireExactGroups(duckdb::Connection &c, DuckdbRuntime &runtime, const catalog::SharedQueryCatalogEntry &entry) {
+void RequireExactGroups(duckdb::Connection &c, DuckdbRuntime &runtime, const catalog::SharedQueryCatalogEntry &entry,
+                        const core::QueryArguments &args) {
   using Key = std::tuple<std::string, bool, std::string>;
   using Val = std::tuple<int64_t, int64_t, bool, double>;
   std::map<Key, Val> expected, actual;
-  auto base = Run(c, entry.base_sql);
+  auto base = Run(c, catalog::BindArguments(entry.base_sql, args));
   for (duckdb::idx_t i = 0; i < base->RowCount(); ++i) {
     const auto rfile = base->GetValue(1, i);
     const auto avg = base->GetValue(4, i);
@@ -150,26 +154,33 @@ void RequireExactGroups(duckdb::Connection &c, DuckdbRuntime &runtime, const cat
         base->GetValue(2, i).GetValue<int64_t>(), base->GetValue(3, i).GetValue<int64_t>(), avg.IsNull(),
         avg.IsNull() ? 0.0 : avg.GetValue<double>()};
   }
-  for (const auto &row : runtime.ExecuteCollect()) {
+  for (const auto &row : runtime.ExecuteCollect(args)) {
     const bool rfile_null = row.values[1].is_null;
     actual[{std::get<std::string>(row.values[0].payload), rfile_null,
             rfile_null ? "" : std::get<std::string>(row.values[1].payload)}] = {
         std::get<int64_t>(row.values[2].payload), std::get<int64_t>(row.values[3].payload), row.values[4].is_null,
         row.values[4].is_null ? 0.0 : std::get<double>(row.values[4].payload)};
   }
-  Require(expected == actual, "exact group comparison failed for Q1");
+  Require(expected == actual, "exact group comparison failed for Q1 stmt " + harness::ArgumentLiterals(args));
+}
+
+// The drawn stmt sets, and a NULL stmt (no row qualifies).
+std::vector<core::QueryArguments> ComparedSets(const catalog::SharedQueryCatalogEntry &entry) {
+  auto sets = harness::ArgumentSets(entry);
+  sets.push_back(catalog::ToCoreArguments(entry.benchmark_arguments)); // the signature: all NULL
+  return sets;
 }
 
 void CompareToBase(duckdb::Connection &c, DuckdbRuntime &runtime, const catalog::SharedQueryCatalogEntry &entry,
-                   const std::string &label) {
-  auto unordered = entry; // cnt ties are legal in SQL: groups are compared by key
+                   const std::vector<core::QueryArguments> &sets, const std::string &label) {
   try {
-    RequireExactGroups(c, runtime, entry);
-    (void)unordered;
-    // The SQL table-function path must serve the same answer.
-    auto aux = Run(c, entry.duckdb_aux_sql);
-    auto base = Run(c, entry.base_sql);
-    Require(aux->RowCount() == base->RowCount(), "aux SQL row count differs");
+    for (const auto &args : sets) {
+      RequireExactGroups(c, runtime, entry, args);
+      // The SQL table-function path must serve the same answer.
+      auto aux = Run(c, catalog::BindArguments(entry.duckdb_aux_sql, args));
+      auto base = Run(c, catalog::BindArguments(entry.base_sql, args));
+      Require(aux->RowCount() == base->RowCount(), "aux SQL row count differs");
+    }
   } catch (const std::exception &ex) {
     throw std::runtime_error(label + ": " + ex.what());
   }
@@ -203,7 +214,8 @@ void RunScenario(const catalog::SharedQueryCatalogEntry &entry, const std::strin
   DuckdbRuntime runtime(c, entry, 10.0);
   runtime.UseManualCapture(); // changes are hand-built below
   runtime.Build();
-  CompareToBase(c, runtime, entry, name + " initial");
+  const auto sets = ComparedSets(entry);
+  CompareToBase(c, runtime, entry, sets, name + " initial");
 
   for (int step = 0; step < steps; ++step) {
     const std::string label = name + " seed=" + std::to_string(seed) + " step=" + std::to_string(step);
@@ -268,7 +280,7 @@ void RunScenario(const catalog::SharedQueryCatalogEntry &entry, const std::strin
       }
     }
     runtime.ApplyMutationBatch(mutation);
-    CompareToBase(c, runtime, entry, label);
+    CompareToBase(c, runtime, entry, sets, label);
   }
   std::cout << "PASS " << name << " seed=" << seed << " steps=" << steps << "\n";
 }
