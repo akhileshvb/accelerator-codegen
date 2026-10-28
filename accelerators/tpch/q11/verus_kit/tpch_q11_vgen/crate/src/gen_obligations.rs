@@ -204,15 +204,15 @@ pub open spec fn nation_in_type(r: NationRow) -> bool {
 
 /// Each value of partsupp lies in the range of its column's SQL type.
 pub open spec fn partsupp_in_type(r: PartsuppRow) -> bool {
-    -2147483648 <= r.ps_partkey <= 2147483647
-    && -2147483648 <= r.ps_suppkey <= 2147483647
-    && -2147483648 <= r.ps_availqty <= 2147483647
+    -9223372036854775808 <= r.ps_partkey <= 9223372036854775807
+    && -9223372036854775808 <= r.ps_suppkey <= 9223372036854775807
+    && -9223372036854775808 <= r.ps_availqty <= 9223372036854775807
     && -999999999999999 <= r.ps_supplycost <= 999999999999999
 }
 
 /// Each value of supplier lies in the range of its column's SQL type.
 pub open spec fn supplier_in_type(r: SupplierRow) -> bool {
-    -2147483648 <= r.s_suppkey <= 2147483647
+    -9223372036854775808 <= r.s_suppkey <= 9223372036854775807
     && -2147483648 <= r.s_nationkey <= 2147483647
 }
 

@@ -23,12 +23,8 @@ import tempfile
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 
 
-# A doc line sql2verus gained after the kits were generated; nothing else may differ.
-LATER_DOC = " (a NULL key matches none)."
-
-
 def same(generated: pathlib.Path, committed: pathlib.Path) -> bool:
-    return generated.read_text().replace(LATER_DOC, ".") == committed.read_text()
+    return generated.read_text() == committed.read_text()
 
 
 UPDATE_SPEC = bool(os.environ.get("REGEN_UPDATE_SPEC"))  # approved spec change only

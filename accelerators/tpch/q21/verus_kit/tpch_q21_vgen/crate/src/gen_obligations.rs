@@ -462,8 +462,8 @@ pub open spec fn max_history() -> int {
 
 /// Each value of lineitem lies in the range of its column's SQL type.
 pub open spec fn lineitem_in_type(r: LineitemRow) -> bool {
-    -2147483648 <= r.l_orderkey <= 2147483647
-    && -2147483648 <= r.l_suppkey <= 2147483647
+    -9223372036854775808 <= r.l_orderkey <= 9223372036854775807
+    && -9223372036854775808 <= r.l_suppkey <= 9223372036854775807
     && -2147483648 <= r.l_commitdate <= 2147483647
     && -2147483648 <= r.l_receiptdate <= 2147483647
 }
@@ -475,12 +475,12 @@ pub open spec fn nation_in_type(r: NationRow) -> bool {
 
 /// Each value of orders lies in the range of its column's SQL type.
 pub open spec fn orders_in_type(r: OrdersRow) -> bool {
-    -2147483648 <= r.o_orderkey <= 2147483647
+    -9223372036854775808 <= r.o_orderkey <= 9223372036854775807
 }
 
 /// Each value of supplier lies in the range of its column's SQL type.
 pub open spec fn supplier_in_type(r: SupplierRow) -> bool {
-    -2147483648 <= r.s_suppkey <= 2147483647
+    -9223372036854775808 <= r.s_suppkey <= 9223372036854775807
     && -2147483648 <= r.s_nationkey <= 2147483647
 }
 

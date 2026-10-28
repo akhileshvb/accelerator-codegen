@@ -875,6 +875,7 @@ struct Tr<'a> {
     rels: HashMap<String, RelInfo>,
     counters: HashMap<&'static str, usize>,
     notes: BTreeSet<String>,
+    ieee_div: bool, // a division by a non-literal was translated with IEEE zero-divisor semantics
     pfx: String, // prefix of subquery helper names (obligations)
     perm: perm::Perm,
     ok_calls: Vec<String>, // the `name_ok(..)` of every chosen float
@@ -1774,6 +1775,7 @@ impl<'a> Tr<'a> {
             if op == Divide && rv.int_lit.is_none() {
                 v.nonlit_div = true;
                 if self.sch.div_ieee {
+                    self.ieee_div = true;
                     self.notes.insert("A zero divisor gives a Rat with den == 0: +infinity (num > 0), -infinity (num < 0) or NaN (num == 0), as the engine computes a division.".into());
                 } else {
                     let c = format!("{} != 0", rv.wrap(1));
@@ -3306,7 +3308,7 @@ fn print(tr: &Tr, top: &Top, sql: &str, src_name: &str) -> String {
         writeln!(w, "}}\n").unwrap();
     }
     let avail = print_facts(w, top, approx, &defined);
-    print_defined(w, top, avail, &defined);
+    print_defined(w, top, avail, &defined, tr.ieee_div);
     let tables: Vec<String> = tr.used.keys().map(|t| table_field(t)).collect();
     tr.perm.print(w, &tables, top, &defined);
     writeln!(w, "}} // verus!").unwrap();
@@ -3505,12 +3507,17 @@ fn print_facts(w: &mut String, top: &Top, approx: bool, defined: &[String]) -> F
 
 /// `defined`: the query's divisors are non-zero, so that it has an answer; with
 /// the lemmas that make `defined <==> exists an answer` a verified fact.
-fn print_defined(w: &mut String, top: &Top, facts: Facts, defined: &[String]) {
+fn print_defined(w: &mut String, top: &Top, facts: Facts, defined: &[String], ieee_div: bool) {
     let b = &top.block;
     let own = facts == Facts::Grouped && !defined.is_empty() && !as_bag(b);
     writeln!(w, "// ── The answer exists exactly when `defined` (verified by Verus, not trusted) ──\n").unwrap();
     if !own {
-        writeln!(w, "/// No divisor of the query is zero{}.", if defined.is_empty() { " (it has none)" } else { "" }).unwrap();
+        let doc = match (defined.is_empty(), ieee_div) {
+            (false, _) => "No divisor of the query is zero.",
+            (true, true) => "Always: a zero divisor gives an infinity or NaN, not an undefined answer.",
+            (true, false) => "No divisor of the query is zero (it has none).",
+        };
+        writeln!(w, "/// {doc}").unwrap();
         writeln!(w, "pub open spec fn defined(db: Db, params: Params) -> bool {{").unwrap();
         if defined.is_empty() {
             writeln!(w, "    true").unwrap();
@@ -3869,6 +3876,7 @@ async fn run() -> Res<()> {
         rels: HashMap::new(),
         counters: HashMap::new(),
         notes: BTreeSet::new(),
+        ieee_div: false,
         pfx: String::new(),
         perm: perm::Perm::default(),
         ok_calls: vec![],

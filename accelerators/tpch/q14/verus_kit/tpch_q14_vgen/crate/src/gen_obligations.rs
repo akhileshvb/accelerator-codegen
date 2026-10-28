@@ -124,7 +124,7 @@ pub open spec fn scan_lines_ok(db: Db, rows: Seq<LineInput>) -> bool {
 }
 
 /// rescan parts_for_lines: SELECT p_partkey, p_type FROM part
-///   restricted to the rows whose p_partkey is one of `keys`.
+///   restricted to the rows whose p_partkey is one of `keys` (a NULL key matches none).
 pub open spec fn rescan_parts_for_lines_ok(db: Db, keys: Seq<i64>, rows: Seq<PartInput>) -> bool {
     forall|f: spec_fn(PartRow) -> int| #[trigger] sum(part_input_seq_view(rows), f) == sum(
         db.part,
@@ -133,7 +133,7 @@ pub open spec fn rescan_parts_for_lines_ok(db: Db, keys: Seq<i64>, rows: Seq<Par
 }
 
 /// rescan lines_for_parts: SELECT l_partkey, l_extendedprice, l_discount, l_shipdate FROM lineitem
-///   restricted to the rows whose l_partkey is one of `keys`.
+///   restricted to the rows whose l_partkey is one of `keys` (a NULL key matches none).
 pub open spec fn rescan_lines_for_parts_ok(db: Db, keys: Seq<i64>, rows: Seq<LineInput>) -> bool {
     forall|f: spec_fn(LineitemRow) -> int| #[trigger] sum(line_input_seq_view(rows), f) == sum(
         db.lineitem,
@@ -201,7 +201,7 @@ pub open spec fn max_history() -> int {
 
 /// Each value of lineitem lies in the range of its column's SQL type.
 pub open spec fn lineitem_in_type(r: LineitemRow) -> bool {
-    -2147483648 <= r.l_partkey <= 2147483647
+    -9223372036854775808 <= r.l_partkey <= 9223372036854775807
     && -999999999999999 <= r.l_extendedprice <= 999999999999999
     && -999999999999999 <= r.l_discount <= 999999999999999
     && -2147483648 <= r.l_shipdate <= 2147483647
@@ -209,7 +209,7 @@ pub open spec fn lineitem_in_type(r: LineitemRow) -> bool {
 
 /// Each value of part lies in the range of its column's SQL type.
 pub open spec fn part_in_type(r: PartRow) -> bool {
-    -2147483648 <= r.p_partkey <= 2147483647
+    -9223372036854775808 <= r.p_partkey <= 9223372036854775807
 }
 
 /// The databases the DBMS can represent: each table within its row-id space, each

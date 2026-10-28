@@ -555,7 +555,7 @@ pub proof fn lemma_query_result_iff(db: Db, params: Params, out: Seq<OutRow>)
 
 // ── The answer exists exactly when `defined` (verified by Verus, not trusted) ──
 
-/// No divisor of the query is zero (it has none).
+/// Always: a zero divisor gives an infinity or NaN, not an undefined answer.
 pub open spec fn defined(db: Db, params: Params) -> bool {
     true
 }
