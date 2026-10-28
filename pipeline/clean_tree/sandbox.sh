@@ -16,6 +16,17 @@
 #                           concurrent sandboxes (one per tree) share one partition (the sandbox's /dev/shm is private)
 #   OPENROUTER_API_KEY      passed through for codex when set (else <clean-tree>/.env has it)
 set -euo pipefail
+# Every run's memory cap (run_outcome.py capped) is a child of a cgroup the sandbox may write: systemd cannot make
+# scopes for a process in its pid namespace. The sandbox runs in a delegated user scope and gets that cgroup.
+if [[ -z "${ACCEL_SANDBOX_SCOPED:-}" ]] && systemd-run --user --scope -q --collect true 2>/dev/null; then
+  exec env ACCEL_SANDBOX_SCOPED=1 systemd-run --user --scope -q --collect -p Delegate=yes -- "$0" "$@"
+fi
+cgroup=()
+if [[ -n "${ACCEL_SANDBOX_SCOPED:-}" ]]; then
+  root="/sys/fs/cgroup$(cut -d: -f3 /proc/self/cgroup)"
+  mkdir -p "${root}/main" && echo $$ >"${root}/main/cgroup.procs" && echo +memory >"${root}/cgroup.subtree_control" &&
+    cgroup=(--bind "${root}" "${root}" --setenv ACCEL_CGROUP "${root}")
+fi
 TREE="$(realpath "${1:?usage: sandbox.sh <clean-tree> [command...]}")"; shift
 STATE="${ACCEL_SANDBOX_STATE:-/flash1/$(id -un)/engine_state}"
 mkdir -p "${STATE}" "${TREE}/.home"
@@ -48,7 +59,7 @@ exec bwrap --die-with-parent --unshare-pid --unshare-ipc --unshare-uts \
   --setenv PATH "/opt/bin:/usr/bin" --setenv HOME "${TREE}/.home" --setenv USER "$(id -un)" \
   --setenv TERM "${TERM:-xterm}" --setenv TMPDIR /tmp \
   --setenv ACCEL_DUCKDB_ROOT "${ACCEL_DUCKDB_ROOT:-}" \
-  "${passenv[@]}" "${lock[@]}" \
+  "${passenv[@]}" "${lock[@]}" "${cgroup[@]}" \
   --setenv ACCEL_TREE "${TREE}" \
   --chdir "${TREE}" \
   "${@:-bash}"

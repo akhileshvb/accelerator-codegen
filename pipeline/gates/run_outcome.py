@@ -17,6 +17,7 @@ fold <gate json>
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
@@ -25,6 +26,7 @@ import signal
 import subprocess
 import sys
 import time
+import uuid
 from pathlib import Path
 
 GRACE_S = 15
@@ -106,14 +108,39 @@ def _exec_gdb(pids: list[int], stacks_log: str) -> None:
 
 
 def capped(cmd: list[str], mb: str = "") -> list[str]:
-    """`cmd` in a user scope with MemoryMax `mb` (default ACCEL_RUN_MEMORY_MB; swap off), when the budget is set and
-    the user's systemd can make scopes; else `cmd` unchanged. The scope execs the command in place: it stays our
-    descendant. Past the cap the kernel kills the process that grew, not its peers (OOMPolicy=continue)."""
+    """`cmd` under a memory cap of `mb` (default ACCEL_RUN_MEMORY_MB; swap off) when the budget is set: in a cgroup
+    of its own under the sandbox's delegated one (ACCEL_CGROUP, clean_tree/sandbox.sh), else in a user scope when
+    the user's systemd can make one; else `cmd` unchanged. Either way the command runs in place (it stays our
+    descendant) and past the cap the kernel kills the process that grew, not its peers."""
     mb = mb or os.environ.get("ACCEL_RUN_MEMORY_MB", "")
-    if not mb.isdigit() or not _scopes():
+    if not mb.isdigit():
+        return cmd
+    if root := os.environ.get("ACCEL_CGROUP"):
+        return ["sh", "-c", 'echo $$ >"$0/cgroup.procs" && exec "$@"', str(_run_cgroup(Path(root), mb)), *cmd]
+    if not _scopes():
         return cmd
     return ["systemd-run", "--user", "--scope", "-q", "--collect", "-p", f"MemoryMax={mb}M", "-p", "MemorySwapMax=0",
             "-p", "OOMPolicy=continue", "--", *cmd]
+
+
+def _run_cgroup(root: Path, mb: str) -> Path:
+    for done in root.glob("run-*"):  # runs that ended (a populated cgroup refuses rmdir)
+        with contextlib.suppress(OSError):
+            done.rmdir()
+    cgroup = root / f"run-{uuid.uuid4().hex[:12]}"
+    cgroup.mkdir()
+    (cgroup / "memory.max").write_text(f"{mb}M")
+    (cgroup / "memory.swap.max").write_text("0")
+    return cgroup
+
+
+def _over_cap(cmd: list[str]) -> bool:
+    """Whether this capped run may have been killed for its cap: its cgroup counts the kills; a scope's is not ours to read."""
+    if cmd[:1] == ["sh"]:
+        with contextlib.suppress(OSError, ValueError):
+            return dict(line.split() for line in Path(cmd[3], "memory.events").read_text().splitlines())["oom_kill"] != "0"
+        return False
+    return cmd[:1] == ["systemd-run"]
 
 
 def _scopes() -> bool:
@@ -143,7 +170,7 @@ def run(seconds: float, outcome_path: str, label: str, cmd: list[str]) -> int:
         _exec_gdb(_descendants(child.pid), stacks_log)
     rc = 128 - rc if rc < 0 else rc
     if rc:
-        over = rc == 137 and cmd[0] == "systemd-run"
+        over = rc == 137 and _over_cap(cmd)
         _write(outcome_path, {"exit_code": rc, "reason": (
             f"{label} was killed (exit 137): over its memory cap of {os.environ['ACCEL_RUN_MEMORY_MB']} MB "
             "(ACCEL_RUN_MEMORY_MB), or by another signal" if over else f"{label} exited {rc}")})

@@ -7,6 +7,7 @@ import json
 import shutil
 import sys
 import time
+from pathlib import Path
 
 import pytest
 
@@ -125,3 +126,17 @@ def test_a_run_over_its_memory_cap_dies_alone_and_says_so(tmp_path, monkeypatch)
     outcome = tmp_path / "run.json"
     rc = run_outcome.run(30, str(outcome), "hog", [sys.executable, "-c", "x = bytearray(400 * 1024 * 1024)"])
     assert rc == 137 and "over its memory cap of 64 MB" in json.loads(outcome.read_text())["reason"]
+
+
+def test_in_a_sandbox_a_run_gets_a_cgroup_under_the_delegated_one_and_ended_runs_are_pruned(tmp_path, monkeypatch):
+    monkeypatch.setenv("ACCEL_CGROUP", str(tmp_path))
+    (tmp_path / "run-ended").mkdir()
+    cmd = run_outcome.capped(["true"], "64")
+    cgroup = Path(cmd[3])
+    assert cmd[:2] == ["sh", "-c"] and cmd[4:] == ["true"] and cgroup.parent == tmp_path
+    assert (cgroup / "memory.max").read_text() == "64M" and (cgroup / "memory.swap.max").read_text() == "0"
+    assert not (tmp_path / "run-ended").exists()
+    (cgroup / "memory.events").write_text("low 0\nhigh 0\nmax 3\noom 1\noom_kill 0\n")
+    assert not run_outcome._over_cap(cmd)  # killed by another signal
+    (cgroup / "memory.events").write_text("low 0\nhigh 0\nmax 3\noom 1\noom_kill 1\n")
+    assert run_outcome._over_cap(cmd)
