@@ -434,7 +434,7 @@ void RunIncrementalDifferentialCheck(const std::string &db_path,
 
 void CheckRfChunks(DifferentialSession &session, int num_chunks, int order_count) {
   auto &[entry, database, connection, runtime] = session;
-  Require(entry.workload == aux_engine::SharedWorkloadKind::Tpch,
+  Require(std::string(entry.workload_name) == "tpch",
           "RF differential is TPC-H only");
   Require(entry.query_id != 11,
           "Q11 is unaffected by RF (no orders/lineitem dependency)");
@@ -909,7 +909,7 @@ void CheckRefreshWrites(DifferentialSession &session, const AdversarialPlan &pla
   if (!plan.require_bulk) {
     return;
   }
-  Require(session.entry.workload == aux_engine::SharedWorkloadKind::Tpch && session.entry.query_id != 11,
+  Require(std::string(session.entry.workload_name) == "tpch" && session.entry.query_id != 11,
           "adversarial bulk required but query cannot use TPC-H RF "
           "(orders/lineitem); set bulk_writes.required=false");
   Require(plan.min_chunks >= 1,

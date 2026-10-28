@@ -1,4 +1,5 @@
 #include "backends/duckdb/api/parallel/parallel_kernel.hpp"
+#include "tpch/common/dense_order_capacity.hpp"
 #include "tpch/q12/duckdb/base/query.hpp"
 #include "tpch/q12/duckdb/base/simd_lineitem.hpp"
 

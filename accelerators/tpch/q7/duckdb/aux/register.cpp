@@ -61,7 +61,6 @@ SharedProbe BuildTpchQ7Probe(::duckdb::MaterializedQueryResult &result,
 }
 
 const SharedQueryRegistrar kEntry{SharedQueryCatalogEntry{7,
-     SharedWorkloadKind::Tpch,
      "tpch",
      core::TpchQ7Layout::kAccelerator,
      "SELECT supp_nation, cust_nation, l_year, SUM(volume) AS revenue FROM ("

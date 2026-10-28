@@ -189,7 +189,7 @@ struct Outcome {
 };
 
 Outcome RunQuery(const std::string &src, int q, int seconds, int readers, bool shared, uint64_t seed) {
-  const auto &entry = engine::LookupSharedQuery(engine::SharedWorkloadKind::Tpch, q);
+  const auto &entry = engine::LookupSharedQuery("tpch", q);
   const auto cases = CasesFor(entry);
   ts::ScratchDir scratch("aux_snapshot_reads_q" + std::to_string(q));
   const auto path = ts::PrivateDbCopy(src, scratch);

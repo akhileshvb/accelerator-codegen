@@ -55,7 +55,6 @@ SharedProbe BuildTpchQ17Probe(::duckdb::MaterializedQueryResult &result,
 }
 
 const SharedQueryRegistrar kEntry{SharedQueryCatalogEntry{17,
-     SharedWorkloadKind::Tpch,
      "tpch",
      query::TpchQ17Layout::kAccelerator,
      // DuckDB TPC-H uses abbreviated containers (LG CASE), not official

@@ -38,7 +38,7 @@ void RunParallelNativeScan(
 	}
 }
 
-bool ScanSecEdgarParallel(
+bool ScanParallel(
     aux_state::core::AuxEngineServices &services, const NativeScanSpec &spec,
     const std::function<void(duckdb::idx_t worker_id, duckdb::DataChunk &chunk)>
         &consume) {

@@ -52,7 +52,6 @@ SharedProbe BuildTpchQ11Probe(::duckdb::MaterializedQueryResult &result,
 }
 
 const SharedQueryRegistrar kEntry{SharedQueryCatalogEntry{11,
-     SharedWorkloadKind::Tpch,
      "tpch",
      query::TpchQ11Layout::kAccelerator,
      "SELECT ps_partkey, SUM(ps_supplycost * ps_availqty) AS value "

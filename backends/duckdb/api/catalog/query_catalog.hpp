@@ -15,8 +15,6 @@
 
 namespace accelerator_codegen::aux_state::engine {
 
-enum class SharedWorkloadKind { Tpch, SecEdgar };
-
 struct SharedQueryArguments {
   std::vector<core::AuxValue> values;
 };
@@ -49,7 +47,6 @@ void AdvanceProbe(SharedProbe &probe);
 
 struct SharedQueryCatalogEntry {
   int query_id = 0;
-  SharedWorkloadKind workload = SharedWorkloadKind::Tpch;
   const char *workload_name = nullptr;
   const char *accelerator_id = nullptr;
   const char *base_sql = nullptr;
@@ -81,12 +78,12 @@ struct SharedQueryRegistrar {
 };
 // Another accelerator serving a registered query (same SQL, probes and
 // arguments) under its own id and aux SQL, e.g. a Verus kernel for it.
-void RegisterSharedQueryVariant(std::string accelerator_id, SharedWorkloadKind workload, int query_id,
+void RegisterSharedQueryVariant(std::string accelerator_id, std::string workload_name, int query_id,
                                 std::string duckdb_aux_sql);
 struct SharedQueryVariantRegistrar {
-  SharedQueryVariantRegistrar(std::string accelerator_id, SharedWorkloadKind workload, int query_id,
+  SharedQueryVariantRegistrar(std::string accelerator_id, std::string workload_name, int query_id,
                               std::string duckdb_aux_sql) {
-    RegisterSharedQueryVariant(std::move(accelerator_id), workload, query_id, std::move(duckdb_aux_sql));
+    RegisterSharedQueryVariant(std::move(accelerator_id), std::move(workload_name), query_id, std::move(duckdb_aux_sql));
   }
 };
 // The entry an accelerator id serves: a registered entry, a variant,
@@ -94,8 +91,6 @@ struct SharedQueryVariantRegistrar {
 // Null if none.
 const SharedQueryCatalogEntry *FindSharedQueryByAccelerator(const std::string &accelerator_id);
 
-const SharedQueryCatalogEntry &LookupSharedQuery(SharedWorkloadKind workload,
-                                               int query_id);
 // A Verus accelerator registered through the host kit (verus_kit.hpp): its
 // catalog query's entry under the accelerator's id (table function
 // accel_<id>).  Null if no glue with that id is registered.
@@ -105,12 +100,9 @@ const SharedQueryCatalogEntry &LookupSharedQuery(const std::string &workload_nam
                                                int query_id);
 
 bool IsParallelAuxAccelerator(const char *accelerator_id);
-const SharedQueryCatalogEntry &LookupSharedQueryParallel(SharedWorkloadKind workload,
-                                                       int query_id);
 const SharedQueryCatalogEntry &LookupSharedQueryParallel(const std::string &workload_name,
                                                        int query_id);
 
-std::vector<int> SharedQueriesForWorkload(SharedWorkloadKind workload);
 std::vector<int> SharedQueriesForWorkload(const std::string &workload_name);
 
 SharedProbe FindSharedProbe(::duckdb::Connection &connection,

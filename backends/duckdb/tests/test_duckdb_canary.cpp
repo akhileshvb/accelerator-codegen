@@ -116,7 +116,6 @@ public:
     const char *sql = keep_.back().c_str();
     engine::SharedQueryCatalogEntry entry;
     entry.query_id = 9000 + static_cast<int>(runtimes_.size());
-    entry.workload = engine::SharedWorkloadKind::Tpch;
     entry.workload_name = "canary";
     entry.accelerator_id = id;
     entry.base_sql = sql;

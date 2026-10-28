@@ -51,7 +51,6 @@ SharedProbe BuildTpchQ13Probe(::duckdb::MaterializedQueryResult &result,
 }
 
 const SharedQueryRegistrar kEntry{SharedQueryCatalogEntry{13,
-     SharedWorkloadKind::Tpch,
      "tpch",
      core::TpchQ13Layout::kAccelerator,
      "SELECT c_count, COUNT(*) AS custdist FROM ("

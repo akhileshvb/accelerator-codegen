@@ -40,7 +40,6 @@ SharedProbe BuildSecEdgarQ3Probe(::duckdb::MaterializedQueryResult &result,
 }
 
 const SharedQueryRegistrar kEntry{SharedQueryCatalogEntry{3,
-     SharedWorkloadKind::SecEdgar,
      "sec_edgar",
      core::SecEdgarQ3Layout::kAccelerator,
      "SELECT s.name, s.cik, SUM(n.value) AS total_value "

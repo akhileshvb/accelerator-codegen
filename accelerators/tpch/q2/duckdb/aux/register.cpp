@@ -60,7 +60,6 @@ SharedProbe BuildTpchQ2Probe(::duckdb::MaterializedQueryResult &result,
 }
 
 const SharedQueryRegistrar kEntry{SharedQueryCatalogEntry{2,
-     SharedWorkloadKind::Tpch,
      "tpch",
      core::TpchQ2Layout::kAccelerator,
      "SELECT s_acctbal, s_name, n_name, p_partkey, p_mfgr, s_address, s_phone, s_comment "

@@ -27,21 +27,11 @@ namespace {
 namespace core = accelerator_codegen::aux_state::core;
 using catalog_values::Require;
 
-SharedWorkloadKind ParseWorkload(const std::string &workload_name) {
-  if (workload_name == "tpch") {
-    return SharedWorkloadKind::Tpch;
-  }
-  if (workload_name == "sec_edgar") {
-    return SharedWorkloadKind::SecEdgar;
-  }
-  throw std::runtime_error("unsupported workload: " + workload_name);
-}
-
 // Registered entries (stable addresses), and variants: other accelerators
 // serving a registered query.
 struct Variant {
   std::string accelerator_id;
-  SharedWorkloadKind workload;
+  std::string workload_name;
   int query_id;
   std::string duckdb_aux_sql;
 };
@@ -59,9 +49,9 @@ Registry &TheRegistry() {
   return registry;
 }
 
-const SharedQueryCatalogEntry *FindEntry(SharedWorkloadKind workload, int query_id) {
+const SharedQueryCatalogEntry *FindEntry(const std::string &workload_name, int query_id) {
   for (const auto &entry : TheRegistry().entries) {
-    if (entry.workload == workload && entry.query_id == query_id) {
+    if (workload_name == entry.workload_name && entry.query_id == query_id) {
       return &entry;
     }
   }
@@ -95,11 +85,11 @@ void RegisterSharedQuery(SharedQueryCatalogEntry entry) {
   registry.entries.push_back(std::move(entry));
 }
 
-void RegisterSharedQueryVariant(std::string accelerator_id, SharedWorkloadKind workload, int query_id,
+void RegisterSharedQueryVariant(std::string accelerator_id, std::string workload_name, int query_id,
                                 std::string duckdb_aux_sql) {
   auto &registry = TheRegistry();
   std::lock_guard<std::mutex> lock(registry.mutex);
-  registry.variants.push_back({std::move(accelerator_id), workload, query_id, std::move(duckdb_aux_sql)});
+  registry.variants.push_back({std::move(accelerator_id), std::move(workload_name), query_id, std::move(duckdb_aux_sql)});
 }
 
 const SharedQueryCatalogEntry *FindSharedQueryByAccelerator(const std::string &accelerator_id) {
@@ -110,7 +100,7 @@ const SharedQueryCatalogEntry *FindSharedQueryByAccelerator(const std::string &a
   }
   for (const auto &variant : TheRegistry().variants) {
     if (variant.accelerator_id == accelerator_id) {
-      const auto *base = FindEntry(variant.workload, variant.query_id);
+      const auto *base = FindEntry(variant.workload_name, variant.query_id);
       return base ? &Derived(accelerator_id, *base, variant.duckdb_aux_sql, false) : nullptr;
     }
   }
@@ -118,7 +108,7 @@ const SharedQueryCatalogEntry *FindSharedQueryByAccelerator(const std::string &a
     const auto base_id = accelerator_id.substr(0, accelerator_id.size() - 13);
     for (const auto &entry : TheRegistry().entries) {
       if (entry.accelerator_id && base_id == entry.accelerator_id) {
-        return &LookupSharedQueryParallel(entry.workload, entry.query_id);
+        return &LookupSharedQueryParallel(entry.workload_name, entry.query_id);
       }
     }
   }
@@ -129,10 +119,11 @@ core::QueryArguments ToCoreArguments(const SharedQueryArguments &arguments) {
   return core::QueryArguments{arguments.values};
 }
 
-const SharedQueryCatalogEntry &LookupSharedQuery(SharedWorkloadKind workload,
+const SharedQueryCatalogEntry &LookupSharedQuery(const std::string &workload_name,
                                                int query_id) {
-  const auto *entry = FindEntry(workload, query_id);
-  Require(entry != nullptr, "unsupported shared query (none registered): " + std::to_string(query_id));
+  const auto *entry = FindEntry(workload_name, query_id);
+  Require(entry != nullptr,
+          "unsupported shared query (none registered): " + workload_name + " Q" + std::to_string(query_id));
   return *entry;
 }
 
@@ -157,11 +148,10 @@ const SharedQueryCatalogEntry *VerusKitCatalogEntry(const std::string &accelerat
   if (!glue) {
     return nullptr;
   }
-  const auto workload = ParseWorkload(glue->workload);
   // Derive from another accelerator's entry for the query only when its
   // arguments are the glue's: the table function types each argument by the
   // entry (a C++ accelerator that derives a parameter itself takes fewer).
-  const auto *base = FindEntry(workload, glue->query_id);
+  const auto *base = FindEntry(glue->workload, glue->query_id);
   if (base) {
     bool same = base->benchmark_arguments.values.size() == glue->params.size();
     for (std::size_t i = 0; same && i < glue->params.size(); ++i)
@@ -187,7 +177,6 @@ const SharedQueryCatalogEntry *VerusKitCatalogEntry(const std::string &accelerat
     slot->aux_sql = std::string("SELECT * FROM accel_") + glue->id + "()";
     auto &e = slot->entry;
     e.query_id = glue->query_id;
-    e.workload = workload;
     e.workload_name = slot->workload_name.c_str();
     e.accelerator_id = slot->id.c_str();
     e.base_sql = slot->sql.c_str();
@@ -201,11 +190,6 @@ const SharedQueryCatalogEntry *VerusKitCatalogEntry(const std::string &accelerat
   return &slot->entry;
 }
 
-const SharedQueryCatalogEntry &LookupSharedQuery(const std::string &workload_name,
-                                               int query_id) {
-  return LookupSharedQuery(ParseWorkload(workload_name), query_id);
-}
-
 bool IsParallelAuxAccelerator(const char *accelerator_id) {
   if (!accelerator_id) {
     return false;
@@ -214,33 +198,22 @@ bool IsParallelAuxAccelerator(const char *accelerator_id) {
   return id.size() >= 13 && id.compare(id.size() - 13, 13, "_aux_parallel") == 0;
 }
 
-const SharedQueryCatalogEntry &LookupSharedQueryParallel(SharedWorkloadKind workload,
+const SharedQueryCatalogEntry &LookupSharedQueryParallel(const std::string &workload_name,
                                                        int query_id) {
-  Require(workload == SharedWorkloadKind::SecEdgar,
-          "parallel aux catalog is only implemented for sec_edgar");
-  const auto &base = LookupSharedQuery(workload, query_id);
+  const auto &base = LookupSharedQuery(workload_name, query_id);
   const std::string id = std::string(base.accelerator_id) + "_aux_parallel";
   return Derived(id, base, "SELECT * FROM accel_" + id + "()", true);
 }
 
-const SharedQueryCatalogEntry &LookupSharedQueryParallel(const std::string &workload_name,
-                                                       int query_id) {
-  return LookupSharedQueryParallel(ParseWorkload(workload_name), query_id);
-}
-
-std::vector<int> SharedQueriesForWorkload(SharedWorkloadKind workload) {
+std::vector<int> SharedQueriesForWorkload(const std::string &workload_name) {
   std::vector<int> out;
   for (const auto &entry : TheRegistry().entries) {
-    if (entry.workload == workload) {
+    if (workload_name == entry.workload_name) {
       out.push_back(entry.query_id);
     }
   }
   std::sort(out.begin(), out.end());
   return out;
-}
-
-std::vector<int> SharedQueriesForWorkload(const std::string &workload_name) {
-  return SharedQueriesForWorkload(ParseWorkload(workload_name));
 }
 
 SharedProbe FindSharedProbe(::duckdb::Connection &connection,

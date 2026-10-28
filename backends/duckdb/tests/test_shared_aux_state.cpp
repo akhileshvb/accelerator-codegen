@@ -8,6 +8,7 @@
 #include "substrate/aux/core/aux_types.hpp"
 #include "substrate/aux/core/aux_txn_buffer.hpp"
 #include "eval/tests/test_support/module_runtime.hpp"
+#include "backends/duckdb/api/catalog/query_catalog.hpp"
 #include "duckdb/main/connection.hpp"
 
 using namespace accelerator_codegen::aux_state::core;
@@ -74,6 +75,20 @@ public:
 } // namespace
 
 int main() {
+  // The catalog is keyed by benchmark name and query number: the same number in two benchmarks stays two queries.
+  namespace engine = accelerator_codegen::aux_state::engine;
+  for (const char *workload : {"alpha", "beta"}) {
+    engine::SharedQueryCatalogEntry entry;
+    entry.query_id = 1;
+    entry.workload_name = workload;
+    entry.accelerator_id = workload;
+    engine::RegisterSharedQuery(entry);
+  }
+  assert(std::string(engine::LookupSharedQuery("alpha", 1).accelerator_id) == "alpha");
+  assert(std::string(engine::LookupSharedQuery("beta", 1).accelerator_id) == "beta");
+  assert(engine::SharedQueriesForWorkload("beta") == std::vector<int>({1}));
+  assert(std::string(engine::LookupSharedQueryParallel("beta", 1).accelerator_id) == "beta_aux_parallel");
+
   // The DuckDB runtime: the module maintains after the SQL commit (never for
   // a rollback) and the published state reads back.
   duckdb::DuckDB db(nullptr);

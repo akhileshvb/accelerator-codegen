@@ -414,6 +414,36 @@ def test_a_harness_that_names_a_benchmark_fails_with_the_files_that_do(repo):
         "still naming one: backends/fake/bench/sweep.cpp (2), backends/fake/tests/harness.cmake (1)")
 
 
+def hostctl_repo(repo, api_source, host_extra=""):
+    shutil.copy(ORCHESTRATOR.parents[1] / "scripts" / "check_backend_query_free.py", repo / "scripts")
+    (repo / "workloads" / "toybench").mkdir(parents=True)
+    api = repo / "backends" / "fake" / "api"
+    api.mkdir()
+    (api / "catalog.hpp").write_text(api_source)
+    host = repo / "backends" / "fake" / "host.sh"
+    host.write_text(host.read_text() + host_extra)
+
+
+def test_hostctl_fails_when_the_backend_api_names_a_benchmark(repo):
+    hostctl_repo(repo, "// toybench is fine in a comment\nenum class Kind { ToyBench };\n")
+    proc, calls, _, _, out = run_gate(repo, "run_engine_hostctl.sh", "0")
+    reason = json.loads(out.read_text())["reason"]
+    assert proc.returncode == 1 and "backends/fake/api/catalog.hpp:2" in reason and "api/catalog.hpp:1" not in reason
+    assert "info" not in calls
+
+
+def test_hostctl_fails_when_host_sh_names_a_benchmark(repo):
+    hostctl_repo(repo, "enum class Kind { A };\n", "export TOYBENCH_DB=x\n")
+    proc, _, _, _, out = run_gate(repo, "run_engine_hostctl.sh", "0")
+    assert proc.returncode == 1 and "backends/fake/host.sh:" in json.loads(out.read_text())["reason"]
+
+
+def test_hostctl_lets_a_benchmark_free_backend_through_the_scan(repo):
+    hostctl_repo(repo, "enum class Kind { A };\n")
+    run_gate(repo, "run_engine_hostctl.sh", "0")
+    assert "must name no benchmark" not in (repo / "gate_out.json").read_text()
+
+
 @pytest.mark.parametrize("script", ["run_aux_correctness.sh", "run_aux_quick_check.sh"])
 def test_every_benchmark_runs_the_differential_not_only_tpch(repo, script):
     # the correctness gates once ran the differential (and with it the frozen suite) for tpch alone

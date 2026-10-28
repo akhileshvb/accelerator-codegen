@@ -1,6 +1,7 @@
 #include "sec_edgar/q24/duckdb/aux/parallel/module.hpp"
 
 #include "backends/duckdb/api/parallel/aux_parallel_scan.hpp"
+#include "sec_edgar/common/scan_specs.hpp"
 #include "sec_edgar/q24/duckdb/base/query.hpp"
 
 #include <algorithm>
@@ -71,7 +72,7 @@ SecEdgarQ24ParallelModule::BuildState(core::AuxEngineServices &services) const {
 
   // 1. pre -> exact membership base (worker-local dictionaries, then merge).
   std::vector<Q24RawPre> parts(workers);
-  const bool pre_ok = ScanSecEdgarParallel(
+  const bool pre_ok = ScanParallel(
       services, CreateSecEdgarQ24PreScanSpec(),
       [&](duckdb::idx_t worker, duckdb::DataChunk &chunk) {
         ChunkStrings a, t, v;
@@ -91,7 +92,7 @@ SecEdgarQ24ParallelModule::BuildState(core::AuxEngineServices &services) const {
 
   // 2. qualifying num rows without a pre match (read-only probes per worker).
   std::vector<Q24OrphanAccumulator> accs(workers);
-  ScanSecEdgarParallel(
+  ScanParallel(
       services, CreateSecEdgarQ24AuxNumScanSpec(),
       [&](duckdb::idx_t worker, duckdb::DataChunk &chunk) {
         const auto n = chunk.size();

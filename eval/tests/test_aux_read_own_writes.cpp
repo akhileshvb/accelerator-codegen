@@ -98,7 +98,7 @@ void Check(bool ok, const std::string &what, const Rows &got, const Rows &want) 
 }
 
 void RunQuery(const std::string &src, int q) {
-  const auto &entry = engine::LookupSharedQuery(engine::SharedWorkloadKind::Tpch, q);
+  const auto &entry = engine::LookupSharedQuery("tpch", q);
   const std::string accel_sql = entry.duckdb_aux_sql, ref_sql = entry.base_sql;
   for (const auto &write : Writes()) {
     ts::ScratchDir scratch("aux_read_own_writes_q" + std::to_string(q) + "_" + write.label);

@@ -38,7 +38,7 @@ cmd_info() {
 
 cmd_up() {
   mkdir -p "${STATE}/logs"
-  printf 'ACCEL_DB=%s\nACCEL_TPCH_DB=%s\n' "${DB}" "${DB}" >"${ENV_FILE}"
+  printf 'ACCEL_DB=%s\n' "${DB}" >"${ENV_FILE}"
 }
 
 cmd_down() { rm -rf "${STATE}"; }

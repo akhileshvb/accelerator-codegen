@@ -25,7 +25,6 @@ namespace accelerator_codegen::aux_state::engine {
 // accelerators/{bench}/q{N}/{engine}/ do not.
 class SharedQueryEngine {
 public:
-  static bool HasSharedQuery(SharedWorkloadKind workload, int query_id);
   static bool HasSharedQuery(const std::string &workload_name, int query_id);
 };
 
