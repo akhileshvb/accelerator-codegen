@@ -1,37 +1,55 @@
 // Parameter sweep of the SEC-EDGAR Q6 aux table function against plain SQL on a
-// real database: every combination of the benchmark domain
-//   fy in {2021..2024}, stmt in {BS, IS, CF, EQ, CI}, uom in {USD, shares, pure, CAD, CNY, EUR}
-// plus edge values (fy 2019 / 2025 / 0 / NULL, unknown stmt / uom, NULL stmt /
-// uom, look-alike case). Also reports build time and the aux read latency.
-//   check_sec_edgar_q6_params <db_copy> [threads] [domain_sample_percent=100]
+// real database: the drawn parameter sets (eval/harness/param_sets.hpp), and each
+// of them with one argument replaced by an edge value (fiscal years outside the
+// domain and the INTEGER range, unknown / look-alike / quoted stmt and uom, NULLs).
+// Also reports build time and the aux read latency. The number of sets is
+// ACCEL_PARAM_SETS (every combination of the domain is a large enough number).
+//   check_sec_edgar_q6_params <db_copy> [threads]
 #include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <iostream>
-#include <random>
 #include <string>
 #include <vector>
 
 #include "backends/duckdb/api/duckdb_runtime.hpp"
 #include "backends/duckdb/api/register.hpp"
+#include "backends/duckdb/api/sql_fallback.hpp"
 #include "catalog/query_catalog.hpp"
 #include "duckdb.hpp"
+#include "eval/harness/param_sets.hpp"
 
 namespace {
-std::string Quote(const std::string &s) {
-  std::string out = "'";
-  for (char c : s) out += c == '\'' ? std::string("''") : std::string(1, c);
-  return out + "'";
+namespace core = accelerator_codegen::aux_state::core;
+namespace harness = accelerator_codegen::aux_state::harness;
+
+core::AuxValue Fy(int64_t v) { return core::AuxValue::Of(core::AuxType::Int64, v); }
+core::AuxValue Text(const std::string &v) { return core::AuxValue::Of(core::AuxType::String, v); }
+
+std::vector<core::AuxValue> FyEdges() {
+  return {Fy(0), Fy(-1), Fy(2147483647), Fy(-2147483648), Fy(9223372036854775807LL),
+          core::AuxValue::Null(core::AuxType::Int64)};
 }
-std::string Lit(const std::string &v) { return v == "\x01NULL" ? "NULL" : Quote(v); }
-std::string Sql(const std::string &fy, const std::string &stmt, const std::string &uom) {
-  return "SELECT s.name, p.stmt, n.tag, p.plabel, SUM(n.value) AS total_value, COUNT(*) AS cnt "
-         "FROM num n JOIN sub s ON n.adsh = s.adsh "
-         "JOIN pre p ON n.adsh = p.adsh AND n.tag = p.tag AND n.version = p.version "
-         "WHERE n.uom = " + Lit(uom) + " AND p.stmt = " + Lit(stmt) + " AND s.fy = " + fy +
-         " AND n.value IS NOT NULL GROUP BY s.name, p.stmt, n.tag, p.plabel "
-         "ORDER BY total_value DESC, s.name, n.tag, p.plabel LIMIT 200";
+
+std::vector<core::AuxValue> TextEdges(const core::AuxValue &drawn) {
+  const auto &name = std::get<std::string>(drawn.payload);
+  std::string lower = name;
+  for (auto &ch : lower) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+  return {Text("nonexistent"), Text(lower), Text(name + " "), Text(name + "'"), Text(""),
+          core::AuxValue::Null(core::AuxType::String)};
 }
+
+// Each drawn set, then with one argument replaced by an edge value.
+std::vector<core::QueryArguments> Sweep(const std::vector<core::QueryArguments> &sets) {
+  std::vector<core::QueryArguments> out = sets;
+  for (const auto &set : sets) {
+    for (const auto &fy : FyEdges()) out.push_back({{fy, set.values[1], set.values[2]}});
+    for (const auto &stmt : TextEdges(set.values[1])) out.push_back({{set.values[0], stmt, set.values[2]}});
+    for (const auto &uom : TextEdges(set.values[2])) out.push_back({{set.values[0], set.values[1], uom}});
+  }
+  return out;
+}
+
 double Ms(std::chrono::steady_clock::time_point t) {
   return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t).count();
 }
@@ -82,46 +100,23 @@ int main(int argc, char **argv) {
   duckdb::Connection con(db);
   accelerator_codegen::RegisterAcceleratorFunctions(con);
   con.Query("PRAGMA threads=" + std::string(argc > 2 ? argv[2] : "12"));
-  const int sample = argc > 3 ? std::atoi(argv[3]) : 100;
   const auto &entry = catalog::LookupSharedQuery("sec_edgar", 6);
   catalog::duckdb::DuckdbRuntime runtime(con, entry, 10.0);
   auto t = std::chrono::steady_clock::now();
   runtime.Build();
   std::cout << "build_s=" << Ms(t) / 1e3 << "\n";
 
-  const std::vector<std::string> fys = {"2021", "2022", "2023", "2024"};
-  const std::vector<std::string> stmts = {"BS", "IS", "CF", "EQ", "CI"};
-  const std::vector<std::string> uoms = {"USD", "shares", "pure", "CAD", "CNY", "EUR"};
-  std::vector<std::vector<std::string>> cases;
-  for (const auto &f : fys)
-    for (const auto &s : stmts)
-      for (const auto &u : uoms) cases.push_back({f, s, u});
-  std::mt19937_64 rng(7);
-  if (sample < 100) {
-    std::shuffle(cases.begin(), cases.end(), rng);
-    cases.resize(std::max<size_t>(1, cases.size() * sample / 100));
-  }
-  for (const auto &f : {"2019", "2025", "0", "-1", "2147483647", "9223372036854775807", "NULL"})
-    cases.push_back({f, "IS", "USD"});
-  cases.push_back({"2023", "ZZ", "USD"});
-  cases.push_back({"2023", "is", "USD"});
-  cases.push_back({"2023", "\x01NULL", "USD"});
-  cases.push_back({"2023", "IS", "zz"});
-  cases.push_back({"2023", "IS", "usd"});
-  cases.push_back({"2023", "IS", "\x01NULL"});
-  cases.push_back({"2022", "BS", "us'd"});
+  const auto cases = Sweep(harness::ArgumentSets(entry));
 
   int checked = 0, failed = 0, nonempty = 0;
   std::vector<double> aux_ms, base_ms;
-  for (const auto &c : cases) {
-    const std::string call = "SELECT * FROM accel_sec_edgar_q6_aux(" +
-                             (c[0] == "NULL" ? std::string("CAST(NULL AS BIGINT)") : c[0]) + ", " + Lit(c[1]) +
-                             ", " + Lit(c[2]) + ")";
+  for (const auto &args : cases) {
+    const std::string call = catalog::BindArguments(entry.duckdb_aux_sql, args);
     t = std::chrono::steady_clock::now();
     auto got = con.Query(call);
     aux_ms.push_back(Ms(t));
     t = std::chrono::steady_clock::now();
-    auto want = con.Query(Sql(c[0], c[1], c[2]));
+    auto want = con.Query(catalog::BindArguments(entry.base_sql, args));
     base_ms.push_back(Ms(t));
     ++checked;
     bool ok = got && !got->HasError() && want && !want->HasError() && got->RowCount() == want->RowCount();
@@ -129,7 +124,7 @@ int main(int argc, char **argv) {
     if (ok) ok = TolerantEqual(*got, *want);
     if (!ok) {
       ++failed;
-      std::cout << "MISMATCH fy=" << c[0] << " stmt=" << c[1] << " uom=" << c[2] << " got_rows="
+      std::cout << "MISMATCH (" << harness::ArgumentLiterals(args) << ") got_rows="
                 << (got && !got->HasError() ? std::to_string(got->RowCount()) : got ? got->GetError() : "null")
                 << " want_rows=" << (want && !want->HasError() ? std::to_string(want->RowCount()) : "err") << "\n";
     }

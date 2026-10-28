@@ -1,6 +1,7 @@
 // Micro-benchmark for the SEC-EDGAR Q3 aux accelerator on a real database:
 // build, read (module + SQL table function), raw maintenance (ApplyDelta
-// through the coordinator, no SQL), and write+read alternation.
+// through the coordinator, no SQL), and write+read alternation. Reads run the
+// drawn parameter sets (eval/harness/param_sets.hpp) in turn.
 //
 // usage: bench_sec_edgar_q3_aux <db_path> [reads] [writes] [sql_table_function_reads]
 // The database is only read; maintenance is applied to the aux state alone.
@@ -22,10 +23,13 @@
 #include "backends/duckdb/api/register.hpp"
 #include "catalog/query_catalog.hpp"
 #include "duckdb.hpp"
+#include "backends/duckdb/api/sql_fallback.hpp"
+#include "eval/harness/param_sets.hpp"
 
 namespace {
 namespace catalog = accelerator_codegen::aux_state::engine;
 namespace core = accelerator_codegen::aux_state::core;
+namespace harness = accelerator_codegen::aux_state::harness;
 using Clock = std::chrono::steady_clock;
 
 double Us(Clock::time_point a, Clock::time_point b) {
@@ -121,6 +125,7 @@ int main(int argc, char **argv) {
   const auto &entry = catalog::LookupSharedQuery("sec_edgar", 3);
   catalog::duckdb::DuckdbRuntime runtime(connection, entry, 10.0);
   runtime.UseManualCapture(); // changes are hand-built below
+  const auto sets = harness::ArgumentSets(entry);
 
   malloc_trim(0);
   const size_t heap_before = mallinfo2().uordblks;
@@ -132,11 +137,16 @@ int main(int argc, char **argv) {
   std::cout << "build_us=" << Us(t0, Clock::now())
             << " footprint_bytes=" << runtime.AuxStateFootprintBytes() << "\n";
 
-  // sample real fy=2022 USD rows (adsh, value) to replay as updates
+  // sample real rows of the drawn (fy, uom) cohorts to replay as updates
+  std::string cohorts;
+  for (const auto &args : sets) {
+    cohorts += (cohorts.empty() ? "" : " OR ") +
+               catalog::BindArguments("(s.fy = $1 AND n.uom = $2)", args);
+  }
   auto sample = connection.Query(
       "SELECT n.adsh, n.tag, n.version, n.ddate, n.qtrs, n.uom, n.coreg, n.value "
       "FROM num n JOIN sub s ON n.adsh = s.adsh "
-      "WHERE s.fy = 2022 AND n.uom = 'USD' AND n.value IS NOT NULL "
+      "WHERE (" + cohorts + ") AND n.value IS NOT NULL "
       "USING SAMPLE 20000 ROWS");
   if (!sample || sample->HasError()) {
     std::cerr << "sample failed\n";
@@ -158,27 +168,32 @@ int main(int argc, char **argv) {
   }
   std::mt19937 rng(1);
 
+  for (const auto &args : sets) {
+    std::cout << "set (" << harness::ArgumentLiterals(args)
+              << ") rows=" << runtime.ExecuteCollect(args).size() << "\n";
+  }
+  const auto next_set = [&](int i) -> const core::QueryArguments & {
+    return sets[static_cast<std::size_t>(i) % sets.size()];
+  };
   std::vector<double> t;
   for (int i = 0; i < reads; ++i) {
     const auto a = Clock::now();
-    auto r = runtime.ExecuteCollect();
+    auto r = runtime.ExecuteCollect(next_set(i));
     t.push_back(Us(a, Clock::now()));
-    if (r.size() != 100) {
-      std::cerr << "unexpected row count " << r.size() << "\n";
-    }
   }
   Report("read: module Execute (steady)", Summarize(t));
 
   t.clear();
   {
     const auto a = Clock::now();
-    auto r = connection.Query(entry.duckdb_aux_sql);
+    auto r = connection.Query(catalog::BindArguments(entry.duckdb_aux_sql, sets.front()));
     std::cout << "first SQL table function call: " << Us(a, Clock::now())
               << "us\n";
   }
   for (int i = 0; i < tf_reads; ++i) {
+    const auto sql = catalog::BindArguments(entry.duckdb_aux_sql, next_set(i));
     const auto a = Clock::now();
-    auto r = connection.Query(entry.duckdb_aux_sql);
+    auto r = connection.Query(sql);
     for (duckdb::idx_t row = 0; row < r->RowCount(); ++row) {
       for (duckdb::idx_t c = 0; c < r->ColumnCount(); ++c) {
         (void)r->GetValue(c, row);
@@ -224,7 +239,7 @@ int main(int argc, char **argv) {
     const auto a = Clock::now();
     runtime.ApplyMutationBatch(batch);
     const auto b = Clock::now();
-    auto r = runtime.ExecuteCollect();
+    auto r = runtime.ExecuteCollect(next_set(i));
     tw.push_back(Us(a, b));
     t.push_back(Us(b, Clock::now()));
     (void)r;

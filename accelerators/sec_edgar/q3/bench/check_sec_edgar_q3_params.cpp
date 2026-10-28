@@ -1,9 +1,10 @@
 // Parameter sweep of the SEC-EDGAR Q3 aux table function against plain SQL on a
-// real database: every combination of fy in {2021..2024, 2019, 2025, 0, NULL,
-// extremes} and uom in {USD, shares, pure, CAD, CNY, EUR, unknown, case / empty
-// variants, NULL}, with the first-read (cohort build) and cached read latency.
+// real database: the drawn parameter sets (eval/harness/param_sets.hpp), and each
+// of them with one argument replaced by an edge value (fiscal years outside the
+// domain and the INTEGER range, NULL, unknown / case-variant / quoted / empty uom),
+// plus every edge pair, with the first-read (cohort build) and cached read latency.
 //   check_sec_edgar_q3_params <db_copy> [threads]
-// Exit status 0 when every answer matches q3.sql with :fy / :uom substituted.
+// Exit status 0 when every answer matches the query template bound to the same arguments.
 #include <chrono>
 #include <cmath>
 #include <iostream>
@@ -12,35 +13,42 @@
 
 #include "backends/duckdb/api/duckdb_runtime.hpp"
 #include "backends/duckdb/api/register.hpp"
+#include "backends/duckdb/api/sql_fallback.hpp"
 #include "catalog/query_catalog.hpp"
 #include "duckdb.hpp"
+#include "eval/harness/param_sets.hpp"
 
 namespace {
 using Clock = std::chrono::steady_clock;
+namespace core = accelerator_codegen::aux_state::core;
+namespace harness = accelerator_codegen::aux_state::harness;
 
-std::string Quote(const std::string &s) {
-  std::string out = "'";
-  for (char c : s) out += c == '\'' ? std::string("''") : std::string(1, c);
-  return out + "'";
+core::AuxValue Fy(int64_t v) { return core::AuxValue::Of(core::AuxType::Int64, v); }
+core::AuxValue Uom(const std::string &v) { return core::AuxValue::Of(core::AuxType::String, v); }
+
+std::vector<core::AuxValue> FyEdges() {
+  return {Fy(0), Fy(-1), Fy(2147483647), Fy(-2147483648), Fy(9223372036854775807LL),
+          core::AuxValue::Null(core::AuxType::Int64)};
 }
 
-std::string Replace(std::string sql, const std::string &from, const std::string &to) {
-  const auto at = sql.find(from);
-  if (at == std::string::npos) {
-    std::cerr << "base_sql shape changed: " << from << "\n";
-    std::exit(2);
+std::vector<core::AuxValue> UomEdges(const core::AuxValue &drawn) {
+  const auto &name = std::get<std::string>(drawn.payload);
+  std::string lower = name;
+  for (auto &ch : lower) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+  return {Uom("nonexistent"), Uom(lower), Uom(name + " "), Uom(name + "'"), Uom(""),
+          core::AuxValue::Null(core::AuxType::String)};
+}
+
+// Each drawn set, then with one argument an edge value, then every edge pair.
+std::vector<core::QueryArguments> Sweep(const std::vector<core::QueryArguments> &sets) {
+  std::vector<core::QueryArguments> out = sets;
+  for (const auto &set : sets) {
+    for (const auto &fy : FyEdges()) out.push_back({{fy, set.values[1]}});
+    for (const auto &uom : UomEdges(set.values[1])) out.push_back({{set.values[0], uom}});
   }
-  sql.replace(at, from.size(), to);
-  return sql;
-}
-
-std::string Sql(const std::string &base, const std::string &fy, const std::string &uom) {
-  std::string sql = base;
-  sql = Replace(sql, "s.fy = 2022", "s.fy = " + fy);
-  sql = Replace(sql, "s2.fy = 2022", "s2.fy = " + fy);
-  sql = Replace(sql, "n.uom = 'USD'", "n.uom = " + uom);
-  sql = Replace(sql, "n2.uom = 'USD'", "n2.uom = " + uom);
-  return sql;
+  for (const auto &fy : FyEdges())
+    for (const auto &uom : UomEdges(sets.front().values[1])) out.push_back({{fy, uom}});
+  return out;
 }
 
 double Us(Clock::time_point a, Clock::time_point b) {
@@ -58,25 +66,17 @@ int main(int argc, char **argv) {
   const auto &entry = catalog::LookupSharedQuery("sec_edgar", 3);
   catalog::duckdb::DuckdbRuntime runtime(con, entry, 10.0);
   runtime.Build();
-  const std::vector<std::string> uoms = {"USD", "shares", "pure", "CAD", "CNY", "EUR",
-                                         "nonexistent", "usd", "", "USD ", "us'd", "\x01NULL"};
-  const std::vector<std::string> fys = {"2021", "2022", "2023", "2024", "2019", "2025", "0",
-                                        "-1", "2147483647", "-2147483648",
-                                        "9223372036854775807", "CAST(NULL AS INTEGER)"};
   int checked = 0, failed = 0;
   double first_us = 0, cached_us = 0, plain_us = 0;
   int firsts = 0, cacheds = 0;
-  const auto check = [&](const std::string &fy, const std::string &uom) {
-    const bool null_uom = uom == "\x01NULL";
-    const std::string call = "SELECT * FROM accel_sec_edgar_q3_aux(" + fy + ", " +
-                             (null_uom ? "NULL" : Quote(uom)) + ")";
+  const auto check = [&](const core::QueryArguments &args) {
+    const std::string call = catalog::BindArguments(entry.duckdb_aux_sql, args);
     const auto t0 = Clock::now();
     auto got = con.Query(call);
     const auto t1 = Clock::now();
     auto again = con.Query(call);
     const auto t2 = Clock::now();
-    auto want = con.Query(Sql(entry.base_sql, fy == "CAST(NULL AS INTEGER)" ? "NULL" : fy,
-                              null_uom ? "NULL" : Quote(uom)));
+    auto want = con.Query(catalog::BindArguments(entry.base_sql, args));
     const auto t3 = Clock::now();
     first_us += Us(t0, t1); ++firsts;
     cached_us += Us(t1, t2); ++cacheds;
@@ -99,14 +99,14 @@ int main(int argc, char **argv) {
       }
     if (!ok) {
       ++failed;
-      std::cout << "MISMATCH fy=" << fy << " uom=" << uom << " rows aux="
+      std::cout << "MISMATCH (" << harness::ArgumentLiterals(args) << ") rows aux="
                 << (got && !got->HasError() ? std::to_string(got->RowCount()) : got->GetError())
                 << " sql=" << (want && !want->HasError() ? std::to_string(want->RowCount()) : want->GetError())
                 << "\n";
     }
   };
-  for (const auto &u : uoms)
-    for (const auto &f : fys) check(f, u);
+  for (const auto &args : Sweep(harness::ArgumentSets(entry)))
+    check(args);
   std::cout << "checked=" << checked << " failed=" << failed
             << " avg_first_read_us=" << first_us / firsts
             << " avg_repeat_read_us=" << cached_us / cacheds

@@ -31,6 +31,7 @@ CREATE TYPE accel_sec_edgar_q6_row AS (
   name text, stmt text, tag text, plabel text,
   total_value double precision, cnt bigint);
 
+DROP FUNCTION IF EXISTS accel_sec_edgar_q6_aux() CASCADE;
 DROP FUNCTION IF EXISTS accel_sec_edgar_q6_aux(bigint, text, text) CASCADE;
 CREATE FUNCTION accel_sec_edgar_q6_aux(bigint, text, text)
 RETURNS SETOF accel_sec_edgar_q6_row

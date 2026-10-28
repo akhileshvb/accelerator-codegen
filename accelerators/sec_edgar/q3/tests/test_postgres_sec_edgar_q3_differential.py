@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""PostgreSQL SEC-EDGAR Q3 differential: accel_sec_edgar_q3_aux() vs plain SQL.
+"""PostgreSQL SEC-EDGAR Q3 differential: accel_sec_edgar_q3_aux(fy, uom) vs plain SQL.
 
-Every comparison checks the defaults accel_sec_edgar_q3_aux() against q3.sql
-and a few random accel_sec_edgar_q3_aux(fy, uom) drawn from the domain
-fy in {2021..2024}, uom in {USD, shares, pure, CAD, CNY, EUR} plus edge values
-(2019, 2025, 0, NULL arguments, unknown / case-variant / empty uom) against
-q3.sql with :fy / :uom substituted.
+Every comparison checks the parameter sets drawn by eval/harness/param_sets.py
+(ACCEL_PARAM_SEED / ACCEL_PARAM_SETS / ACCEL_PARAM_FILE; "[params]" line) and a few
+random edge arguments (fiscal years outside the domain, NULL arguments, unknown /
+case-variant / empty uom) against workloads/sec_edgar/q3.sql prepared and executed
+with the same arguments on the same session.
 
 Modes
   random : randomized I/D/U on num and sub (cohort fy moves, adsh moves, NULLs,
@@ -24,20 +24,21 @@ import sys
 
 import psycopg2
 
-_Q3 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                        "../../../../workloads/sec_edgar/q3.sql")).read().strip().rstrip(";")
-for _lit, _par in (("s.fy = 2022", "s.fy = %(fy)s"), ("s2.fy = 2022", "s2.fy = %(fy)s"),
-                   ("n.uom = 'USD'", "n.uom = %(uom)s"), ("n2.uom = 'USD'", "n2.uom = %(uom)s")):
-    assert _Q3.count(_lit) == 1, _lit
-    _Q3 = _Q3.replace(_lit, _par)
-REF_SQL = _Q3                      # parameters %(fy)s, %(uom)s
-DEFAULT_REF = {"fy": 2022, "uom": "USD"}
-ACC_SQL = "SELECT * FROM accel_sec_edgar_q3_aux()"
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.join(HERE, "..", "..", "..", "..", "eval", "harness"))
+import param_sets  # noqa: E402
+
+TEMPLATE = open(os.path.join(HERE, "../../../../workloads/sec_edgar/q3.sql")).read().strip().rstrip(";")
+PREPARE_REF = "PREPARE q3_ref AS " + TEMPLATE   # $1 = fy, $2 = uom
+REF_SQL = "EXECUTE q3_ref(%(fy)s, %(uom)s)"
 ACC_PARAM_SQL = "SELECT * FROM accel_sec_edgar_q3_aux(%(fy)s::bigint, %(uom)s::text)"
 REL = 1e-9
 
-FYS = [2021, 2022, 2022, 2023, 2024, 2019, 2025, 0, -1, 2147483647, None]
-UOMS = ["USD", "USD", "shares", "pure", "CAD", "CNY", "EUR", "nonexistent", "usd", "", "USD ", None]
+DRAWN = [s["params"] for s in param_sets.draw_sets("sec_edgar", 3)]    # {"fy", "uom"}
+DRAWN_FYS = sorted({p["fy"] for p in DRAWN})
+DRAWN_UOMS = sorted({p["uom"] for p in DRAWN})
+FY_EDGES = [DRAWN_FYS[0] - 3, DRAWN_FYS[-1] + 1, 0, -1, 2147483647, None]
+UOM_EDGES = ["nonexistent", "", None] + [u.lower() for u in DRAWN_UOMS] + [u + " " for u in DRAWN_UOMS]
 
 
 def connect(search_path=None):
@@ -47,9 +48,10 @@ def connect(search_path=None):
                          password=os.environ.get("PGPASSWORD", "postgres"),
                          dbname=os.environ.get("PGDATABASE", "sec_edgar"))
     c.autocommit = True
-    if search_path:
-        with c.cursor() as cur:
+    with c.cursor() as cur:
+        if search_path:
             cur.execute("SET search_path = %s" % search_path)
+        cur.execute(PREPARE_REF)  # binds the tables of the search path
     return c
 
 
@@ -69,15 +71,11 @@ def close(a, b):
     return abs(a - b) <= REL * max(abs(a), abs(b), 1.0) + 1e-6
 
 
-def compare(conn, label, params=None):
-    """params None: defaults (no-argument overload); else {'fy':..., 'uom':...}."""
-    if params is None:
-        ref = fetch(conn, REF_SQL, DEFAULT_REF)
-        acc = fetch(conn, ACC_SQL)
-    else:
-        ref = fetch(conn, REF_SQL, params)
-        acc = fetch(conn, ACC_PARAM_SQL, params)
-        label = "%s fy=%r uom=%r" % (label, params["fy"], params["uom"])
+def compare(conn, label, params):
+    """params: {'fy':..., 'uom':...}."""
+    ref = fetch(conn, REF_SQL, params)
+    acc = fetch(conn, ACC_PARAM_SQL, params)
+    label = "%s fy=%r uom=%r" % (label, params["fy"], params["uom"])
     ok = len(ref) == len(acc)
     msg = ""
     if not ok:
@@ -108,19 +106,21 @@ def compare(conn, label, params=None):
 
 
 def compare_all(conn, rnd, label, draws=2):
-    n = compare(conn, label)
+    n = sum(compare(conn, label, params) for params in DRAWN)
     for _ in range(draws):
-        n += compare(conn, label, {"fy": rnd.choice(FYS), "uom": rnd.choice(UOMS)})
+        n += compare(conn, label, {"fy": rnd.choice(DRAWN_FYS + FY_EDGES), "uom": rnd.choice(DRAWN_UOMS + UOM_EDGES)})
     return n
 
 
 def full():
     conn = connect("public")
-    n = compare(conn, "full#1")
-    n2 = compare(conn, "full#2")
-    for uom in ("USD", "shares", "pure", "CAD", "CNY", "EUR", "nonexistent"):
-        for fy in (2021, 2022, 2023, 2024, 2019, 2025, 0, None):
-            compare(conn, "full", {"fy": fy, "uom": uom})
+    n = sum(compare(conn, "full#1", params) for params in DRAWN)
+    n2 = sum(compare(conn, "full#2", params) for params in DRAWN)
+    for params in DRAWN:
+        for fy in FY_EDGES:
+            compare(conn, "full", {"fy": fy, "uom": params["uom"]})
+        for uom in UOM_EDGES:
+            compare(conn, "full", {"fy": params["fy"], "uom": uom})
     print("PASS full-data differential (%d rows)" % n)
     return n
 
@@ -156,7 +156,10 @@ class Rand:
         return round(self.rnd.uniform(-1e6, 1e9), self.rnd.choice([0, 2, 6]))
 
     def uom(self):
-        return self.rnd.choice(["USD", "USD", "USD", "EUR", "shares", "pure", "CAD", "CNY", None, "usd"])
+        return self.rnd.choice(DRAWN_UOMS + DRAWN_UOMS + UOM_EDGES[:2] + [None])
+
+    def fy(self):
+        return self.rnd.choice(DRAWN_FYS + DRAWN_FYS + FY_EDGES)
 
     def op(self):
         k = self.rnd.randrange(14)
@@ -183,7 +186,7 @@ class Rand:
             self.exec("UPDATE num SET footnote='x' WHERE ctid IN (SELECT ctid FROM num WHERE adsh=%s LIMIT 3)", (a,))
         elif k == 7:  # cohort move
             self.exec("UPDATE sub SET fy=%s WHERE adsh=%s",
-                      (self.rnd.choice([2022, 2022, 2021, 2023, 2024, None]), a))
+                      (self.fy(), a))
         elif k == 8:
             self.exec("UPDATE sub SET cik=%s WHERE adsh=%s",
                       (self.rnd.choice([None, 1, 2, 3, self.rnd.randint(1, 10**6)]), a))
@@ -194,10 +197,10 @@ class Rand:
             n = self.new_adsh()
             self.exec("INSERT INTO sub(adsh,cik,name,fy) VALUES (%s,%s,%s,%s)",
                       (n, self.rnd.choice([None, 1, 2, 5, 77]), self.rnd.choice([None, "ACME", "NEWCO"]),
-                       self.rnd.choice([2022, 2022, 2021, 2023, 2024, None])))
+                       self.fy()))
             for _ in range(self.rnd.randint(0, 6)):
                 self.exec("INSERT INTO num(adsh,tag,version,ddate,qtrs,uom,coreg,value)"
-                          " VALUES (%s,'t','v',20220101,4,%s,'',%s)", (n, self.rnd.choice(["USD", "USD", "EUR", "shares", "pure"]), self.value()))
+                          " VALUES (%s,'t','v',20220101,4,%s,'',%s)", (n, self.rnd.choice(DRAWN_UOMS), self.value()))
             self.filings.append(n)
         elif k == 11:  # delete a filing with its facts
             if len(self.filings) > 20:
@@ -227,10 +230,10 @@ def random_mode():
     with setup.cursor() as cur:
         cur.execute("DROP SCHEMA IF EXISTS q3diff CASCADE")
         cur.execute("CREATE SCHEMA q3diff")
-        cur.execute("CREATE TEMP TABLE pick AS SELECT adsh FROM public.sub WHERE fy=2022 "
-                    "ORDER BY adsh LIMIT %s", (sample,))
-        cur.execute("INSERT INTO pick SELECT adsh FROM public.sub WHERE fy IS DISTINCT FROM 2022 "
-                    "ORDER BY adsh LIMIT %s", (sample // 2,))
+        cur.execute("CREATE TEMP TABLE pick AS SELECT adsh FROM public.sub WHERE fy = ANY(%s) "
+                    "ORDER BY adsh LIMIT %s", (DRAWN_FYS, sample))
+        cur.execute("INSERT INTO pick SELECT adsh FROM public.sub WHERE fy IS NULL OR NOT fy = ANY(%s) "
+                    "ORDER BY adsh LIMIT %s", (DRAWN_FYS, sample // 2))
         cur.execute("CREATE TABLE q3diff.sub AS SELECT s.* FROM public.sub s JOIN pick USING (adsh)")
         cur.execute("CREATE TABLE q3diff.num AS SELECT n.* FROM public.num n JOIN pick USING (adsh)")
         cur.execute("CREATE INDEX ON q3diff.num(adsh)")
