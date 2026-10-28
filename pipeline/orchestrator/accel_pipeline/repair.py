@@ -932,8 +932,9 @@ def _queued_for_lease(text: str) -> bool:
 
 
 def _loaded(repo_root: Path | None, load_factor: float, text: str = "") -> bool:
-    """The machine is oversubscribed, the failing run queued for the measurement lease, or another
-    worker holds the measurement lease or the shared-tree lease."""
+    """The machine is oversubscribed, the failing run queued for the measurement lease, or another worker holds
+    the shared-tree lease. Another worker measuring is not load: each lease slot runs pinned to its own cores, and a
+    run that had to wait for one says so (_queued_for_lease)."""
     try:
         if os.getloadavg()[0] > load_factor * (os.cpu_count() or 1):
             return True
@@ -941,7 +942,7 @@ def _loaded(repo_root: Path | None, load_factor: float, text: str = "") -> bool:
         pass
     from accel_pipeline import pack
 
-    if _queued_for_lease(text) or pack.held_by_other(os.environ.get("ACCEL_INSTANCE_TAG", "")):
+    if _queued_for_lease(text):
         return True
     if repo_root is None:
         return False

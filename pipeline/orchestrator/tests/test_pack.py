@@ -365,13 +365,12 @@ def test_the_seed_pointer_names_the_context_pack(tmp_path):
 
 # --- triage sees the lease ---
 
-def test_a_timeout_while_another_worker_measures_is_infra(host_dir, monkeypatch):
+def test_a_timeout_while_another_worker_measures_on_its_own_cores_is_the_code(host_dir, monkeypatch):
     monkeypatch.setenv("ACCEL_INSTANCE_TAG", "me")
-    text = "aux_bench did not finish within 900s"
-    assert repair.classify("aux_bench_sweep", {"log_tail": text}, {}, None, query=3, load_factor=1e9) == ("code", None)
+    text = "[measurement-lease] waited 0.0 s for the measurement lease\naux_bench did not finish within 900s"
     holder = spawn(window_script(3), "other")
     holder.stdout.readline()
-    assert repair.classify("aux_bench_sweep", {"log_tail": text}, {}, None, query=3, load_factor=1e9) == ("infra", "timeout_under_load")
+    assert repair.classify("aux_bench_sweep", {"log_tail": text}, {}, None, query=3, load_factor=1e9) == ("code", None)
     holder.kill()
     holder.wait()
 
