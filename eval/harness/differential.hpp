@@ -15,6 +15,12 @@ namespace accelerator_codegen::aux_state::harness {
 
 namespace aux_engine = ::accelerator_codegen::aux_state::engine;
 
+// The checks below compare with the entry's base SQL bound to `arguments`; without the argument, to the
+// default binding (an entry without one needs the argument).
+void CompareAuxRowsToBase(duckdb::Connection &connection,
+                          const aux_engine::SharedQueryCatalogEntry &entry,
+                          const core::QueryArguments &arguments,
+                          const std::vector<core::AuxRow> &accelerated);
 void CompareAuxRowsToBase(duckdb::Connection &connection,
                           const aux_engine::SharedQueryCatalogEntry &entry,
                           const std::vector<core::AuxRow> &accelerated);
@@ -26,6 +32,11 @@ void CompareAuxRowsToSql(duckdb::Connection &connection,
                          const std::string &base_sql,
                          const std::vector<core::AuxRow> &accelerated);
 
+// The accelerator, read with `arguments`, answers as the base SQL bound to them.
+void RequireSharedMatchesBase(duckdb::Connection &connection,
+                              aux_engine::duckdb::DuckdbRuntime &runtime,
+                              const aux_engine::SharedQueryCatalogEntry &entry,
+                              const core::QueryArguments &arguments);
 void RequireSharedMatchesBase(duckdb::Connection &connection,
                               aux_engine::duckdb::DuckdbRuntime &runtime,
                               const aux_engine::SharedQueryCatalogEntry &entry);
@@ -34,10 +45,14 @@ void RequireSharedMatchesBase(duckdb::Connection &connection,
 // then run the checks below on it. Each leaves the data as it found it (writes are undone through the runtime, which
 // maintains the state for the undo too), except CheckRefreshWrites and CheckRfChunks (they go last); CheckNoDrift ends the run with the
 // only from-scratch rebuild.
+// The session reads and compares with `arguments` (an entry with a default binding: that).
 struct DifferentialSession {
   DifferentialSession(const std::string &db_path, const aux_engine::SharedQueryCatalogEntry &entry);
+  DifferentialSession(const std::string &db_path, const aux_engine::SharedQueryCatalogEntry &entry,
+                      core::QueryArguments arguments);
 
   const aux_engine::SharedQueryCatalogEntry &entry;
+  core::QueryArguments arguments;
   duckdb::DuckDB database;
   duckdb::Connection connection;
   aux_engine::duckdb::DuckdbRuntime runtime;
@@ -71,11 +86,13 @@ void CheckNoDrift(DifferentialSession &session);
 void CheckNoDrift(DifferentialSession &session, const std::function<suite::Rows()> &answers);
 
 // The same checks on a database of their own (a fresh session each).
-void RunDifferentialCheck(const std::string &db_path,
-                          const aux_engine::SharedQueryCatalogEntry &entry);
+void RunDifferentialCheck(const std::string &db_path, const aux_engine::SharedQueryCatalogEntry &entry,
+                          const core::QueryArguments &arguments);
+void RunDifferentialCheck(const std::string &db_path, const aux_engine::SharedQueryCatalogEntry &entry);
 
-void RunIncrementalDifferentialCheck(const std::string &db_path,
-                                     const aux_engine::SharedQueryCatalogEntry &entry);
+void RunIncrementalDifferentialCheck(const std::string &db_path, const aux_engine::SharedQueryCatalogEntry &entry,
+                                     const core::QueryArguments &arguments);
+void RunIncrementalDifferentialCheck(const std::string &db_path, const aux_engine::SharedQueryCatalogEntry &entry);
 
 struct NamedWrite {
   std::string name;
@@ -111,6 +128,9 @@ void RunRfChunkDifferentialCheck(const std::string &db_path,
 
 // Rigorous post-analysis write audit: RO, then the adversarial probes, optional RF bulk chunks and the drift check.
 // db_path must be a writable work copy (RF mutations are permanent). Env: see AdversarialPlan.
+void RunAdversarialWriteDifferentialCheck(
+    const std::string &db_path, const aux_engine::SharedQueryCatalogEntry &entry,
+    const core::QueryArguments &arguments, int max_probes = 5, int min_chunks = 1, bool require_bulk = false);
 void RunAdversarialWriteDifferentialCheck(
     const std::string &db_path, const aux_engine::SharedQueryCatalogEntry &entry,
     int max_probes = 5, int min_chunks = 1, bool require_bulk = false);

@@ -6,6 +6,8 @@
 target_sources(accelerator_codegen PRIVATE
     eval/harness/differential.cpp
     eval/harness/cost_calibration.cpp
+    eval/harness/param_source.cpp
+    eval/harness/param_sets.cpp
     eval/harness/tpch_rf.cpp
 )
 

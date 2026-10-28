@@ -52,11 +52,15 @@ struct SharedQueryCatalogEntry {
   SharedWorkloadKind workload = SharedWorkloadKind::Tpch;
   const char *workload_name = nullptr;
   const char *accelerator_id = nullptr;
+  // The SQL strings below may carry $n (the n-th argument): bind them with BindArguments (sql_fallback.hpp).
   const char *base_sql = nullptr;
   const char *duckdb_aux_sql = nullptr;
   const char *postgres_base_kernel_sql = nullptr;
   const char *postgres_aux_sql = nullptr;
   const char *probe_select_sql = nullptr;
+  // The signature: one value per argument, which types it. All non-null: also the default
+  // binding the SQL above is written for (HasDefaultBinding). A null value (AuxValue::Null(type)):
+  // the SQL is a template and every caller supplies the arguments.
   SharedQueryArguments benchmark_arguments;
   core::TableId mutation_table = 0;
   bool compare_unordered = false;
@@ -66,9 +70,14 @@ struct SharedQueryCatalogEntry {
   // Where the query keeps its maintenance cost models (<bench>/q<N>/cost_model.hpp).
   core::AuxCostModelLocation cost_model;
   // The query for any arguments, answering a read the state cannot serve:
-  // $n is the n-th table-function argument (base_sql answers a call without).
+  // $n is the n-th table-function argument (base_sql answers a call without, when the entry has a default binding).
   const char *fallback_sql = nullptr;
 };
+
+// Every argument of the signature has a value (benchmark_arguments), so the entry's SQL is bound to it.
+bool HasDefaultBinding(const SharedQueryCatalogEntry &entry);
+// The default binding; throws, naming the entry, if it has none.
+core::QueryArguments DefaultArguments(const SharedQueryCatalogEntry &entry);
 
 // ---- the registry: each query's directory registers its entries ----
 //
@@ -113,32 +122,41 @@ const SharedQueryCatalogEntry &LookupSharedQueryParallel(const std::string &work
 std::vector<int> SharedQueriesForWorkload(SharedWorkloadKind workload);
 std::vector<int> SharedQueriesForWorkload(const std::string &workload_name);
 
-SharedProbe FindSharedProbe(::duckdb::Connection &connection,
-                            const SharedQueryCatalogEntry &entry);
+// The probe, fingerprint and pool functions below run the entry's SQL bound to `arguments`; without
+// the argument, to the default binding (DefaultArguments).
+SharedProbe FindSharedProbe(::duckdb::Connection &connection, const SharedQueryCatalogEntry &entry,
+                            const core::QueryArguments &arguments);
+SharedProbe FindSharedProbe(::duckdb::Connection &connection, const SharedQueryCatalogEntry &entry);
 
 // Expand/replace the trailing LIMIT on probe_select_sql (bench + differential).
 std::string ExpandProbeSelectLimit(const char *probe_select_sql, int limit);
 
 // Fingerprint of entry.base_sql (stable enough to detect result-changing writes).
-std::string FingerprintSharedBaseSql(::duckdb::Connection &connection,
-                                     const SharedQueryCatalogEntry &entry);
+std::string FingerprintSharedBaseSql(::duckdb::Connection &connection, const SharedQueryCatalogEntry &entry,
+                                     const core::QueryArguments &arguments);
+std::string FingerprintSharedBaseSql(::duckdb::Connection &connection, const SharedQueryCatalogEntry &entry);
 
 // True iff probe.update_sql changes FingerprintSharedBaseSql (txn rolled back).
-bool SharedProbeChangesBaseResult(::duckdb::Connection &connection,
-                                  const SharedQueryCatalogEntry &entry,
-                                  const SharedProbe &probe,
+bool SharedProbeChangesBaseResult(::duckdb::Connection &connection, const SharedQueryCatalogEntry &entry,
+                                  const core::QueryArguments &arguments, const SharedProbe &probe,
                                   const std::string &before_fp);
+bool SharedProbeChangesBaseResult(::duckdb::Connection &connection, const SharedQueryCatalogEntry &entry,
+                                  const SharedProbe &probe, const std::string &before_fp);
 
 // Catalog probe_select candidates whose update_sql invalidates this query's
 // DuckDB answer. Used by write-frequency benches so maintenance is exercised.
 // Throws if zero invalidating probes are found.
 std::vector<SharedProbe> CollectInvalidatingSharedProbes(
+    ::duckdb::Connection &connection, const SharedQueryCatalogEntry &entry, const core::QueryArguments &arguments,
+    int candidate_limit = 256, int max_keep = 64);
+std::vector<SharedProbe> CollectInvalidatingSharedProbes(
     ::duckdb::Connection &connection, const SharedQueryCatalogEntry &entry,
     int candidate_limit = 256, int max_keep = 64);
 
 // First invalidating probe (same filter as CollectInvalidatingSharedProbes).
-SharedProbe FindInvalidatingSharedProbe(::duckdb::Connection &connection,
-                                        const SharedQueryCatalogEntry &entry);
+SharedProbe FindInvalidatingSharedProbe(::duckdb::Connection &connection, const SharedQueryCatalogEntry &entry,
+                                        const core::QueryArguments &arguments);
+SharedProbe FindInvalidatingSharedProbe(::duckdb::Connection &connection, const SharedQueryCatalogEntry &entry);
 
 core::MutationBatch BuildSharedMutation(const SharedQueryCatalogEntry &entry,
                                         const SharedProbe &probe);
@@ -170,10 +188,9 @@ struct BatchWritePool {
 // Up to `want` distinct rows (throws if fewer than `min_rows`).
 // `filler_select_sql` has probe_select_sql's columns (build_probe reads it)
 // and a trailing LIMIT, which is replaced; null: no filler.
-BatchWritePool CollectBatchWritePool(::duckdb::Connection &connection,
-                                     const SharedQueryCatalogEntry &entry,
-                                     std::size_t want, std::size_t min_rows,
-                                     const char *filler_select_sql);
+BatchWritePool CollectBatchWritePool(::duckdb::Connection &connection, const SharedQueryCatalogEntry &entry,
+                                     const core::QueryArguments &arguments, std::size_t want,
+                                     std::size_t min_rows, const char *filler_select_sql);
 
 // One mutation carrying every probe's current old/new row (one table).
 core::MutationBatch BuildSharedBatchMutation(

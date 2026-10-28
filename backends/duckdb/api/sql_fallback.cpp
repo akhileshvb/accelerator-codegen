@@ -69,6 +69,14 @@ std::string WithLiterals(const std::string &sql, const ::duckdb::vector<::duckdb
   return out;
 }
 
+std::string BindArguments(const std::string &sql, const core::QueryArguments &arguments) {
+  ::duckdb::vector<::duckdb::Value> literals;
+  for (const auto &argument : arguments.values) {
+    literals.push_back(AuxValueToDuckdb(argument));
+  }
+  return WithLiterals(sql, literals);
+}
+
 namespace {
 
 core::AuxValue AuxValueFromDuckdb(const ::duckdb::Value &value) {
@@ -133,16 +141,16 @@ std::string FallbackSql(const SharedQueryCatalogEntry &entry, const core::QueryA
     throw std::runtime_error(std::string("ACCEL_FALLBACK_TRAP: fallback SQL would run for ") +
                              (entry.accelerator_id ? entry.accelerator_id : "?"));
   }
-  // No arguments: the defaults the base query bakes in.
+  // No arguments: the default binding the base query is written for.
+  if (arguments.values.empty() && !HasDefaultBinding(entry)) {
+    throw std::runtime_error(std::string(entry.accelerator_id ? entry.accelerator_id : "?") +
+                             " has no default binding: the fallback needs the call's arguments");
+  }
   const char *query = arguments.values.empty() ? entry.base_sql : entry.fallback_sql;
   if (!query) {
     return {};
   }
-  ::duckdb::vector<::duckdb::Value> literals;
-  for (const auto &argument : arguments.values) {
-    literals.push_back(AuxValueToDuckdb(argument));
-  }
-  return WithLiterals(query, literals);
+  return BindArguments(query, arguments);
 }
 
 bool AnswerFromFallbackSql(::duckdb::Connection &connection, const SharedQueryCatalogEntry &entry,
