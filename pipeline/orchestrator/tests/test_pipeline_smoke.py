@@ -80,6 +80,7 @@ def test_a_serial_build_fails_the_run_only_where_threads_could_speed_it_up(tmp_p
 
 def test_the_pipeline_passes_end_to_end_with_a_scripted_agent():
     env = {k: v for k, v in os.environ.items() if k != "OPENROUTER_API_KEY"}
+    env["PYTHONPATH"] = os.pathsep.join(filter(None, (str(SMOKE.parents[1]), env.get("PYTHONPATH"))))  # the package
     proc = subprocess.run([sys.executable, str(SMOKE / "pipeline_smoke.py"), "--workload",
                            os.environ.get("ACCEL_SMOKE_WORKLOAD", "tpch_q14_aux"), "--engine",
                            os.environ.get("ACCEL_SMOKE_ENGINE", "duckdb")],

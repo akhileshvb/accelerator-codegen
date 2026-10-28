@@ -431,6 +431,16 @@ def test_a_harness_defect_a_gate_finds_goes_to_host_bootstrap_without_an_agent_r
     assert reported == ["gate:test_suite_validate"] and revisions == [] and world.agent_messages == []
 
 
+def test_a_harness_failure_in_host_bootstrap_is_repaired_by_its_own_agent(world, monkeypatch):
+    monkeypatch.setattr(repair_mod, "report_defect", lambda ctx, failure: pytest.fail("the stage's own files"))
+    monkeypatch.setattr(repair_mod, "revise_upstream", lambda ctx: False)  # nothing upstream of the harnesses
+    failed = GateResult("harness_conformance", "fail", {"reason": "clause bench-rows: 1 row", "owner": "harness"})
+    world.gate_script = [([failed], failed)]
+    ctx = RepairCtx(world.config, None, "w", 3, stage="host_bootstrap", change_kind="host_bootstrap")
+    run_with_repair(ctx, lambda: None, gates=["harness_conformance"])
+    assert len(world.agent_messages) == 1 and "bench-rows" in world.agent_messages[0]
+
+
 def test_a_recorded_harness_defect_is_reproduced_through_request_gate(world):
     from accel_pipeline.engine_backend import pending_harness_requests
 

@@ -1268,8 +1268,8 @@ def run_conformance(pipeline_config: PipelineConfig, workload: dict[str, Any], q
 
 def run_bootstrap_gates(pipeline_config: PipelineConfig, workload: dict[str, Any], query: int, *,
                         iteration: int) -> tuple[list[GateResult], GateResult | None]:
-    """The harnesses built and smoked, then conformant on the representative query; the results and the failing one.
-    The harnesses are this stage's own code, so a conformance failure is repaired here (not sent to an owner)."""
+    """The harnesses built and smoked, then conformant on the representative query; the results and the failing one
+    (a harness failure is this stage's own: the repair loop repairs it here)."""
     from accel_pipeline.stages import materialize_registration
 
     materialize_registration(pipeline_config, workload, query)  # the module test of a registered query is built too
@@ -1278,10 +1278,7 @@ def run_bootstrap_gates(pipeline_config: PipelineConfig, workload: dict[str, Any
     if built.status != "pass":
         return [built], built
     conformance = run_conformance(pipeline_config, workload, query, change_kind="host_bootstrap", iteration=iteration)
-    if conformance.status != "fail":
-        return [built, conformance], None
-    conformance = dataclasses.replace(conformance, data={**conformance.data, "owner": "query"})
-    return [built, conformance], conformance
+    return [built, conformance], conformance if conformance.status == "fail" else None
 
 
 def _bootstrap_under_repair(pipeline_config, model_config, engine, representative_workload, workload, query,

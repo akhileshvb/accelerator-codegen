@@ -1046,4 +1046,3 @@ def test_the_bootstrap_registers_the_query_then_builds_then_checks_conformance(t
     results, bad = hb.run_bootstrap_gates(SimpleNamespace(repo_root=tmp_path), {"engine_name": "toydb"}, 3, iteration=0)
     assert steps == ["register", *ran] and [r.name for r in results] == ran
     assert (bad.name if bad else None) == failed
-    assert bad is None or bad.name != "harness_conformance" or bad.data["owner"] == "query"  # the stage repairs its own harnesses
