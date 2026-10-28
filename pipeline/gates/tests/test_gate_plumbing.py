@@ -29,6 +29,7 @@ case "${verb}" in
       printf 'WARNING: ThreadSanitizer: data race (pid=1)\n  Write of size 8 at 0x1 by thread T1:\n    #0 Add %s/module.cpp:9 (bin+0x1)\n    #1 ParallelEach /x/substrate/pool.cpp:3 (bin+0x2)\n\nSUMMARY: ThreadSanitizer: data race %s/module.cpp:9 in Add\n' "${FAKE_TSAN_REPORT}" "${FAKE_TSAN_REPORT}" > "${path}.1"
       printf 'WARNING: ThreadSanitizer: data race (pid=2)\n  Write of size 8 at 0x1 by thread T1:\n    #0 Foo /engine/src/x.cpp:9 (bin+0x1)\n\nSUMMARY: ThreadSanitizer: data race /engine/src/x.cpp:9 in Foo\n' > "${path}.2"
     fi
+    [[ "$1" != *diff* || -z "${ACCEL_SUITE_REPORT:-}" || -n "${FAKE_NO_SUITE_REPORT:-}" ]] || echo '{"ok": true}' > "${ACCEL_SUITE_REPORT}"
     [[ -z "${FAKE_FAIL_AT_N_THREADS:-}" || "${ACCEL_AUX_THREADS:-}" == 1 || "$1" != diff_bin ]] || exit 1
     [[ -z "${FAKE_FAIL_AT_ONE_THREAD:-}" || "${ACCEL_AUX_THREADS:-}" != 1 || "$1" != diff_bin ]] || exit 1
     if [[ -n "${FAKE_SWEEP:-}" && "$1" == bench_aux ]]; then  # a sweep point: reads and builds scale with the thread budget
@@ -39,6 +40,7 @@ case "${verb}" in
       done
     elif [[ "$1" == benchmark* && "$2" == --query ]]; then  # a bench that counts hits (or, FAKE_BENCH_CONSTANT, one that assumes them)
       rate=0.0; [[ -z "${FAKE_BENCH_CONSTANT:-}" && -n "${ACCEL_AUX_FORCE_FALLBACK:-}" ]] || rate=1.0
+      [[ -z "${FAKE_BENCH_DECLINES:-}" ]] || rate=0.0  # no module behind the registration: nothing ever hits
       [[ -z "${ACCEL_PROFILE_CONTROL:-}" || -n "${FAKE_BENCH_NO_PROFILE:-}" ]] || echo enable >"${ACCEL_PROFILE_CONTROL}"
       echo "suite,write_frequency_pct,workload_speedup,query_only_speedup,num_queries,accel_fallback_reads,state_builds,engine_ref_query_median_us,${FAKE_BENCH_NO_HIT_MEDIAN:-accel_hit_median_us,}accel_hit_rate"
       for pct in ${FAKE_BENCH_ONE_ROW:-${ACCEL_AUX_WRITE_FREQUENCIES//,/ }}; do
@@ -47,8 +49,8 @@ case "${verb}" in
     else
       echo "${FAKE_RUN_OUT:-ran $*}"
     fi
-    if [[ "$1" == "calibrator" ]]; then
-      echo '{"interference_delta_per_query_us": 3, "interference_rebuild_per_query_us": 4}' > "${FAKE_COST_MODEL}"
+    if [[ "$1" == calibrat* ]]; then  # the cost model goes to the path it is given
+      echo "{\"interference_delta_per_query_us\": ${FAKE_COST_DELTA:-3}, \"interference_rebuild_per_query_us\": 4}" > "${@: -1}"
     fi ;;
   build)  # configures the build dir from ACCEL_CMAKE_ARGS, as the contract asks (unless told not to)
     args="${FAKE_IGNORE_CMAKE_ARGS:+-G Ninja}${FAKE_IGNORE_CMAKE_ARGS:-${ACCEL_CMAKE_ARGS}}"
@@ -99,7 +101,7 @@ def run_gate(repo, script, *args, ctx_extra=None, env_extra=None, kind="aux_stat
         **os.environ, "PATH": f"{Path(sys.executable).parent}{os.pathsep}{os.environ['PATH']}",
         "ACCEL_GATE_CONTEXT": str(ctx_path), "FAKE_LOG": str(log),
         "ACCEL_GATE_OUT": str(out_json), "ACCEL_PIPELINE_WORKER_ID": "w7",
-        "ACCEL_ENGINE_STATE_ROOT": str(repo / "state"), "FAKE_COST_MODEL": str(repo / "cost_model.json"),
+        "ACCEL_ENGINE_STATE_ROOT": str(repo / "state"), 
         "ACCEL_PIPELINE_BUILD_DIR": str(repo / "build-release"),
         "ACCEL_PIPELINE_PYTHONPATH": str(ORCHESTRATOR), **(env_extra or {}),
     }
@@ -334,58 +336,17 @@ def test_host_bootstrap_builds_every_harness_and_smokes_each(repo):
     assert result(gj, "host_bootstrap")["status"] == "pass"
 
 
-def test_host_bootstrap_smokes_the_differential_on_a_registered_query(repo):
+def test_host_bootstrap_builds_and_smokes_the_module_test_of_a_registered_query(repo):
     host_bootstrap_repo(repo)
     register = repo / "accelerators" / "tpch" / "q6" / "fake" / "aux"
     register.mkdir(parents=True)
     (register / "register.cpp").write_text("// q6\n")
     proc, calls, _, _, _ = run_gate(repo, "run_host_bootstrap.sh", "0", ctx_extra={"engine_host": HARNESS_HOST})
     assert proc.returncode == 0, proc.stdout + proc.stderr
-    assert "run test_fake_tpch_differential 6" in calls
-
-
-def test_host_bootstrap_fails_a_bench_that_reports_the_same_hit_rate_when_forced_to_fall_back(repo):
-    host_bootstrap_repo(repo)
-    register = repo / "accelerators" / "tpch" / "q6" / "fake" / "aux"
-    register.mkdir(parents=True)
-    (register / "register.cpp").write_text("// q6\n")
-    proc, calls, _, gj, _ = run_gate(repo, "run_host_bootstrap.sh", "0", ctx_extra={"engine_host": HARNESS_HOST},
-                                     env_extra={"FAKE_BENCH_CONSTANT": "1"})
-    assert proc.returncode == 1
-    assert "does not count hits" in result(gj, "host_bootstrap")["reason"]
-
-
-def test_host_bootstrap_fails_a_bench_that_omits_a_required_column(repo):
-    host_bootstrap_repo(repo)
-    register = repo / "accelerators" / "tpch" / "q6" / "fake" / "aux"
-    register.mkdir(parents=True)
-    (register / "register.cpp").write_text("// q6\n")
-    proc, _, _, gj, _ = run_gate(repo, "run_host_bootstrap.sh", "0", ctx_extra={"engine_host": HARNESS_HOST},
-                                 env_extra={"FAKE_BENCH_NO_HIT_MEDIAN": "other,"})
-    assert proc.returncode == 1
-    assert "lacks the required columns accel_hit_median_us" in result(gj, "host_bootstrap")["reason"]
-
-
-def test_host_bootstrap_fails_a_bench_that_never_opens_the_profile_window(repo):
-    host_bootstrap_repo(repo)
-    register = repo / "accelerators" / "tpch" / "q6" / "fake" / "aux"
-    register.mkdir(parents=True)
-    (register / "register.cpp").write_text("// q6\n")
-    proc, _, _, gj, _ = run_gate(repo, "run_host_bootstrap.sh", "0", ctx_extra={"engine_host": HARNESS_HOST},
-                                 env_extra={"FAKE_BENCH_NO_PROFILE": "1"})
-    assert proc.returncode == 1
-    assert "never opened run_profile's window" in result(gj, "host_bootstrap")["reason"]
-
-
-def test_host_bootstrap_fails_a_bench_that_counts_no_state_build_on_a_hitting_run(repo):
-    host_bootstrap_repo(repo)
-    register = repo / "accelerators" / "tpch" / "q6" / "fake" / "aux"
-    register.mkdir(parents=True)
-    (register / "register.cpp").write_text("// q6\n")
-    proc, _, _, gj, _ = run_gate(repo, "run_host_bootstrap.sh", "0", ctx_extra={"engine_host": HARNESS_HOST},
-                                 env_extra={"FAKE_BENCH_BUILDS": "0"})
-    assert proc.returncode == 1
-    assert "reports state_builds=0" in result(gj, "host_bootstrap")["reason"]
+    assert "build test_fake_tpch_differential test_fake_aux_multi_connection_stress test_fake_cross_accel " \
+           "benchmark_fake_tpch_aux calibrate_fake_tpch_aux_cost_model test_tpch_q6_aux" in calls
+    assert "run test_tpch_q6_aux --help" in calls and "run test_fake_tpch_differential --help" in calls
+    assert all(c.endswith("--help") for c in calls if c.startswith("run"))  # what they do on a query is conformance's
 
 
 def test_host_bootstrap_fails_without_the_harness_sources(repo):

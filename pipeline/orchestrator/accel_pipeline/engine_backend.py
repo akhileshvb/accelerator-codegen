@@ -34,7 +34,6 @@ from accel_pipeline.config import (
     ModelConfig,
     PipelineConfig,
     apply_workload_overrides,
-    benchmark_of,
     engine_artifacts_dir,
     harness_targets,
     load_run_workload,
@@ -43,7 +42,7 @@ from accel_pipeline.config import (
     query_artifacts_dir,
     sanitize_engine_name,
 )
-from accel_pipeline.data import frozen_problem, prepare_host_sdk_payload, suite_path
+from accel_pipeline.data import prepare_host_sdk_payload
 from accel_pipeline.gates import GateResult, format_reloop_failure_sections
 from accel_pipeline.mcp import ToolContext, make_gate_tools
 from accel_pipeline.pack import apply_foreign_engine_quarantine, restore_quarantine
@@ -1120,7 +1119,8 @@ def run_engine_pipeline(pipeline_config: PipelineConfig, model_config: ModelConf
 # host_bootstrap: the engine's workload harnesses
 
 _DEFAULT_GATE_MAX_ROUNDS = 3
-_ACCEPTANCE_REPAIRS = 2
+_CONFORMANCE_REPAIRS = 2
+BOOTSTRAP_GATES = ["host_bootstrap", "harness_conformance"]
 
 
 def host_bootstrap_dir(repo_root: Path, engine_name: str) -> Path:
@@ -1246,17 +1246,42 @@ def run_host_bootstrap(pipeline_config: PipelineConfig, model_config: ModelConfi
         return {"engine_name": engine, "status": "pass", "skipped": False, "path": str(path)}
 
     if not force and not pending_harness_requests(repo_root, engine):
-        existing = gate_runner.run_gate(pipeline_config, "host_bootstrap", query, workload=workload,
-                                        raise_on_failure=False, change_kind="host_bootstrap", iteration=0)
-        if existing.status == "pass":
+        results, failed = run_bootstrap_gates(pipeline_config, workload, query, iteration=0)
+        if failed is None:
             path = write_host_bootstrap_status(repo_root, engine, status="pass",
                                                reason="the existing harness passes the gate",
-                                               extra={"gate_data": existing.data})
+                                               extra={"gate_data": results[0].data})
             print(f"[host_bootstrap] engine={engine}: the existing harness passes; no agent run", flush=True)
             return {"engine_name": engine, "status": "pass", "skipped": True, "path": str(path)}
 
     return _bootstrap_under_repair(pipeline_config, model_config, engine, representative_workload, workload, query,
                                    model_overrides)
+
+
+def run_conformance(pipeline_config: PipelineConfig, workload: dict[str, Any], query: int, *,
+                    change_kind: str, iteration: int = 0) -> GateResult:
+    """The one conformance check (run_harness_conformance.sh) on a registered query: every read is answered by the
+    reference SQL, so the harnesses must pass whatever its module is."""
+    return gate_runner.run_gate(pipeline_config, "harness_conformance", query, workload, raise_on_failure=False,
+                                change_kind=change_kind, iteration=iteration)
+
+
+def run_bootstrap_gates(pipeline_config: PipelineConfig, workload: dict[str, Any], query: int, *,
+                        iteration: int) -> tuple[list[GateResult], GateResult | None]:
+    """The harnesses built and smoked, then conformant on the representative query; the results and the failing one.
+    The harnesses are this stage's own code, so a conformance failure is repaired here (not sent to an owner)."""
+    from accel_pipeline.stages import materialize_registration
+
+    materialize_registration(pipeline_config, workload, query)  # the module test of a registered query is built too
+    built = gate_runner.run_gate(pipeline_config, "host_bootstrap", query, workload=workload, raise_on_failure=False,
+                                 change_kind="host_bootstrap", iteration=iteration)
+    if built.status != "pass":
+        return [built], built
+    conformance = run_conformance(pipeline_config, workload, query, change_kind="host_bootstrap", iteration=iteration)
+    if conformance.status != "fail":
+        return [built, conformance], None
+    conformance = dataclasses.replace(conformance, data={**conformance.data, "owner": "query"})
+    return [built, conformance], conformance
 
 
 def _bootstrap_under_repair(pipeline_config, model_config, engine, representative_workload, workload, query,
@@ -1284,14 +1309,12 @@ def _bootstrap_under_repair(pipeline_config, model_config, engine, representativ
                                         extra_user_message=text)
 
     def run_gates(_names: list[str]) -> tuple[list[GateResult], GateResult | None]:
-        result = gate_runner.run_gate(pipeline_config, "host_bootstrap", query, workload=workload,
-                                      raise_on_failure=False, change_kind="host_bootstrap", iteration=rounds["gate"])
-        last["gate"] = result
-        if result.status == "pass":
-            return [result], None
-        write_host_bootstrap_status(repo_root, engine, status="fail", reason=str((result.data or {}).get("reason") or ""),
-                                    extra={"gate_data": result.data, "attempt": rounds["gate"] + 1})
-        return [result], result
+        results, failed = run_bootstrap_gates(pipeline_config, workload, query, iteration=rounds["gate"])
+        last["gate"] = failed or results[0]
+        if failed is not None:
+            write_host_bootstrap_status(repo_root, engine, status="fail", reason=str((failed.data or {}).get("reason") or ""),
+                                        extra={"gate_data": failed.data, "attempt": rounds["gate"] + 1})
+        return results, failed
 
     def repair(failure: Failure) -> None:
         rounds["gate"] += 1
@@ -1311,7 +1334,7 @@ def _bootstrap_under_repair(pipeline_config, model_config, engine, representativ
 
     ctx.repair_turn, ctx.gate_runner = repair, run_gates
     ctx.max_code_rounds = int(workload.get("host_bootstrap_gate_max_rounds") or _DEFAULT_GATE_MAX_ROUNDS)
-    run_with_repair(ctx, attempt, gates=["host_bootstrap"])
+    run_with_repair(ctx, attempt, gates=BOOTSTRAP_GATES)
 
     max_critique = critic.rounds(workload)
     for critique_round in range(1, max_critique + 1):
@@ -1328,7 +1351,7 @@ def _bootstrap_under_repair(pipeline_config, model_config, engine, representativ
         feedback = verdict_feedback(critic, verdict, critique_round)
         _write_feedback(critic, feedback, critique_round)
         pending_text["feedback"] = feedback
-        run_with_repair(ctx, attempt, gates=["host_bootstrap"])
+        run_with_repair(ctx, attempt, gates=BOOTSTRAP_GATES)
 
     final = last["gate"]
     path = write_host_bootstrap_status(repo_root, engine, status=final.status,
@@ -1337,33 +1360,31 @@ def _bootstrap_under_repair(pipeline_config, model_config, engine, representativ
     return {"engine_name": engine, "status": final.status, "skipped": False, "path": str(path), "gate": final.data}
 
 
-def accept_harness(pipeline_config: PipelineConfig, model_config: ModelConfig, workload_name: str,
-                   workload: dict[str, Any], query: int, model_overrides: dict[str, str] | None = None) -> None:
-    """The harnesses pass on this query with every read answered by the reference SQL (the gate forces the fallback),
-    when the suite freezes and after host_bootstrap revises them: the bootstrap gate can only smoke them. A failure is
-    the harness's: it is recorded as a harness request, host_bootstrap re-runs with it as a required fix, and the
-    check repeats."""
+def check_conformance(pipeline_config: PipelineConfig, model_config: ModelConfig, workload_name: str,
+                      workload: dict[str, Any], query: int, model_overrides: dict[str, str] | None = None) -> None:
+    """The conformance check on this query when its suite freezes (the bootstrap ran it before any suite). A failure is
+    the harness's: it is recorded as a harness request, host_bootstrap re-runs with it as a required fix (and its own
+    gates repeat the check), and the check repeats."""
     if workload.get("workload_kind") != "aux_state" or not workload.get("engine_name"):
         return  # no engine harnesses to run
     engine = sanitize_engine_name(str(workload["engine_name"]))
-    for repairs in range(_ACCEPTANCE_REPAIRS + 1):
-        result = gate_runner.run_gate(pipeline_config, "harness_acceptance", query, workload,
-                                      change_kind="harness_acceptance")
+    for repairs in range(_CONFORMANCE_REPAIRS + 1):
+        result = run_conformance(pipeline_config, workload, query, change_kind="harness_conformance")
         if result.status in ("pass", "skip"):
             return
-        failure = failure_from_gate(result, stage="harness_acceptance", workload=workload,
+        failure = failure_from_gate(result, stage="harness_conformance", workload=workload,
                                     repo_root=pipeline_config.repo_root)
-        if repairs == _ACCEPTANCE_REPAIRS:
+        if repairs == _CONFORMANCE_REPAIRS:
             break
         print(f"[host_bootstrap] the {engine} harnesses fail on Q{query}: {failure.summary}; host_bootstrap repairs them",
               flush=True)
         record(pipeline_config.repo_root, engine, {
             "benchmark": str(workload.get("benchmark_name") or ""), "query": query, "scope": "harness",
-            "helper": "harness acceptance", "reason": render_failure(failure)})
+            "helper": "harness conformance", "reason": render_failure(failure)})
         run_host_bootstrap(pipeline_config, model_config, engine_name=engine, representative_workload=workload_name,
                            model_overrides=model_overrides)
     report = host_bootstrap_dir(pipeline_config.repo_root, engine) / "stop_report.md"
-    report.write_text(f"# Stopped: the {engine} harnesses fail on Q{query} after {_ACCEPTANCE_REPAIRS} repairs\n\n"
+    report.write_text(f"# Stopped: the {engine} harnesses fail on Q{query} after {_CONFORMANCE_REPAIRS} repairs\n\n"
                       f"{render_failure(failure)}\n", encoding="utf-8")
     raise StageStopped(f"the {engine} harnesses fail on Q{query} with every read answered by the reference SQL", report)
 
@@ -1371,20 +1392,14 @@ def accept_harness(pipeline_config: PipelineConfig, model_config: ModelConfig, w
 def ensure_host_bootstrap_for_workload(pipeline_config: PipelineConfig, model_config: ModelConfig, workload_name: str,
                                        *, model_overrides: dict[str, str] | None = None, dry_run: bool = False,
                                        skip_gates: bool = False) -> dict[str, Any] | None:
-    """Single-query entry: bootstrap the engine's harnesses if needed, else None. A query past its suite's freeze has
-    the revised harnesses accepted on it, as revise_upstream does mid-run."""
+    """Single-query entry: bootstrap the engine's harnesses if needed, else None."""
     workload = load_run_workload(pipeline_config, workload_name)
     if not needs_host_bootstrap(workload):
         return None
-    result = run_host_bootstrap(pipeline_config, model_config,
-                                engine_name=sanitize_engine_name(str(workload.get("engine_name") or "")),
-                                representative_workload=workload_name, model_overrides=model_overrides,
-                                dry_run=dry_run, skip_gates=skip_gates)
-    root, query = pipeline_config.repo_root, int(workload.get("query_number") or 0)
-    art = query_artifacts_dir(root, query, workload=workload)
-    if not (result.get("skipped") or dry_run or skip_gates) and not frozen_problem(art, suite_path(root, benchmark_of(workload), query)):
-        accept_harness(pipeline_config, model_config, workload_name, workload, query, model_overrides)
-    return result
+    return run_host_bootstrap(pipeline_config, model_config,
+                              engine_name=sanitize_engine_name(str(workload.get("engine_name") or "")),
+                              representative_workload=workload_name, model_overrides=model_overrides,
+                              dry_run=dry_run, skip_gates=skip_gates)
 
 
 def ensure_host_bootstrap_for_pack(pack: dict[str, Any], *, repo_root: Path, pipeline_config: PipelineConfig,

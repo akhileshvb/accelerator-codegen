@@ -45,6 +45,8 @@ The validate report, for a suite of three tuples and two transactions:
 `tuple_rows[i]` is the row count of the tuple on line i+1 of `params.sql`; `txn` is the file name in `txns/`; `errors`
 are strings (a tuple that does not evaluate, a transaction that does not apply).
 
+**Clause `suite-report`**: a differential that ran with `ACCEL_SUITE_DIR` set writes the report at `ACCEL_SUITE_REPORT`.
+
 After the build and after each committed transaction the accelerated answer must equal the reference's at the same snapshot (ties at the order and LIMIT cut are open); a transaction starting `-- rollback` is applied then aborted. A failure exits non-zero naming the seed, tuple and transaction.
 
 ## Verbs
@@ -87,7 +89,7 @@ replacement) into an error naming the accelerator, and the harness refuses to ru
 `0` pass, `1` the contract is violated, `77` the engine profile states it n/a. The gate is
 `engine_hit_contract` (`pipeline/gates/run_engine_hit_contract.sh`).
 
-The same contract is exercised from outside by the pipeline's canary suite (`canary_contract.md`), and the host_bootstrap gate runs each bench once with reads hitting and once with every read forced to the fallback (`ACCEL_AUX_FORCE_FALLBACK=1`): the two must report different `accel_hit_rate`.
+The same contract is exercised from outside by the pipeline's canary suite (`canary_contract.md`) and, for the benches, by the conformance clauses of `bench_sweep_contract.md`.
 
 Benchmarks report the same facts so `measurement.check_measurement` can tell a hit from a fallback: the
 sweep CSV carries `accel_hit_rate` (reads served from the state over all reads), `accel_fallback_reads`

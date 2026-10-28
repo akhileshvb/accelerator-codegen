@@ -416,10 +416,9 @@ def test_a_recorded_harness_defect_goes_to_host_bootstrap_before_the_next_check(
     bootstraps = []
     monkeypatch.setattr(engine_backend, "pending_harness_requests", lambda root, engine: "- **ties**")
     monkeypatch.setattr(engine_backend, "run_host_bootstrap", lambda *a, **kw: bootstraps.append(kw["engine_name"]))
-    monkeypatch.setattr(engine_backend, "accept_harness", lambda *a: bootstraps.append("acceptance"))
     ctx = world.ctx()
     ctx.workload = {**ctx.workload, "engine_name": "toyengine"}
-    assert repair_mod.revise_upstream(ctx) and bootstraps == ["toyengine", "acceptance"]
+    assert repair_mod.revise_upstream(ctx) and bootstraps == ["toyengine"]
 
 
 def test_a_harness_defect_a_gate_finds_goes_to_host_bootstrap_without_an_agent_round(world, monkeypatch):

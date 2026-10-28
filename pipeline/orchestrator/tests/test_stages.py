@@ -115,8 +115,6 @@ def test_materialize_workload_stubs_writes_missing_files(tmp_path):
 
 
 def test_materialize_registration_fills_the_engines_template_once(tmp_path, monkeypatch):
-    import json
-
     from accel_pipeline.stages import materialize_registration
 
     repo = tmp_path / "repo"
@@ -130,13 +128,11 @@ def test_materialize_registration_fills_the_engines_template_once(tmp_path, monk
     for rel, text in files.items():
         (repo / rel).parent.mkdir(parents=True, exist_ok=True)
         (repo / rel).write_text(text)
-    analysis = tmp_path / "analysis.json"
-    analysis.write_text(json.dumps({"accelerator_id": "toybench_q1_aux"}))
-    monkeypatch.setattr("accel_pipeline.stages.analysis_artifact_path", lambda *a, **k: analysis)
     (tmp_path / "art").mkdir()
     monkeypatch.setattr("accel_pipeline.stages.query_artifacts_dir", lambda *a, **k: tmp_path / "art")
     register = "accelerators/toybench/q1/toyengine/aux/register.cpp"
-    workload = {"workload_kind": "aux_state", "benchmark_name": "toybench", "engine_name": "toyengine", "parameters": [{"name": "c", "type": "integer"}],
+    workload = {"workload_kind": "aux_state", "benchmark_name": "toybench", "engine_name": "toyengine",
+                "accelerator_id": "toybench_q1_aux", "parameters": [{"name": "c", "type": "integer"}],
                 "engine_host": {"aux_register_path": register},
                 "reference_sql_path": str(repo / "workloads/toybench/instances/seed_1/1.sql")}
     config = type("Cfg", (), {"repo_root": repo})()
