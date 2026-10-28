@@ -424,7 +424,7 @@ def test_a_recorded_harness_defect_goes_to_host_bootstrap_before_the_next_check(
 
 def test_a_harness_defect_a_gate_finds_goes_to_host_bootstrap_without_an_agent_round(world, monkeypatch):
     reported, revisions = [], [True]
-    monkeypatch.setattr(repair_mod, "report_harness_defect", lambda ctx, failure: reported.append(failure.source))
+    monkeypatch.setattr(repair_mod, "report_defect", lambda ctx, failure: reported.append(failure.source))
     monkeypatch.setattr(repair_mod, "revise_upstream", lambda ctx: revisions.pop(0) if revisions else False)
     failed = GateResult("test_suite_validate", "fail", {"reason": "wrote no suite report", "owner": "harness"})
     world.gate_script = [([failed], failed)]
@@ -437,9 +437,9 @@ def test_a_recorded_harness_defect_is_reproduced_through_request_gate(world):
 
     ctx = world.ctx()
     ctx.workload = {**ctx.workload, "engine_name": "toyengine"}
-    failure = repair_mod.Failure(kind="infra", stage="test_suite", source="gate:test_suite_validate",
+    failure = repair_mod.Failure(kind="infra", stage="test_suite", source="gate:test_suite_validate", owner="harness",
                                  summary="wrote no suite report", reproduce="bash pipeline/gates/run_test_suite_validate.sh 3")
-    repair_mod.report_harness_defect(ctx, failure)
+    repair_mod.report_defect(ctx, failure)
     text = pending_harness_requests(ctx.pipeline_config.repo_root, "toyengine")
     assert 'request_gate("test_suite_validate")' in text and "bash pipeline/gates" not in text
 
@@ -449,7 +449,80 @@ def test_test_data_that_does_not_load_stops_the_stage_without_a_repair_round(wor
     world.gate_script = [gate_fail(text=load)]
     with pytest.raises(StageStopped) as stopped:
         run_with_repair(world.ctx(), lambda: None, gates=["aux_correctness"])
-    assert "test data does not load" in stopped.value.reason and world.agent_messages == []
+    assert stopped.value.reason.startswith("owner data:") and world.agent_messages == []
+
+
+def owned_fail(owner, name="aux_correctness", **data):
+    result = GateResult(name, "fail", {"log_tail": "it failed", "owner": owner, **data})
+    return [result], result
+
+
+def test_a_backend_defect_is_recorded_once_for_its_owner_and_the_agent_adapts(world):
+    from accel_pipeline.engine_backend import pending
+
+    ctx = world.ctx()
+    ctx.workload = {**ctx.workload, "engine_name": "toyengine"}
+    world.gate_script = [owned_fail("backend"), owned_fail("backend")]
+    run_with_repair(ctx, lambda: None, gates=["aux_correctness"])
+    assert len(world.agent_messages) == 2 and "Owner: backend" in world.agent_messages[0]
+    assert "Adapt within your own files" in world.agent_messages[0]
+    assert len(pending(world.tmp, "toyengine", "backend")) == 1
+
+
+@pytest.mark.parametrize("owner", ["data", "pipeline"])
+def test_a_data_or_pipeline_failure_stops_with_a_report_naming_the_owner(world, owner):
+    world.gate_script = [owned_fail(owner)]
+    with pytest.raises(StageStopped) as stopped:
+        run_with_repair(world.ctx(), lambda: None, gates=["aux_correctness"])
+    assert stopped.value.reason.startswith(f"owner {owner}:") and world.agent_messages == []
+    assert f"Owner: {owner}" in Path(stopped.value.report).read_text()
+
+
+def test_a_blocker_the_agent_gives_to_the_pipeline_stops_the_stage(world):
+    def blocked():
+        raise StageFailure(Failure(kind="infra", stage="implementation", source="agent", summary="the gate is broken",
+                                   infra_reason=repair_mod.AGENT_BLOCKER, owner="pipeline"))
+
+    with pytest.raises(StageStopped) as stopped:
+        run_with_repair(world.ctx(), blocked, gates=["aux_correctness"])
+    assert stopped.value.reason.startswith("owner pipeline:") and world.agent_messages == []
+
+
+def test_the_stages_own_files_are_repaired_in_its_own_rounds(world, monkeypatch):
+    monkeypatch.setattr(repair_mod, "revise_upstream", lambda ctx: False)
+    world.gate_script = [owned_fail("harness")]
+    ctx = world.ctx()
+    ctx.stage = "host_bootstrap"
+    run_with_repair(ctx, lambda: None, gates=["host_bootstrap"])
+    assert len(world.agent_messages) == 1
+
+
+def test_the_other_phases_of_an_exit_are_recorded_for_their_owners(world, monkeypatch):
+    reported = []
+    monkeypatch.setattr(repair_mod, "report_defect", lambda ctx, failure: reported.append((failure.source, failure.owner)))
+    world.gate_script = [owned_fail("query", name="aux_exit", elsewhere={"aux_multi_connection": "harness",
+                                                                        "aux_bench_sweep": "backend",
+                                                                        "aux_tsan": "infra"})]
+    run_with_repair(world.ctx(), lambda: None, gates=["aux_exit"])
+    assert reported == [("gate:aux_multi_connection", "harness"), ("gate:aux_bench_sweep", "backend")]
+    assert len(world.agent_messages) == 1
+
+
+def test_a_gates_owner_decides_before_the_text_is_read(repo):
+    load = "[host.sh load s.sql] rc=1\nConstraint Error"
+    assert repair_mod.classify("aux_correctness", {"log_tail": load}, WORKLOAD, repo) == ("infra", "data", "test_data_load")
+    assert repair_mod.classify("aux_correctness", {"log_tail": load, "owner": "query"}, WORKLOAD, repo) == ("code", "query", None)
+    assert repair_mod.classify("aux_correctness", {"log_tail": "x", "owner": "harness"}, WORKLOAD, repo)[:2] == ("code", "harness")
+    assert repair_mod.classify("aux_correctness", {"log_tail": "x", "owner": "backend"}, WORKLOAD, repo)[:2] == ("code", "backend")
+    assert repair_mod.classify("aux_correctness", {"log_tail": "x", "owner": "infra"}, WORKLOAD, repo)[:2] == ("infra", "infra")
+
+
+def test_a_failure_without_an_owner_is_owned_by_its_kind():
+    assert repair_mod.Failure(kind="code", stage="s", source="x", summary="y").owner == "query"
+    assert repair_mod.Failure(kind="infra", stage="s", source="x", summary="y").owner == "infra"
+    assert repair_mod.Failure(kind="orchestrator", stage="s", source="x", summary="y").owner == "pipeline"
+    assert "Owner: harness" in repair_mod.render_failure(
+        repair_mod.Failure(kind="infra", stage="s", source="x", summary="y", owner="harness"))
 
 
 def _out_of_credits():
@@ -809,22 +882,22 @@ def classify(text, repo, **kw):
 
 
 def test_engine_internal_sanitizer_is_infra(repo):
-    assert classify(TSAN, repo) == ("infra", "engine_internal_sanitizer")
+    assert classify(TSAN, repo) == ("code", "backend", "engine_internal_sanitizer")
 
 
 def test_sanitizer_frame_in_the_query_dir_is_code(repo):
-    assert classify(TSAN_OURS, repo) == ("code", None)
+    assert classify(TSAN_OURS, repo) == ("code", "query", None)
 
 
 def test_sanitizer_frame_in_a_file_changed_this_stage_is_code(repo):
     (repo / "shared.cc").write_text("x")
     text = TSAN.replace("/engine/src/pool.cc:88 (libengine", "/repo/shared.cc:88 (libengine", 1)
-    assert classify(text, repo) == ("code", None)
+    assert classify(text, repo) == ("code", "query", None)
 
 
 def test_missing_producer_artifact(repo):
-    assert classify("error: analysis.json not found for query 3", repo) == ("infra", "missing_producer")
-    assert classify("target missing from the gate context", repo) == ("infra", "missing_producer")
+    assert classify("error: analysis.json not found for query 3", repo) == ("infra", "pipeline", "missing_producer")
+    assert classify("target missing from the gate context", repo) == ("infra", "pipeline", "missing_producer")
 
 
 @pytest.mark.parametrize("text", [
@@ -833,29 +906,29 @@ def test_missing_producer_artifact(repo):
     "backends/e/host.sh up exited with status 2",
 ])
 def test_harness_errors(text, repo):
-    assert classify(text, repo) == ("infra", "harness_error")
+    assert classify(text, repo) == ("infra", "infra", "harness_error")
 
 
 def test_python_traceback_outside_the_harness_is_code(repo):
     text = "Traceback (most recent call last):\n  File \"/r/accelerators/toybench/q3/check.py\", line 3\nValueError"
-    assert classify(text, repo) == ("code", None)
+    assert classify(text, repo) == ("code", "query", None)
 
 
 def test_timeout_is_infra_only_under_load(repo, monkeypatch):
     text = "gate did not finish within 7200s"
     monkeypatch.setattr("os.getloadavg", lambda: (0.1, 0.1, 0.1))
-    assert classify(text, repo) == ("code", None)
+    assert classify(text, repo) == ("code", "query", None)
     monkeypatch.setattr("os.getloadavg", lambda: (1e6, 1e6, 1e6))
-    assert classify(text, repo) == ("infra", "timeout_under_load")
-    assert classify("", repo, returncode=137) == ("infra", "timeout_under_load")
+    assert classify(text, repo) == ("infra", "infra", "timeout_under_load")
+    assert classify("", repo, returncode=137) == ("infra", "infra", "timeout_under_load")
 
 
 def test_shared_tree_failures_are_infra(repo):
-    assert classify("unsupported shared query binding", repo) == ("infra", "unsupported_shared_query")
+    assert classify("unsupported shared query binding", repo) == ("infra", "infra", "unsupported_shared_query")
 
 
 def test_plain_test_failure_is_code(repo):
-    assert classify("Segmentation fault in accelerators/toybench/q3/aux.cpp\n1 test failed", repo) == ("code", None)
+    assert classify("Segmentation fault in accelerators/toybench/q3/aux.cpp\n1 test failed", repo) == ("code", "query", None)
 
 
 def test_transient_provider_failure():
@@ -877,19 +950,19 @@ ASAN_ENGINE = """==1==ERROR: AddressSanitizer: heap-use-after-free on address 0x
 
 
 def test_an_engine_backend_report_in_the_backends_tree_is_code(repo):
-    assert repair_mod.classify("engine_canary_asan", {"log_tail": ASAN_BACKEND}, ENGINE_WORKLOAD, repo) == ("code", None)
+    assert repair_mod.classify("engine_canary_asan", {"log_tail": ASAN_BACKEND}, ENGINE_WORKLOAD, repo) == ("code", "query", None)
 
 
-def test_an_engine_backend_report_without_a_backend_frame_is_infra(repo):
+def test_an_engine_backend_report_without_a_backend_frame_is_the_backends(repo):
     assert repair_mod.classify("engine_canary_asan", {"log_tail": ASAN_ENGINE}, ENGINE_WORKLOAD, repo) == (
-        "infra", "engine_internal_sanitizer")
+        "code", "backend", "engine_internal_sanitizer")
 
 
 def test_a_harness_that_fails_a_later_repeat_is_a_race_and_code():
     data = {"log_tail": "test_x failed on run 4 after passing 3 times: a race (the harness or the backend depends on timing)"}
     assert repair_mod.racy_repeats(data) == (3, 4)
     assert repair_mod.racy_repeats({"log_tail": "failed on run 1"}) is None
-    assert repair_mod.classify("engine_scan", data, ENGINE_WORKLOAD, None) == ("code", None)
+    assert repair_mod.classify("engine_scan", data, ENGINE_WORKLOAD, None) == ("code", "query", None)
 
 
 def test_the_failure_report_of_a_racy_gate_says_it_is_a_race():
@@ -914,10 +987,10 @@ HOSTED = {"benchmark_name": "toybench", "query_number": 3, "engine_name": "toydb
 
 def test_a_missing_harness_target_is_host_bootstraps_not_the_querys(repo):
     text = "[host.sh build test_toydb_cross_accel] rc=1\nninja: error: unknown target 'test_toydb_cross_accel'"
-    assert repair_mod.classify("aux_exit", {"log_tail": text}, HOSTED, repo) == ("infra", repair_mod.HARNESS_MISSING)
-    assert repair_mod.classify("host_bootstrap", {"log_tail": text}, HOSTED, repo)[1] != repair_mod.HARNESS_MISSING
+    assert repair_mod.classify("aux_exit", {"log_tail": text}, HOSTED, repo) == ("infra", "harness", "harness_missing")
+    assert repair_mod.classify("host_bootstrap", {"log_tail": text}, HOSTED, repo)[2] != "harness_missing"
     own = "ninja: error: unknown target 'agent_toybench_q3_oracle'"  # the query's own target is the query's to fix
-    assert repair_mod.classify("quick_check", {"log_tail": own}, HOSTED, repo) == ("code", None)
+    assert repair_mod.classify("quick_check", {"log_tail": own}, HOSTED, repo) == ("code", "query", None)
 
 
 def test_the_failure_report_carries_the_reason_the_stacks_one_log_tail_and_the_gate_to_rerun():

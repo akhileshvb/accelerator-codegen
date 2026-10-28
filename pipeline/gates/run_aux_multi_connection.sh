@@ -16,7 +16,7 @@ load_aux_gate_context "${ROOT}" "${QUERY}"
 
 JSON="${GATE_OUT}/aux_multi_connection.json"
 if [[ -z "${MULTI_CONN_TARGET}" ]]; then
-  emit_result "${JSON}" aux_multi_connection fail "no multi-connection target in the gate context (engine_host.multi_conn_target). ${HOST_HINT}" ""
+  emit_result "${JSON}" aux_multi_connection fail "no multi-connection target in the gate context (engine_host.multi_conn_target). ${HOST_HINT}" "" "owner=pipeline"
 fi
 
 export ACCEL_AUX_BENCHMARK="${BENCHMARK_NAME}"
@@ -26,7 +26,7 @@ export ACCEL_MULTI_CONN_BACKGROUND_READERS="${ACCEL_MULTI_CONN_BACKGROUND_READER
 export ACCEL_MULTI_CONN_STRESS_SEC="${ACCEL_MULTI_CONN_STRESS_SEC:-5}"
 
 if ! engine_ready "${MULTI_CONN_TARGET}"; then
-  emit_result "${JSON}" aux_multi_connection fail "${ENGINE_FAIL}" "${ENGINE_LOG}"
+  emit_result "${JSON}" aux_multi_connection fail "${ENGINE_FAIL}" "${ENGINE_LOG}" "owner=${ENGINE_OWNER}"
 fi
 engine_run "${MULTI_CONN_TARGET}" "${QUERY}"
 STATUS=pass

@@ -29,7 +29,7 @@ if [[ ${THREAD_LINT_RC} -ne 0 ]]; then
 fi
 
 if ! engine_ready_for_ctest "${PATTERN}" "${EXCLUDE}"; then
-  emit_result "${OUT}/aux_unit.json" aux_unit fail "${ENGINE_FAIL}" "${ENGINE_LOG}" "query:=${QUERY}"
+  emit_result "${OUT}/aux_unit.json" aux_unit fail "${ENGINE_FAIL}" "${ENGINE_LOG}" "owner=${ENGINE_OWNER}" "query:=${QUERY}"
 fi
 engine_run ctest --test-dir "${ACCEL_BUILD_DIR}" --no-tests=error -j "${ACCEL_CTEST_JOBS:-$(nproc)}" --stop-on-failure -R "${PATTERN}" -E "${EXCLUDE}" --output-on-failure
 

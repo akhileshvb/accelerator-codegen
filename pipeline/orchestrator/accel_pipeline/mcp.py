@@ -46,6 +46,7 @@ from sqlglot.tokens import Tokenizer, TokenType
 
 from accel_pipeline import data, repair as repair_mod
 from accel_pipeline.agent import keep_alive, record_check, budget_footer, write_blocker
+from accel_pipeline.layout import BACKEND, HARNESS, OWNERS, QUERY
 from accel_pipeline.config import (
     pipeline_root,
     PipelineConfig,
@@ -258,8 +259,11 @@ def build_mcp_tool_callables(
         harnesses or its backend is also recorded as a request to that owner."""
         from accel_pipeline.engine_backend import record
 
-        write_blocker(art, summary, evidence)
-        if owner in ("harness", "backend") and workload.get("engine_name"):
+        owner = owner or QUERY
+        if owner not in OWNERS:
+            return f"Unknown owner {owner!r}: one of {', '.join(OWNERS)}, or leave it empty. Call report_blocker again."
+        write_blocker(art, summary, evidence, owner)
+        if owner in (HARNESS, BACKEND) and workload.get("engine_name"):
             record(pipeline_config.repo_root, sanitize_engine_name(str(workload["engine_name"])), {
                 "benchmark": str(workload.get("benchmark_name") or ""), "query": query, "scope": owner,
                 "helper": summary.strip()[:200], "reason": evidence.strip()})
@@ -496,9 +500,11 @@ def register_core(tool, call) -> None:
         """Call when the obstacle is outside what you own (a pipeline, gate, harness or backend bug, a
         missing input) instead of investigating it. Writes blocker.md and ends your turn.
 
-        owner: "harness" when the engine's workload harnesses are wrong (host_bootstrap fixes them before
-        your next check), "backend" for the engine backend (recorded for its owner; you adapt meanwhile),
-        else empty. The orchestrator re-runs the failing check, then comes back to you to adapt."""
+        owner: who the obstacle belongs to. "harness": the engine's workload harnesses are wrong (host_bootstrap
+        fixes them before your next check). "backend": the engine backend (recorded for its owner; you adapt
+        meanwhile). "data": the workload's data or test cut (the run stops with a report). "pipeline": a gate or the
+        orchestrator (the run stops with a report). "infra": the machine or a provider. Else "query" (the default).
+        For harness, backend and query the orchestrator re-runs the failing check, then comes back to you to adapt."""
         return call("report_blocker", summary, evidence, owner)
 
     @tool(read_only=False)

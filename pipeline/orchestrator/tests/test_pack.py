@@ -370,14 +370,14 @@ def test_a_timeout_while_another_worker_measures_on_its_own_cores_is_the_code(ho
     text = "[measurement-lease] waited 0.0 s for the measurement lease\naux_bench did not finish within 900s"
     holder = spawn(window_script(3), "other")
     holder.stdout.readline()
-    assert repair.classify("aux_bench_sweep", {"log_tail": text}, {}, None, query=3, load_factor=1e9) == ("code", None)
+    assert repair.classify("aux_bench_sweep", {"log_tail": text}, {}, None, query=3, load_factor=1e9) == ("code", "query", None)
     holder.kill()
     holder.wait()
 
 
 def test_not_getting_the_lease_is_infra(host_dir):
     text = "measurement lease not acquired within 3600s (held by q9): not acquired within 3600s"
-    assert repair.classify("aux_bench_sweep", {"log_tail": text}, {}, None, query=3) == ("infra", "measurement_lease_busy")
+    assert repair.classify("aux_bench_sweep", {"log_tail": text}, {}, None, query=3) == ("infra", "infra", "measurement_lease_busy")
 
 
 # --- nothing kills other workers' processes ---

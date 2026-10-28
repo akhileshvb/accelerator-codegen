@@ -1,9 +1,12 @@
 """A failure, how it is triaged, the repair loop that answers it, and the advisor the loop consults.
 
-No stage failure, gate failure, bench failure, timeout or exception ends a run uncaught. A failure is triaged
-(from the failure's own text, engine-generic) as infra or code; infra failures are retried (and, when persistent,
-quarantined), code failures resume the agent's session with the failure report, and once that budget is spent the
-tree goes back to the best snapshot, the plan is redone once, and the run stops cleanly.
+No stage failure, gate failure, bench failure, timeout or exception ends a run uncaught. A failure names its owner
+(`layout.OWNERS`), decided where it is known: a gate writes `owner` in its result, and only a result without one is
+triaged from its text (engine-generic). One routing in `run_with_repair` maps owner to action: the query's failures
+resume the agent's session with the failure report; the harness's go to host_bootstrap and are re-checked; the
+backend's are recorded for its owner while the agent adapts; the data's and the pipeline's stop the run with a report
+naming the owner; infrastructure failures are retried (and, when persistent, quarantined). Once the query's repair
+budget is spent the tree goes back to the best snapshot, the plan is redone once, and the run stops cleanly.
 
 The advisor is a second opinion for a stuck agent: a stronger model forks the agent's own codex session (full
 context) and answers once. The fork is a new session; the agent's is never touched, and files the advisor changes
@@ -39,7 +42,8 @@ from accel_pipeline.config import (
     sanitize_engine_name,
 )
 from accel_pipeline.data import pending_change_request
-from accel_pipeline.layout import query_dir, tree_snapshot
+from accel_pipeline.layout import (
+    BACKEND, DATA, HARNESS, INFRA, PIPELINE, QUERY, UNKNOWN_TARGET, query_dir, tree_snapshot)
 from accel_pipeline.prompts import render_prompt
 from accel_pipeline.runlog import append_experiment_log, log_event
 from accel_pipeline.agent import MAIN, READ_ONLY_TOOLS, SessionStore, write_json
@@ -123,6 +127,7 @@ def run_with_repair(ctx: RepairCtx, attempt: Callable[[], T], *, gates: list[str
     upstream_left = 2  # revisions by the suite's or harnesses' owner on a blocker, before the agent adapts instead
     blocker: Failure | None = None  # the agent said the obstacle is not in its files: the next code round adapts to it
     last_blocker: Failure | None = None  # cited in the stop report
+    reported: set[str] = set()  # backend defects already recorded
     result: Any = None
     run_attempt = True
 
@@ -137,7 +142,10 @@ def run_with_repair(ctx: RepairCtx, attempt: Callable[[], T], *, gates: list[str
             return result
 
         _record(ctx, failure)
-        if failure.infra_reason == AGENT_BLOCKER:
+        record_elsewhere(ctx, failure)
+        if failure.owner == _own_owner(ctx):  # a failure in what the stage itself writes
+            failure = replace(failure, owner=QUERY)
+        if failure.infra_reason == AGENT_BLOCKER and failure.owner not in _STOPS:
             blocker = last_blocker = failure
             if upstream_left > 0 and revise_upstream(ctx):  # the blocker's owner fixed it: the check reruns
                 upstream_left -= 1
@@ -145,21 +153,29 @@ def run_with_repair(ctx: RepairCtx, attempt: Callable[[], T], *, gates: list[str
             if gates and from_attempt:  # the obstacle may be a flake: the stage's own checks run once first
                 ctx.log(f"the agent reported a blocker ({failure.summary}); running the stage's gates once")
                 continue
-            failure = replace(failure, kind="code", infra_reason=None)  # nothing left to check: the agent adapts
+            failure = replace(failure, kind="code", infra_reason=None, owner=QUERY)  # nothing left to check: the agent adapts
         if failure.infra_reason == PROVIDER_CREDITS:
             raise stop_stage(ctx, failure, failure.summary)
-        if failure.infra_reason == HARNESS_DEFECT:
-            if ctx.stage != "host_bootstrap":
-                report_harness_defect(ctx, failure)
+        if failure.kind == "orchestrator":
+            if orchestrator_left <= 0:
+                raise stop_stage(ctx, failure, f"orchestrator failure: {failure.summary}")
+            orchestrator_left -= 1
+            ctx.log(f"orchestrator failure ({failure.summary}); retrying once")
+            run_attempt = from_attempt
+            continue
+        if failure.owner == HARNESS:
+            report_defect(ctx, failure)
             if upstream_left > 0 and revise_upstream(ctx):
                 upstream_left -= 1
                 continue
             raise stop_stage(ctx, failure, "the workload harness is wrong and host_bootstrap did not fix it")
-        if failure.infra_reason == TEST_DATA_LOAD:
-            raise stop_stage(ctx, failure, "the workload's test data does not load into the engine: fix the dataset, "
-                             "the schema or the test cut, then `--resume`")
-        if failure.infra_reason == HARNESS_MISSING:
-            raise stop_stage(ctx, failure, "a workload-harness target is missing: run `--stage host_bootstrap`, then `--resume`")
+        if failure.owner in _STOPS:
+            raise stop_stage(ctx, failure, f"owner {failure.owner}: {_STOPS[failure.owner]}")
+        if failure.owner == BACKEND:  # recorded once for the backend's owner; the agent adapts meanwhile
+            if (defect := f"{failure.source}:{failure.summary}") not in reported:
+                reported.add(defect)
+                report_defect(ctx, failure)
+            failure = replace(failure, diagnosis=[*failure.diagnosis, ADAPT_TO_BACKEND])
         if failure.infra_reason == PROVIDER_FLAKE:
             flakes += 1
             if flakes > cfg.provider_retries:
@@ -180,13 +196,6 @@ def run_with_repair(ctx: RepairCtx, attempt: Callable[[], T], *, gates: list[str
                 quarantined.add(gate)
                 continue
             raise stop_stage(ctx, failure, f"infra failure persists: {failure.infra_reason or failure.source}")
-        if failure.kind == "orchestrator":
-            if orchestrator_left <= 0:
-                raise stop_stage(ctx, failure, f"orchestrator failure: {failure.summary}")
-            orchestrator_left -= 1
-            ctx.log(f"orchestrator failure ({failure.summary}); retrying once")
-            run_attempt = from_attempt
-            continue
 
         if code_left > 0:
             code_left -= 1
@@ -213,6 +222,20 @@ def run_with_repair(ctx: RepairCtx, attempt: Callable[[], T], *, gates: list[str
         if last_blocker is not None:
             raise stop_stage(ctx, _persisting(last_blocker, failure), f"{reason}; the agent's blocker: {last_blocker.summary}")
         raise stop_stage(ctx, failure, reason)
+
+
+_STOPS = {
+    DATA: "the workload's data or test cut is wrong (a load the engine rejects, a cut that misses what the query needs): "
+          "fix the dataset, the schema or the cut, then `--resume`",
+    PIPELINE: "a gate or the orchestrator is wrong, not the stage's work: fix it, then `--resume`",
+}
+ADAPT_TO_BACKEND = ("The engine backend is at fault here; this is recorded for its owner and the pipeline cannot change it "
+                    "for you. Adapt within your own files.")
+
+
+def _own_owner(ctx: RepairCtx) -> str:
+    """The owner of what the stage itself writes: its failures are repaired in its own rounds."""
+    return HARNESS if ctx.stage == "host_bootstrap" else BACKEND if ctx.workload.get("workload_kind") == "engine_backend" else QUERY
 
 
 def run_gates_with_repair(
@@ -317,10 +340,10 @@ def _attempt(ctx: RepairCtx, attempt: Callable[[], T]) -> tuple[T | None, Failur
 
 
 def _failure_from_text(ctx: RepairCtx, source: str, text: str) -> Failure:
-    kind, reason = classify(source, {"log_tail": text}, ctx.workload, ctx.pipeline_config.repo_root,
-                            query=ctx.query, load_factor=ctx.pipeline_config.repair.load_factor)
+    kind, owner, reason = classify(source, {"log_tail": text}, ctx.workload, ctx.pipeline_config.repo_root,
+                                   query=ctx.query, load_factor=ctx.pipeline_config.repair.load_factor)
     return Failure(kind=kind, stage=ctx.stage, source=source, summary=text.splitlines()[0][:300] if text else source,  # type: ignore[arg-type]
-                   evidence=text, infra_reason=reason)
+                   evidence=text, infra_reason=reason, owner=owner)
 
 
 def _check_gates(ctx: RepairCtx, gates: list[str], quarantined: set[str]) -> Failure | None:
@@ -362,7 +385,8 @@ def _quick_gate(ctx: RepairCtx) -> GateResult | None:
     if quick.status != "fail":
         return None
     text = render_failure(quick.failure) if quick.failure else quick.summary
-    return gate_mod.GateResult("quick_check", "fail", {"status": "fail", "reason": quick.summary, "log_tail": text})
+    return gate_mod.GateResult("quick_check", "fail", {"status": "fail", "reason": quick.summary, "log_tail": text,
+                                                       "owner": quick.failure.owner if quick.failure else QUERY})
 
 
 def _record(ctx: RepairCtx, failure: Failure) -> None:
@@ -430,16 +454,24 @@ def repair_turn(ctx: RepairCtx, failure: Failure, *, must_change: bool | None = 
     return None
 
 
-def report_harness_defect(ctx: RepairCtx, failure: Failure) -> None:
-    """Record a gate's finding against the workload harness as a request to host_bootstrap, reproduced through
-    request_gate (the gate's own shell command needs the orchestrator's environment)."""
+def report_defect(ctx: RepairCtx, failure: Failure) -> None:
+    """Record a failure that is the harness's or the backend's as a request to its owner (host_bootstrap; the
+    backend's validation), reproduced through request_gate (the gate's own shell command needs the orchestrator's
+    environment)."""
     from accel_pipeline.engine_backend import record
 
     gate = failure.source.removeprefix("gate:")
     if engine := str(ctx.workload.get("engine_name") or ""):
         record(ctx.pipeline_config.repo_root, sanitize_engine_name(engine), {
-            "benchmark": str(ctx.workload.get("benchmark_name") or ""), "query": ctx.query, "scope": "harness",
+            "benchmark": str(ctx.workload.get("benchmark_name") or ""), "query": ctx.query, "scope": failure.owner,
             "helper": failure.source, "reason": render_failure(replace(failure, reproduce=f'request_gate("{gate}")'))})
+
+
+def record_elsewhere(ctx: RepairCtx, failure: Failure) -> None:
+    """The failed phases of a gate that belong to other owners than the failure's (aux_exit) go to those owners."""
+    for gate, owner in failure.elsewhere.items():
+        if owner in (HARNESS, BACKEND) and owner != _own_owner(ctx):
+            report_defect(ctx, replace(failure, source=f"gate:{gate}", owner=owner))
 
 
 def revise_upstream(ctx: RepairCtx) -> bool:
@@ -718,10 +750,7 @@ if TYPE_CHECKING:
 
 PROVIDER_FLAKE = "provider_flake"  # the infra_reason of a network or provider error: the agent never ran
 AGENT_BLOCKER = "agent_reported_blocker"  # the infra_reason of a blocker the agent handed to the operator
-TEST_DATA_LOAD = "test_data_load"  # the engine rejected the workload's data before any build: no agent can fix it
 PROVIDER_CREDITS = "provider_out_of_credits"  # the infra_reason of a 402 from the provider: retrying cannot help
-HARNESS_DEFECT = "harness_defect"  # a gate found the workload harness wrong: host_bootstrap fixes it
-HARNESS_MISSING = "harness_missing"  # a harness target host_bootstrap should have made is not there: its stage, not this one
 FailureKind = Literal["code", "infra", "timeout", "measurement", "orchestrator"]
 
 
@@ -736,6 +765,11 @@ class Failure:
     infra_reason: str | None = None
     diagnosis: list[str] = field(default_factory=list)
     stacks: str = ""  # every thread's stack when a run hit its deadline (gates/run_outcome.py)
+    owner: str = ""  # one of layout.OWNERS; by kind when the source does not say
+    elsewhere: dict[str, str] = field(default_factory=dict)  # gate -> owner, for the other failed phases of an aux_exit
+
+    def __post_init__(self) -> None:
+        self.owner = self.owner or {"infra": INFRA, "orchestrator": PIPELINE}.get(self.kind, QUERY)
 
 
 class StageFailure(Exception):
@@ -747,6 +781,8 @@ class StageFailure(Exception):
 def render_failure(f: Failure) -> str:
     """The markdown report fed to the agent."""
     lines = [f"## {f.kind} failure in {f.stage} ({f.source})", "", f.summary]
+    if f.owner != QUERY:
+        lines += ["", f"Owner: {f.owner}"]
     if f.diagnosis:
         lines += ["", *(f"- {d}" for d in f.diagnosis)]
     if f.reproduce:
@@ -799,10 +835,10 @@ def failure_from_gate(
     repo_root: Path | None = None,
     load_factor: float = 1.5,
 ) -> Failure:
-    """A failed gate as a Failure, triaged as infra or code."""
+    """A failed gate as a Failure, with the owner the gate named (classify)."""
     from accel_pipeline import gates as gate_mod  # gates imports Failure from this module
     workload = workload or {}
-    kind, reason = classify(result.name, result.data, workload, repo_root, load_factor=load_factor)
+    kind, owner, reason = classify(result.name, result.data, workload, repo_root, load_factor=load_factor)
     tail = gate_log_tail(result.data)
     return Failure(
         kind=kind,  # type: ignore[arg-type]
@@ -812,6 +848,8 @@ def failure_from_gate(
         evidence=tail,
         reproduce=str(result.data.get("reproduce") or f'request_gate("{result.name}")'),
         infra_reason=reason,
+        owner=owner,
+        elsewhere=dict(result.data.get("elsewhere") or {}),
         diagnosis=_racy_diagnosis(result.data) + [f"`{line}`" for line in crash_lines(tail, max_lines=15)],
         stacks=str(result.data.get("stacks") or ""),
     )
@@ -952,6 +990,15 @@ def _loaded(repo_root: Path | None, load_factor: float, text: str = "") -> bool:
     return holder is not None and holder != worker_id_from_env("")
 
 
+# What a gate that names another owner than the query or infrastructure decides: (kind, infra_reason).
+_NAMED = {
+    HARNESS: ("code", "harness_defect"),
+    BACKEND: ("code", "backend_defect"),
+    DATA: ("infra", "data_defect"),
+    PIPELINE: ("infra", "pipeline_defect"),
+}
+
+
 def classify(
     gate_name: str,
     data: Mapping[str, Any],
@@ -960,39 +1007,49 @@ def classify(
     *,
     query: int | None = None,
     load_factor: float = 1.5,
-) -> tuple[str, str | None]:
-    """(kind, infra_reason) of a failed gate: kind is "infra" or "code"."""
+) -> tuple[str, str, str | None]:
+    """(kind, owner, infra_reason) of a failed gate. The gate's own `owner` decides, except that "query" (what a gate
+    says when nothing says otherwise) and "infra" are still refined by what only the orchestrator sees, the shared
+    tree and the machine. A result without an owner is read from its text (engine-generic)."""
     from accel_pipeline import pack
 
-    if data.get("owner") == "harness":  # the gate itself found the workload harness wrong
-        return "infra", HARNESS_DEFECT
+    owner = data.get("owner")
+    if owner in _NAMED:
+        kind, reason = _NAMED[owner]
+        return kind, owner, reason
     text = failure_text(data)
     if query is None and workload.get("query_number") is not None:
         query = int(workload["query_number"])
-    if _HARNESS_ERROR.search(text):
-        return "infra", "harness_error"
-    if gate_name != "host_bootstrap" and missing_harness_target(text, workload):  # making them is that gate's stage
-        return "infra", HARNESS_MISSING
-    if _MISSING_PRODUCER.search(text):
-        return "infra", "missing_producer"
-    if _TEST_DATA_LOAD.search(text):  # before any build: the workload's data, not the query's code
-        return "infra", TEST_DATA_LOAD
-    if gate_name == "test_suite_validate" and _REGISTRATION_ERROR.search(text):
-        return "infra", "harness_error"
-    shared = classify_infra_failure(text, query=query if query is not None else -1)
-    if shared:
-        return "infra", shared
-    if _engine_internal_sanitizer(text, workload, query, repo_root):
-        return "infra", "engine_internal_sanitizer"
+    if owner is None and (found := _owner_from_text(gate_name, text, workload, query, repo_root)):
+        return found
+    if shared := classify_infra_failure(text, query=query if query is not None else -1):
+        return "infra", INFRA, shared
     if pack.BUSY.search(text):
-        return "infra", "measurement_lease_busy"
+        return "infra", INFRA, "measurement_lease_busy"
     if (_TIMEOUT.search(text) or _returncode(data) in _TIMEOUT_RC) and _loaded(repo_root, load_factor, text):
-        return "infra", "timeout_under_load"
-    return "code", None
+        return "infra", INFRA, "timeout_under_load"
+    return ("infra", INFRA, "infra_reported") if owner == INFRA else ("code", QUERY, None)
+
+
+def _owner_from_text(gate_name: str, text: str, workload: Mapping[str, Any], query: int | None,
+                     repo_root: Path | None) -> tuple[str, str, str] | None:
+    """The fallback for a result that names no owner: (kind, owner, infra_reason) by the failure's own text."""
+    if _HARNESS_ERROR.search(text):
+        return "infra", INFRA, "harness_error"
+    if gate_name != "host_bootstrap" and missing_harness_target(text, workload):  # making them is that gate's stage
+        return "infra", HARNESS, "harness_missing"
+    if _MISSING_PRODUCER.search(text):
+        return "infra", PIPELINE, "missing_producer"
+    if _TEST_DATA_LOAD.search(text):  # before any build: the workload's data, not the query's code
+        return "infra", DATA, "test_data_load"
+    if gate_name == "test_suite_validate" and _REGISTRATION_ERROR.search(text):
+        return "infra", INFRA, "harness_error"
+    if _engine_internal_sanitizer(text, workload, query, repo_root):
+        return "code", BACKEND, "engine_internal_sanitizer"
+    return None
 
 
 _TEST_DATA_LOAD = re.compile(r"^\[host\.sh load [^\]]*\] rc=[1-9]", re.MULTILINE)
-_UNKNOWN_TARGET = re.compile(r"unknown target '([A-Za-z0-9_]+)'|No rule to make target '([A-Za-z0-9_]+)'")
 
 
 def missing_harness_target(text: str, workload: Mapping[str, Any]) -> str:
@@ -1004,7 +1061,7 @@ def missing_harness_target(text: str, workload: Mapping[str, Any]) -> str:
         return ""
     harness = {*harness_targets(sanitize_engine_name(engine), bench).values(),
                f"{unit_test_target(bench, int(workload['query_number']))}_aux"}
-    return next((t for m in _UNKNOWN_TARGET.finditer(text) for t in m.groups() if t in harness), "")
+    return next((t for m in UNKNOWN_TARGET.finditer(text) for t in m.groups() if t in harness), "")
 
 
 # --- shared-tree infrastructure failures: repaired without burning agent turns

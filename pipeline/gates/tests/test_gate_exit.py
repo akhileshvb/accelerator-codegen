@@ -3,6 +3,8 @@ leaves that gate's result file, and aux_exit.json says what each did."""
 
 from __future__ import annotations
 
+import pytest
+
 from test_gate_plumbing import GATES, repo, result, run_gate  # noqa: F401  (repo is a fixture)
 from test_gate_threads import bench_calls
 
@@ -39,6 +41,17 @@ def test_a_failing_phase_fails_the_exit_with_its_reason_and_the_others_finish(re
     assert exit_result["status"] == "fail" and exit_result["failed_phases"]
     assert exit_result["reason"].split(":")[0] in exit_result["failed_phases"]
     assert all(phase["seconds"] >= 0 for phase in exit_result["phases"].values())
+
+
+@pytest.mark.parametrize("env, failed, owner", [
+    ({"FAKE_BENCH_ONE_ROW": "0"}, ["bench"], "harness"),  # a bench that ignores the write-frequency list
+    ({"FAKE_RC_run": "1"}, None, "query"),
+])
+def test_the_exit_takes_the_owner_of_its_failed_phases(repo, tmp_path, env, failed, owner):
+    proc, *_, gj, _ = exit_run(repo, tmp_path, **env)
+    exit_result = result(gj, "aux_exit")
+    assert proc.returncode == 1 and exit_result["owner"] == owner and exit_result["elsewhere"] == {}
+    assert failed is None or exit_result["failed_phases"] == failed
 
 
 def test_phases_can_be_picked(repo, tmp_path):

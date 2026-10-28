@@ -93,11 +93,27 @@ engine_trait() {
 	engine_host info 2>/dev/null | python3 -c "import json,sys; print(json.load(sys.stdin).get(sys.argv[1], ''))" "$1"
 }
 
+# Whose fault a failed host step is: the dataset's (load), the backend's (up), a build's by the files its errors
+# name (layout.build_error_owner).
+step_owner() {
+	case "$1" in
+	load) echo data ;;
+	up) echo backend ;;
+	*)
+		[[ -n "${BENCHMARK_NAME:-}" ]] || { echo query; return; }
+		# shellcheck disable=SC2086
+		PYTHONPATH="${ACCEL_PIPELINE_PYTHONPATH:-${GATE_ROOT}/pipeline/orchestrator}" python3 -m accel_pipeline.layout build-owner \
+			"accelerators/${BENCHMARK_NAME}/q${GATE_QUERY}" ${HARNESS_TARGETS:-} <<<"$2"
+		;;
+	esac
+}
+
 # Run host.sh steps in order (each argument is one "verb args" string). On failure
-# sets ENGINE_FAIL and returns 1; ENGINE_LOG has a line per step and the failed step's output. Builds of one
-# build dir run one at a time (gates.build_lock takes the same lock).
+# sets ENGINE_FAIL, ENGINE_STEP and ENGINE_OWNER (step_owner) and returns 1; ENGINE_LOG has a line per step and the
+# failed step's output. Builds of one build dir run one at a time (gates.build_lock takes the same lock).
 engine_steps() {
 	ENGINE_LOG=""
+	ENGINE_OWNER=query
 	local step out rc started runner
 	for step in "$@"; do
 		started="$(now_us)"
@@ -111,6 +127,8 @@ engine_steps() {
 		if [[ ${rc} -ne 0 && ${rc} -ne 77 ]]; then
 			ENGINE_LOG+="${out}"$'\n'
 			ENGINE_STEP="${step%% *}"
+			ENGINE_OWNER="$(step_owner "${ENGINE_STEP}" "${out}")"
+			ENGINE_OWNER="${ENGINE_OWNER:-query}"
 			ENGINE_FAIL="host.sh ${ENGINE_STEP} failed (exit ${rc})"
 			return 1
 		fi
@@ -190,6 +208,7 @@ harness_unclaimed() {
 		for file in "${GATE_ROOT}"/accelerators/*/build.cmake; do
 			[[ -f "${file}" ]] && grep -Eq "(^|[^A-Za-z0-9_])${target}([^A-Za-z0-9_]|$)" "${file}" || continue
 			ENGINE_STEP=build
+			ENGINE_OWNER=query
 			ENGINE_FAIL="${file#"${GATE_ROOT}"/} names the harness target ${target}: the workload harnesses belong to host_bootstrap; build the query's own targets only"
 			ENGINE_LOG="$(grep -En "(^|[^A-Za-z0-9_])${target}([^A-Za-z0-9_]|$)" "${file}")"
 			return 1
@@ -243,13 +262,15 @@ _engine_run() {
 
 # write_result <json> <gate> <status> <reason> <log> [key=value ...]
 # Writes and prints the gate result (extras: key=string, key:=json); returns 0
-# only for pass or skip.
+# only for pass or skip. A failing result names its owner (the extra owner=, else the query).
 write_result() {
 	python3 - "$@" <<'PY'
 import json, sys, pathlib, os
 out, gate, status, reason, log, *extra = sys.argv[1:]
 payload = {"gate": gate, "status": status, "reason": reason, "log_tail": log[-6000:],
            "engine_name": os.environ.get("ENGINE_NAME", "")}
+if status not in ("pass", "skip"):
+    payload["owner"] = "query"
 for kv in extra:
     k, _, v = kv.partition("=")
     if k.endswith(":"):

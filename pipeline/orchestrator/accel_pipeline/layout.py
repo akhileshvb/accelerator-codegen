@@ -71,6 +71,36 @@ def query_dir(bench: str, query: int | str) -> str:
     return f"{ACCELERATORS}/{bench}/q{query}"
 
 
+# ---- who owns a failure ------------------------------------------------------------------------
+
+QUERY, HARNESS, BACKEND, DATA, PIPELINE, INFRA = OWNERS = ("query", "harness", "backend", "data", "pipeline", "infra")
+UNKNOWN_TARGET = re.compile(r"unknown target '([A-Za-z0-9_]+)'|No rule to make target '([A-Za-z0-9_]+)'")
+_NAMED_PATH = re.compile(r"(?:backends|accelerators)/[^\s:()'\"]+")
+
+
+def path_owner(rel: str, query: str) -> str:
+    """Who owns a file a failure names: the query (its directory `query`), a peer query's shared tree (infra), the
+    workload harnesses (host_bootstrap), the rest of a backend; "" for any other file."""
+    layer = classify(rel)
+    if layer.kind == "query":
+        return QUERY if _under(_norm(rel), query) else INFRA
+    if layer.kind == "backend":
+        return HARNESS if any(fnmatch.fnmatch(_norm(rel), g) for g in harness_globs(layer.engine)) else BACKEND
+    return ""
+
+
+def build_error_owner(log: str, query: str, harness_targets: Sequence[str] = ()) -> str:
+    """Who a failed build is the fault of, by its first error that names a harness target host_bootstrap should have
+    made or a file in a layer with an owner (path_owner); the query's by default."""
+    for line in log.splitlines():
+        if any(t in harness_targets for m in UNKNOWN_TARGET.finditer(line) for t in m.groups() if t):
+            return HARNESS
+        named = _NAMED_PATH.search(line)
+        if named and re.search(r"error|undefined reference", line, re.I) and (owner := path_owner(named.group(), query)):
+            return owner
+    return QUERY
+
+
 def query_glob(bench: str, query: int | str) -> str:
     return f"{ACCELERATORS}/{bench}/q{query}/**"
 
@@ -774,9 +804,13 @@ def code_stamp(repo_root: Path, *, query_dir: str = "", extra: Sequence[str] = (
 
 
 def main(argv: list[str]) -> int:
-    """The `stamp` command the gate scripts run."""
+    """The `stamp` and `build-owner` commands the gate scripts run."""
+    if argv[:1] == ["build-owner"] and len(argv) >= 2:  # <query dir> [harness target ...], the build log on stdin
+        print(build_error_owner(sys.stdin.read(), argv[1], argv[2:]))
+        return 0
     if argv[:1] != ["stamp"] or len(argv) < 2:
-        print("usage: python3 -m accel_pipeline.layout stamp <repo_root> [--query-dir DIR] [EXTRA ...]", file=sys.stderr)
+        print("usage: python3 -m accel_pipeline.layout stamp <repo_root> [--query-dir DIR] [EXTRA ...]\n"
+              "       python3 -m accel_pipeline.layout build-owner <query dir> [harness target ...] < build log", file=sys.stderr)
         return 2
     args, query_dir = argv[1:], ""
     if "--query-dir" in args:

@@ -57,7 +57,7 @@ case "${verb}" in
     mkdir -p "${ACCEL_BUILD_DIR}"
     printf 'ACCELERATOR_CODEGEN_BUILD_FAKE:BOOL=%s\nCMAKE_BUILD_TYPE:STRING=%s\n' "${switch}" "${type}" \
       > "${ACCEL_BUILD_DIR}/CMakeCache.txt"
-    echo "build ok" ;;
+    echo "${FAKE_BUILD_OUT:-build ok}" ;;
   *) echo "${verb} ok" ;;
 esac
 exit "${!rc_var:-0}"
@@ -167,6 +167,25 @@ def test_correctness_fails_when_build_fails_without_running(repo):
     assert proc.returncode == 1
     assert not any(c.startswith("run") for c in calls)
     assert "host.sh build failed" in result(gj, "correctness")["reason"]
+
+
+@pytest.mark.parametrize("verb, build_out, owner", [
+    ("load", "", "data"),
+    ("up", "", "backend"),
+    ("build", "", "query"),
+    ("build", "backends/fake/tests/harness/diff.cpp:9:3: error: no member named x", "harness"),
+    ("build", "/r/backends/fake/api/hooks.hpp:4:1: error: expected ;", "backend"),
+    ("build", "ninja: error: unknown target 'diff_bin'", "harness"),
+])
+def test_a_failed_host_step_names_its_owner(repo, verb, build_out, owner):
+    proc, _, _, gj, _ = run_gate(repo, "run_correctness.sh", "3",
+                                 env_extra={f"FAKE_RC_{verb}": "1", "FAKE_BUILD_OUT": build_out or "build ok"})
+    assert proc.returncode == 1 and result(gj, "correctness")["owner"] == owner
+
+
+def test_a_gate_that_fails_without_naming_its_owner_is_the_querys(repo):
+    proc, _, _, gj, _ = run_gate(repo, "run_correctness.sh", "3", env_extra={"FAKE_RC_run": "1"})
+    assert result(gj, "correctness")["owner"] == "query"
 
 
 def test_correctness_without_differential_target_fails_closed(repo):

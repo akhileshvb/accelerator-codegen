@@ -8,7 +8,8 @@ run <seconds> <outcome json> <label> -- <command...>
     dumps the user stacks of every process the command started, then kills them and exits 124.
 fold <gate json>
     Merges the last run's outcome into a failed result the gate script wrote, whatever wrote it: the exit code, the
-    run's reason after the script's own, and the stacks condensed (threads with the same frames counted once).
+    run's reason after the script's own, and the stacks condensed (threads with the same frames counted once). A run
+    that hit its deadline after queueing for the measurement lease makes the failure infrastructure's.
 """
 
 from __future__ import annotations
@@ -24,6 +25,7 @@ import time
 from pathlib import Path
 
 GRACE_S = 15
+QUEUED_S = 5.0  # a wait for the measurement lease this long means other benchmarks were running
 MAX_TRACED = 6
 MAX_FRAMES = 30
 STACKS_CHARS = 8000
@@ -162,6 +164,13 @@ def condense(text: str) -> str:
     return "\n".join(out)[:STACKS_CHARS]
 
 
+def _lease_wait(result_path: Path) -> float:
+    """Seconds the gate's runs waited for the measurement lease (the gate's `.phases` file)."""
+    phases = Path(f"{str(result_path).removesuffix('.json')}.phases")
+    text = phases.read_text(encoding="utf-8") if phases.is_file() else ""
+    return sum(float(m) for m in re.findall(r"^measurement_lease_wait=([\d.]+)$", text, re.MULTILINE))
+
+
 def fold(result_path: Path) -> None:
     outcome_path = Path(f"{str(result_path).removesuffix('.json')}.run.json")
     if not outcome_path.is_file():
@@ -178,6 +187,8 @@ def fold(result_path: Path) -> None:
         reason, ran = str(data.get("reason") or "").strip(), outcome.get("reason") or ""
         if ran not in reason:
             data["reason"] = f"{reason}; {ran}" if reason else ran
+        if outcome["exit_code"] == 124 and _lease_wait(result_path) >= QUEUED_S:
+            data["owner"] = "infra"
         if stacks_log.is_file() and (stacks := condense(stacks_log.read_text(errors="replace"))):
             data["stacks"] = stacks
         result_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
