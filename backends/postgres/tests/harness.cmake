@@ -3,11 +3,10 @@
 # SEC-EDGAR Q4 differential: psql client (no server SDK to build, a server with
 # the extension installed to run).
 add_executable(test_postgres_sec_edgar_q4_differential
-    accelerators/sec_edgar/q4/tests/test_postgres_sec_edgar_q4_differential.cpp)
+    accelerators/sec_edgar/q4/tests/test_postgres_sec_edgar_q4_differential.cpp
+    eval/harness/param_source.cpp)
 target_include_directories(test_postgres_sec_edgar_q4_differential PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/accelerators)
-target_compile_definitions(test_postgres_sec_edgar_q4_differential PRIVATE
-    ACCEL_SRC_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
 
 if(NOT TARGET accel_backend_postgres)
     return()

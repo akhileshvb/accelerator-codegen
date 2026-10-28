@@ -452,10 +452,10 @@ struct SecEdgarQ4SuGroups {
 
 // Query parameters resolved against the dictionaries.
 struct SecEdgarQ4Params {
-  int32_t sic_lo = 4000;
-  int32_t sic_hi = 4999;
-  std::string stmt = "EQ";
-  std::string uom = "USD";
+  int32_t sic_lo = 0;
+  int32_t sic_hi = 0;
+  std::string stmt;
+  std::string uom;
   bool empty = false; // NULL argument / empty range
 };
 
