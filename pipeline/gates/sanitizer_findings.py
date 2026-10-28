@@ -11,7 +11,7 @@ directory (a global defined there, or a heap block whose allocating frame, the f
 there). A race inside the (uninstrumented) engine or the substrate that merely sits under a call from the query is
 not the query's. Every other report is summarized as infrastructure and never fails the check. Prints JSON:
 {"yours": [{"summary", "frames"}], "infra": {"count", "summaries": [...]}, "owner"}, where owner is "query" when
-any report is the query's, "backend" when every report is inside the engine or the substrate, "" without reports.
+any report is the query's, else "" (the engine's and the substrate's reports fail nothing).
 """
 
 from __future__ import annotations
@@ -109,7 +109,7 @@ def classify(log_dir: Path, fragment: str) -> dict:
     return {
         "yours": yours[:MAX_YOURS], "yours_count": len(yours),
         "infra": {"count": len(infra), "summaries": sorted(set(infra))[:MAX_INFRA]},
-        "owner": "query" if yours else "backend" if infra else "",
+        "owner": "query" if yours else "",  # the engine's own reports are never a failure, so they name no owner
     }
 
 

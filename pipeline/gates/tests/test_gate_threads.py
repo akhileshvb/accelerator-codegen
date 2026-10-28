@@ -231,7 +231,7 @@ def test_a_race_on_a_global_of_the_query_is_the_querys_even_when_the_access_fram
     assert found["yours_count"] == 1 and found["infra"]["count"] == 0
 
 
-def test_a_report_only_inside_the_engine_is_the_backends(tmp_path):
+def test_a_report_only_inside_the_engine_names_no_owner(tmp_path):
     import sanitizer_findings
 
     assert sanitizer_findings.classify(tmp_path, qdir("b", 1) + "/")["owner"] == ""
@@ -240,7 +240,15 @@ def test_a_report_only_inside_the_engine_is_the_backends(tmp_path):
         "  Write of size 8 at 0x1 by thread T1:\n"
         "    #0 Foo /engine/src/x.cpp:9 (bin+0x1)\n\n"
         "SUMMARY: ThreadSanitizer: data race /engine/src/x.cpp:9 in Foo\n")
-    assert sanitizer_findings.classify(tmp_path, qdir("b", 1) + "/")["owner"] == "backend"
+    assert sanitizer_findings.classify(tmp_path, qdir("b", 1) + "/")["owner"] == ""  # it fails nothing
+
+
+def test_a_step_that_fails_in_a_sanitizer_run_beside_engine_reports_is_the_querys(repo):
+    proc, _, _, gj, _ = run_gate(repo, "run_aux_quick_check.sh", "5", env_extra={
+        **SAN_ENV, "FAKE_TSAN_REPORT": "/engine/src", "FAKE_RC_run": "1"})
+    assert proc.returncode == 1
+    data = result(gj, "quick_check")
+    assert data["step"] != "sanitizer" and data["owner"] == "query"
 
 
 @pytest.mark.parametrize("allocator, yours", [("Pipeline::Schedule() <null> (libengine.so+0x2)", 0),

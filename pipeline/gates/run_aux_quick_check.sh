@@ -62,21 +62,20 @@ if [[ -n "${SANITIZER}" ]]; then
 fi
 HOST_RUN="${ENGINE_HOST} run"
 SAN_EXTRAS=()
-sanitizer_report() { # sets SAN_EXTRAS, SAN_YOURS (reports in the query's own directory) and SAN_OWNER
+sanitizer_report() { # sets SAN_EXTRAS and SAN_YOURS (reports in the query's own directory)
 	SAN_YOURS=0
-	SAN_OWNER=""
 	SAN_EXTRAS=()
 	[[ -n "${SAN_LOGDIR}" ]] || return 0
 	local findings
 	findings="$(python3 "$(dirname "${BASH_SOURCE[0]}")/sanitizer_findings.py" "${SAN_LOGDIR}" \
 		"accelerators/${BENCHMARK_NAME}/q${QUERY}/")"
 	SAN_YOURS="$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['yours_count'])" "${findings}")"
-	SAN_OWNER="$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['owner'])" "${findings}")"
 	SAN_EXTRAS=("sanitizer=${SANITIZER}" "threads:=${THREADS}" "sanitizer_findings:=${findings}")
 }
-fail_step() { # step reproduce-command [reason [owner]]: a failing step is the query's unless the host step or the sanitizer says otherwise
+fail_step() { # step reproduce-command [reason [owner]]: a failing step is the query's unless the host step says otherwise
+  # (the engine's own sanitizer reports never fail a step: a step that failed in a sanitizer run failed for itself)
   sanitizer_report
-  emit_result "${JSON}" quick_check fail "${3:-$1 failed}" "${ENGINE_LOG:-}${LOG:-}" "step=$1" "owner=${4:-${SAN_OWNER:-query}}" \
+  emit_result "${JSON}" quick_check fail "${3:-$1 failed}" "${ENGINE_LOG:-}${LOG:-}" "step=$1" "owner=${4:-query}" \
     "reproduce=ACCEL_ENGINE_INSTANCE=${ACCEL_ENGINE_INSTANCE} ACCEL_ENGINE_STATE_DIR=${ACCEL_ENGINE_STATE_DIR} ACCEL_BUILD_DIR=${ACCEL_BUILD_DIR} ${SANITIZER:+ACCEL_QUICK_SANITIZER=${SANITIZER} ACCEL_QUICK_THREADS=${THREADS} }$2" "${SAN_EXTRAS[@]}" "${SUITE_EXTRAS[@]}"
 }
 
