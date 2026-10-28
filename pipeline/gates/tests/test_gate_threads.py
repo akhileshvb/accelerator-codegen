@@ -7,6 +7,8 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 from test_gate_plumbing import GATES, repo, result, run_gate  # noqa: F401  (repo is a fixture)
 
 sys.path.insert(0, str(GATES))
@@ -221,6 +223,27 @@ def test_a_race_on_a_global_of_the_query_is_the_querys_even_when_the_access_fram
         "SUMMARY: ThreadSanitizer: data race in std::thread::_State_impl::_M_run()\n")
     found = sanitizer_findings.classify(tmp_path, Q + "/")
     assert found["yours_count"] == 1 and found["infra"]["count"] == 0
+
+
+@pytest.mark.parametrize("allocator, yours", [("Pipeline::Schedule() <null> (libengine.so+0x2)", 0),
+                                              ("Build /r/{Q}/state.cpp:7 (lib+0x6)", 1)])
+def test_a_heap_block_is_the_querys_only_when_the_query_allocated_it(tmp_path, allocator, yours):
+    import sanitizer_findings
+
+    Q = qdir("b", 1)
+    (tmp_path / "tsan.1").write_text(
+        "WARNING: ThreadSanitizer: data race (pid=1)\n"
+        "  Atomic write of size 4 at 0x1 by thread T1:\n"
+        "    #0 Task::Run() <null> (libengine.so+0x4)\n\n"
+        "  Previous write of size 8 at 0x1 by main thread:\n"
+        "    #0 operator new(unsigned long) <null> (libtsan.so.2+0x1)\n"
+        "    #1 Pipeline::Schedule() <null> (libengine.so+0x2)\n\n"
+        "  Location is heap block of size 24 at 0x1 allocated by main thread:\n"
+        "    #0 operator new(unsigned long) <null> (libtsan.so.2+0x1)\n"
+        f"    #1 {allocator.format(Q=Q)}\n"
+        f"    #2 Execute /r/{Q}/module.cpp:480 (lib+0x3)\n\n"
+        "SUMMARY: ThreadSanitizer: data race (libengine.so+0x4) in Task::Run()\n")
+    assert sanitizer_findings.classify(tmp_path, Q + "/")["yours_count"] == yours
 
 
 def test_a_bench_that_prints_one_row_for_several_write_frequencies_is_the_harnesss(repo, tmp_path):
