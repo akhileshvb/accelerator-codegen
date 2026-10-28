@@ -1338,6 +1338,12 @@ def _plan(fields: list[str], columns: list[str]) -> list[tuple[int, str]] | str:
     return plan
 
 
+def _key_tag(fields: list[str], key_out: str) -> str:
+    """The rescan key's tag: its column's in the rescanned rows."""
+    tags = {f.rsplit(":", 1)[0].removeprefix("row."): f.rsplit(":", 1)[1] for f in fields if ":" in f}
+    return tags.get(sanitize(key_out), "int")
+
+
 def _rows_rec(rec: dict[str, Any], plan: list[tuple[int, str]]) -> Counter:
     sign_i = next((i for i, f in enumerate(rec["fields"]) if f.rsplit(":", 1)[0].endswith("sign")), None)
     c: Counter = Counter()
@@ -1489,7 +1495,7 @@ def compare_glue(ctx: VerusContext, runner_call, sql_call, tests_dir: Path, db: 
                     if isinstance(plan, str):
                         problems.append({"at": f"txn {i}", "input": f"rescan {n}", "error": plan})
                         continue
-                    ktag = krec["fields"][0].rsplit(":", 1)[-1] if krec["fields"] and ":" in krec["fields"][0] else "int"
+                    ktag = _key_tag(rec["fields"], rescans[n]["key_out"])
                     ks = {norm_recorded(r[0], ktag) for r in krec["rows"]}
                     kcol = after["columns"].index(rescans[n]["key_out"]) if rescans[n]["key_out"] in after["columns"] else 0
                     checked["rescan"] += 1

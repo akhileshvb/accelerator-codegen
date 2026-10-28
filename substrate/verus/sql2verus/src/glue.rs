@@ -374,7 +374,8 @@ impl<'m> Ffi<'m> {
             });
         };
         match el {
-            Elem::Prim(rt) => val(prim, rt, format!("*{r}"), None, fields, stmts, if prefix.is_empty() { "value".into() } else { prefix.trim_end_matches('.').into() }),
+            // a Vec<u8> is logged as text whatever the scan's type (text rescan keys)
+            Elem::Prim(rt) => val(if *rt == "Vec<u8>" { Ty::Text } else { prim }, rt, format!("*{r}"), None, fields, stmts, if prefix.is_empty() { "value".into() } else { prefix.trim_end_matches('.').into() }),
             Elem::Struct(n) => {
                 let st = strukt(self.m, n);
                 for (i, (f, fe)) in st.fields.iter().enumerate() {
