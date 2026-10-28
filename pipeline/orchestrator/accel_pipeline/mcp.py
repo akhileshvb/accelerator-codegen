@@ -233,7 +233,7 @@ def build_mcp_tool_callables(
         return payload
 
     def run_correctness() -> str:
-        """Run correctness / aux_correctness gate (smoke + SF1 differential for aux)."""
+        """Run correctness / aux_correctness gate (smoke + differential for aux)."""
         return _run_named_gate("aux_correctness" if is_aux else "correctness")
 
     def run_multi_connection() -> str:
@@ -460,7 +460,7 @@ def register_core(tool, call) -> None:
 
     @tool(read_only=True)
     def run_correctness() -> str:
-        """Run correctness / aux_correctness gate (smoke + SF1 differential)."""
+        """Run correctness / aux_correctness gate (smoke + differential)."""
         return call("run_correctness")
 
     @tool(read_only=True)

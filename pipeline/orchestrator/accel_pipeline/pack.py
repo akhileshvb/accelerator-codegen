@@ -923,7 +923,7 @@ PACK_REL = Path("pipeline/artifacts/shared/repo_context_pack.md")
 
 def build_repo_context_pack_markdown(repo_root: Path) -> str:
     root = Path(repo_root)
-    modules = [str(p.relative_to(root)) for p in sorted(root.glob("accelerators/tpch/q*/*/aux/module.cpp"))]
+    modules = [str(p.relative_to(root)) for p in sorted(root.glob("accelerators/*/q*/*/aux/module.cpp"))]
     index = [
         f"- `{rel}` ({next((p for p in Path(rel).parts if p.startswith('q') and p[1:].isdigit()), '?')})" for rel in modules
     ] or ["(none found)"]
@@ -954,7 +954,7 @@ def build_repo_context_pack_markdown(repo_root: Path) -> str:
         "| The query's registration | `accelerators/<bench>/q{N}/<engine>/register.cpp` (peer queries show the pattern) | `unsupported shared query` / function does not exist |",
         "| Shared test and bench helpers | `eval/tests/test_support/`, `eval/bench/` (read peers) | multi-conn / writer SQL fail |",
         "",
-        "## TPC-H aux module index (read-only references)",
+        "## Aux module index (read-only references)",
         "",
         *index,
         "",

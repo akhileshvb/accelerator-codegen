@@ -99,7 +99,7 @@ _SEED_LESSONS = (
     ("Do not put huge rebuild/scratch maps on the accel hit path",
      "read path regressions after maintenance refactors",
      "Hit latency can jump to 100ms+ while write-mix looks improved", ("slow_hit_path",)),
-    ("Do not hardcode SF1 cardinalities as live capacities on the hot path",
+    ("Do not hardcode iteration-database cardinalities as live capacities on the hot path",
      "sizing maps/arrays/partitions",
      "Size from bind-time row_estimate / measured domain", ("capacity_sizing",)),
     ("Do not spend an attempt on ≤5% read micro-opts while write-mix cliff remains",
@@ -601,7 +601,7 @@ def review_kernel(kernel_path: Path) -> dict[str, Any]:
             "Store `group_id` on lookup rows (e.g. FilingInfo) during sub scan; never touch the intern map inside ProcessNum*.")
     if _STRING_HASH_RE.search(text) and (agg_map or _STRING_HASH_RE.search(hot or "")):
         add("std_string_hash", "medium", "Uses `std::hash<std::string>` — expensive on a hot aggregation path.",
-            "Replace string hashing with build-time interning to dense integer group ids (see q16 `GetOrCreateGroupId`, SEC-EDGAR Q1 `AdshInternTable`).")
+            "Replace string hashing with build-time interning to dense integer group ids.")
     if hot is not None:
         if _TO_STORED_STRING_RE.search(hot):
             add("heap_string_in_hot_path", "high",
@@ -656,7 +656,7 @@ TECHNIQUES = {
     "specialized_chunk_handlers": "Separate handlers for all-flat, all-dict, and mixed layouts instead of one generic loop",
     "group_interning": "Intern GROUP BY keys at build time; consume path uses uint32_t group_id + dense sum/count vectors",
     "packed_group_keys": "Pack interned dimension ids into a single integer group key for O(1) indexing",
-    "fixed_slots_with_overflow": "Dense fixed slots for hot groups + hash overflow for rare groups (TPC-H Q12 pattern)",
+    "fixed_slots_with_overflow": "Dense fixed slots for hot groups + hash overflow for rare groups",
     "join_multiplicity": "Track (adsh,tag,version) multiplicity when SQL join duplicates rows — avoid under-counting",
     "build_phase_strings": "Confine ToStoredString / heap string allocation to sub/pre build — not num consume",
     "integer_fingerprint_keys": "Replace std::string join keys with fixed-width fingerprints (AdshKey, TagVersionKey, etc.)",
@@ -989,7 +989,7 @@ def _aux_advice(art: Path, pipeline_config: PipelineConfig, digest: dict[str, An
         + f"; read_only best={best_read:.3f}x; {mix_pct or 10}% write-mix" + (f"={write_mix:.2f}x" if write_mix > 0 else " (measure via quick bench)."),
         "Cheap incremental maintenance is required — Prefer ApplyDelta / touched partitions over RebuildAll on every point write. "
         "Raising write-mix raises the accept score.",
-        "Designs must scale with SF (bind-time row estimates; no SF1 hardcoding).",
+        "Designs must scale with SF (bind-time row estimates; no hardcoded iteration-database sizes).",
         "Measure-first: run_profile on CURRENT tree; cite phase_breakdown + 0% and 10% metrics.",
     ]
     if cliff and best_read >= floor:
@@ -1104,7 +1104,7 @@ def render_digest(state: dict[str, Any]) -> str:
         lines.append(f"- last vs best_valid: **{float(board['improvement_pct_vs_best_valid']):+.2f}%**")
     if is_aux and state.get("fair_sweep_read_only"):
         lines.append(f"- fair_sweep_read_only: **{float(state['fair_sweep_read_only']):.3f}x** "
-                     "(SF1 fair reference — do not confuse with A/B keep/regress target)")
+                     "(iteration-database fair reference — do not confuse with A/B keep/regress target)")
     if is_aux and state.get("write_mix_pct"):
         wm = float(state.get("write_mix_workload_speedup") or 0.0)
         lines.append(f"- write_mix ({int(state['write_mix_pct'])}%): **{wm:.3f}x** workload (feeds dual-axis accept score as write_mix^0.25)")

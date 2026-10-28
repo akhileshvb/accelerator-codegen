@@ -441,3 +441,21 @@ def test_a_clean_audit_has_no_repair_round(stage_ctx, monkeypatch):
     monkeypatch.setattr(audit_stage, "repair_turn", rnd.repair)
     audit_stage._fix_blocking_findings(stage_ctx, rnd.audit_turn)
     assert rnd.repairs == [] and rnd.audit_messages == []
+
+
+def test_the_implementation_bootstrap_points_at_an_existing_sibling_query_of_any_benchmark(tmp_path):
+    from accel_pipeline.prompts import build_implementation_bootstrap
+
+    for rel in ("accelerators/other/q9/toyengine/aux/register.cpp", "accelerators/other/q9/layout.hpp",
+                "accelerators/other/q9/bench/benchmark_q9.cpp", "accelerators/new/q2/toyengine/aux/register.cpp",
+                "accelerators/new/q2/layout.hpp"):
+        (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / rel).write_text("")
+    workload = {"benchmark_name": "new", "engine_name": "toyengine"}
+    text = build_implementation_bootstrap(tmp_path, workload, 5, {}, cost_model_config="cfg.json")
+    assert "`accelerators/new/q2/layout.hpp`" in text and "accelerators/other/q9" not in text  # the same benchmark first
+    for rel in ("accelerators/new/q2",):
+        (tmp_path / rel / "layout.hpp").unlink()
+        (tmp_path / rel / "toyengine").rename(tmp_path / rel / "gone")
+    text = build_implementation_bootstrap(tmp_path, workload, 5, {}, cost_model_config="cfg.json")
+    assert "`accelerators/other/q9/layout.hpp`" in text and "`accelerators/other/q9/bench/benchmark_q9.cpp`" in text

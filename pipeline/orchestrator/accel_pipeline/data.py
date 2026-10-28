@@ -12,8 +12,8 @@ column), so the work stays bounded on any dataset. They feed the analysis prompt
 Test cuts, made once out of the engine's loaded dataset right after host bootstrap. A cut keeps a sample of the
 largest table and, along the query's join keys, every row those rows join to (the parents they reference and the
 children that reference them), so the query's answers on it are as non-trivial as on the full data. It holds every
-table of the dataset, because a harness may write tables the query does not read (TPC-H's refresh functions need
-orders beside lineitem): the ones the query does not join to follow key columns of the same name (`l_orderkey` and
+table of the dataset, because a harness may write tables the query does not read (a refresh function may insert
+parent and child rows together): the ones the query does not join to follow key columns of the same name (`l_orderkey` and
 `o_orderkey`, or `customer_id` in both). Two cuts, each a directory of <table>.tbl files (what every host.sh
 `load` reads) written from the host's `sql` verb, so any engine works:
 
@@ -49,7 +49,6 @@ import csv
 import datetime as dt
 import fcntl
 import hashlib
-import io
 import json
 import math
 import os
@@ -59,6 +58,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from dataclasses import asdict, dataclass, field
@@ -809,16 +809,22 @@ class AnswerKeys:
         return keyed.sql(dialect=self.dialect)
 
 
+def _tbl_field(value: str | None) -> str:
+    """A .tbl field: NULL is empty, the empty string is `""`, a value with a quote is quoted (host_contract.md)."""
+    if value is None:
+        return ""
+    return '"' + value.replace('"', '""') + '"' if value == "" or '"' in value else value
+
+
 def _write_cut(runner: HostSql, selects: dict[str, str], directory: Path) -> dict[str, int]:
     directory.mkdir(parents=True)
     counts: dict[str, int] = {}
     for table, select in selects.items():
         lines = []
         for row in runner.rows(select, CUT_STATEMENT_SECONDS):
-            fields = ["" if v is None else v for v in row]
-            if any("|" in f or "\n" in f for f in fields):
+            if any(v is not None and ("|" in v or "\n" in v) for v in row):
                 raise ValueError(f"{table} holds a value with '|' or a newline: not representable in a .tbl file")
-            lines.append("|".join(fields) + "|\n")
+            lines.append("|".join(_tbl_field(v) for v in row) + "|\n")
         (directory / f"{table}.tbl").write_text("".join(lines), encoding="utf-8")
         counts[table] = len(lines)
     if not any(counts.values()):
@@ -912,8 +918,42 @@ def describe(manifest: dict[str, Any]) -> str:
             + ", ".join(f"{t} {manifest['subset_rows'][t]:,}/{manifest['tiny_rows'][t]:,}" for t in manifest["source_rows"]))
 
 
+def parse_csv(text: str) -> list[list[str | None]]:
+    """CSV rows; a bare empty cell is NULL (None), a quoted one (`""`) the empty string."""
+    rows: list[list[str | None]] = []
+    row: list[str | None] = []
+    cell: list[str] = []
+    quoted = in_quotes = False
+    i = 0
+    while i < len(text):
+        ch = text[i]
+        if in_quotes:
+            if ch == '"' and text[i + 1: i + 2] == '"':
+                cell.append('"')
+                i += 1
+            elif ch == '"':
+                in_quotes = False
+            else:
+                cell.append(ch)
+        elif ch == '"':
+            quoted = in_quotes = True
+        elif ch in ",\n":
+            row.append("".join(cell) if cell or quoted else None)
+            cell, quoted = [], False
+            if ch == "\n":
+                rows.append(row)
+                row = []
+        elif ch != "\r":
+            cell.append(ch)
+        i += 1
+    if cell or quoted or row:
+        row.append("".join(cell) if cell or quoted else None)
+        rows.append(row)
+    return rows
+
+
 class HostSql:
-    """`host.sh sql -` of the run's engine instance: one statement in, CSV out, time-boxed."""
+    """`host.sh sql -` of the run's engine instance: one statement in, CSV out (host_contract.md), time-boxed."""
 
     def __init__(self, ctx: "DataToolContext") -> None:
         cfg = ctx.pipeline_config
@@ -930,8 +970,8 @@ class HostSql:
         if not (Path(self.env["ACCEL_ENGINE_STATE_DIR"]) / "env").is_file():  # written by `up`
             raise RuntimeError("the engine instance is not up (host.sh up, then load the dataset)")
 
-    def _run(self, sql: str, seconds: float, max_lines: int) -> tuple[int, list[str]]:
-        """(exit code, first max_lines output lines); the process group is killed at the time box or the line cap."""
+    def _run(self, sql: str, seconds: float, max_lines: int) -> tuple[int, list[str], str]:
+        """(exit code, first max_lines stdout lines, stderr); the process group is killed at the time box or the line cap."""
         # One statement at a time on the instance: an embedded engine's database file takes one process, and an agent
         # that issues several tool calls at once would otherwise get lock errors from all but the first.
         lock = (Path(self.env["ACCEL_ENGINE_STATE_DIR"]) / "data_tools.lock").open("a")
@@ -941,41 +981,45 @@ class HostSql:
         finally:
             lock.close()
 
-    def _run_locked(self, sql: str, seconds: float, max_lines: int) -> tuple[int, list[str]]:
-        proc = subprocess.Popen(
-            [str(host_script(self.cfg.repo_root, self.engine)), "sql", "-"], cwd=self.cfg.repo_root, env=self.env,
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, start_new_session=True,
-        )
-        timer = _Killer(proc, time.monotonic() + seconds)
-        try:
-            proc.stdin.write(sql)
-            proc.stdin.close()
-            lines: list[str] = []
-            for line in proc.stdout:
-                lines.append(line.rstrip("\n"))
-                if len(lines) >= max_lines:
-                    timer.kill()
-                    break
-            proc.wait()
-        finally:
-            timer.cancel()
-        if timer.fired_on_deadline:
-            raise TimeoutError(f"exceeded the {seconds:g} s time box")
-        return proc.returncode, lines
+    def _run_locked(self, sql: str, seconds: float, max_lines: int) -> tuple[int, list[str], str]:
+        with tempfile.TemporaryFile("w+", encoding="utf-8") as err:  # a pipe could fill and stall the engine
+            proc = subprocess.Popen(
+                [str(host_script(self.cfg.repo_root, self.engine)), "sql", "-"], cwd=self.cfg.repo_root, env=self.env,
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=err, text=True, start_new_session=True,
+            )
+            timer = _Killer(proc, time.monotonic() + seconds)
+            try:
+                proc.stdin.write(sql)
+                proc.stdin.close()
+                lines: list[str] = []
+                for line in proc.stdout:
+                    lines.append(line.rstrip("\n"))
+                    if len(lines) >= max_lines:
+                        timer.kill()
+                        break
+                proc.wait()
+            finally:
+                timer.cancel()
+            if timer.fired_on_deadline:
+                raise TimeoutError(f"exceeded the {seconds:g} s time box")
+            err.seek(0)
+            return proc.returncode, lines, err.read()
 
-    def query(self, sql: str, seconds: float, max_rows: int) -> tuple[list[list[str]], bool]:
-        """(header + at most max_rows rows, more rows exist)."""
-        code, lines = self._run(sql, seconds, max_rows + 2)  # header, the rows, one more to tell
-        text = "\n".join(lines)
+    def _table(self, sql: str, seconds: float, max_rows: int) -> tuple[list[list[str | None]], bool]:
+        code, lines, stderr = self._run(sql, seconds, max_rows + 2)  # header, the rows, one more to tell
         if code != 0 and len(lines) < max_rows + 2:
-            raise RuntimeError(text[-1500:] or f"host.sh sql exited {code}")
-        parsed = list(csv.reader(io.StringIO(text)))
+            raise RuntimeError((stderr or "\n".join(lines))[-1500:] or f"host.sh sql exited {code}")
+        parsed = parse_csv("\n".join(lines))
         return parsed[: max_rows + 1], len(parsed) > max_rows + 1
 
+    def query(self, sql: str, seconds: float, max_rows: int) -> tuple[list[list[str]], bool]:
+        """(header + at most max_rows rows, more rows exist); NULL shows as an empty cell."""
+        table, more = self._table(sql, seconds, max_rows)
+        return [["" if c is None else c for c in row] for row in table], more
+
     def rows(self, sql: str, seconds: float) -> list[list[str | None]]:
-        """The rows of a statement (no header), NULL as None (CSV shows it as an empty cell)."""
-        table, more = self.query(sql, seconds, 10_000_000)
-        return [[c if c != "" else None for c in row] for row in table[1:]]
+        """The rows of a statement (no header), NULL as None and the empty string as ''."""
+        return self._table(sql, seconds, 10_000_000)[0][1:]
 
 
 def _read_data_sql(engine: str, root: Path) -> dict[str, Any]:

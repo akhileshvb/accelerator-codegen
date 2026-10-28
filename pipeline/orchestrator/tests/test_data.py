@@ -771,3 +771,35 @@ def test_a_declared_foreign_key_links_a_child_to_the_rows_of_its_parent():
                       {"num": [], "sub": ["cik"], "pre": ["report", "line"]}, 100)
     assert out["sub"].startswith("SELECT * FROM sub WHERE adsh IN (SELECT adsh FROM (")
     assert out["pre"].startswith("SELECT * FROM pre WHERE adsh IN (SELECT adsh FROM (")
+
+
+def test_parse_csv_keeps_null_and_the_empty_string_apart():
+    assert data_mod.parse_csv('a,b\n,""\n"x,""y""",\n') == [["a", "b"], [None, ""], ['x,"y"', None]]
+    assert data_mod.parse_csv('a\n"line\nbreak"\n') == [["a"], ["line\nbreak"]]
+
+
+def test_rows_tell_null_from_empty_and_query_shows_both_empty(dataset):
+    runner = dataset.runner
+    sql = "SELECT NULL AS n, '' AS e, 'x\"y' AS q"
+    assert runner.rows(sql, 10) == [[None, "", 'x"y']]
+    assert runner.query(sql, 10, 5)[0][1] == ["", "", 'x"y']
+
+
+def test_the_host_sql_keeps_stderr_out_of_the_csv_and_reports_it_on_failure(tmp_path, monkeypatch):
+    ctx = make_engine(tmp_path, monkeypatch)
+    host = ctx.pipeline_config.repo_root / "backends" / "fake" / "host.sh"
+    text = host.read_text().replace('sql) exec', 'sql) echo "warning: engine chatter" >&2; exec')
+    host.write_text(text)
+    runner = data_mod.HostSql(ctx)
+    assert runner.rows("SELECT 1 AS a", 10) == [["1"]]
+    with pytest.raises(RuntimeError, match="warning: engine chatter"):
+        runner.rows("SELECT * FROM nowhere", 10)
+
+
+def test_a_cut_writes_null_bare_and_the_empty_string_quoted(tmp_path):
+    class Rows:
+        def rows(self, select, seconds):
+            return [["1", None, "", 'a"b']]
+
+    data_mod._write_cut(Rows(), {"t": "SELECT 1"}, tmp_path / "cut")
+    assert (tmp_path / "cut" / "t.tbl").read_text() == '1||""|"a""b"|\n'

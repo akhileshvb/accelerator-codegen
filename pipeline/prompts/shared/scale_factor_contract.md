@@ -2,6 +2,8 @@
 
 The pipeline iterates on small datasets; production targets much larger scale factors. A design must stay correct and fast as data grows, not only on the iteration database.
 
+Scale names are relative to the workload: SF1 is the iteration database, SFn is n times its rows in every scaling table, whatever the benchmark.
+
 | Tier | DB | Use | Obligation |
 |---|---|---|---|
 | Iteration (SF1) | the host's dataset env var | correctness, baseline, profile, write-frequency sweeps, A/B | primary signal; fast turnaround |

@@ -1667,13 +1667,13 @@ def _not_scaling(at_n: float, at_1: float, threads: int, where: str) -> str:
 
 
 def full_scale_defect(sweep_scaling: dict[str, Any]) -> str:
-    """The thread_scaling of the last bench sweep (SF1 builds at N and at 1 thread) as a defect, for a subset build too
+    """The thread_scaling of the last bench sweep (builds at N and at 1 thread on the iteration database) as a defect, for a subset build too
     short to judge."""
     at_n, at_1 = float(sweep_scaling.get("build_ms_at_N") or 0.0) / 1e3, float(sweep_scaling.get("build_ms_at_1") or 0.0) / 1e3
     threads = int(sweep_scaling.get("threads") or 0)
     if threads < MIN_THREADS or not at_n or at_1 / at_n >= SCALING_FLOOR:
         return ""
-    return _not_scaling(at_n, at_1, threads, "in the last bench sweep on the full SF1 database")
+    return _not_scaling(at_n, at_1, threads, "in the last bench sweep on the full iteration database")
 
 
 def build_report(reports: list[dict], *, scale: float, threads: int, budget_s: float, expected_scaling: bool,
