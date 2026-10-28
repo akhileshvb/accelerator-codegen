@@ -348,6 +348,14 @@ def test_parse_stat_marks_unsupported_events_none():
     assert counters == {"cycles": 100.0, "L1-dcache-load-misses": None}
 
 
+def test_the_profile_window_fits_the_whole_run_the_engine_reference_included():
+    from accel_pipeline.optimization.bench import RUN_BUDGET_SEC, window_query_count
+
+    assert window_query_count(60.0, 6.0) == 100_000  # a 60 us hit: 6 s of the hit loop
+    # the reference runs every query too: at 80x a query costs 81 hits, and the window shrinks to fit the budget
+    assert window_query_count(60.0, 6.0, run_us=81 * 60.0) == int(RUN_BUDGET_SEC * 1e6 / (81 * 60.0))
+
+
 def test_per_query_counters_divide_the_window_and_derive_rates():
     window = {"cycles": 10000.0, "instructions": 30000.0, "branches": 1000.0, "branch-misses": 50.0}
     per_query = bench.per_query_counters(window, 10)

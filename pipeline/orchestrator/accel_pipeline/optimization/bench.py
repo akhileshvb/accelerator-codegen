@@ -83,6 +83,7 @@ TARGET_LOOP_SEC = 6.0
 ACCELERATOR_DSO_MARKER = "accelerator_codegen"
 MODULE_NAMESPACE = re.compile(r"::(query|q\d+)::")  # accelerators/<bench>/q<N> code, and templates instantiated over its types
 PERF_TIMEOUT_SEC = 300
+RUN_BUDGET_SEC = PERF_TIMEOUT_SEC / 3  # the measured loop's share: the state build, warmup and report take the rest
 WIDE_VECTOR_RE = re.compile(r"\b[yz]mm\d+")
 SAMPLE_LINE_RE = re.compile(r"^\s*(?P<pct>\d+(?:\.\d+)?)%\s+(?P<rest>.+?)\s*$")
 
@@ -202,11 +203,15 @@ def vectorization_of(annotate_text: str) -> dict[str, Any]:
     }
 
 
-def window_query_count(hit_us: float | None, loop_seconds: float = TARGET_LOOP_SEC) -> int:
-    """Measured queries in the profile window: about `loop_seconds` of the hit loop."""
+def window_query_count(hit_us: float | None, loop_seconds: float = TARGET_LOOP_SEC, run_us: float | None = None) -> int:
+    """Measured queries in the profile window: about `loop_seconds` of the hit loop, and no more than the whole run
+    (`run_us` a query: the bench also runs the engine's reference for every one) finishes in RUN_BUDGET_SEC."""
     if not hit_us or hit_us <= 0:
         return 2 * MIN_QUERIES
-    return max(MIN_QUERIES, min(MAX_QUERIES, int(loop_seconds * 1e6 / hit_us)))
+    queries = loop_seconds * 1e6 / hit_us
+    if run_us and run_us > 0:
+        queries = min(queries, RUN_BUDGET_SEC * 1e6 / run_us)
+    return max(MIN_QUERIES, min(MAX_QUERIES, int(queries)))
 
 
 def work_counter_report(diagnostics: dict[str, Any], estimate: dict[str, Any]) -> dict[str, Any]:
@@ -251,6 +256,7 @@ def profile_hit_path(
     *,
     cwd: Path | None = None,
     hit_us: float | None = None,
+    run_us: float | None = None,
     diagnostics: dict[str, Any] | None = None,
     estimate: dict[str, Any] | None = None,
     runner: Runner = subprocess.run,
@@ -258,12 +264,12 @@ def profile_hit_path(
     record: bool = True,
 ) -> dict[str, Any]:
     """Profile `bench_cmd` (the aux bench at one write-frequency point); `env` carries its parameters. The window
-    is about `loop_seconds` of the measured loop (`hit_us` per operation). With record=False only the counters
-    are taken (no samples, no disassembly)."""
+    is about `loop_seconds` of the measured loop (`hit_us` per operation, `run_us` per query of the whole bench).
+    With record=False only the counters are taken (no samples, no disassembly)."""
     perf = perf_binary()
     if perf is None:
         return failed("perf is not installed on this host")
-    queries = window_query_count(hit_us, loop_seconds)
+    queries = window_query_count(hit_us, loop_seconds, run_us)
     events = ",".join(STAT_EVENTS)
     with tempfile.TemporaryDirectory(prefix="accel-perf-") as tmp:
         tmpdir = Path(tmp)

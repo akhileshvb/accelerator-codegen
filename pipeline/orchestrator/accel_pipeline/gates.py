@@ -1663,7 +1663,7 @@ class Bench:
         with tempfile.TemporaryDirectory(prefix="accel-bench-") as work:
             read = perf_bench.profile_hit_path(self.command(), self.env(work, 1), cwd=self.cfg.repo_root,
                                                runner=self.host.perf_runner(), hit_us=row["accel_hit_median_us"],
-                                               loop_seconds=COUNTER_LOOP_SECONDS, record=False)
+                                               run_us=_run_us(row), loop_seconds=COUNTER_LOOP_SECONDS, record=False)
             build = self.run(["perf", "stat", "-x,", "-e", "instructions,cycles,cache-misses", "-o", f"{work}/build.stat",
                               "--", *self.command()], self.env(work, 1))
             stat = Path(work) / "build.stat"
@@ -1686,7 +1686,7 @@ class Bench:
             with tempfile.TemporaryDirectory(prefix="accel-bench-") as work:
                 out[path] = perf_bench.profile_hit_path(
                     self.command(pct), self.env(work, 1, pct), cwd=self.cfg.repo_root, runner=self.host.perf_runner(), hit_us=op_us,
-                    loop_seconds=seconds, diagnostics=row if pct == 0 else None)
+                    run_us=_run_us(row), loop_seconds=seconds, diagnostics=row if pct == 0 else None)
         with tempfile.TemporaryDirectory(prefix="accel-bench-") as work:
             out["build"] = perf_bench.profile_build(self.command(), self.env(work, 1), cwd=self.cfg.repo_root,
                                                     runner=self.host.perf_runner())
@@ -1697,6 +1697,15 @@ class Bench:
         from accel_pipeline.optimization import bench as perf_bench
 
         return perf_bench.engine_profile_gap(host_info(self.cfg.repo_root, self.host.engine, self.cfg.build_dir))
+
+
+def _run_us(row: dict[str, Any]) -> float | None:
+    """What one query of the whole bench takes: the accelerator's workload and the engine reference's (the workload
+    speedup times it), over the queries; None when the row lacks them."""
+    try:
+        return float(row["accel_workload_us"]) * (1 + float(row["workload_speedup"])) / float(row["num_queries"])
+    except (KeyError, TypeError, ValueError, ZeroDivisionError):
+        return None
 
 
 def _op_us(row: dict[str, Any]) -> float:
