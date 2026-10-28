@@ -275,7 +275,8 @@ pub fn read_1(store: &GStore, at: u64, tries: u64) -> (r: (i32, Option<Reading<D
     ensures
         r.0 == 0 ==> r.1 is Some,
         0 <= r.0 <= 3,
-        r.1 matches Some(g) ==> g.at() == at,
+        r.1 matches Some(g) ==> g.at() == at && g.db() == db_1(store.db_at(g.version() as nat))
+            && g.snapshot_db() == db_1(store.snap_db(at)),
 {
     match store.read(at, tries) {
         Read::Found(g) => {

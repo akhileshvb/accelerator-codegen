@@ -5,26 +5,32 @@
 //                 [--ffi <gen_ffi.rs> --ffi-header <q.h> --ffi-prefix <p>]
 //
 // gen_world.rs (VERIFIED): the kernel's state on the verified aux store
-// (verus_substrate).  `State` answers for `db` when `s.db() == db`, and the
-// next version of the store is prepared from the ob_* functions with their
-// contracts restated against the store's timeline:
-//   prepare_apply(store, base, <apply's inputs>)   from the newest version
-//     (base: its state, with the proof that it answers for that version);
-//     requires apply's contracts with s.db() := version e, db2 := e + 1
-//     (and the kernel state := the base's);
-//   prepare_build(store, e, <build's inputs>)      requires build's
-//     contracts with db := version e + 1;
-//   prepare_invalid(store, e).
-// Those requires are the host's contract (TRUSTED, unchecked by the C ABI).
+// (verus_substrate).  `State` answers for `db` when `s.db() == db`.  Over the
+// ob_* functions, with their contracts restated against a version's database:
+//   stage_apply(base, <apply's inputs>)   the next version's slot from the
+//     newest version's state (base: with the proof that it answers for that
+//     version); requires apply's contracts with s.db() := version e, db2 :=
+//     e + 1 (and the kernel state := the base's);
+//   stage_build(head, <build's inputs>)   requires build's contracts with
+//     db := version e + 1;
+//   stage_invalid(head);
+//   answer(reading, <execute's inputs>)   THEOREM 5.4: every answer is the
+//     query on the database the read version answers for and, if the host's
+//     contract holds for the read, on the database the snapshot sees.
+// A staged slot becomes a version of a store of its own (`into_prepared`) or
+// of the benchmark's world (scripts/gen_verus_world.py: taken only if staged
+// on the batch's base).  The stage_* requires are the host's contract
+// (TRUSTED, unchecked by the C ABI).
 //
 // gen_ffi.rs (TRUSTED GLUE, not verified) and its C header: pointers in,
-// slices / rows out, the ob_* or prepare_* functions called, nothing else.
+// slices / rows out, the ob_* or stage_* / answer functions called, nothing else.
 //   * <p>_build / _free / _apply / _rescan_<n>_keys / _execute / _result_*:
 //     the kernel's states owned by the host (a host store keeps them);
 //   * <p>s_*: the Verus store (new / free / newest_base / base_state /
-//     base_free / prepare_apply / prepare_build / prepare_invalid /
-//     prepared_free / begin / abort / install / read / state_release /
-//     invalidate_all / version_count).
+//     base_free / newest_head / head_free / stage_apply / stage_build /
+//     stage_invalid / staged_free / begin / abort / install / read /
+//     reading_free / answer / invalidate_all / version_count); the world's
+//     base_k / head_k / read_k hand out the same bases, heads and readings.
 // Marshalling (fixed):
 //   * a NULL flag `<field>__null` is one more u8 field (column) after its value;
 //   * rows (`x`): `size_t x__n`, then
@@ -184,7 +190,7 @@ pub(crate) fn world(m: &Model) -> String {
         }
     }
     let out_ens: Vec<&String> = exec.ensures.iter().filter(|x| x.starts_with("r matches Some(out)")).collect();
-    let row_ty = exec.ret.trim_start_matches("(r: Option<Vec<").trim_end_matches(">>)").to_string();
+    let row_ty = exec.ret.strip_prefix("(r: Option<Vec<").and_then(|x| x.strip_suffix(">>)")).expect("execute returns Option<Vec<row>>").to_string();
     writeln!(w, "/// The query on a reading (THEOREM 5.4): every answer is the query on the database the").unwrap();
     writeln!(w, "/// version answers for, and, if the host's contract holds for the read, on the").unwrap();
     writeln!(w, "/// database the snapshot sees.  None: the host answers with SQL.").unwrap();

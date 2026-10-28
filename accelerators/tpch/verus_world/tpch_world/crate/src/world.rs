@@ -2249,7 +2249,8 @@ pub fn read_1(store: &GStore, at: u64, tries: u64) -> (r: (i32, Option<Reading<D
     ensures
         r.0 == 0 ==> r.1 is Some,
         0 <= r.0 <= 3,
-        r.1 matches Some(g) ==> g.at() == at,
+        r.1 matches Some(g) ==> g.at() == at && g.db() == db_1(store.db_at(g.version() as nat))
+            && g.snapshot_db() == db_1(store.snap_db(at)),
 {
     match store.read(at, tries) {
         Read::Found(g) => {
@@ -2335,7 +2336,8 @@ pub fn read_2(store: &GStore, at: u64, tries: u64) -> (r: (i32, Option<Reading<D
     ensures
         r.0 == 0 ==> r.1 is Some,
         0 <= r.0 <= 3,
-        r.1 matches Some(g) ==> g.at() == at,
+        r.1 matches Some(g) ==> g.at() == at && g.db() == db_2(store.db_at(g.version() as nat))
+            && g.snapshot_db() == db_2(store.snap_db(at)),
 {
     match store.read(at, tries) {
         Read::Found(g) => {
@@ -2421,7 +2423,8 @@ pub fn read_3(store: &GStore, at: u64, tries: u64) -> (r: (i32, Option<Reading<D
     ensures
         r.0 == 0 ==> r.1 is Some,
         0 <= r.0 <= 3,
-        r.1 matches Some(g) ==> g.at() == at,
+        r.1 matches Some(g) ==> g.at() == at && g.db() == db_3(store.db_at(g.version() as nat))
+            && g.snapshot_db() == db_3(store.snap_db(at)),
 {
     match store.read(at, tries) {
         Read::Found(g) => {
@@ -2507,7 +2510,8 @@ pub fn read_4(store: &GStore, at: u64, tries: u64) -> (r: (i32, Option<Reading<D
     ensures
         r.0 == 0 ==> r.1 is Some,
         0 <= r.0 <= 3,
-        r.1 matches Some(g) ==> g.at() == at,
+        r.1 matches Some(g) ==> g.at() == at && g.db() == db_4(store.db_at(g.version() as nat))
+            && g.snapshot_db() == db_4(store.snap_db(at)),
 {
     match store.read(at, tries) {
         Read::Found(g) => {
@@ -2593,7 +2597,8 @@ pub fn read_5(store: &GStore, at: u64, tries: u64) -> (r: (i32, Option<Reading<D
     ensures
         r.0 == 0 ==> r.1 is Some,
         0 <= r.0 <= 3,
-        r.1 matches Some(g) ==> g.at() == at,
+        r.1 matches Some(g) ==> g.at() == at && g.db() == db_5(store.db_at(g.version() as nat))
+            && g.snapshot_db() == db_5(store.snap_db(at)),
 {
     match store.read(at, tries) {
         Read::Found(g) => {
@@ -2679,7 +2684,8 @@ pub fn read_6(store: &GStore, at: u64, tries: u64) -> (r: (i32, Option<Reading<D
     ensures
         r.0 == 0 ==> r.1 is Some,
         0 <= r.0 <= 3,
-        r.1 matches Some(g) ==> g.at() == at,
+        r.1 matches Some(g) ==> g.at() == at && g.db() == db_6(store.db_at(g.version() as nat))
+            && g.snapshot_db() == db_6(store.snap_db(at)),
 {
     match store.read(at, tries) {
         Read::Found(g) => {
@@ -2765,7 +2771,8 @@ pub fn read_7(store: &GStore, at: u64, tries: u64) -> (r: (i32, Option<Reading<D
     ensures
         r.0 == 0 ==> r.1 is Some,
         0 <= r.0 <= 3,
-        r.1 matches Some(g) ==> g.at() == at,
+        r.1 matches Some(g) ==> g.at() == at && g.db() == db_7(store.db_at(g.version() as nat))
+            && g.snapshot_db() == db_7(store.snap_db(at)),
 {
     match store.read(at, tries) {
         Read::Found(g) => {
@@ -2851,7 +2858,8 @@ pub fn read_8(store: &GStore, at: u64, tries: u64) -> (r: (i32, Option<Reading<D
     ensures
         r.0 == 0 ==> r.1 is Some,
         0 <= r.0 <= 3,
-        r.1 matches Some(g) ==> g.at() == at,
+        r.1 matches Some(g) ==> g.at() == at && g.db() == db_8(store.db_at(g.version() as nat))
+            && g.snapshot_db() == db_8(store.snap_db(at)),
 {
     match store.read(at, tries) {
         Read::Found(g) => {
@@ -2937,7 +2945,8 @@ pub fn read_9(store: &GStore, at: u64, tries: u64) -> (r: (i32, Option<Reading<D
     ensures
         r.0 == 0 ==> r.1 is Some,
         0 <= r.0 <= 3,
-        r.1 matches Some(g) ==> g.at() == at,
+        r.1 matches Some(g) ==> g.at() == at && g.db() == db_9(store.db_at(g.version() as nat))
+            && g.snapshot_db() == db_9(store.snap_db(at)),
 {
     match store.read(at, tries) {
         Read::Found(g) => {
@@ -3023,7 +3032,8 @@ pub fn read_10(store: &GStore, at: u64, tries: u64) -> (r: (i32, Option<Reading<
     ensures
         r.0 == 0 ==> r.1 is Some,
         0 <= r.0 <= 3,
-        r.1 matches Some(g) ==> g.at() == at,
+        r.1 matches Some(g) ==> g.at() == at && g.db() == db_10(store.db_at(g.version() as nat))
+            && g.snapshot_db() == db_10(store.snap_db(at)),
 {
     match store.read(at, tries) {
         Read::Found(g) => {
@@ -3109,7 +3119,8 @@ pub fn read_11(store: &GStore, at: u64, tries: u64) -> (r: (i32, Option<Reading<
     ensures
         r.0 == 0 ==> r.1 is Some,
         0 <= r.0 <= 3,
-        r.1 matches Some(g) ==> g.at() == at,
+        r.1 matches Some(g) ==> g.at() == at && g.db() == db_11(store.db_at(g.version() as nat))
+            && g.snapshot_db() == db_11(store.snap_db(at)),
 {
     match store.read(at, tries) {
         Read::Found(g) => {
@@ -3195,7 +3206,8 @@ pub fn read_12(store: &GStore, at: u64, tries: u64) -> (r: (i32, Option<Reading<
     ensures
         r.0 == 0 ==> r.1 is Some,
         0 <= r.0 <= 3,
-        r.1 matches Some(g) ==> g.at() == at,
+        r.1 matches Some(g) ==> g.at() == at && g.db() == db_12(store.db_at(g.version() as nat))
+            && g.snapshot_db() == db_12(store.snap_db(at)),
 {
     match store.read(at, tries) {
         Read::Found(g) => {
@@ -3281,7 +3293,8 @@ pub fn read_13(store: &GStore, at: u64, tries: u64) -> (r: (i32, Option<Reading<
     ensures
         r.0 == 0 ==> r.1 is Some,
         0 <= r.0 <= 3,
-        r.1 matches Some(g) ==> g.at() == at,
+        r.1 matches Some(g) ==> g.at() == at && g.db() == db_13(store.db_at(g.version() as nat))
+            && g.snapshot_db() == db_13(store.snap_db(at)),
 {
     match store.read(at, tries) {
         Read::Found(g) => {
@@ -3367,7 +3380,8 @@ pub fn read_14(store: &GStore, at: u64, tries: u64) -> (r: (i32, Option<Reading<
     ensures
         r.0 == 0 ==> r.1 is Some,
         0 <= r.0 <= 3,
-        r.1 matches Some(g) ==> g.at() == at,
+        r.1 matches Some(g) ==> g.at() == at && g.db() == db_14(store.db_at(g.version() as nat))
+            && g.snapshot_db() == db_14(store.snap_db(at)),
 {
     match store.read(at, tries) {
         Read::Found(g) => {
@@ -3453,7 +3467,8 @@ pub fn read_15(store: &GStore, at: u64, tries: u64) -> (r: (i32, Option<Reading<
     ensures
         r.0 == 0 ==> r.1 is Some,
         0 <= r.0 <= 3,
-        r.1 matches Some(g) ==> g.at() == at,
+        r.1 matches Some(g) ==> g.at() == at && g.db() == db_15(store.db_at(g.version() as nat))
+            && g.snapshot_db() == db_15(store.snap_db(at)),
 {
     match store.read(at, tries) {
         Read::Found(g) => {
@@ -3539,7 +3554,8 @@ pub fn read_16(store: &GStore, at: u64, tries: u64) -> (r: (i32, Option<Reading<
     ensures
         r.0 == 0 ==> r.1 is Some,
         0 <= r.0 <= 3,
-        r.1 matches Some(g) ==> g.at() == at,
+        r.1 matches Some(g) ==> g.at() == at && g.db() == db_16(store.db_at(g.version() as nat))
+            && g.snapshot_db() == db_16(store.snap_db(at)),
 {
     match store.read(at, tries) {
         Read::Found(g) => {
@@ -3625,7 +3641,8 @@ pub fn read_17(store: &GStore, at: u64, tries: u64) -> (r: (i32, Option<Reading<
     ensures
         r.0 == 0 ==> r.1 is Some,
         0 <= r.0 <= 3,
-        r.1 matches Some(g) ==> g.at() == at,
+        r.1 matches Some(g) ==> g.at() == at && g.db() == db_17(store.db_at(g.version() as nat))
+            && g.snapshot_db() == db_17(store.snap_db(at)),
 {
     match store.read(at, tries) {
         Read::Found(g) => {
@@ -3711,7 +3728,8 @@ pub fn read_18(store: &GStore, at: u64, tries: u64) -> (r: (i32, Option<Reading<
     ensures
         r.0 == 0 ==> r.1 is Some,
         0 <= r.0 <= 3,
-        r.1 matches Some(g) ==> g.at() == at,
+        r.1 matches Some(g) ==> g.at() == at && g.db() == db_18(store.db_at(g.version() as nat))
+            && g.snapshot_db() == db_18(store.snap_db(at)),
 {
     match store.read(at, tries) {
         Read::Found(g) => {
@@ -3797,7 +3815,8 @@ pub fn read_19(store: &GStore, at: u64, tries: u64) -> (r: (i32, Option<Reading<
     ensures
         r.0 == 0 ==> r.1 is Some,
         0 <= r.0 <= 3,
-        r.1 matches Some(g) ==> g.at() == at,
+        r.1 matches Some(g) ==> g.at() == at && g.db() == db_19(store.db_at(g.version() as nat))
+            && g.snapshot_db() == db_19(store.snap_db(at)),
 {
     match store.read(at, tries) {
         Read::Found(g) => {
@@ -3883,7 +3902,8 @@ pub fn read_20(store: &GStore, at: u64, tries: u64) -> (r: (i32, Option<Reading<
     ensures
         r.0 == 0 ==> r.1 is Some,
         0 <= r.0 <= 3,
-        r.1 matches Some(g) ==> g.at() == at,
+        r.1 matches Some(g) ==> g.at() == at && g.db() == db_20(store.db_at(g.version() as nat))
+            && g.snapshot_db() == db_20(store.snap_db(at)),
 {
     match store.read(at, tries) {
         Read::Found(g) => {
@@ -3969,7 +3989,8 @@ pub fn read_21(store: &GStore, at: u64, tries: u64) -> (r: (i32, Option<Reading<
     ensures
         r.0 == 0 ==> r.1 is Some,
         0 <= r.0 <= 3,
-        r.1 matches Some(g) ==> g.at() == at,
+        r.1 matches Some(g) ==> g.at() == at && g.db() == db_21(store.db_at(g.version() as nat))
+            && g.snapshot_db() == db_21(store.snap_db(at)),
 {
     match store.read(at, tries) {
         Read::Found(g) => {
@@ -4055,7 +4076,8 @@ pub fn read_22(store: &GStore, at: u64, tries: u64) -> (r: (i32, Option<Reading<
     ensures
         r.0 == 0 ==> r.1 is Some,
         0 <= r.0 <= 3,
-        r.1 matches Some(g) ==> g.at() == at,
+        r.1 matches Some(g) ==> g.at() == at && g.db() == db_22(store.db_at(g.version() as nat))
+            && g.snapshot_db() == db_22(store.snap_db(at)),
 {
     match store.read(at, tries) {
         Read::Found(g) => {

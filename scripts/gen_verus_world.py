@@ -328,7 +328,8 @@ pub fn read_{k}(store: &GStore, at: u64, tries: u64) -> (r: (i32, Option<Reading
     ensures
         r.0 == 0 ==> r.1 is Some,
         0 <= r.0 <= 3,
-        r.1 matches Some(g) ==> g.at() == at,
+        r.1 matches Some(g) ==> g.at() == at && g.db() == db_{k}(store.db_at(g.version() as nat))
+            && g.snapshot_db() == db_{k}(store.snap_db(at)),
 {{
     match store.read(at, tries) {{
         Read::Found(g) => {{

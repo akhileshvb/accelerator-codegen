@@ -120,7 +120,7 @@ public:
 };
 
 // A build staged through `glue`: `make_head` returns the newest version's head (or throws),
-// `free_head` releases it; `done` runs on the head once staged.
+// `free_head` releases it.
 template <class MakeHead, class FreeHead>
 void *StageBuildOn(const Glue &glue, Host &host, MakeHead make_head, FreeHead free_head) {
   void *head = nullptr;

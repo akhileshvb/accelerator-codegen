@@ -83,7 +83,9 @@ open(d + '/link.c', 'w').write('''#include "q.h"
 int main(void) {
   void *fs[] = {%s};
   tqs_store *st = tqs_new();
-  tqs_prepared *p = tqs_prepare_invalid(st);
+  tqs_head *h = tqs_newest_head(st);
+  tqs_staged *p = tqs_stage_invalid(h);
+  tqs_head_free(h);
   int32_t status = -1;
   if (tqs_install(st, p, 5, ~(uint64_t)0, 0) != 0) return 1;
   if (tqs_read(st, 0, 0, &status) != NULL || status != 1) return 2;
