@@ -23,7 +23,7 @@ export ACCEL_AUX_BENCHMARK="${BENCHMARK_NAME}"
 export ACCEL_CROSS_ACCEL_TEST_QUERIES="${QUERY}"
 
 if ! engine_ready "${CROSS_ACCEL_TARGET}"; then
-  emit_result "${JSON}" aux_cross_accel fail "${ENGINE_FAIL}" "${ENGINE_LOG}" "owner=${ENGINE_OWNER}"
+  engine_not_ready "${JSON}" aux_cross_accel
 fi
 engine_run "${CROSS_ACCEL_TARGET}" "${QUERY}"
 STATUS=pass

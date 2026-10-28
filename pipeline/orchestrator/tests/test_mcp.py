@@ -215,7 +215,7 @@ def test_concurrent_calls_run_one_statement_at_a_time_on_the_instance(ctx, tools
 
 
 CONFIG = SimpleNamespace(quick_tier=QuickTierConfig())
-WORKLOAD = {"workload_kind": "aux_state"}
+WORKLOAD = {"workload_kind": "aux_state", "benchmark_name": "tpch"}
 
 
 def test_quick_check_passes_its_arguments_on_and_renders_the_result(monkeypatch):

@@ -28,7 +28,7 @@ fi
 
 TARGETS=("${AUX_TEST_TARGET}" "${DIFF_BINARY}")
 if ! engine_ready "${TARGETS[@]}"; then
-  emit_result "${JSON}" aux_correctness fail "${ENGINE_FAIL}" "${ENGINE_LOG}" "owner=${ENGINE_OWNER}"
+  engine_not_ready "${JSON}" aux_correctness
 fi
 
 engine_run "${AUX_TEST_TARGET}"

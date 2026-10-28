@@ -865,20 +865,28 @@ def _cut(cfg: PipelineConfig, workload: dict[str, Any], query: int, source: Path
     return manifest
 
 
-def ensure_cut_datasets(cfg: PipelineConfig, workload: dict[str, Any], query: int) -> CutDatasets | None:
+class CutError(RuntimeError):
+    """The test cuts cannot be made: the workload's data is at fault (data-owned). There is no fallback to the full
+    dataset, whose quick tier would run for hours at scale and hide the cause."""
+
+
+def ensure_cut_datasets(cfg: PipelineConfig, workload: dict[str, Any], query: int) -> CutDatasets:
     """The cuts of this query's tables, made once per dataset (cached by a content key; ACCEL_SUBSET_DATASET_DIR
-    names ready-made ones). None, with the reason on stderr, when they cannot be made: the quick tier then runs on
-    the full dataset."""
+    names ready-made ones). A cut that cannot be made records its reason with the key (.failed) and raises CutError
+    on every call, without trying again; changing the data or the SQL changes the key."""
     if given := os.environ.get("ACCEL_SUBSET_DATASET_DIR"):
         return CutDatasets(Path(given), Path(given), {"source_rows": {}, "subset_rows": {}})
     source = Path(str(workload.get("dataset_dir") or os.environ.get("ACCEL_DATASET_DIR") or ""))
     if not source.is_dir() or not any(source.glob("*.tbl")):
-        return None
+        raise CutError(f"no test databases: the dataset directory {str(source)!r} is missing or holds no .tbl files")
     bench = str(workload.get("benchmark_name") or "")
     destination = Path(f"{cfg.build_dir}.subset") / f"{bench}-q{query}-{_key(cfg, workload, query, source)}"
     destination.parent.mkdir(parents=True, exist_ok=True)
     with (destination.parent / f"{destination.name}.lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
+        failed = destination.with_name(f"{destination.name}.failed")
+        if failed.is_file():
+            raise CutError(f"{failed.read_text(encoding='utf-8')} (recorded in {failed}; delete it to try again)")
         if not (destination / ".done").is_file():
             started = time.monotonic()
             try:
@@ -888,8 +896,8 @@ def ensure_cut_datasets(cfg: PipelineConfig, workload: dict[str, Any], query: in
                 manifest = _cut(cfg, workload, query, source, destination)
             except (RuntimeError, ValueError, TimeoutError, OSError) as exc:
                 shutil.rmtree(destination, ignore_errors=True)
-                print(f"[pipeline] test databases not made ({exc}); quick_check runs on the full dataset", file=sys.stderr, flush=True)
-                return None
+                failed.write_text(f"the test databases of Q{query} cannot be made: {type(exc).__name__}: {exc}", encoding="utf-8")
+                raise CutError(failed.read_text(encoding="utf-8")) from exc
             (destination / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
             (destination / ".done").touch()
             print(f"[pipeline] test databases of Q{query} in {time.monotonic() - started:.0f} s: {describe(manifest)}",

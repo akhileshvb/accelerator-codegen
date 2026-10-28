@@ -246,3 +246,56 @@ def test_the_live_model_probe_has_a_provider():
 
     models = ModelConfig(api_key_env="K", presets={"default": "m"}, stages={}, stage_providers={"analysis": "codex_exec"})
     assert resolve_stage_provider("preflight_live", models) == "codex_exec"
+
+
+@pytest.fixture
+def bundle(tmp_path):
+    """A complete workload bundle (the kestrel files) in a scratch repo: nothing for the `workload` check to find."""
+    import shutil
+    from types import SimpleNamespace
+
+    shutil.copytree(REPO_ROOT / "workloads" / "kestrel", tmp_path / "workloads" / "kestrel")
+    db = tmp_path / "source.db"
+    db.touch()
+    workload = {"benchmark_name": "kestrel", "workload_kind": "aux_state", "dataset_key": "kestrel_sf1", "dataset_db": str(db),
+                "reference_sql_path": str(tmp_path / "workloads/kestrel/instances/seed_1/01.sql"),
+                "parameters": [{"name": "a", "type": "DATE"}, {"name": "b", "type": "DATE"}, {"name": "c", "type": "VARCHAR"}],
+                "aux_bench_sweep": {"suites": "sale_append"}}
+    return lambda **changes: SimpleNamespace(cfg=SimpleNamespace(repo_root=tmp_path), workload={**workload, **changes}, query=1), tmp_path
+
+
+def test_a_complete_workload_bundle_has_no_problems(bundle):
+    probe, _ = bundle
+    assert cli.workload(probe()) == []
+
+
+@pytest.mark.parametrize("remove, expected", [
+    ("workloads/kestrel/schema.sql", "the schema is missing"),
+    ("workloads/kestrel/q1.sql", "the query template is missing"),
+    ("workloads/kestrel/test_db_subset.sql", "the test-database subset"),
+    ("workloads/kestrel/instances/seed_1/01.sql", "the reference SQL (reference_sql_path) is missing"),
+])
+def test_the_workload_check_names_a_missing_file(bundle, remove, expected):
+    probe, root = bundle
+    (root / remove).unlink()
+    assert any(expected in p and remove.split("/", 1)[1] in p for p in cli.workload(probe()))
+
+
+@pytest.mark.parametrize("changes, expected", [
+    ({"reference_sql_path": "workloads/kestrel/q1.sql"}, "unbound $n placeholders"),
+    ({"parameters": []}, "declares 0 parameters, the query template takes 3"),
+    ({"parameters": [{"name": "a", "type": "DATE"}, {"name": "b", "type": "DATE"}, {"name": "c"}]}, "needs a name and a SQL type"),
+    ({"aux_bench_sweep": {}}, "names no write suite"),
+    ({"dataset_db": "/nonexistent.db"}, "source database /nonexistent.db does not exist"),
+    ({"dataset_db": ""}, "no `datasets:` entry"),
+])
+def test_the_workload_check_names_a_wrong_field(bundle, changes, expected):
+    probe, _ = bundle
+    assert any(expected in p for p in cli.workload(probe(**changes)))
+
+
+def test_a_cut_that_cannot_be_built_fails_preflight_with_its_reason(probe, monkeypatch):
+    def refuse(*args):
+        raise cli.CutError("the test databases of Q14 cannot be made: ValueError: 'x y' is not a plain identifier")
+    monkeypatch.setattr(cli, "ensure_cut_datasets", refuse)
+    assert cli.test_database(probe) == ["the test databases of Q14 cannot be made: ValueError: 'x y' is not a plain identifier"]

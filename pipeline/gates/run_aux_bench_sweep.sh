@@ -41,7 +41,7 @@ if [[ -z "${BENCH_TARGET}" ]]; then
   exit 0
 fi
 if ! engine_ready "${BENCH_TARGET}"; then
-  emit_result "${OUT}/aux_bench_sweep.json" aux_bench_sweep fail "${ENGINE_FAIL}" "${ENGINE_LOG}" "owner=${ENGINE_OWNER}" "query:=${QUERY}"
+  engine_not_ready "${OUT}/aux_bench_sweep.json" aux_bench_sweep "query:=${QUERY}"
 fi
 
 export ACCEL_AUX_BENCH_WORK_DIR="${BUILD}/${AUX_BENCH_WORK_DIR_SUFFIX:-q${QUERY}_aux_bench}"
@@ -54,7 +54,7 @@ else
 fi
 export ACCEL_AUX_BENCH_SUITES="${ACCEL_AUX_BENCH_SUITES:-${AUX_BENCH_SUITES}}"
 [[ -n "${ACCEL_AUX_BENCH_SUITES}" ]] || emit_result "${OUT}/aux_bench_sweep.json" aux_bench_sweep fail \
-  "the workload names no write suite: set aux_bench_sweep.suites in its workload config" "" "query:=${QUERY}"
+  "the workload names no write suite: set aux_bench_sweep.suites in its workload config" "" "owner=pipeline" "query:=${QUERY}"
 export ACCEL_AUX_BENCHMARK="${BENCHMARK_NAME}"
 export ACCEL_AUX_BENCH_TARGET="${BENCH_TARGET}"
 
@@ -255,23 +255,20 @@ summary_path = pathlib.Path("${ART}/aux_bench_summary.json")
 summary_path.write_text(json.dumps(summary, indent=2))
 
 if status == "pass":
-    bench = "${BENCHMARK_NAME}"
     query = int("${QUERY}")
-    workload_name = f"{bench}_q{query}_aux"
     try:
-        workload = load_workload(workload_name, pathlib.Path("${ROOT}"), engine="${ENGINE_NAME}")
-    except FileNotFoundError:
+        workload = load_workload(f"${BENCHMARK_NAME}_q{query}_aux", pathlib.Path("${ROOT}"), engine="${ENGINE_NAME}")
+    except FileNotFoundError:  # the orchestrator records the outcome with the workload it runs
         workload = None
-    change_kind = os.environ.get("ACCEL_GATE_CHANGE_KIND", "bench_sweep")
-    iteration = int(os.environ.get("ACCEL_GATE_ITERATION", "0"))
-    record_aux_bench_sweep_outcome(
-        pathlib.Path("${ROOT}"),
-        query,
-        summary,
-        iteration=iteration,
-        change_kind=change_kind,
-        workload=workload,
-    )
+    if workload:
+        record_aux_bench_sweep_outcome(
+            pathlib.Path("${ROOT}"),
+            query,
+            summary,
+            iteration=int(os.environ.get("ACCEL_GATE_ITERATION", "0")),
+            change_kind=os.environ.get("ACCEL_GATE_CHANGE_KIND", "bench_sweep"),
+            workload=workload,
+        )
 
 print(out.read_text())
 sys.exit(0 if status == "pass" else 1)

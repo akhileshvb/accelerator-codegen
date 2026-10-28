@@ -19,7 +19,7 @@ WORKLOAD_KIND="$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get(
 export ACCEL_WORKLOAD_KIND="${WORKLOAD_KIND}"
 
 if ! engine_ready "${BENCH_TARGET}"; then
-  emit_result "${JSON}" baseline fail "${ENGINE_FAIL}" "${ENGINE_LOG}" "owner=${ENGINE_OWNER}" "query:=${QUERY}"
+  engine_not_ready "${JSON}" baseline "query:=${QUERY}"
 fi
 
 ALL_LOG="${ENGINE_LOG}"

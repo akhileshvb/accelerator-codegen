@@ -1316,3 +1316,20 @@ def test_the_cache_can_be_turned_off(setup):
     optimization_loop.run_build(config, BUILD_WORKLOAD, 4)
     optimization_loop.run_build(config, BUILD_WORKLOAD, 4)
     assert len(builds) == 2
+
+
+def test_a_gate_on_a_cut_that_cannot_be_built_fails_as_the_datas_and_does_not_run(config, monkeypatch):
+    from accel_pipeline.data import CutError
+
+    def refuse(*args):
+        raise CutError("no test databases")
+    monkeypatch.setattr(gates, "ensure_cut_datasets", refuse)
+    monkeypatch.setattr(gates, "_run_gate_script", lambda *a, **k: pytest.fail("the gate ran"))
+    gates_dir = config.repo_root / "gates"
+    gates_dir.mkdir()
+    (gates_dir / gates.GATE_SCRIPTS["aux_correctness_quick"]).touch()
+    config.gates_dir = gates_dir
+    result = gates.run_gate(config, "aux_correctness_quick", 6, WORKLOAD, raise_on_failure=False)
+    assert result.status == "fail" and result.data["owner"] == "data" and result.data["reason"] == "no test databases"
+    quick = run_quick_check(config, WORKLOAD, 6)
+    assert quick.status == "fail" and quick.failure.owner == "data" and "no test databases" in quick.summary

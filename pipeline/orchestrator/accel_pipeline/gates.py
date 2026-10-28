@@ -81,6 +81,7 @@ from accel_pipeline.data import (
     statements,
     txn_files,
     txn_profiles,
+    CutError,
     dependent_tables,
     ensure_cut_datasets,
     ensure_dataset_loaded,
@@ -95,7 +96,7 @@ from accel_pipeline.data import (
     suite_path,
     workload_dataset_dir,
 )
-from accel_pipeline.layout import code_stamp, query_dir, workload_schema_sql
+from accel_pipeline.layout import DATA, code_stamp, query_dir, workload_schema_sql
 from accel_pipeline.repair import Failure, render_evidence, render_failure
 from accel_pipeline.runlog import (
     log_base_bench_gate,
@@ -179,7 +180,11 @@ class GateResult:
 
 
 class GateFailure(RuntimeError):
-    """Raised when a required gate does not pass."""
+    """Raised when a required gate does not pass; `result` is that gate's, with the owner it named."""
+
+    def __init__(self, result: "GateResult") -> None:
+        super().__init__(gate_failure_message(result))
+        self.result = result
 
 
 GATES_ALLOW_SKIP = frozenset(
@@ -198,8 +203,10 @@ GATES_ALLOW_SKIP = frozenset(
         "engine_canary_tsan",
         "slot_restart",
         "aux_tsan",
-        "module_tsan",
+        "module_tsan",  # skips when the engine-free TSAN driver has no case for the query (aux_tsan covers it)
         "slot_tsan",
+        "slot_own_writes",
+        "slot_ddl_events",
     }
 )
 
@@ -224,7 +231,7 @@ def require_gate_pass(result: GateResult, *, allow_skip: bool = False) -> None:
         return
     if result.status == "skip" and allow_skip:
         return
-    raise GateFailure(gate_failure_message(result))
+    raise GateFailure(result)
 
 
 def build_jobs() -> int:
@@ -351,6 +358,18 @@ def run_gate(
         out_json.with_suffix(sidecar).unlink(missing_ok=True)
     out_json.unlink(missing_ok=True)  # a gate that dies before writing never reads as its last result
 
+    tier = GATE_TIERS.get(gate_name)
+    subset = None
+    if tier == "quick" or gate_name in SUBSET_DATASET_GATES:
+        try:
+            subset = ensure_cut_datasets(pipeline_config, workload, query).subset
+        except CutError as exc:  # the data's failure: the gate does not run on a dataset it was not meant for
+            result = GateResult(gate_name, "fail", {"gate": gate_name, "status": "fail", "owner": DATA, "reason": str(exc)})
+            out_json.write_text(json.dumps(result.data, indent=2) + "\n", encoding="utf-8")
+            if raise_on_failure:
+                require_gate_pass(result)
+            return result
+
     gate_env = os.environ.copy()
     # Gate scripts' `python3` is the pipeline's own interpreter (its packages), not the system one.
     gate_env["PATH"] = f"{Path(sys.executable).parent}{os.pathsep}{gate_env.get('PATH', '')}"
@@ -386,13 +405,10 @@ def run_gate(
     kind = str(workload.get("workload_kind") or "")
     if kind:
         gate_env["ACCEL_WORKLOAD_KIND"] = kind
-    tier = GATE_TIERS.get(gate_name)
     if tier:
         gate_env["ACCEL_GATE_TIER"] = tier
-    if tier == "quick" or gate_name in SUBSET_DATASET_GATES:
-
-        if cuts := ensure_cut_datasets(pipeline_config, workload, query):
-            gate_env["ACCEL_SUBSET_DATASET_DIR"] = str(cuts.subset)
+    if subset:
+        gate_env["ACCEL_SUBSET_DATASET_DIR"] = str(subset)
     gate_env.update(env or {})
 
     # Codex may never create the worker build dir. Once the engine has a host.sh, only its
@@ -1174,7 +1190,7 @@ def admission_refusal(pipeline_config: PipelineConfig, workload: dict[str, Any],
     return f"{gate} refused: run quick_check first and iterate until it passes on the current code (it takes seconds), then request {gate} once."
 
 
-def _project_write_cost(pipeline_config: PipelineConfig, workload: dict[str, Any], query: int, cuts: CutDatasets | None) -> Projection | None:
+def _project_write_cost(pipeline_config: PipelineConfig, workload: dict[str, Any], query: int, cuts: CutDatasets) -> Projection | None:
     """The full gate's write time, projected from the timings of the quick differential (None: no timings)."""
     bench = str(workload.get("benchmark_name") or "")
     art = query_artifacts_dir(pipeline_config.repo_root, query, workload=workload)
@@ -1185,7 +1201,7 @@ def _project_write_cost(pipeline_config: PipelineConfig, workload: dict[str, Any
     probes = int(((read_yaml(suite / MANIFEST).get("point_writes") or {}).get("max_probes")) or 5)
     return project(
         reports, profiles=txn_profiles(suite), dependent=dependent_tables(art),
-        scale=cuts.scale if cuts else (lambda tables: 1.0), probes_full=probes,
+        scale=cuts.scale, probes_full=probes,
         budget_s=GATE_RUN_TIMEOUT_S * pipeline_config.quick_tier.write_cost_budget_share)
 
 
@@ -1209,7 +1225,7 @@ def _last_sweep_scaling(art: Path) -> dict[str, Any]:
     return sweep.get("thread_scaling") or {} if sweep.get("status") == "pass" else {}
 
 
-def _plain_report(pipeline_config: PipelineConfig, workload: dict[str, Any], query: int, cuts: CutDatasets | None,
+def _plain_report(pipeline_config: PipelineConfig, workload: dict[str, Any], query: int, cuts: CutDatasets,
                   instance: dict[str, str]) -> tuple[dict[str, Any], list[str]]:
     """(the compact report of a passing plain check, the defects it shows): rebuild-on-write, writes and a build that
     would not fit the gates, a build that does not scale with threads; then the reads and perf counters."""
@@ -1221,7 +1237,7 @@ def _plain_report(pipeline_config: PipelineConfig, workload: dict[str, Any], que
     reports = load_reports(gates_dir_for_query(art))
     dependent = dependent_tables(art)
     line, defect = build_report(
-        reports, scale=cuts.scale(dependent) if cuts else 1.0, threads=gate_threads(),
+        reports, scale=cuts.scale(dependent), threads=gate_threads(),
         budget_s=pipeline_config.quick_tier.build_budget_sec,
         expected_scaling=expects_scaling(load_query_analysis(pipeline_config.repo_root, query, workload=workload)[1]),
         sweep_scaling=_last_sweep_scaling(art))
@@ -1288,13 +1304,17 @@ def prepare_inner_loop(pipeline_config: PipelineConfig, workload: dict[str, Any]
     substrate and harness in the background, so the agent's first sanitizer check compiles only the query's files."""
     if not pipeline_config.quick_tier.enabled or workload.get("workload_kind") != "aux_state":
         return None
-    cuts = ensure_cut_datasets(pipeline_config, workload, query)
+    try:
+        cuts = ensure_cut_datasets(pipeline_config, workload, query)
+    except CutError as exc:  # every gate on the cuts reports it as the data's; there is nothing to prebuild against
+        print(f"[pipeline] {exc}", file=sys.stderr, flush=True)
+        return None
     gates_dir = gates_dir_for_query(query_artifacts_dir(pipeline_config.repo_root, query, workload=workload))
 
     def build() -> None:
         run_gate(pipeline_config, QUICK_GATE, query, workload, out_dir=gates_dir / "prebuild", timeout_s=SANITIZER_TIMEOUT_SEC,
                  env={"ACCEL_QUICK_SANITIZER": "thread", "ACCEL_QUICK_PREBUILD": "1",
-                      **({"ACCEL_SUBSET_DATASET_DIR": str(cuts.tiny)} if cuts else {})})
+                      "ACCEL_SUBSET_DATASET_DIR": str(cuts.tiny)})
     thread = threading.Thread(target=build, name="sanitizer-prebuild", daemon=True)
     thread.start()
     return thread
@@ -1329,7 +1349,11 @@ def run_quick_check(pipeline_config: PipelineConfig, workload: dict, query: int,
                            report=saved_report(pipeline_config, workload, query).get("reports", {}).get(stamp, {}))
 
     started = time.monotonic()
-    cuts = ensure_cut_datasets(pipeline_config, workload, query)
+    try:
+        cuts = ensure_cut_datasets(pipeline_config, workload, query)
+    except CutError as exc:
+        failure = Failure(kind="infra", stage=QUICK_GATE, source=QUICK_GATE, summary=str(exc), owner=DATA, infra_reason="data_defect")
+        return QuickResult(status="fail", failure=failure, summary=failure.summary)
     gates_dir = gates_dir_for_query(query_artifacts_dir(pipeline_config.repo_root, query, workload=workload))
     for stale in report_paths(gates_dir):
         stale.unlink(missing_ok=True)
@@ -1341,7 +1365,7 @@ def run_quick_check(pipeline_config: PipelineConfig, workload: dict, query: int,
             "ACCEL_QUICK_DIFFERENTIAL": "1" if differential else "0",
             "ACCEL_QUICK_PROBES": str(quick.differential_probes),
             "ACCEL_BUILD_STAMP_CACHE": "1" if quick.build_stamp_cache else "0",
-            **({"ACCEL_SUBSET_DATASET_DIR": str(cuts.tiny if sanitizer else cuts.subset)} if cuts else {}),
+            "ACCEL_SUBSET_DATASET_DIR": str(cuts.tiny if sanitizer else cuts.subset),
             **({"ACCEL_QUICK_SANITIZER": sanitizer, "ACCEL_QUICK_THREADS": str(threads)} if sanitizer else {}),
         },
         timeout_s=max(quick.timeout_sec, SANITIZER_TIMEOUT_SEC) if sanitizer else quick.timeout_sec,

@@ -43,7 +43,7 @@ from accel_pipeline.config import (
 )
 from accel_pipeline.data import pending_change_request
 from accel_pipeline.layout import (
-    BACKEND, DATA, HARNESS, INFRA, PIPELINE, QUERY, UNKNOWN_TARGET, query_dir, tree_snapshot)
+    BACKEND, DATA, HARNESS, INFRA, PIPELINE, QUERY, query_dir, tree_snapshot)
 from accel_pipeline.prompts import render_prompt
 from accel_pipeline.runlog import append_experiment_log, log_event
 from accel_pipeline.agent import MAIN, READ_ONLY_TOOLS, SessionStore, write_json
@@ -333,7 +333,8 @@ def _attempt(ctx: RepairCtx, attempt: Callable[[], T]) -> tuple[T | None, Failur
     except StageFailure as exc:
         return None, exc.failure
     except gate_mod.GateFailure as exc:
-        return None, _failure_from_text(ctx, "gate", str(exc))
+        return None, failure_from_gate(exc.result, stage=ctx.stage, workload=ctx.workload,
+                                       repo_root=ctx.pipeline_config.repo_root, load_factor=ctx.pipeline_config.repair.load_factor)
     except Exception as exc:  # noqa: BLE001 - the loop's contract: nothing else escapes
         return None, Failure(kind="orchestrator", stage=ctx.stage, source="exception",
                              summary=f"{type(exc).__name__}: {exc}", evidence=traceback.format_exc())
@@ -468,7 +469,9 @@ def report_defect(ctx: RepairCtx, failure: Failure) -> None:
 
 
 def record_elsewhere(ctx: RepairCtx, failure: Failure) -> None:
-    """The failed phases of a gate that belong to other owners than the failure's (aux_exit) go to those owners."""
+    """The failed phases of a gate that belong to other owners than the failure's (aux_exit) go to those owners. Only
+    the upstream owners need a record: a stop owner outranks them (layout.OWNER_PRECEDENCE) and its report lists every
+    failed phase, and the query's and infrastructure's phases fail again on the gate's rerun."""
     for gate, owner in failure.elsewhere.items():
         if owner in (HARNESS, BACKEND) and owner != _own_owner(ctx):
             report_defect(ctx, replace(failure, source=f"gate:{gate}", owner=owner))
@@ -886,9 +889,6 @@ _HARNESS_ERROR = re.compile(
     r"|host\.sh[^\n]*(?:exit(?:ed)?(?: with)?(?: code| status)?[ =:]+2\b|returned 2\b)",
     re.IGNORECASE,
 )
-# The test_suite validation runs on the registration the pipeline scaffolded: a failure to find or serve it is the
-# pipeline's, never the tester's (who owns tests/workload only).
-_REGISTRATION_ERROR = re.compile(r"unsupported shared query|Table Function with name \S+ does not exist", re.IGNORECASE)
 _TRANSIENT_PROVIDER = (
     "stream disconnected", "error sending request", "connection refused", "cannot connect to host",
     "timed out", "timeout", "temporarily unavailable", "503", "502", "429", "rate limit", "reconnecting...",
@@ -946,7 +946,7 @@ def _own_paths(workload: Mapping[str, Any], query: int | None, repo_root: Path) 
     if workload.get("workload_kind") == "engine_backend":
         ours.add(f"backends/{workload.get('engine_name') or ''}/")
     elif query is not None:
-        ours.add(query_dir(str(workload.get("benchmark_name") or "tpch"), query) + "/")
+        ours.add(query_dir(benchmark_of(workload), query) + "/")
     return ours
 
 
@@ -1019,7 +1019,7 @@ def classify(
     text = failure_text(data)
     if query is None and workload.get("query_number") is not None:
         query = int(workload["query_number"])
-    if owner is None and (found := _owner_from_text(gate_name, text, workload, query, repo_root)):
+    if owner is None and (found := _owner_from_text(text, workload, query, repo_root)):
         return found
     if shared := classify_infra_failure(text, query=query if query is not None else -1):
         return "infra", INFRA, shared
@@ -1030,37 +1030,16 @@ def classify(
     return ("infra", INFRA, "infra_reported") if owner == INFRA else ("code", QUERY, None)
 
 
-def _owner_from_text(gate_name: str, text: str, workload: Mapping[str, Any], query: int | None,
+def _owner_from_text(text: str, workload: Mapping[str, Any], query: int | None,
                      repo_root: Path | None) -> tuple[str, str, str] | None:
     """The fallback for a result that names no owner: (kind, owner, infra_reason) by the failure's own text."""
     if _HARNESS_ERROR.search(text):
         return "infra", INFRA, "harness_error"
-    if gate_name != "host_bootstrap" and missing_harness_target(text, workload):  # making them is that gate's stage
-        return "infra", HARNESS, "harness_missing"
     if _MISSING_PRODUCER.search(text):
         return "infra", PIPELINE, "missing_producer"
-    if _TEST_DATA_LOAD.search(text):  # before any build: the workload's data, not the query's code
-        return "infra", DATA, "test_data_load"
-    if gate_name == "test_suite_validate" and _REGISTRATION_ERROR.search(text):
-        return "infra", INFRA, "harness_error"
     if _engine_internal_sanitizer(text, workload, query, repo_root):
         return "code", BACKEND, "engine_internal_sanitizer"
     return None
-
-
-_TEST_DATA_LOAD = re.compile(r"^\[host\.sh load [^\]]*\] rc=[1-9]", re.MULTILINE)
-
-
-def missing_harness_target(text: str, workload: Mapping[str, Any]) -> str:
-    """The workload-harness target a build could not find (host_bootstrap makes them), if that is why it failed."""
-    from accel_pipeline.config import harness_targets, sanitize_engine_name, unit_test_target
-
-    engine, bench = str(workload.get("engine_name") or ""), str(workload.get("benchmark_name") or "")
-    if not (engine and bench and workload.get("query_number") is not None):
-        return ""
-    harness = {*harness_targets(sanitize_engine_name(engine), bench).values(),
-               f"{unit_test_target(bench, int(workload['query_number']))}_aux"}
-    return next((t for m in UNKNOWN_TARGET.finditer(text) for t in m.groups() if t in harness), "")
 
 
 # --- shared-tree infrastructure failures: repaired without burning agent turns
@@ -1114,12 +1093,12 @@ def release_shared_lease(repo_root: Path, *, query: int, worker_id: str | None =
     return bool(release_sticky_lease(repo_root, holder=holder))
 
 
-def restore_aux_from_snapshot(repo_root: Path, query: int, workload: dict[str, Any] | None = None) -> list[str]:
+def restore_aux_from_snapshot(repo_root: Path, query: int, workload: dict[str, Any]) -> list[str]:
     art = query_artifacts_dir(repo_root, query, workload=workload)
     # The snapshot mirrors repo-relative paths; everything a query owns (aux module,
     # tests, cost model under config/) lives in its directory accelerators/<bench>/q<N>/.
     snap_root = art / "best_valid_baseline_snapshot"
-    bench = str((workload or {}).get("benchmark_name") or "tpch")
+    bench = benchmark_of(workload)
     rel_q = Path("accelerators") / bench / f"q{query}"
     snap = snap_root / rel_q
     restored: list[str] = []
@@ -1144,10 +1123,10 @@ def handle_infra_failure(pipeline_config: Any, workload: dict[str, Any], query: 
 
     restored: dict[str, list[str]] = {}
     if foreign := re.match(r"foreign_file_compile:q(\d+)$", reason):  # the compile error names the peer's file
-        if files := restore_aux_from_snapshot(repo_root, int(foreign.group(1))):
+        if files := restore_aux_from_snapshot(repo_root, int(foreign.group(1)), workload):
             restored[f"q{foreign.group(1)}"] = files
     # Restore this query from its own baseline so a bad mid-edit does not linger.
-    if own := restore_aux_from_snapshot(repo_root, query, workload=workload):
+    if own := restore_aux_from_snapshot(repo_root, query, workload):
         restored[f"q{query}_own"] = own
     return {
         "infra_reason": reason,

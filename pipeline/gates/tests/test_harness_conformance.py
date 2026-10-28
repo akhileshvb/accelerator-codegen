@@ -61,3 +61,8 @@ def test_a_calibrator_that_measures_no_interference_on_the_declining_module_conf
 def test_a_failed_harness_names_its_exit_code_and_the_query(repo):
     _, _, data = conformance(repo, FAKE_RC_run="1")
     assert "exited 1 on query 5 with every read answered by the reference SQL" in data["reason"] and data["exit_code"] == 1
+
+
+def test_a_failed_engine_step_is_charged_to_its_owner(repo):
+    _, _, data = conformance(repo, FAKE_RC_load="1")
+    assert data["status"] == "fail" and data["owner"] == "data"

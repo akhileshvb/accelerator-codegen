@@ -25,7 +25,7 @@ TARGETS=("${DIFF_BINARY}" "${MULTI_CONN_TARGET}" "${CROSS_ACCEL_TARGET}" "${HARN
 for target in "${TARGETS[@]}"; do
   [[ -n "${target}" ]] || emit_result "${JSON}" harness_conformance fail "a harness target is missing from the gate context. ${HOST_HINT}" "" "owner=harness"
 done
-engine_ready "${TARGETS[@]}" || emit_result "${JSON}" harness_conformance fail "${ENGINE_FAIL}" "${ENGINE_LOG}"
+engine_ready "${TARGETS[@]}" || engine_not_ready "${JSON}" harness_conformance
 
 suite_prepare quick "${JSON}" harness_conformance
 suite_adversarial_env

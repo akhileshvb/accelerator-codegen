@@ -642,7 +642,7 @@ def test_an_exit_gate_record_older_than_the_turn_does_not_end_it(tmp_path, monke
 def test_the_mcp_validate_analysis_tool_reports_the_stage_check(tmp_path):
     from accel_pipeline.mcp import build_mcp_tool_callables
 
-    tools = build_mcp_tool_callables(_repo_config(tmp_path), {}, "w", 1, "analysis", 0, tmp_path)
+    tools = build_mcp_tool_callables(_repo_config(tmp_path), {"benchmark_name": "tpch"}, "w", 1, "analysis", 0, tmp_path)
     assert tools["validate_analysis"]().startswith("invalid: analysis file not found")
 
 
@@ -654,7 +654,7 @@ def test_the_mcp_update_analysis_tool_patches_then_validates(tmp_path, monkeypat
     target = tmp_path / "analysis.json"
     target.write_text(json.dumps({"x": {"y": 1}}))
     monkeypatch.setattr("accel_pipeline.mcp.analysis_artifact_path", lambda *a, **k: target)
-    tools = build_mcp_tool_callables(_repo_config(tmp_path), {}, "w", 1, "analysis", 0, tmp_path)
+    tools = build_mcp_tool_callables(_repo_config(tmp_path), {"benchmark_name": "tpch"}, "w", 1, "analysis", 0, tmp_path)
     out = tools["update_analysis"]([{"op": "replace", "path": "/x/y", "value": 2}])
     assert out.startswith("applied 1 operation(s); validation: invalid") and json.loads(target.read_text()) == {"x": {"y": 2}}
     assert tools["update_analysis"]([{"op": "remove", "path": "/nope"}]).startswith("not applied")
@@ -696,7 +696,7 @@ def test_every_mcp_proxy_takes_the_parameters_of_the_tool_it_forwards_to(tmp_pat
 
     proxies = {}
     register_core(lambda read_only: lambda fn: proxies.setdefault(fn.__name__, fn), lambda *args: "")
-    tools = build_mcp_tool_callables(_repo_config(tmp_path), {}, "w", 1, "optimization", 0, tmp_path)
+    tools = build_mcp_tool_callables(_repo_config(tmp_path), {"benchmark_name": "tpch"}, "w", 1, "optimization", 0, tmp_path)
     params = lambda fn: list(inspect.signature(fn).parameters)
     drift = {name: (params(proxy), params(tools[name])) for name, proxy in proxies.items()
              if name in tools and name not in NARROWED and params(proxy) != params(tools[name])}
