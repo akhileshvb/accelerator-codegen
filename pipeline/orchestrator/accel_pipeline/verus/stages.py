@@ -360,6 +360,16 @@ def json_block(text: str) -> dict[str, Any] | None:
     return None
 
 
+def agent_json(path: Path, res: AgentResult) -> dict[str, Any]:
+    """The JSON file an agent was asked to write; if it does not parse, the JSON of the agent's final message
+    (written back, so later readers see it)."""
+    data = read_json(path)
+    if not data and (data := json_block(res.final_text) or {}):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    return data
+
+
 def _replay(ctx: VerusContext, numbered: Path, plain: Path) -> AgentResult:
     d = numbered if numbered.is_dir() else plain
     if not d.is_dir():
@@ -449,11 +459,11 @@ def _analysis_and_mark(r: Run) -> None:
 
 
 def _spec_audit(r: Run, key: str) -> None:
-    r.agent("verus_spec_audit", "01_spec_audit.md",
-            "Audit spec/gen_spec.rs against query/query.sql; write analysis/spec_audit.json.")
+    res = r.agent("verus_spec_audit", "01_spec_audit.md",
+                  "Audit spec/gen_spec.rs against query/query.sql; write analysis/spec_audit.json.")
     if r.dry_run:
         return
-    audit = read_json(r.ctx.ws / "analysis" / "spec_audit.json")
+    audit = agent_json(r.ctx.ws / "analysis" / "spec_audit.json", res)
     if audit.get("verdict") != "ok":
         raise PipelineStop("the spec does not mean what the SQL means (sql2verus must be fixed, not the spec): "
                            + json.dumps(audit.get("issues") or audit)[:3000])
@@ -533,8 +543,8 @@ def _analysis(r: Run) -> None:
         if not check["ok"]:
             feedback = f"sql2verus refused inputs/q.inputs:\n{check['error']}"
             continue
-        r.agent("verus_critic", "02b_critic.md", "Review the analysis; write analysis/critique.json.")
-        crit = read_json(ctx.ws / "analysis" / "critique.json")
+        res = r.agent("verus_critic", "02b_critic.md", "Review the analysis; write analysis/critique.json.")
+        crit = agent_json(ctx.ws / "analysis" / "critique.json", res)
         failed = _failed_checks(crit)
         if (crit.get("verdict") == "accept" and not failed) or round_ == revisions:
             r.note(f"analysis accepted after {round_ + 1} round(s) (critic: {crit.get('verdict', '?')}"
@@ -587,11 +597,11 @@ def freeze(r: Run) -> None:
 
 def _obligations_audit(r: Run) -> str:
     """The obligations' faithfulness audit; '' if they are faithful."""
-    r.agent("verus_obligations_audit", "01b_obligations_audit.md",
-            "Audit frozen/gen_obligations.rs against inputs/q.inputs; write analysis/obligations_audit.json.")
+    res = r.agent("verus_obligations_audit", "01b_obligations_audit.md",
+                  "Audit frozen/gen_obligations.rs against inputs/q.inputs; write analysis/obligations_audit.json.")
     if r.dry_run:
         return ""
-    audit = read_json(r.ctx.ws / "analysis" / "obligations_audit.json")
+    audit = agent_json(r.ctx.ws / "analysis" / "obligations_audit.json", res)
     return "" if audit.get("verdict") == "ok" else json.dumps(audit.get("issues") or audit)[:3000]
 
 
@@ -653,8 +663,8 @@ def _write_glue(r: Run, task: str) -> tuple[bool, str]:
         if not c["ok"]:
             feedback = "The glue contract check failed (what the glue delivered vs the declared SQL):\n" + _brief(c, 6000)
             continue
-        r.agent("verus_glue_audit", "03d_glue_audit.md", "Audit glue/glue.cpp; write analysis/glue_audit.json.")
-        audit = read_json(ctx.ws / "analysis" / "glue_audit.json")
+        res = r.agent("verus_glue_audit", "03d_glue_audit.md", "Audit glue/glue.cpp; write analysis/glue_audit.json.")
+        audit = agent_json(ctx.ws / "analysis" / "glue_audit.json", res)
         failed = _failed_checks(audit)
         if audit.get("verdict") == "ok" and not failed:
             return True, ""
