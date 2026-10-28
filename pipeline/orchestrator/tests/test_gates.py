@@ -1333,3 +1333,12 @@ def test_a_gate_on_a_cut_that_cannot_be_built_fails_as_the_datas_and_does_not_ru
     assert result.status == "fail" and result.data["owner"] == "data" and result.data["reason"] == "no test databases"
     quick = run_quick_check(config, WORKLOAD, 6)
     assert quick.status == "fail" and quick.failure.owner == "data" and "no test databases" in quick.summary
+
+
+def test_a_background_gate_that_died_says_why_and_shows_no_stale_phase(tmp_path, monkeypatch):
+    monkeypatch.setattr(gates, "_state_path", lambda *a: tmp_path / "bg" / "aux_correctness.json")
+    (tmp_path / "bg").mkdir()
+    (tmp_path / "bg" / "aux_correctness.json").write_text(json.dumps({"gate": "aux_correctness", "status": "running",
+                                                                     "pid": 2 ** 22 + 7, "started_at": 0}))
+    status = gates.background_status(None, {}, 3, "aux_correctness")
+    assert status == {"gate": "aux_correctness", "status": "died", "reason": gates.BACKGROUND_DIED}

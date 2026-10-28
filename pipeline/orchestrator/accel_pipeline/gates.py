@@ -974,6 +974,11 @@ def _live(out_dir: Path, gate: str) -> dict[str, Any]:
     return {**live, "progress": progress} if progress else live
 
 
+BACKGROUND_DIED = ("the background run ended before it finished: a background gate runs inside your session and ends "
+                   "with it (a new turn, a restart), so its last phase says nothing about the code or the harness. "
+                   "Request it again, or in the foreground when it takes longer than you will wait")
+
+
 def background_status(pipeline_config: PipelineConfig, workload: dict[str, Any], query: int, gate: str) -> dict[str, Any]:
     """State of the background run of `gate`: running (with seconds elapsed, its current step and what its runs
     last printed), or its result and whether the code has changed since it ran ("stale": rerun it for acceptance)."""
@@ -982,7 +987,7 @@ def background_status(pipeline_config: PipelineConfig, workload: dict[str, Any],
         return {"gate": gate, "status": "none", "reason": "no background run; request_gate(gate, background=True) starts one"}
     if state.get("status") == "running":
         if not _alive(int(state.get("pid", 0))):
-            return {**state, "status": "died", "reason": "the background process ended without a result"}
+            return {"gate": gate, "status": "died", "reason": BACKGROUND_DIED}
         return {**state, "elapsed_sec": round(time.time() - float(state["started_at"]), 1),
                 **_live(_state_path(pipeline_config, workload, query, gate).parent / gate, gate),
                 "note": "still running: keep working, check again after your next edit or test"}

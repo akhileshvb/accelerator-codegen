@@ -76,6 +76,7 @@ from accel_pipeline.repair import (
     handle_infra_failure,
     is_transient_provider_failure,
     run_gates_with_repair,
+    revise_upstream,
     run_with_repair,
 )
 from accel_pipeline.runlog import (
@@ -1347,6 +1348,12 @@ class _Iteration:
         for attempt in range(1, self.max_attempts + 1):
             if self.fails >= self.fail_stop or (self.deadline is not None and time.time() >= self.deadline):
                 break
+            # a request the worker made against what it does not own (the harness, the suite) goes to its owner
+            # first, as before every repair turn; the baseline is remeasured on what the owner revised
+            if revise_upstream(RepairCtx(cfg, self.model_config, self.workload_name, query, stage="optimization",
+                                         change_kind="optimization", iteration=self.iteration,
+                                         model_overrides=self.model_overrides)):
+                self.measure_baseline()
             experimental = load_experimental_branch(self.art)
             if experimental:
                 self.depth = int(experimental.get("chain_depth") or 0)
