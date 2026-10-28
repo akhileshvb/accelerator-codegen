@@ -611,6 +611,7 @@ void AcceleratorRuntime::ApplyReady() {
     }
     const auto start = Clock::now();
     const bool applied = ApplyChange(combined);
+    EndCommit(combined.epoch); // a replay publishes outside RuntimeHost::Commit: nothing else ends its commit group
     std::lock_guard<std::mutex> lock(impl->state_mutex);
     if (!applied) {
       // Replayed after the rebuild.
