@@ -92,6 +92,10 @@ replacement) into an error naming the accelerator, and the harness refuses to ru
 `0` pass, `1` the contract is violated, `77` the engine profile states it n/a. The gate is
 `engine_hit_contract` (`pipeline/gates/run_engine_hit_contract.sh`).
 
+A read is a hit only when the state answered it: a read the state could serve that the module answers through
+the engine's SQL anyway (its `Execute` calls `ExecuteFallback`, which reaches `AnswerFromSql`) is counted as a
+fallback in the statistics the backend reports, whichever path the module took.
+
 The same contract is exercised from outside by the pipeline's canary suite (`canary_contract.md`) and, for the benches, by the conformance clauses of `bench_sweep_contract.md`.
 
 Benchmarks report the same facts so `measurement.check_measurement` can tell a hit from a fallback: the

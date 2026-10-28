@@ -1,5 +1,6 @@
 // GENERATED BACKEND
 #include "backends/duckdb/api/duckdb_aux_backend.hpp"
+#include "backends/duckdb/api/scan.hpp"
 
 #include <chrono>
 
@@ -43,6 +44,9 @@ bool DuckDBAuxBackend::AnswerFromSql(const core::QueryArguments &arguments, core
   if (!sql_answer) {
     return false;
   }
+  // Answered from the engine's SQL, not the state: a fallback however the module reached it (its own Execute too).
+  // The SQL's scans run on the engine's threads, where t_table_scans does not see them.
+  ++t_table_scans;
   const auto start = std::chrono::steady_clock::now();
   const bool answered = sql_answer(arguments, sink);
   runtime.NoteSqlFallbackUs(

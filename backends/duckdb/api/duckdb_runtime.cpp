@@ -229,6 +229,9 @@ void DuckdbRuntime::Read(const core::QueryArguments &arguments, Sink &sink) {
   } else {
     accelerator_.binding->Module().ExecuteFallback(*accelerator_.backend, arguments, sink);
   }
+  if (guard.Servable() && t_table_scans > 0) {
+    servable_reads_answered_from_sql_++;
+  }
   core::RecordAuxExecute(!guard.Servable() || t_table_scans > 0
                              ? core::AuxExecutePath::Fallback
                              : core::AuxExecutePath::Hit);
@@ -487,7 +490,13 @@ uint64_t DuckdbRuntime::AuxStateFootprintBytes() const {
   return versioned ? ComputeAuxStateFootprintBytes(*versioned, entry_.accelerator_id) : 0;
 }
 
-runtime::AcceleratorStats DuckdbRuntime::Stats() const { return accelerator_.runtime->Stats(); }
+runtime::AcceleratorStats DuckdbRuntime::Stats() const {
+  auto stats = accelerator_.runtime->Stats();
+  const auto from_sql = servable_reads_answered_from_sql_.load();
+  stats.reads_hit -= from_sql;
+  stats.reads_fallback += from_sql;
+  return stats;
+}
 
 core::CalibrationEngine::Timed
 DuckdbCalibrationEngine::WriteThenRead(const std::string &sql,
