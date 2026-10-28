@@ -390,6 +390,19 @@ def test_runner_env_modes(tmp_path):
     assert context.draw_env(None, "replace") == {}
 
 
+def test_sql2verus_gets_the_engine_division_and_nullable_parameters(tmp_path, monkeypatch):
+    seen: list[list[str]] = []
+    monkeypatch.setattr(actions, "sql2verus_bin", lambda ctx: Path("sql2verus"))
+    monkeypatch.setattr(actions, "_run", lambda cmd, **kw: seen.append(cmd))
+    ctx = _ctx(tmp_path)
+    actions._sql2verus(ctx, tmp_path / "o", inputs=None)
+    assert "--div-zero" not in seen[-1] and "--nullable-params" not in seen[-1]  # engine profile, non-NULL parameters
+    ctx.settings.update(div_zero="error", nullable_params=[1, 3])
+    actions._sql2verus(ctx, tmp_path / "o", inputs=None)
+    cmd = seen[-1]
+    assert cmd[cmd.index("--div-zero") + 1] == "error" and cmd[cmd.index("--nullable-params") + 1] == "1,3"
+
+
 def test_sanitize_reserves_what_sql2verus_reserves():
     rust = (REPO / "substrate" / "verus" / "sql2verus" / "src" / "main.rs").read_text(encoding="utf-8")
     block = re.search(r"const RESERVED: &\[&str\] = &\[(.*?)\];", rust, re.S).group(1)

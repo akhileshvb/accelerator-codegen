@@ -19,6 +19,8 @@
 # `none` runs codex unsandboxed (approvals are bypassed either way).
 sandbox: bwrap
 engine: duckdb                  # the engine the accelerator runs on: the spec models its semantics (sql2verus --engine)
+# div_zero: ieee                # a zero divisor: ieee (inf / NaN) | error (undefined); default from the engine
+# nullable_params: [1]          # parameters ($n) that may be NULL (sql2verus --nullable-params); default none
 agent_retries: 2                # an agent step failing on a provider hiccup (429/5xx, dropped stream) is retried
 # Independent stages run concurrently: the spec audit with the analysis; after
 # freeze B, the obligations audit, the tests and the glue.  false: one at a time.

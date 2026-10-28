@@ -17,8 +17,8 @@ You write one C++ file against two APIs:
   keyed rescan in chunks; `Arg*` read query arguments; `Out*` make result
   cells; `Glue` describes the query; `Registrar` registers it.
 * `frozen/<crate>_verus.h`: the kernel's C ABI (prefix `{{ffi_prefix}}_` for
-  kernel states; ignore the `{{ffi_prefix}}s_` functions: the host keeps the
-  states in the database's one Verus store itself). Its
+  kernel states, `{{ffi_prefix}}s_` for the Verus store; both are used, see
+  "The Verus store" below). Its
   conventions: a rows argument `x` is `size_t x__n` then either one array `x`
   (a row type without text: the header declares the struct) or column arrays
   in field order: `x__<field>` (nested `x__<field>__<field>`), a text column
@@ -28,7 +28,11 @@ You write one C++ file against two APIs:
   `_result_len` and `_result_c<k>` (0: NULL). A NULL-able field `f` comes
   with a flag `f__null` (nonzero: NULL): set it from `kit::IsNull` and leave
   the value slot zero (`kit::kNoText` for text); never read the value of a
-  NULL cell.
+  NULL cell. A NULL-able **parameter** (the header's `execute` declares it: a
+  text parameter is a null pointer, any other type has a `p<n>__null` flag
+  argument after its value, zero when NULL) is tested with `kit::ArgIsNull`
+  before the `kit::Arg*` conversion; other parameters never are NULL (the
+  `Arg*` functions return false on NULL: the host answers with SQL).
 
 ## The Glue to define and register
 
@@ -38,7 +42,8 @@ const kit::Glue kGlue = {
     { /* tables: one per delta in inputs/q.inputs, any order */
       {"<table>", {"<captured column>", ...}}, ... },
     { /* parameter kinds, $1 first: kit::Kind::Text / Int / Dec / Date / Bool */ },
-    Build, FreeState, Apply, Execute,
+    Build, FreeState, Apply, Execute, Answer, PrepareApply, PrepareBuild,
+    kit::StoreOps{ /* see "The Verus store" */ },
 };
 const kit::Registrar kRegistrar(&kGlue);
 ```
@@ -68,6 +73,32 @@ const kit::Registrar kRegistrar(&kGlue);
   every result row into an `AuxRow` (`kit::Out*`; columns in the query's
   order; a decimal with its scale; NULLs as `kit::OutNull`). Free the result.
 * `FreeState`: `{{ffi_prefix}}_free`.
+
+## The Verus store (same file)
+
+The database's Verus store keeps the kernel's states as versions; the glue
+hands it the kernel's calls. Three more functions and the store wiring, all
+from the same marshalling as above (write each argument list once and share
+it between the pairs below):
+
+* `Answer(reading, args, out)`: `Execute`'s body, calling
+  `{{ffi_prefix}}s_answer(reading, <parameters>)` (the verified answer on a
+  store reading) instead of `{{ffi_prefix}}_execute(state, ...)`.
+* `PrepareApply(base, changes, h, err)`: `Apply`'s body, but the base is a
+  `{{ffi_prefix}}s_base` (the newest version's base, not a state): take the
+  state for the rescan keys from `{{ffi_prefix}}s_base_state(base)` and finish
+  with `{{ffi_prefix}}s_stage_apply(base, <apply's arguments>, err)`, which
+  returns the next version's slot (null with `*err`: the host rebuilds).
+* `PrepareBuild(head_of, h)`: `Build`'s body; the last step is
+  `{{ffi_prefix}}s_stage_build(head_of(), <build's arguments>)`, where
+  `head_of()` (a `{{ffi_prefix}}s_head`) is called once, after the scans, and
+  the staged slot is returned (never null).
+* The `kit::StoreOps` aggregate, in the order of `verus_kit.hpp`, each entry a
+  cast-and-forward lambda to the same-named `{{ffi_prefix}}s_*` function
+  (`new`, `free`, `newest_base`, `base_state`, `base_free`, `newest_head`,
+  `head_free`, `stage_invalid`, `staged_free`, `begin`, `abort`, `install`,
+  `read`, `reading_free`, `invalidate_all`, `version_count`). Pass `Answer`,
+  `PrepareApply`, `PrepareBuild` and the aggregate after `Execute` in `kGlue`.
 
 ## Rules
 
