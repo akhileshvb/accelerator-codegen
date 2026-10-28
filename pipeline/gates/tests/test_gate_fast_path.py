@@ -181,7 +181,7 @@ def test_the_quick_tier_loads_the_subset_into_its_own_instance(repo):
     assert proc.returncode == 0, proc.stdout + proc.stderr
     first = log.read_text().splitlines()[0]
     assert "instance=w7-fake-quick" in first and "data=/data/subset" in first
-    assert "state/full-quick" in first
+    assert "state/full/quick" in first  # inside the state dir, which the agents' sandbox mounts
 
 
 def test_the_full_tier_ignores_the_subset(repo):
