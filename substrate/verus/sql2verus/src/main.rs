@@ -1,6 +1,7 @@
 // sql2verus: SQL (+ DDL) -> trusted Verus reference spec (q_ref).
 //
 //   sql2verus --schema <ddl.sql> --query <query.sql> --out <spec.rs>
+//             [--nullable-params <n,..>]
 //             [--obligations <gen_obligations.rs> [--inputs <q.inputs>] [--kernel-stub <kernel.rs>]
 //              [--world <gen_world.rs>] [--ffi <gen_ffi.rs> --ffi-header <q.h> --ffi-prefix <p>
 //               [--host-glue <gen_glue.cpp> --accel-id <id> --workload <name> --query-id <n>]]]
@@ -32,7 +33,10 @@
 //
 // Semantic rules applied (the decisions a reviewer signs off on once, here):
 //   * Tables are bags (sequences; duplicates count).  Parameters are non-NULL
-//     by host contract.
+//     by host contract, except those named by --nullable-params: a nullable
+//     parameter is an `Option<T>` field of `Params` and reads like a NULL-able
+//     column (a comparison with NULL filters the row, as the engine's
+//     three-valued WHERE does).
 //   * NULL: a NULL-able column the query reads is an `Option<T>` field of its
 //     row.  In expressions it is a guarded value (`c->0`, guard `c is Some`);
 //     the missing side of a LEFT JOIN adds the guard `p is Some`, so
@@ -314,8 +318,9 @@ fn flt_rescale(code: &str, prec: u8, from: u32, to: u32) -> (String, u8) {
     }
 }
 
-/// scale of a numeric parameter used as a multiplier (`x * $n`): DECIMAL(.., 9), value * 10^9.
-const MULT_PARAM_SCALE: u32 = 9;
+/// scale of a numeric parameter used as a multiplier (`x * $n`): DECIMAL(.., 12), value * 10^12; the engine binds
+/// the argument as the DECIMAL(w, s) of its literal, and a value with more places is outside the type (the host declines).
+const MULT_PARAM_SCALE: u32 = 12;
 
 fn bytes_lit(s: &str) -> String {
     if s.is_empty() {
@@ -864,6 +869,7 @@ struct Tr<'a> {
     frames: Vec<Frame>,
     used: BTreeMap<String, BTreeSet<String>>,
     params: BTreeMap<u32, (Ty, bool, bool)>,
+    nullable_params: BTreeSet<u32>, // parameters that may be NULL (--nullable-params)
     items: Vec<String>,
     vars: HashSet<String>,
     rels: HashMap<String, RelInfo>,
@@ -1125,6 +1131,10 @@ impl<'a> Tr<'a> {
         } else {
             self.params.insert(n, (ty, false, false));
         }
+        if self.nullable_params.contains(&n) {
+            // NULL-able like a column: `p is Some` guards the value `p->0`
+            return Ok(Val { param: Some(n), guard: Some(format!("params.p{n} is Some")), ..Val::atom(format!("params.p{n}->0"), ty) });
+        }
         Ok(Val { param: Some(n), ..Val::atom(format!("params.p{n}"), ty) })
     }
 
@@ -1134,7 +1144,7 @@ impl<'a> Tr<'a> {
             // a parameter scaled by an integer literal is an integer (SEC-EDGAR Q24's `$1*10000+101` over a year)
             Operator::Multiply if other.ty == Ty::Int && other.int_lit.is_some() => Some(Ty::Int),
             // otherwise a parameter multiplying a number is a DECIMAL with MULT_PARAM_SCALE places (exact for any value
-            // with at most that many decimals: TPC-H Q11's 0.0001/SF down to SF 100000)
+            // with at most that many decimals: TPC-H Q11's 0.0001/SF down to SF 10^8)
             Operator::Multiply if matches!(other.ty, Ty::Int | Ty::Dec(_)) => Some(Ty::Dec(MULT_PARAM_SCALE)),
             Operator::Multiply | Operator::Divide => None,
             Operator::Plus | Operator::Minus if matches!(other.ty, Ty::Date | Ty::Ts) => None,
@@ -1229,7 +1239,7 @@ impl<'a> Tr<'a> {
                     let pv = self.placeholder(ph, Some(Ty::Text))?;
                     let code = format!("like_match({}, {})", v.code, pv.code);
                     let code = if *negated { format!("!{code}") } else { code };
-                    let mut out = Val::atom(code, Ty::Bool).with_meta(&[&v]);
+                    let mut out = Val::atom(code, Ty::Bool).with_meta(&[&v, &pv]);
                     if out.guard.is_some() && *negated {
                         bail!("NOT LIKE on a possibly-NULL value");
                     }
@@ -3096,7 +3106,8 @@ fn print(tr: &Tr, top: &Top, sql: &str, src_name: &str) -> String {
     for (n, (t, ch, days)) in &tr.params {
         let extra = if *ch { "; compared with a CHAR column, so the host passes it without trailing spaces" } else { "" };
         let what = if *days { " (a number of days: `$n * INTERVAL '1' DAY`)" } else { "" };
-        writeln!(w, "//  * ${n} is params.p{n}: {}{what}{extra}.", ty_doc(*t)).unwrap();
+        let null = if tr.nullable_params.contains(n) { "; None = NULL" } else { "" };
+        writeln!(w, "//  * ${n} is params.p{n}: {}{what}{extra}{null}.", ty_doc(*t)).unwrap();
     }
     let used_tys: BTreeSet<String> = tr
         .used
@@ -3143,8 +3154,9 @@ fn print(tr: &Tr, top: &Top, sql: &str, src_name: &str) -> String {
     writeln!(w, "/// The query parameters.").unwrap();
     writeln!(w, "pub struct Params {{").unwrap();
     for (n, (t, _, days)) in &tr.params {
-        writeln!(w, "    /// ${n}: {}{}", ty_doc(*t), if *days { ", a number of days" } else { "" }).unwrap();
-        writeln!(w, "    pub p{n}: {},", verus_ty(*t)).unwrap();
+        let (null, vty) = if tr.nullable_params.contains(n) { ("; None = NULL", format!("Option<{}>", verus_ty(*t))) } else { ("", verus_ty(*t).to_string()) };
+        writeln!(w, "    /// ${n}: {}{}{null}", ty_doc(*t), if *days { ", a number of days" } else { "" }).unwrap();
+        writeln!(w, "    pub p{n}: {vty},").unwrap();
     }
     writeln!(w, "}}\n").unwrap();
     for it in &tr.items {
@@ -3851,6 +3863,7 @@ async fn run() -> Res<()> {
         frames: vec![],
         used: BTreeMap::new(),
         params: BTreeMap::new(),
+        nullable_params: opt0(&args, "--nullable-params").map(|l| l.split(',').filter_map(|n| n.trim().parse().ok()).collect()).unwrap_or_default(),
         items: vec![],
         vars: HashSet::new(),
         rels: HashMap::new(),

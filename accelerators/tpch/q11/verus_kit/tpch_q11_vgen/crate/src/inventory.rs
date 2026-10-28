@@ -754,7 +754,7 @@ pub proof fn lemma_emission_answer(inventory: Inventory, split: int, weight: int
         &&& moment_at(inventory.groups, row.0 as int).count > 0
         &&& row.1 == weight * moment_at(inventory.groups, row.0 as int).value
         &&& inventory.total.count@ > 0
-        &&& 1000000000 * moment_at(inventory.groups, row.0 as int).value > limit
+        &&& 1000000000000 * moment_at(inventory.groups, row.0 as int).value > limit
     } by {
         lemma_all_members(inventory, split, position);
         lemma_positive_group(&inventory, output[position].0 as int);
@@ -769,7 +769,7 @@ pub proof fn lemma_emission_answer(inventory: Inventory, split: int, weight: int
             requires weight > 0, all[left].1 >= all[right].1, rows[left].1 == weight * all[left].1, rows[right].1 == weight * all[right].1;
     }
     assert forall|part: i64| #[trigger] moment_at(inventory.groups, part as int).count > 0
-        && 1000000000 * moment_at(inventory.groups, part as int).value > limit implies
+        && 1000000000000 * moment_at(inventory.groups, part as int).value > limit implies
         exists|position: int| 0 <= position < rows.len() && (#[trigger] rows[position]).0 == part by {
         lemma_part_position(inventory, split, part);
         let position = choose|position: int| 0 <= position < all.len() && (#[trigger] all[position]).0 == part;
@@ -789,7 +789,7 @@ pub proof fn lemma_emission_answer(inventory: Inventory, split: int, weight: int
 pub fn passes_wide(value: &Wide, limit: &Wide) -> (result: bool)
     ensures result == ranks::passes(value@, limit@),
 {
-    let scaled = value.mul(&Wide::from_i128(1000000000i128));
+    let scaled = value.mul(&Wide::from_i128(1000000000000i128));
     limit.lt(&scaled)
 }
 

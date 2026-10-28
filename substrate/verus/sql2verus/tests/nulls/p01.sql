@@ -1,0 +1,1 @@
+SELECT id, s FROM t WHERE s = $1 ORDER BY id

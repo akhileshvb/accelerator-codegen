@@ -312,11 +312,29 @@ pub open spec fn merge_weight(buckets: Slices, key: KeyView) -> spec_fn((Key, Ar
     |row: (Key, Arc<Wide>)| (*row.1)@ * nested_count(buckets, row.0.view(), key)
 }
 
-#[verifier::rlimit(20)]
-pub fn answer(nations: &Slices, buckets: &Slices, parameter: &[u8], Ghost(db): Ghost<Db>) -> (result: Option<Vec<(Vec<u8>, i64)>>)
+pub fn answer(nations: &Slices, buckets: &Slices, parameter: Option<&[u8]>, Ghost(db): Ghost<Db>) -> (result: Option<Vec<(Vec<u8>, i64)>>)
     requires nations_for(*nations, db), buckets_for(*buckets, db),
-    ensures result matches Some(out) ==> query_result(db, params(parameter@), out_view(out@)),
-        result.is_none() ==> !answer_fits(db, params(parameter@)),
+    ensures result matches Some(out) ==> query_result(db, params(match parameter { Some(x) => Some(x@), None => None }), out_view(out@)),
+        result.is_none() ==> !answer_fits(db, params(match parameter { Some(x) => Some(x@), None => None })),
+{
+    match parameter {
+        Some(name) => answer_named(nations, buckets, name, Ghost(db)),
+        None => {
+            let empty: Vec<(Vec<u8>, i64)> = Vec::new();
+            proof {
+                lemma_null_parameter_result(db, params(None));
+                assert(out_view(empty@) =~= Seq::<OutRow>::empty());
+            }
+            Some(empty)
+        },
+    }
+}
+
+#[verifier::rlimit(20)]
+fn answer_named(nations: &Slices, buckets: &Slices, parameter: &[u8], Ghost(db): Ghost<Db>) -> (result: Option<Vec<(Vec<u8>, i64)>>)
+    requires nations_for(*nations, db), buckets_for(*buckets, db),
+    ensures result matches Some(out) ==> query_result(db, params(Some(parameter@)), out_view(out@)),
+        result.is_none() ==> !answer_fits(db, params(Some(parameter@))),
 {
     hide(Tree::at);
     hide(Tree::entries);
@@ -337,13 +355,13 @@ pub fn answer(nations: &Slices, buckets: &Slices, parameter: &[u8], Ghost(db): G
         None => {
             let empty: Vec<(Vec<u8>, i64)> = Vec::new();
             proof {
-                lemma_missing_nation(nations, db, params(parameter@));
+                lemma_missing_nation(nations, db, params(Some(parameter@)));
                 assert(out_view(empty@) =~= Seq::<OutRow>::empty());
             }
             return Some(empty);
         },
     };
-    proof { lemma_matches_for(nations, &*matches, db, params(parameter@)); }
+    proof { lemma_matches_for(nations, &*matches, db, params(Some(parameter@))); }
     let rows = matches.rows();
     if rows.len() == 1 {
         let (nation, multiplicity) = &rows[0];
@@ -355,20 +373,20 @@ pub fn answer(nations: &Slices, buckets: &Slices, parameter: &[u8], Ghost(db): G
             assert(matches.entries() =~= seq![(nation.view(), **multiplicity)]);
             assert(matches.entries()[0].1 == **multiplicity);
             assert((**multiplicity)@ > 0);
-            assert forall|name: Seq<u8>| #![trigger group_count(db, params(parameter@), name)]
-                group_count(db, params(parameter@), name) == (**multiplicity)@ * count(groups, (0int, name)) by {
-                lemma_group_indexed(db, params(parameter@), &*matches, buckets, name);
+            assert forall|name: Seq<u8>| #![trigger group_count(db, params(Some(parameter@)), name)]
+                group_count(db, params(Some(parameter@)), name) == (**multiplicity)@ * count(groups, (0int, name)) by {
+                lemma_group_indexed(db, params(Some(parameter@)), &*matches, buckets, name);
                 lemma_sum_singleton((nation.view(), **multiplicity), |row: (KeyView, Wide)| row.1@ * nested_count(*buckets, row.0, (0int, name)));
                 assert(count(groups, (0int, name)) == nested_count(*buckets, nation.view(), (0int, name)));
             }
-            lemma_groups_result(db, params(parameter@), &groups, (**multiplicity)@);
+            lemma_groups_result(db, params(Some(parameter@)), &groups, (**multiplicity)@);
         }
         let selected = select(&groups, &**multiplicity);
         proof {
             if selected.is_none() {
                 let model = limit_rows(sort_by(group_rows(groups.entries(), (**multiplicity)@), ext_order()), 100);
-                assert(query_result(db, params(parameter@), model));
-                assert(!answer_fits(db, params(parameter@)));
+                assert(query_result(db, params(Some(parameter@)), model));
+                assert(!answer_fits(db, params(Some(parameter@))));
             }
         }
         return selected;
@@ -376,7 +394,7 @@ pub fn answer(nations: &Slices, buckets: &Slices, parameter: &[u8], Ghost(db): G
     let mut merged = Counts::new();
     let mut position = 0usize;
     while position < rows.len()
-        invariant position <= rows.len(), positive(merged), matches_for(*matches, db, params(parameter@)), buckets_for(*buckets, db),
+        invariant position <= rows.len(), positive(merged), matches_for(*matches, db, params(Some(parameter@))), buckets_for(*buckets, db),
             rows@.map_values(|row: (Key, Arc<Wide>)| (row.0.view(), *row.1)) == matches.entries(),
             forall|key: KeyView| #![trigger count(merged, key)] count(merged, key) == sum(rows@.take(position as int), merge_weight(*buckets, key)),
         decreases rows.len() - position,
@@ -406,20 +424,20 @@ pub fn answer(nations: &Slices, buckets: &Slices, parameter: &[u8], Ghost(db): G
                 assert(count(merged, key) == 0);
             }
         }
-        assert forall|name: Seq<u8>| #![trigger group_count(db, params(parameter@), name)] group_count(db, params(parameter@), name) == 1int * count(merged, (0int, name)) by {
-            lemma_group_indexed(db, params(parameter@), &*matches, buckets, name);
+        assert forall|name: Seq<u8>| #![trigger group_count(db, params(Some(parameter@)), name)] group_count(db, params(Some(parameter@)), name) == 1int * count(merged, (0int, name)) by {
+            lemma_group_indexed(db, params(Some(parameter@)), &*matches, buckets, name);
             lemma_sum_map(rows@, |row: (Key, Arc<Wide>)| (row.0.view(), *row.1),
                 |row: (KeyView, Wide)| row.1@ * nested_count(*buckets, row.0, (0int, name)), merge_weight(*buckets, (0int, name)));
         }
-        lemma_groups_result(db, params(parameter@), &merged, 1int);
+        lemma_groups_result(db, params(Some(parameter@)), &merged, 1int);
     }
     let one = Wide::from_i128(1);
     let selected = select(&merged, &one);
     proof {
         if selected.is_none() {
             let model = limit_rows(sort_by(group_rows(merged.entries(), 1int), ext_order()), 100);
-            assert(query_result(db, params(parameter@), model));
-            assert(!answer_fits(db, params(parameter@)));
+            assert(query_result(db, params(Some(parameter@)), model));
+            assert(!answer_fits(db, params(Some(parameter@))));
         }
     }
     selected

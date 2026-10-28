@@ -78,6 +78,9 @@ struct TextColumn {
 };
 
 // ---- query arguments (false: NULL or not convertible: answer with SQL) ----
+// The argument is SQL NULL.  Only for a parameter the kernel declares NULL-able (Option in its
+// spec); the other Arg* functions return false on NULL, which answers with SQL.
+bool ArgIsNull(const core::QueryArguments &args, std::size_t i);
 bool ArgText(const core::QueryArguments &args, std::size_t i, std::string &out);
 bool ArgI64(const core::QueryArguments &args, std::size_t i, int scale, int64_t &out);
 bool ArgDate(const core::QueryArguments &args, std::size_t i, int32_t &out);

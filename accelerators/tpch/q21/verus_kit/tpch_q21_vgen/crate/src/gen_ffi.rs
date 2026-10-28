@@ -274,7 +274,7 @@ pub unsafe extern "C" fn tpchq21vgen_apply(s: *const State, lineitem_delta__n: u
 /// The query's answer on the state, or NULL (the host then answers with SQL).
 #[no_mangle]
 pub unsafe extern "C" fn tpchq21vgen_execute(s: *const State, p1: *const u8, p1__len: usize) -> *mut FfiResult {
-    match ob_execute(&*s, slice(p1, p1__len)) {
+    match ob_execute(&*s, if p1.is_null() { None } else { Some(slice(p1, p1__len)) }) {
         Some(rows) => Box::into_raw(Box::new(FfiResult { rows })),
         None => ptr::null_mut(),
     }
@@ -539,7 +539,7 @@ pub unsafe extern "C" fn tpchq21vgens_reading_free(x: *mut QReading) {
 /// answers with SQL).
 #[no_mangle]
 pub unsafe extern "C" fn tpchq21vgens_answer(r: *const QReading, p1: *const u8, p1__len: usize) -> *mut FfiResult {
-    match answer(&*r, slice(p1, p1__len)) {
+    match answer(&*r, if p1.is_null() { None } else { Some(slice(p1, p1__len)) }) {
         Some(rows) => Box::into_raw(Box::new(FfiResult { rows })),
         None => ptr::null_mut(),
     }

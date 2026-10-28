@@ -218,9 +218,9 @@ pub fn build(
     Some(State { waiting, suppliers: supplier_bag, nations: nation_bag, buckets, names, database: Ghost(db) })
 }
 
-pub fn execute(state: &State, parameter: &[u8]) -> (result: Option<Vec<(Vec<u8>, i64)>>)
-    ensures result matches Some(out) ==> query_result(state.db(), params(parameter@), out_view(out@)),
-        result.is_none() ==> !answer_fits(state.db(), params(parameter@)),
+pub fn execute(state: &State, parameter: Option<&[u8]>) -> (result: Option<Vec<(Vec<u8>, i64)>>)
+    ensures result matches Some(out) ==> query_result(state.db(), params(match parameter { Some(x) => Some(x@), None => None }), out_view(out@)),
+        result.is_none() ==> !answer_fits(state.db(), params(match parameter { Some(x) => Some(x@), None => None })),
 {
     hide(Tree::at);
     hide(Tree::entries);

@@ -366,6 +366,20 @@ impl<'m> Ffi<'m> {
                     cp.push(format!("{} {}", c_prim(rt), c_ident(x)));
                     args.push(x.clone());
                 }
+                Arg::NullText => {
+                    rp.push(format!("{x}: *const u8"));
+                    rp.push(format!("{x}__len: usize"));
+                    cp.push(format!("const uint8_t *{}", c_ident(x)));
+                    cp.push(format!("size_t {x}__len"));
+                    args.push(format!("if {x}.is_null() {{ None }} else {{ Some(slice({x}, {x}__len)) }}"));
+                }
+                Arg::NullScalar(rt) => {
+                    rp.push(format!("{x}: {rt}"));
+                    rp.push(format!("{x}__null: u8"));
+                    cp.push(format!("{} {}", c_prim(rt), c_ident(x)));
+                    cp.push(format!("uint8_t {x}__null"));
+                    args.push(format!("if {x}__null != 0 {{ None }} else {{ Some({x}) }}"));
+                }
                 Arg::Rows(el) => {
                     rp.push(format!("{x}__n: usize"));
                     cp.push(format!("size_t {x}__n"));
@@ -1282,6 +1296,22 @@ pub(crate) fn kit(m: &Model, prefix: &str, header: &str, accel_id: &str, workloa
                 writeln!(w, "  std::string p{n};\n  if (!kit::ArgText(a, {k}, p{n}))\n    return false;").unwrap();
                 eargs.push(format!("reinterpret_cast<const uint8_t *>(p{n}.data())"));
                 eargs.push(format!("p{n}.size()"));
+            }
+            (Arg::NullText, _) => {
+                writeln!(w, "  std::string p{n};\n  const bool p{n}_null = kit::ArgIsNull(a, {k});\n  if (!p{n}_null && !kit::ArgText(a, {k}, p{n}))\n    return false;").unwrap();
+                eargs.push(format!("p{n}_null ? nullptr : reinterpret_cast<const uint8_t *>(p{n}.data())"));
+                eargs.push(format!("p{n}.size()"));
+            }
+            (Arg::NullScalar(rt), t) => {
+                let (decl, conv) = match (*rt, t) {
+                    ("i32", Ty::Date) => ("int32_t", format!("kit::ArgDate(a, {k}, p{n})")),
+                    ("i64", Ty::Ts) => bail!("host glue: TIMESTAMP parameter ${n}"),
+                    ("i64", t) => ("int64_t", format!("kit::ArgI64(a, {k}, {}, p{n})", if let Ty::Dec(s) = t { s } else { 0 })),
+                    _ => bail!("host glue: parameter ${n} of type {ty:?}"),
+                };
+                writeln!(w, "  {decl} p{n} = 0;\n  const bool p{n}_null = kit::ArgIsNull(a, {k});\n  if (!p{n}_null && !{conv})\n    return false;").unwrap();
+                eargs.push(format!("p{n}"));
+                eargs.push(format!("static_cast<uint8_t>(p{n}_null)"));
             }
             (Arg::Scalar("i32"), Ty::Date) => {
                 writeln!(w, "  int32_t p{n} = 0;\n  if (!kit::ArgDate(a, {k}, p{n}))\n    return false;").unwrap();

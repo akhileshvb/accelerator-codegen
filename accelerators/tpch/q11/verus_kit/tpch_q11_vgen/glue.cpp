@@ -139,8 +139,8 @@ bool Run(const kit::core::QueryArguments &args, std::vector<kit::core::AuxRow> &
   if (!kit::ArgText(args, 0, nation_name)) {
     return false;
   }
-  int64_t fraction = 0; // $2 * 10^9, converted exactly (else decline)
-  if (!kit::ArgI64(args, 1, 9, fraction)) {
+  int64_t fraction = 0; // $2 * 10^12, converted exactly (else decline)
+  if (!kit::ArgI64(args, 1, 12, fraction)) {
     return false;
   }
   tpchq11vgen_result *result = call(reinterpret_cast<const uint8_t *>(nation_name.data()), nation_name.size(),

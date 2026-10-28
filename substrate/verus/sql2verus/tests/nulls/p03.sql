@@ -1,0 +1,1 @@
+SELECT id FROM t WHERE NOT (a = $1) ORDER BY id

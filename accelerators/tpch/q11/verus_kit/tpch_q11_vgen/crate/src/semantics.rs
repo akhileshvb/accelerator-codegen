@@ -261,12 +261,12 @@ pub open spec fn inventory_answer(inventory: Inventory, weight: int, output: Seq
         &&& moment_at(inventory.groups, row.0 as int).count > 0
         &&& row.1 == weight * moment_at(inventory.groups, row.0 as int).value
         &&& inventory.total.count@ > 0
-        &&& 1000000000 * moment_at(inventory.groups, row.0 as int).value as int > inventory.total.value@ * fraction
+        &&& 1000000000000 * moment_at(inventory.groups, row.0 as int).value as int > inventory.total.value@ * fraction
     }
     &&& forall|left: int, right: int| 0 <= left < right < output.len() ==>
         (#[trigger] output[left]).0 != (#[trigger] output[right]).0 && output[left].1 >= output[right].1
     &&& forall|part: i64| #[trigger] moment_at(inventory.groups, part as int).count > 0
-        && 1000000000 * moment_at(inventory.groups, part as int).value as int > inventory.total.value@ * fraction ==>
+        && 1000000000000 * moment_at(inventory.groups, part as int).value as int > inventory.total.value@ * fraction ==>
         exists|position: int| 0 <= position < output.len() && (#[trigger] output[position]).0 == part
 }
 
@@ -596,8 +596,8 @@ pub proof fn lemma_execute_model(db: Db, name: Seq<u8>, fraction: int, inventory
         assert(weight * count > 0) by (nonlinear_arith) requires weight > 0, count > 0;
         assert(weight * inventory.total.count@ > 0) by (nonlinear_arith)
             requires weight > 0, inventory.total.count@ > 0;
-        assert(1000000000 * (weight * value) > (weight * inventory.total.value@) * fraction) by (nonlinear_arith)
-            requires weight > 0, 1000000000 * value > inventory.total.value@ * fraction;
+        assert(1000000000000 * (weight * value) > (weight * inventory.total.value@) * fraction) by (nonlinear_arith)
+            requires weight > 0, 1000000000000 * value > inventory.total.value@ * fraction;
         assert(scalar_1_value(db, wanted) == Some((weight * inventory.total.value@) * fraction));
     }
     assert forall|left: int, right: int| 0 <= left < right < output.len() implies
@@ -617,9 +617,9 @@ pub proof fn lemma_execute_model(db: Db, name: Seq<u8>, fraction: int, inventory
         assert(inventory.total.count@ > 0) by (nonlinear_arith)
             requires weight > 0, weight * inventory.total.count@ > 0;
         assert(scalar_1_value(db, wanted) == Some((weight * inventory.total.value@) * fraction));
-        assert(1000000000 * (weight * value) > (weight * inventory.total.value@) * fraction);
-        assert(1000000000 * value > inventory.total.value@ * fraction) by (nonlinear_arith)
-            requires weight > 0, 1000000000 * (weight * value) > (weight * inventory.total.value@) * fraction;
+        assert(1000000000000 * (weight * value) > (weight * inventory.total.value@) * fraction);
+        assert(1000000000000 * value > inventory.total.value@ * fraction) by (nonlinear_arith)
+            requires weight > 0, 1000000000000 * (weight * value) > (weight * inventory.total.value@) * fraction;
         let position = choose|position: int| 0 <= position < output.len() && (#[trigger] output[position]).0 == bounded;
         assert(exact_view(output)[position].ps_partkey == part);
     }

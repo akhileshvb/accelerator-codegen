@@ -10,7 +10,8 @@
 #   expected.txt: <query> ok | <query> ok-spec <text the obligations refusal
 #   must contain> | <query> refused <text the refusal must contain>
 #   A <query>.inputs next to a query declares its kernel inputs (default:
-#   every table whole).  Suite `queries`: the production queries with declared
+#   every table whole); a <query>.nullable-params its NULL-able parameters
+#   (numbers, comma separated).  Suite `queries`: the production queries with declared
 #   inputs (workloads/tpch/<q>.inputs), each expected ok.
 #   scripts/test_sql2verus.sh [-j N] [suite ...]      (default: all suites)
 set -euo pipefail
@@ -33,6 +34,7 @@ one() { # suite query expectation...
   local dir="$T/tests/$suite" schema
   if [ "$suite" = queries ]; then dir="$ROOT/workloads/tpch"; schema="$dir/schema.sql"; else schema="$dir/schema.sql"; fi
   local inp=(); [ -f "$dir/$q.inputs" ] && inp=(--inputs "$dir/$q.inputs")
+  [ -f "$dir/$q.nullable-params" ] && inp+=(--nullable-params "$(cat "$dir/$q.nullable-params")")
   local out
   if ! out=$("$BIN" --schema "$schema" --query "$dir/$q.sql" --out "$d/gen_spec.rs" "${inp[@]}" \
                --obligations "$d/gen_obligations.rs" --kernel-stub "$d/kernel.rs" --world "$d/gen_world.rs" \
