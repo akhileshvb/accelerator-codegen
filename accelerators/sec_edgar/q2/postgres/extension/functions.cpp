@@ -1,5 +1,4 @@
 // GENERATED BACKEND — PostgreSQL SQL functions for SEC-EDGAR Q2 (module only).
-//   accel_sec_edgar_q2_aux()                  the template defaults (fy 2022, 'pure')
 //   accel_sec_edgar_q2_aux(fy bigint, uom text)
 #if defined(ACCELERATOR_CODEGEN_POSTGRES_EXTENSION)
 
@@ -26,16 +25,7 @@ namespace {
 
 // Executed by accel_register_queries().
 constexpr char kFunctionsSql[] = R"SQL(
-DROP FUNCTION IF EXISTS accel_sec_edgar_q2_aux() CASCADE;
 DROP FUNCTION IF EXISTS accel_sec_edgar_q2_aux(bigint, text) CASCADE;
-CREATE FUNCTION accel_sec_edgar_q2_aux()
-RETURNS TABLE (
-  name text,
-  tag text,
-  value double precision
-)
-AS 'accelerator_codegen_pg', 'AcceleratorCodegenAuxSecEdgarQ2'
-LANGUAGE C;
 CREATE FUNCTION accel_sec_edgar_q2_aux(bigint, text)
 RETURNS TABLE (
   name text,

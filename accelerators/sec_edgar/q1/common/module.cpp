@@ -597,6 +597,19 @@ bool SecEdgarQ1Module::CheckValidity(core::AuxEngineServices &services,
       .IsValid();
 }
 
+std::optional<std::string>
+SecEdgarQ1Module::StmtArgument(const core::QueryArguments &arguments) {
+  if (arguments.values.size() != 1 ||
+      (!arguments.values[0].is_null &&
+       !std::holds_alternative<std::string>(arguments.values[0].payload))) {
+    throw std::invalid_argument("sec_edgar q1 aux expects (stmt VARCHAR)");
+  }
+  if (arguments.values[0].is_null) {
+    return std::nullopt;
+  }
+  return std::get<std::string>(arguments.values[0].payload);
+}
+
 void SecEdgarQ1Module::Execute(core::AuxEngineServices &services,
                                const core::QueryArguments &arguments,
                                core::AuxRowSink &sink) {
@@ -605,7 +618,7 @@ void SecEdgarQ1Module::Execute(core::AuxEngineServices &services,
     ExecuteFallback(services, arguments, sink);
     return;
   }
-  Emit(*state, sink);
+  Emit(*state, StmtArgument(arguments), sink);
 }
 
 void SecEdgarQ1Module::ExecuteFallback(core::AuxEngineServices &services,
@@ -614,7 +627,7 @@ void SecEdgarQ1Module::ExecuteFallback(core::AuxEngineServices &services,
   if (services.AnswerFromSql(arguments, sink)) {
     return;
   }
-  Emit(BuildState(services), sink);
+  Emit(BuildState(services), StmtArgument(arguments), sink);
 }
 
 } // namespace accelerator_codegen::aux_state::query

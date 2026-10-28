@@ -19,11 +19,8 @@
 
 namespace accelerator_codegen::aux_state::query {
 
-// Query parameters (templated literals of workloads/sec_edgar/q2.sql).
-// The aux table function is accel_sec_edgar_q2_aux() (defaults) or
-// accel_sec_edgar_q2_aux(fy BIGINT, uom VARCHAR).
-constexpr int64_t kSecEdgarQ2DefaultFy = 2022;
-constexpr const char *kSecEdgarQ2DefaultUom = "pure";
+// The aux table function is accel_sec_edgar_q2_aux(fy BIGINT, uom VARCHAR)
+// (the parameters of workloads/sec_edgar/q2.sql).
 constexpr std::size_t kSecEdgarQ2ResultLimit = 100;
 
 // Physical DuckDB column positions in the mutation rows.
@@ -36,7 +33,7 @@ constexpr core::ColumnId kQ2SubAdsh = 0, kQ2SubName = 2, kQ2SubFy = 10;
 // Every unit of measure is materialised by default, so Execute never runs
 // SQL for any (fy, uom).  SecEdgarQ2Config::max_uom_rows is an explicit
 // opt-out: a unit with more non-NULL rows than the limit is not materialised
-// and is answered by the exact SQL path (the default unit is always kept).
+// and is answered by the exact SQL path.
 constexpr uint64_t kSecEdgarQ2DefaultMaxUomRows =
     std::numeric_limits<uint64_t>::max();
 
