@@ -25,7 +25,7 @@ struct DecliningQuery {
   std::string accelerator_id;
   std::string table_function;
   std::vector<std::string> argument_types; // SQL type names of the table function's arguments
-  std::string base_sql;                    // the query with its default arguments
+  std::string base_sql;                    // the query with its default arguments, or a $n template (no default binding)
   std::string fallback_sql;                // the query for any arguments: $n is the n-th argument
   std::vector<std::string> tables;         // the tables the query reads
 };
@@ -94,6 +94,22 @@ struct DecliningBinding final : DuckdbRuntime::Binding {
 };
 
 // The catalog entry holds C strings: they live as long as the process.
+inline core::AuxType ArgumentAuxType(const std::string &name) {
+  if (name == "DATE") return core::AuxType::Date;
+  if (name == "INTEGER" || name == "BIGINT") return core::AuxType::Int64;
+  if (name == "DOUBLE" || name == "DECIMAL") return core::AuxType::Double;
+  return core::AuxType::String;
+}
+
+// "fn($1, ..., $n)", the call of a table function that has no zero-argument form.
+inline std::string ParameterizedCall(const std::string &function, std::size_t arguments) {
+  std::string call = function + "(";
+  for (std::size_t n = 1; n <= arguments; ++n) {
+    call += (n > 1 ? ", $" : "$") + std::to_string(n);
+  }
+  return call + ")";
+}
+
 inline const char *Keep(std::string text) {
   static std::deque<std::string> kept;
   kept.push_back(std::move(text));
@@ -109,7 +125,16 @@ inline void RegisterDecliningQuery(const DecliningQuery &query) {
   entry.workload_name = declining_detail::Keep(query.workload_name);
   entry.accelerator_id = declining_detail::Keep(query.accelerator_id);
   entry.base_sql = declining_detail::Keep(query.base_sql);
-  entry.duckdb_aux_sql = declining_detail::Keep("SELECT * FROM " + query.table_function + "()");
+  // A $n template has no default binding: the table function takes only the parameterized signature.
+  const bool templated = query.base_sql.find('$') != std::string::npos;
+  entry.duckdb_aux_sql = declining_detail::Keep(
+      "SELECT * FROM " + (templated ? declining_detail::ParameterizedCall(query.table_function, query.argument_types.size())
+                                    : query.table_function + "()"));
+  if (templated) {
+    for (const auto &type : query.argument_types) {
+      entry.benchmark_arguments.values.push_back(core::AuxValue::Null(declining_detail::ArgumentAuxType(type)));
+    }
+  }
   entry.fallback_sql = declining_detail::Keep(query.fallback_sql);
   RegisterSharedQuery(entry);
 
@@ -119,7 +144,9 @@ inline void RegisterDecliningQuery(const DecliningQuery &query) {
   for (const auto &type : query.argument_types) {
     aux.argument_types.push_back(declining_detail::ArgumentType(type));
   }
-  aux.overload_argument_types.push_back({});
+  if (!templated) {
+    aux.overload_argument_types.push_back({});
+  }
   aux.make_binding = [query](::duckdb::Connection &) {
     CaptureTableList tables;
     for (std::size_t table = 0; table < query.tables.size(); ++table) {

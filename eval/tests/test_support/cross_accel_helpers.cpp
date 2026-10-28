@@ -2,6 +2,8 @@
 #include "eval/tests/test_support/cross_accel_helpers.hpp"
 
 #include "eval/tests/test_support/result_compare.hpp"
+#include "backends/duckdb/api/sql_fallback.hpp"
+#include "eval/harness/param_sets.hpp"
 
 #include <unistd.h>
 
@@ -18,6 +20,9 @@
 
 namespace accelerator_codegen::test_support {
 namespace {
+
+namespace aux_engine = accelerator_codegen::aux_state::engine;
+namespace harness = accelerator_codegen::aux_state::harness;
 
 
 bool ApproxDoublesMatch(double expected, double actual) {
@@ -342,101 +347,16 @@ std::string TpchAuxSql(int query_num) {
 	}
 }
 
-std::string SecEdgarReferenceSql(int query_num) {
-	switch (query_num) {
-	case 1:
-		return "SELECT stmt, rfile, COUNT(*) AS cnt, COUNT(DISTINCT adsh) AS num_filings, AVG(line) AS avg_line_num "
-		       "FROM pre WHERE stmt IS NOT NULL GROUP BY stmt, rfile ORDER BY cnt DESC";
-	case 2:
-		return "SELECT s.name, n.tag, n.value "
-		       "FROM num n "
-		       "JOIN sub s ON n.adsh = s.adsh "
-		       "JOIN ("
-		       "    SELECT adsh, tag, MAX(value) AS max_value "
-		       "    FROM num "
-		       "    WHERE uom = 'pure' AND value IS NOT NULL "
-		       "    GROUP BY adsh, tag"
-		       ") m ON n.adsh = m.adsh AND n.tag = m.tag AND n.value = m.max_value "
-		       "WHERE n.uom = 'pure' AND s.fy = 2022 AND n.value IS NOT NULL "
-		       "ORDER BY n.value DESC, s.name, n.tag "
-		       "LIMIT 100";
-	case 3:
-		return "SELECT s.name, s.cik, SUM(n.value) AS total_value "
-		       "FROM num n "
-		       "JOIN sub s ON n.adsh = s.adsh "
-		       "WHERE n.uom = 'USD' AND s.fy = 2022 AND n.value IS NOT NULL "
-		       "GROUP BY s.name, s.cik "
-		       "HAVING SUM(n.value) > ("
-		       "    SELECT AVG(sub_total) FROM ("
-		       "        SELECT SUM(n2.value) AS sub_total "
-		       "        FROM num n2 "
-		       "        JOIN sub s2 ON n2.adsh = s2.adsh "
-		       "        WHERE n2.uom = 'USD' AND s2.fy = 2022 AND n2.value IS NOT NULL "
-		       "        GROUP BY s2.cik"
-		       "    ) avg_sub"
-		       ") "
-		       "ORDER BY total_value DESC "
-		       "LIMIT 100";
-	case 4:
-		return "SELECT s.sic, t.tlabel, p.stmt, "
-		       "COUNT(DISTINCT s.cik) AS num_companies, "
-		       "SUM(n.value) AS total_value, "
-		       "AVG(n.value) AS avg_value "
-		       "FROM num n "
-		       "JOIN sub s ON n.adsh = s.adsh "
-		       "JOIN tag t ON n.tag = t.tag AND n.version = t.version "
-		       "JOIN pre p ON n.adsh = p.adsh AND n.tag = p.tag AND n.version = p.version "
-		       "WHERE n.uom = 'USD' AND p.stmt = 'EQ' "
-		       "AND s.sic BETWEEN 4000 AND 4999 "
-		       "AND n.value IS NOT NULL AND t.abstract = 0 "
-		       "GROUP BY s.sic, t.tlabel, p.stmt "
-		       "HAVING COUNT(DISTINCT s.cik) >= 2 "
-		       "ORDER BY total_value DESC "
-		       "LIMIT 500";
-	case 6:
-		return "SELECT s.name, p.stmt, n.tag, p.plabel, "
-		       "SUM(n.value) AS total_value, COUNT(*) AS cnt "
-		       "FROM num n "
-		       "JOIN sub s ON n.adsh = s.adsh "
-		       "JOIN pre p ON n.adsh = p.adsh AND n.tag = p.tag AND n.version = p.version "
-		       "WHERE n.uom = 'USD' AND p.stmt = 'IS' AND s.fy = 2023 "
-		       "AND n.value IS NOT NULL "
-		       "GROUP BY s.name, p.stmt, n.tag, p.plabel "
-		       "ORDER BY total_value DESC, s.name, n.tag, p.plabel "
-		       "LIMIT 200";
-	case 24:
-		return "SELECT n.tag, n.version, COUNT(*) AS cnt, SUM(n.value) AS total "
-		       "FROM num n "
-		       "LEFT JOIN pre p ON n.tag = p.tag AND n.version = p.version AND n.adsh = p.adsh "
-		       "WHERE n.uom = 'USD' AND n.ddate BETWEEN 20230101 AND 20231231 "
-		       "AND n.value IS NOT NULL AND p.adsh IS NULL "
-		       "GROUP BY n.tag, n.version "
-		       "HAVING COUNT(*) > 10 "
-		       "ORDER BY cnt DESC "
-		       "LIMIT 100";
-	default:
-		throw std::runtime_error("unsupported SEC EDGAR query for reference SQL: " + std::to_string(query_num));
-	}
+// The catalog's SQL bound to the query's first drawn parameter set (the same set for every
+// call of the run, so references and accelerator calls agree).
+std::string SecEdgarSql(int query_num, const char *aux_engine::SharedQueryCatalogEntry::*sql) {
+	const auto &entry = aux_engine::LookupSharedQuery("sec_edgar", query_num);
+	return aux_engine::BindArguments(entry.*sql, harness::ArgumentSets(entry).front());
 }
 
-std::string SecEdgarAuxSql(int query_num) {
-	switch (query_num) {
-	case 1:
-		return "SELECT * FROM accel_sec_edgar_q1_aux()";
-	case 2:
-		return "SELECT * FROM accel_sec_edgar_q2_aux()";
-	case 3:
-		return "SELECT * FROM accel_sec_edgar_q3_aux()";
-	case 4:
-		return "SELECT * FROM accel_sec_edgar_q4_aux()";
-	case 6:
-		return "SELECT * FROM accel_sec_edgar_q6_aux()";
-	case 24:
-		return "SELECT * FROM accel_sec_edgar_q24_aux()";
-	default:
-		throw std::runtime_error("unsupported SEC EDGAR query for aux SQL: " + std::to_string(query_num));
-	}
-}
+std::string SecEdgarReferenceSql(int query_num) { return SecEdgarSql(query_num, &aux_engine::SharedQueryCatalogEntry::base_sql); }
+
+std::string SecEdgarAuxSql(int query_num) { return SecEdgarSql(query_num, &aux_engine::SharedQueryCatalogEntry::duckdb_aux_sql); }
 
 std::string CanonicalizeSql(CrossAccelBenchmark benchmark, int query_num, const std::string &sql) {
 	if (benchmark == CrossAccelBenchmark::Tpch && query_num == 3) {

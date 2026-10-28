@@ -20,12 +20,14 @@
 #include "backends/duckdb/api/duckdb_runtime.hpp"
 #include "catalog/query_catalog.hpp"
 #include "eval/harness/differential.hpp"
+#include "eval/harness/param_sets.hpp"
 #include "eval/harness/tpch_rf.hpp"
 #include "eval/tests/test_support/db_paths.hpp"
 #include "eval/tests/tpch_fuzz_writes.hpp"
 
 namespace {
 
+namespace core = accelerator_codegen::aux_state::core;
 namespace engine = accelerator_codegen::aux_state::engine;
 namespace harness = accelerator_codegen::aux_state::harness;
 namespace ts = accelerator_codegen::test_support;
@@ -40,23 +42,28 @@ struct Totals {
 
 class Audit {
 public:
-  Audit(DuckdbRuntime &runtime_p, const engine::SharedQueryCatalogEntry &entry_p, std::string workload_p)
-      : runtime(runtime_p), entry(entry_p), workload(std::move(workload_p)) {}
+  Audit(DuckdbRuntime &runtime_p, const engine::SharedQueryCatalogEntry &entry_p, std::string workload_p,
+        std::vector<core::QueryArguments> sets_p)
+      : runtime(runtime_p), entry(entry_p), workload(std::move(workload_p)), sets(std::move(sets_p)) {}
 
   void CheckAnswers(duckdb::Connection &connection_p) { connection = &connection_p; }
+  const std::vector<core::QueryArguments> &Sets() const { return sets; }
 
   // `write` commits one transaction.
   template <typename Write> void Step(const std::string &name, Write &&write) {
     const auto before = runtime.Stats();
     write();
-    runtime.ExecuteCollect(); // waits for any rebuild the commit caused
+    runtime.ExecuteCollect(sets.front()); // waits for any rebuild the commit caused
     const auto after = runtime.Stats();
     std::string wrong;
     if (connection) {
-      try {
-        harness::RequireSharedMatchesBase(*connection, runtime, entry);
-      } catch (const std::exception &e) {
-        wrong = std::string(e.what()).substr(0, 120);
+      for (const auto &arguments : sets) {
+        try {
+          harness::RequireSharedMatchesBase(*connection, runtime, entry, arguments);
+        } catch (const std::exception &e) {
+          wrong = std::string(e.what()).substr(0, 120);
+          break;
+        }
       }
     }
     Record(name, before, after, wrong);
@@ -108,6 +115,7 @@ private:
   DuckdbRuntime &runtime;
   const engine::SharedQueryCatalogEntry &entry;
   std::string workload;
+  std::vector<core::QueryArguments> sets; // the parameter sets every step is checked with
   Totals totals;
   duckdb::Connection *connection = nullptr;
   int wrong_answers = 0;
@@ -135,11 +143,23 @@ void RunFuzz(duckdb::Connection &connection, DuckdbRuntime &runtime, Audit &audi
   }
 }
 
+// The catalog's invalidating probes for the first parameter set that has some.
+std::vector<engine::SharedProbe> SecProbes(duckdb::Connection &connection, const engine::SharedQueryCatalogEntry &entry,
+                                           const std::vector<core::QueryArguments> &sets) {
+  for (const auto &arguments : sets) {
+    try {
+      return engine::CollectInvalidatingSharedProbes(connection, entry, arguments, 256, 3);
+    } catch (const std::exception &) {
+    }
+  }
+  throw std::runtime_error("no drawn parameter set has an answer the catalog probes can change");
+}
+
 // SEC-EDGAR tables reach the accelerator only through the probes' hand-built
 // mutations, so every write is a probe (repeated: they toggle or advance).
 void RunSecProbes(duckdb::Connection &connection, DuckdbRuntime &runtime, Audit &audit,
                   const engine::SharedQueryCatalogEntry &entry) {
-  auto probes = engine::CollectInvalidatingSharedProbes(connection, entry, 256, 3);
+  auto probes = SecProbes(connection, entry, audit.Sets());
   constexpr int kRounds = 3;
   for (int round = 0; round < kRounds; ++round) {
     for (std::size_t i = 0; i < probes.size(); ++i) {
@@ -150,7 +170,7 @@ void RunSecProbes(duckdb::Connection &connection, DuckdbRuntime &runtime, Audit 
 
 void RunSecSql(duckdb::Connection &connection, DuckdbRuntime &runtime, Audit &audit,
                const engine::SharedQueryCatalogEntry &entry) {
-  const auto probes = engine::CollectInvalidatingSharedProbes(connection, entry, 256, 3);
+  const auto probes = SecProbes(connection, entry, audit.Sets());
   for (std::size_t i = 0; i < probes.size(); ++i) {
     audit.Step("probe" + std::to_string(i), [&] { runtime.ApplyWrite(probes[i].update_sql); });
     audit.Step("restore" + std::to_string(i), [&] { runtime.ApplyWrite(probes[i].restore_sql); });
@@ -208,7 +228,7 @@ void AuditQuery(const std::string &db, const std::string &workload, const engine
   runtime.Build();
   const double build_us =
       std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - build_start).count();
-  Audit audit(runtime, entry, workload);
+  Audit audit(runtime, entry, workload, harness::ArgumentSets(entry));
   audit.CheckAnswers(connection);
   if (workload == "rf-small") {
     RunRf(connection, runtime, audit, 10, 6);

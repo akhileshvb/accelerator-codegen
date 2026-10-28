@@ -42,10 +42,14 @@ namespace accelerator_codegen::aux_state::engine {
 
 namespace {
 
-// "(literal)"; an integer keeps its type (ToSQLString quotes the extreme ones as text).
+// "(literal)"; an integer keeps its type (ToSQLString quotes the extreme ones as text) unless it
+// fits an INTEGER, which a plain literal states: it converts to an INTEGER or a BIGINT argument alike
+// (a table function does not accept a BIGINT for an INTEGER argument).
 std::string SqlLiteral(const ::duckdb::Value &value) {
   if (!value.IsNull() && value.type().IsIntegral()) {
-    return "(CAST(" + value.ToString() + " AS " + value.type().ToString() + "))";
+    const auto text = value.ToString();
+    const bool fits_integer = text.size() < 10 || (text.size() == 10 && text[0] != '-' && text <= "2147483647");
+    return fits_integer ? "(" + text + ")" : "(CAST(" + text + " AS " + value.type().ToString() + "))";
   }
   return "(" + value.ToSQLString() + ")";
 }

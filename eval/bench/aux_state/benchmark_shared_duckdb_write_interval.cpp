@@ -13,7 +13,9 @@
 #include <utility>
 #include <vector>
 
+#include "backends/duckdb/api/sql_fallback.hpp"
 #include "eval/harness/differential.hpp"
+#include "eval/harness/param_sets.hpp"
 #include "catalog/query_catalog.hpp"
 #include "sec_edgar/common/duckdb_probes.hpp"
 #include "backends/duckdb/api/duckdb_runtime.hpp"
@@ -26,6 +28,7 @@ namespace catalog = accelerator_codegen::aux_state::engine;
 namespace harness = accelerator_codegen::aux_state::harness;
 namespace core = accelerator_codegen::aux_state::core;
 using catalog::duckdb::DuckdbRuntime;
+using Arguments = core::QueryArguments;
 using Clock = std::chrono::steady_clock;
 
 std::unique_ptr<std::ofstream> &SweepOutput() {
@@ -75,53 +78,16 @@ uint64_t ExecuteSql(duckdb::Connection &connection, const char *sql) {
   return rows;
 }
 
-uint64_t ExecuteBase(duckdb::Connection &connection,
-                     const catalog::SharedQueryCatalogEntry &entry) {
-  return ExecuteSql(connection, entry.base_sql);
+uint64_t ExecuteBase(duckdb::Connection &connection, const catalog::SharedQueryCatalogEntry &entry,
+                     const Arguments &arguments) {
+  return ExecuteSql(connection, catalog::BindArguments(entry.base_sql, arguments).c_str());
 }
 
-uint64_t ExecuteAuxSql(duckdb::Connection &connection,
-                       const catalog::SharedQueryCatalogEntry &entry) {
+uint64_t ExecuteAuxSql(duckdb::Connection &connection, const catalog::SharedQueryCatalogEntry &entry,
+                       const Arguments &arguments) {
   Require(entry.duckdb_aux_sql != nullptr && *entry.duckdb_aux_sql,
           "missing duckdb_aux_sql");
-  return ExecuteSql(connection, entry.duckdb_aux_sql);
-}
-
-// One drawn parameter set: the substituted base SQL and the accelerator
-// overload call. Produced by eval/bench/sec_edgar/sweep/sweep_params.py from
-// the per-query JSON specs (the same seeded sequence the Postgres driver uses).
-struct ParamDraw {
-  std::string base_sql;
-  std::string call_sql;
-};
-
-struct ParamDraws {
-  std::vector<ParamDraw> reads;
-  std::vector<ParamDraw> checks;
-};
-
-// File format: one draw per line "base_sql<TAB>call_sql"; lines starting with
-// "#check" mark the start of the correctness-check draws.
-ParamDraws LoadParamDraws(const std::string &path) {
-  std::ifstream in(path);
-  Require(in.good(), "cannot open ACCEL_SWEEP_PARAM_FILE " + path);
-  ParamDraws draws;
-  bool in_checks = false;
-  std::string line;
-  while (std::getline(in, line)) {
-    if (line.rfind("#check", 0) == 0) {
-      in_checks = true;
-      continue;
-    }
-    if (line.empty() || line[0] == '#') {
-      continue;
-    }
-    const auto tab = line.find('\t');
-    Require(tab != std::string::npos, "bad param draw line");
-    ParamDraw draw{line.substr(0, tab), line.substr(tab + 1)};
-    (in_checks ? draws.checks : draws.reads).push_back(std::move(draw));
-  }
-  return draws;
+  return ExecuteSql(connection, catalog::BindArguments(entry.duckdb_aux_sql, arguments).c_str());
 }
 
 std::string CellText(const duckdb::Value &value) {
@@ -145,17 +111,20 @@ bool CellsClose(const std::string &a, const std::string &b) {
   }
 }
 
-// Shared-vs-base check for one drawn parameter set: the overload call must
-// return the same rows (in order, numbers to 1e-6 relative) as the substituted
-// base SQL. Falls back to an order-insensitive comparison on ties.
-void RequireDrawMatches(duckdb::Connection &connection, const ParamDraw &draw) {
-  auto base = connection.Query(draw.base_sql);
+// Shared-vs-base check for one parameter set: the table-function call must
+// return the same rows (in order, numbers to 1e-6 relative) as the base
+// SQL bound to the same arguments. Falls back to an order-insensitive comparison on ties.
+void RequireCallMatchesBase(duckdb::Connection &connection, const catalog::SharedQueryCatalogEntry &entry,
+                            const Arguments &arguments) {
+  const auto base_sql = catalog::BindArguments(entry.base_sql, arguments);
+  const auto call_sql = catalog::BindArguments(entry.duckdb_aux_sql, arguments);
+  auto base = connection.Query(base_sql);
   Require(base != nullptr && !base->HasError(),
           base ? base->GetError() : "param check: base query failed");
-  auto shared = connection.Query(draw.call_sql);
+  auto shared = connection.Query(call_sql);
   Require(shared != nullptr && !shared->HasError(),
           shared ? shared->GetError() : "param check: accelerator call failed");
-  const std::string what = " for params draw: " + draw.call_sql;
+  const std::string what = " for params: " + harness::ArgumentLiterals(arguments);
   Require(base->RowCount() == shared->RowCount() &&
               base->ColumnCount() == shared->ColumnCount(),
           "param check shape mismatch (base rows=" +
@@ -293,6 +262,22 @@ std::string BatchRestoreSql(const catalog::BatchWritePool &pool) {
          pool.table + ".rowid = o.rid";
 }
 
+// The first parameter set whose answer the query's catalog probes can change: the writes are aimed at it.
+// (Sets whose answer is empty on this database have no invalidating probe.)
+const Arguments &WriteTargetSet(const std::string &db_path, const catalog::SharedQueryCatalogEntry &entry,
+                                const std::vector<Arguments> &sets) {
+  duckdb::DuckDB database(db_path.c_str());
+  duckdb::Connection connection(database);
+  for (const auto &arguments : sets) {
+    try {
+      (void)catalog::FindInvalidatingSharedProbe(connection, entry, arguments);
+      return arguments;
+    } catch (const std::exception &) {
+    }
+  }
+  throw std::runtime_error("no drawn parameter set has an answer the catalog probes can change");
+}
+
 // Pool for `schedule`: as many distinct rows as the run touches (each row
 // written at most once per mode) if the table has them, at least one batch.
 // Reports how many rows are the query's invalidating candidates, checks a
@@ -300,7 +285,7 @@ std::string BatchRestoreSql(const catalog::BatchWritePool &pool) {
 // change the base result (rolled back).
 catalog::BatchWritePool SelectBatchPool(const std::string &db_path,
                                         const catalog::SharedQueryCatalogEntry &entry,
-                                        const WriteSchedule &schedule) {
+                                        const Arguments &arguments, const WriteSchedule &schedule) {
   duckdb::DuckDB database(db_path.c_str());
   duckdb::Connection connection(database);
   auto pragma = connection.Query("PRAGMA threads=" + std::to_string(BenchThreads()));
@@ -310,7 +295,7 @@ catalog::BatchWritePool SelectBatchPool(const std::string &db_path,
           ? catalog::sec_edgar_probes::BatchFillerSelectSql(entry.query_id)
           : nullptr;
   auto pool = catalog::CollectBatchWritePool(
-      connection, entry, static_cast<std::size_t>(schedule.total),
+      connection, entry, arguments, static_cast<std::size_t>(schedule.total),
       static_cast<std::size_t>(schedule.max_batch), filler);
   std::cerr << "batch_pool query=" << entry.query_id << " table=" << pool.table
             << " column=" << pool.column << " rows=" << pool.probes.size()
@@ -319,7 +304,7 @@ catalog::BatchWritePool SelectBatchPool(const std::string &db_path,
             << " rows_per_sec=" << schedule.rows_per_sec
             << " batches=" << schedule.batches << " max_batch=" << schedule.max_batch
             << " total_rows=" << schedule.total << '\n';
-  const auto before_fp = catalog::FingerprintSharedBaseSql(connection, entry);
+  const auto before_fp = catalog::FingerprintSharedBaseSql(connection, entry, arguments);
   const int sample = GetEnvInt("ACCEL_BATCH_VERIFY_SAMPLE", 4);
   if (sample > 0 && pool.invalidating > 0) {
     int changed = 0, checked = 0;
@@ -331,7 +316,7 @@ catalog::BatchWritePool SelectBatchPool(const std::string &db_path,
         continue;
       }
       ++checked;
-      changed += catalog::SharedProbeChangesBaseResult(connection, entry,
+      changed += catalog::SharedProbeChangesBaseResult(connection, entry, arguments,
                                                        pool.probes[idx], before_fp)
                      ? 1
                      : 0;
@@ -347,7 +332,7 @@ catalog::BatchWritePool SelectBatchPool(const std::string &db_path,
   Require(updated != nullptr && !updated->HasError(),
           updated ? updated->GetError() : "batch update failed");
   const auto touched = updated->GetValue(0, 0).GetValue<int64_t>();
-  const auto after_fp = catalog::FingerprintSharedBaseSql(connection, entry);
+  const auto after_fp = catalog::FingerprintSharedBaseSql(connection, entry, arguments);
   connection.Rollback();
   Require(touched == schedule.max_batch,
           "batch update touched " + std::to_string(touched) + " rows, expected " +
@@ -382,7 +367,7 @@ ModeSummary RunMode(const std::string &db_path,
                     const catalog::SharedQueryCatalogEntry &entry,
                     const WriteSchedule &schedule,
                     const catalog::BatchWritePool &pool, bool shared,
-                    const ParamDraws *draws = nullptr) {
+                    const std::vector<Arguments> &sets) {
   duckdb::DuckDB database(db_path.c_str());
   duckdb::Connection connection(database);
   accelerator_codegen::RegisterAcceleratorFunctions(connection);
@@ -410,13 +395,13 @@ ModeSummary RunMode(const std::string &db_path,
     const auto build_start = Clock::now();
     runtime->Build();
     build_us = ElapsedUs(build_start);
-    (void)ExecuteAuxSql(connection, entry);
+    (void)ExecuteAuxSql(connection, entry, sets.front());
   }
   for (int i = 0; i < GetEnvInt("ACCEL_SHARED_SWEEP_WARMUP", 1); ++i) {
     if (shared) {
-      (void)ExecuteAuxSql(connection, entry);
+      (void)ExecuteAuxSql(connection, entry, sets.front());
     } else {
-      (void)ExecuteBase(connection, entry);
+      (void)ExecuteBase(connection, entry, sets.front());
     }
   }
   (void)target_qps;
@@ -469,15 +454,8 @@ ModeSummary RunMode(const std::string &db_path,
       rows_touched += n;
     }
     const auto start = Clock::now();
-    if (draws != nullptr) {
-      const auto &draw = draws->reads[static_cast<size_t>(read_index) %
-                                      draws->reads.size()];
-      rows = ExecuteSql(connection,
-                        (shared ? draw.call_sql : draw.base_sql).c_str());
-    } else {
-      rows = shared ? ExecuteAuxSql(connection, entry)
-                    : ExecuteBase(connection, entry);
-    }
+    const auto &arguments = sets[static_cast<size_t>(read_index) % sets.size()];
+    rows = shared ? ExecuteAuxSql(connection, entry, arguments) : ExecuteBase(connection, entry, arguments);
     if (shared) {
       runtime->last_rows = rows;
     }
@@ -487,14 +465,11 @@ ModeSummary RunMode(const std::string &db_path,
   const auto read_stats = Summarize(std::move(read_samples));
   const auto write_stats = Summarize(std::move(write_samples));
   if (shared) {
-    harness::RequireSharedMatchesBase(connection, *runtime, entry);
-    if (draws != nullptr) {
-      for (const auto &draw : draws->checks) {
-        RequireDrawMatches(connection, draw);
-      }
-      std::cerr << "param correctness: " << draws->checks.size()
-                << " drawn sets match base" << '\n';
+    for (const auto &arguments : sets) {
+      harness::RequireSharedMatchesBase(connection, *runtime, entry, arguments);
+      RequireCallMatchesBase(connection, entry, arguments);
     }
+    std::cerr << "param correctness: " << sets.size() << " parameter sets match base" << '\n';
   }
   if (do_writes) {
     auto restore = connection.Query(BatchRestoreSql(pool));
@@ -565,12 +540,15 @@ int main(int argc, char **argv) {
           std::make_unique<std::ofstream>(output_path, mode);
       Require(SweepOutput()->good(), "failed to open sweep output");
     }
+    const auto sets = harness::ArgumentSets(entry);
     if (std::getenv("ACCEL_SHARED_SWEEP_RUN_DIFFERENTIAL")) {
-      harness::RunDifferentialCheck(db_path, entry);
+      for (const auto &arguments : sets) {
+        harness::RunDifferentialCheck(db_path, entry, arguments);
+      }
       std::cerr << "duckdb differential check passed for Q" << entry.query_id
                 << '\n';
       if (std::getenv("ACCEL_SHARED_SWEEP_RUN_INCREMENTAL_DIFFERENTIAL")) {
-        harness::RunIncrementalDifferentialCheck(db_path, entry);
+        harness::RunIncrementalDifferentialCheck(db_path, entry, WriteTargetSet(db_path, entry, sets));
         std::cerr << "duckdb incremental differential check passed for Q"
                   << entry.query_id << '\n';
       }
@@ -588,23 +566,10 @@ int main(int argc, char **argv) {
            "invalidating_rows");
     }
     std::cerr << "ACCEL_BENCH_THREADS=" << BenchThreads() << '\n';
-    // ACCEL_SWEEP_PARAMS=default|random. Random mode reads the pre-drawn
-    // parameter sets (ACCEL_SWEEP_PARAM_FILE, made by sweep_params.py from
-    // ACCEL_SWEEP_PARAM_SEED) so base and shared see the same sequence.
-    const char *params_env = std::getenv("ACCEL_SWEEP_PARAMS");
-    const std::string params_mode =
-        params_env && *params_env ? params_env : "default";
-    Require(params_mode == "default" || params_mode == "random",
-            "ACCEL_SWEEP_PARAMS must be default or random");
-    ParamDraws draws;
-    if (params_mode == "random") {
-      const char *file = std::getenv("ACCEL_SWEEP_PARAM_FILE");
-      Require(file && *file, "random mode needs ACCEL_SWEEP_PARAM_FILE "
-                             "(see eval/bench/sec_edgar/sweep/sweep_params.py)");
-      draws = LoadParamDraws(file);
-      Require(!draws.reads.empty(), "param file has no read draws");
-    }
-    const ParamDraws *draws_ptr = params_mode == "random" ? &draws : nullptr;
+    // An entry with a default binding reads it ("default"); one without reads the sets drawn by
+    // eval/harness/param_sets (ACCEL_PARAM_SEED, _SETS, _FILE), the same sequence for base and
+    // shared ("random").
+    const std::string params_mode = catalog::HasDefaultBinding(entry) ? "default" : "random";
     // interval_sec = 1 / (rows touched per second); 0 = read-only.
     const int64_t rows_per_sec =
         interval > 0.0 ? static_cast<int64_t>(std::llround(1.0 / interval)) : 0;
@@ -613,7 +578,7 @@ int main(int argc, char **argv) {
         GetEnvDouble("ACCEL_SHARED_SWEEP_READER_QPS", 2.0));
     catalog::BatchWritePool pool;
     if (schedule.batches > 0) {
-      pool = SelectBatchPool(db_path, entry, schedule);
+      pool = SelectBatchPool(db_path, entry, WriteTargetSet(db_path, entry, sets), schedule);
     }
     // Each row in the pool is invalidating or filler; this run's batches
     // walk the pool from slot 0, so these many of its row-writes hit
@@ -623,8 +588,8 @@ int main(int argc, char **argv) {
       invalidating_rows +=
           static_cast<std::size_t>(k) % pool.probes.size() < pool.invalidating ? 1 : 0;
     }
-    const auto base = RunMode(db_path, entry, schedule, pool, false, draws_ptr);
-    const auto shared = RunMode(db_path, entry, schedule, pool, true, draws_ptr);
+    const auto base = RunMode(db_path, entry, schedule, pool, false, sets);
+    const auto shared = RunMode(db_path, entry, schedule, pool, true, sets);
     const double base_workload_us = base.read.sum_us + base.write.sum_us;
     const double shared_workload_us = shared.read.sum_us + shared.write.sum_us;
     const double base_with_build_us = base.build_us + base_workload_us;

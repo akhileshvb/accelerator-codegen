@@ -218,6 +218,10 @@ def materialize_registration(pipeline_config: PipelineConfig, workload: dict[str
     analysis = json.loads(analysis_artifact_path(repo, query, workload=workload).read_text(encoding="utf-8"))
     facts = with_facts(repo, workload, query)
     accelerator_id = str(analysis["accelerator_id"])
+    template_sql = (repo / "workloads" / benchmark / f"q{query}.sql").read_text(encoding="utf-8")
+    # A workload with a parameter generator (eval/bench/<benchmark>/gen_params.py) has no default binding: the
+    # entry's SQL is the $n template, not the literal instance.
+    parameterized = bool(workload.get("parameters")) and (repo / "eval" / "bench" / benchmark / "gen_params.py").is_file()
     values = {
         "benchmark_name": benchmark,
         "engine_name": engine,
@@ -225,8 +229,10 @@ def materialize_registration(pipeline_config: PipelineConfig, workload: dict[str
         "accelerator_id": accelerator_id,
         "table_function": "accel_" + accelerator_id,
         "argument_types": _cpp_string_list([str(p["type"]).upper() for p in workload.get("parameters", [])]),
-        "base_sql": Path(workload["reference_sql_path"]).read_text(encoding="utf-8").strip().rstrip(";"),
-        "fallback_sql": (repo / "workloads" / benchmark / f"q{query}.sql").read_text(encoding="utf-8").strip().rstrip(";"),
+        "base_sql": (template_sql if parameterized else Path(workload["reference_sql_path"]).read_text(encoding="utf-8"))
+        .strip()
+        .rstrip(";"),
+        "fallback_sql": template_sql.strip().rstrip(";"),
         "tables": _cpp_string_list([t["name"] for t in facts["dependent_tables"]]),
     }
     content = _substitute(template.read_text(encoding="utf-8"), values)

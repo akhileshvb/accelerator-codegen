@@ -16,7 +16,9 @@
 #include <utility>
 #include <vector>
 
+#include "backends/duckdb/api/sql_fallback.hpp"
 #include "eval/harness/differential.hpp"
+#include "eval/harness/param_sets.hpp"
 #include "catalog/query_catalog.hpp"
 #include "backends/duckdb/api/duckdb_runtime.hpp"
 #include "backends/duckdb/api/register.hpp"
@@ -27,6 +29,7 @@ namespace {
 namespace catalog = accelerator_codegen::aux_state::engine;
 namespace harness = accelerator_codegen::aux_state::harness;
 using catalog::duckdb::DuckdbRuntime;
+using Arguments = accelerator_codegen::aux_state::core::QueryArguments;
 using Clock = std::chrono::steady_clock;
 
 std::unique_ptr<std::ofstream> &SweepOutput() {
@@ -79,16 +82,29 @@ uint64_t ExecuteSql(duckdb::Connection &connection, const char *sql) {
   return rows;
 }
 
-uint64_t ExecuteBase(duckdb::Connection &connection,
-                     const catalog::SharedQueryCatalogEntry &entry) {
-  return ExecuteSql(connection, entry.base_sql);
+uint64_t ExecuteBase(duckdb::Connection &connection, const catalog::SharedQueryCatalogEntry &entry,
+                     const Arguments &arguments) {
+  return ExecuteSql(connection, catalog::BindArguments(entry.base_sql, arguments).c_str());
 }
 
-uint64_t ExecuteAuxSql(duckdb::Connection &connection,
-                       const catalog::SharedQueryCatalogEntry &entry) {
+uint64_t ExecuteAuxSql(duckdb::Connection &connection, const catalog::SharedQueryCatalogEntry &entry,
+                       const Arguments &arguments) {
   Require(entry.duckdb_aux_sql != nullptr && *entry.duckdb_aux_sql,
           "missing duckdb_aux_sql");
-  return ExecuteSql(connection, entry.duckdb_aux_sql);
+  return ExecuteSql(connection, catalog::BindArguments(entry.duckdb_aux_sql, arguments).c_str());
+}
+
+// The first parameter set whose answer the query's catalog probes can change: the writes are aimed at it.
+const Arguments &WriteTargetSet(duckdb::Connection &connection, const catalog::SharedQueryCatalogEntry &entry,
+                                const std::vector<Arguments> &sets) {
+  for (const auto &arguments : sets) {
+    try {
+      (void)catalog::FindInvalidatingSharedProbe(connection, entry, arguments);
+      return arguments;
+    } catch (const std::exception &) {
+    }
+  }
+  throw std::runtime_error("no drawn parameter set has an answer the catalog probes can change");
 }
 
 struct TimingSummary {
@@ -124,7 +140,7 @@ TimingSummary Summarize(std::vector<double> samples) {
 
 ModeSummary RunMode(const std::string &db_path,
                     const catalog::SharedQueryCatalogEntry &entry,
-                    double interval, bool shared, int threads) {
+                    const std::vector<Arguments> &sets, double interval, bool shared, int threads) {
   duckdb::DuckDB database(db_path.c_str());
   duckdb::Connection connection(database);
   accelerator_codegen::RegisterAcceleratorFunctions(connection);
@@ -145,19 +161,19 @@ ModeSummary RunMode(const std::string &db_path,
     const auto build_start = Clock::now();
     runtime->Build();
     build_us = ElapsedUs(build_start);
-    (void)ExecuteAuxSql(connection, entry);
+    (void)ExecuteAuxSql(connection, entry, sets.front());
   }
   for (int i = 0; i < GetEnvInt("ACCEL_SHARED_SWEEP_WARMUP", 1); ++i) {
     if (shared) {
-      (void)ExecuteAuxSql(connection, entry);
+      (void)ExecuteAuxSql(connection, entry, sets.front());
     } else {
-      (void)ExecuteBase(connection, entry);
+      (void)ExecuteBase(connection, entry, sets.front());
     }
   }
   catalog::SharedProbe probe;
   const bool do_writes = interval > 0.0;
   if (do_writes) {
-    probe = catalog::FindInvalidatingSharedProbe(connection, entry);
+    probe = catalog::FindInvalidatingSharedProbe(connection, entry, WriteTargetSet(connection, entry, sets));
     std::cerr << "invalidating_write_probes=1 query=" << entry.query_id << '\n';
   }
   double next_write = do_writes ? interval : 1e30;
@@ -182,8 +198,8 @@ ModeSummary RunMode(const std::string &db_path,
       next_write += interval;
     }
     const auto start = Clock::now();
-    rows = shared ? ExecuteAuxSql(connection, entry)
-                  : ExecuteBase(connection, entry);
+    const auto &arguments = sets[static_cast<size_t>(read_index) % sets.size()];
+    rows = shared ? ExecuteAuxSql(connection, entry, arguments) : ExecuteBase(connection, entry, arguments);
     if (shared) {
       runtime->last_rows = rows;
     }
@@ -193,7 +209,9 @@ ModeSummary RunMode(const std::string &db_path,
   const auto read_stats = Summarize(std::move(read_samples));
   const auto write_stats = Summarize(std::move(write_samples));
   if (shared) {
-    harness::RequireSharedMatchesBase(connection, *runtime, entry);
+    for (const auto &arguments : sets) {
+      harness::RequireSharedMatchesBase(connection, *runtime, entry, arguments);
+    }
   }
   if (do_writes) {
     auto restore = connection.Query(probe.restore_sql);
@@ -245,12 +263,17 @@ int main(int argc, char **argv) {
       SweepOutput() = std::make_unique<std::ofstream>(output_path, mode);
       Require(SweepOutput()->good(), "failed to open sweep output");
     }
+    const auto sets = harness::ArgumentSets(entry);
     if (std::getenv("ACCEL_SHARED_SWEEP_RUN_DIFFERENTIAL")) {
-      harness::RunDifferentialCheck(db_path, entry);
+      for (const auto &arguments : sets) {
+        harness::RunDifferentialCheck(db_path, entry, arguments);
+      }
       std::cerr << "duckdb parallel aux differential check passed for Q"
                 << entry.query_id << '\n';
       if (std::getenv("ACCEL_SHARED_SWEEP_RUN_INCREMENTAL_DIFFERENTIAL")) {
-        harness::RunIncrementalDifferentialCheck(db_path, entry);
+        duckdb::DuckDB database(db_path.c_str());
+        duckdb::Connection connection(database);
+        harness::RunIncrementalDifferentialCheck(db_path, entry, WriteTargetSet(connection, entry, sets));
         std::cerr << "duckdb parallel aux incremental differential check passed for Q"
                   << entry.query_id << '\n';
       }
@@ -266,8 +289,8 @@ int main(int argc, char **argv) {
            "workload_with_build_speedup_vs_base");
     }
     std::cerr << "ACCEL_BENCH_THREADS=" << threads << '\n';
-    const auto base = RunMode(db_path, entry, interval, false, threads);
-    const auto shared = RunMode(db_path, entry, interval, true, threads);
+    const auto base = RunMode(db_path, entry, sets, interval, false, threads);
+    const auto shared = RunMode(db_path, entry, sets, interval, true, threads);
     const double base_workload_us = base.read.sum_us + base.write.sum_us;
     const double shared_workload_us = shared.read.sum_us + shared.write.sum_us;
     const double base_with_build_us = base.build_us + base_workload_us;
