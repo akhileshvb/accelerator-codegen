@@ -33,25 +33,8 @@ if ! engine_ready_for_ctest "${PATTERN}" "${EXCLUDE}"; then
 fi
 engine_run ctest --test-dir "${ACCEL_BUILD_DIR}" --no-tests=error -j "${ACCEL_CTEST_JOBS:-$(nproc)}" --stop-on-failure -R "${PATTERN}" -E "${EXCLUDE}" --output-on-failure
 
-STATUS="pass"
-if [[ ${RC} -ne 0 ]]; then
-  STATUS="fail"
-fi
-
-GATE_LOG_TEXT="${ENGINE_LOG}${LOG}" python3 - <<PY
-import os, json, pathlib
-path = pathlib.Path("${OUT}/aux_unit.json")
-path.write_text(json.dumps({
-    "gate": "aux_unit",
-    "query": int("${QUERY}"),
-    "benchmark": "${BENCHMARK_NAME}",
-    "status": "${STATUS}",
-    "exit_code": int("${RC}"),
-    "pattern": "${PATTERN}",
-    "exclude": "${EXCLUDE}",
-    "log_tail": os.environ["GATE_LOG_TEXT"][-4000:],
-}, indent=2))
-print(path.read_text())
-PY
-
-[[ "${STATUS}" == "pass" ]]
+# the shared result format (reason, owner) like every gate: the failing tests are the reason
+[[ ${RC} -eq 0 ]] || emit_result "${OUT}/aux_unit.json" aux_unit fail \
+  "ctest failed: $(sed -n '/The following tests FAILED/,$p' <<<"${LOG}" | sed -n 's/^[[:space:]]*[0-9]* - \([^ ]*\).*/\1/p' | paste -sd, -)" \
+  "${ENGINE_LOG}${LOG}" "query:=${QUERY}" "exit_code:=${RC}" "pattern=${PATTERN}" "exclude=${EXCLUDE}"
+emit_result "${OUT}/aux_unit.json" aux_unit pass "" "${ENGINE_LOG}${LOG}" "query:=${QUERY}" "pattern=${PATTERN}" "exclude=${EXCLUDE}"
