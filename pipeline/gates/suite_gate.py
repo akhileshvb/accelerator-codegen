@@ -36,10 +36,33 @@ def _suite(ctx: dict) -> Path | None:
 
 
 def prepare(ts, ctx: dict, suite: Path, tier: str) -> int:
+    """The ACCEL_SUITE_* exports of a run of the frozen suite at `tier` (validate: the suite before its freeze)."""
     settings, art = ctx["test_suite"], Path(ctx["artifacts_dir"])
     if tier != "validate" and (problem := ts.frozen_problem(art, suite)):
         print(problem, file=sys.stderr)
         return 3
+    print(_exports(_suite_env(ts, ctx, suite, tier)))
+    return 0
+
+
+def prepare_conformance(ts, ctx: dict, suite: Path | None) -> int:
+    """The suite harness_conformance runs: the frozen one, else a probe suite at the query's default binding (the
+    harnesses must read the suite environment before the tester's suite exists), else none."""
+    settings, art = ctx["test_suite"], Path(ctx["artifacts_dir"])
+    if suite is not None and not ts.frozen_problem(art, suite):
+        return prepare(ts, ctx, suite, "quick")
+    bound = Path(settings.get("bound_sql") or "")
+    binding = ts.default_binding(Path(settings["query_sql"]).read_text(encoding="utf-8"),
+                                 bound.read_text(encoding="utf-8")) if bound.is_file() else None
+    if binding is None:
+        return 0
+    out = Path(os.environ.get("ACCEL_GATE_OUT_DIR") or art / "gates")
+    print(_exports(_suite_env(ts, ctx, ts.write_probe_suite(out / "harness_conformance" / "probe_suite", binding), "quick")))
+    return 0
+
+
+def _suite_env(ts, ctx: dict, suite: Path, tier: str) -> dict[str, str]:
+    settings, art = ctx["test_suite"], Path(ctx["artifacts_dir"])
     seed = int(os.environ.get("ACCEL_SUITE_SEED") or 0) or None
     cfg = ts.SuiteConfig(**settings["config"])
     out = Path(os.environ.get("ACCEL_GATE_OUT_DIR") or art / "gates")
@@ -52,8 +75,7 @@ def prepare(ts, ctx: dict, suite: Path, tier: str) -> int:
         ACCEL_SUITE_SCHEMA_SQL=settings["schema_sql"],
         ACCEL_SUITE_HASH=ts.content_hash(suite),
     )
-    print(_exports(env))
-    return 0
+    return env
 
 
 def validate(ts, ctx: dict, suite: Path, report_path: str | None) -> int:
@@ -99,10 +121,14 @@ def main(argv: list[str]) -> int:
         return summary(rest[0])
     ctx = _context()
     suite = _suite(ctx)
-    if suite is None:
+    conformance = command == "prepare" and rest[0] == "conformance" and bool(ctx.get("test_suite"))
+    if suite is None and not conformance:
         return 0
     sys.path.insert(0, str(root / "pipeline" / "orchestrator"))
     from accel_pipeline import data as ts
+
+    if conformance:
+        return prepare_conformance(ts, ctx, suite)
 
     if command == "prepare":
         return prepare(ts, ctx, suite, rest[0])

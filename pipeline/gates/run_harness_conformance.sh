@@ -27,7 +27,7 @@ for target in "${TARGETS[@]}"; do
 done
 engine_ready "${TARGETS[@]}" || engine_not_ready "${JSON}" harness_conformance
 
-suite_prepare quick "${JSON}" harness_conformance
+suite_prepare conformance "${JSON}" harness_conformance
 suite_adversarial_env
 [[ -z "${ACCEL_SUITE_REPORT:-}" ]] || rm -f "${ACCEL_SUITE_REPORT}"
 export ACCEL_MULTI_CONN_TEST_QUERIES="${QUERY}" ACCEL_CROSS_ACCEL_TEST_QUERIES="${QUERY}" ACCEL_AUX_BENCHMARK="${BENCHMARK_NAME}"

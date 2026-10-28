@@ -1167,6 +1167,7 @@ def gate_settings(pipeline_config: Any, workload: dict[str, Any], query: int) ->
     return {
         "dir": str(suite_path(root, bench, query)),
         "query_sql": str(root / workload_query_sql(bench, query)),
+        "bound_sql": str(workload.get("reference_sql_path") or ""),  # the query at its default binding
         "function": (aux_function_name if aux else base_function_name)(bench, query),
         "arity": len(workload.get("parameters") or []),
         "param_names": [str(p["name"]) for p in workload.get("parameters") or []],
@@ -1555,6 +1556,36 @@ def freeze(art: Path, suite: Path, *, query: int, reason: str = "test_suite stag
     record = {"query": query, "hash": content_hash(suite), "time": time.strftime("%Y-%m-%dT%H:%M:%S"), "reason": reason}
     (art / FROZEN_RECORD).write_text(json.dumps(record, indent=2), encoding="utf-8")
     return record
+
+
+def default_binding(template_sql: str, bound_sql: str) -> list[str] | None:
+    """The values the bound reference SQL has where the query template has `$1..$n`, as SQL (one suite tuple), or
+    None when the two do not line up. Both are canonicalised first, which drops comments and spacing."""
+    try:
+        template, bound = (sqlglot.parse_one(sql).sql(comments=False) for sql in (template_sql, bound_sql))
+    except sqlglot.errors.ParseError:
+        return None
+    pieces = re.split(r"\$(\d+)", template)
+    if len(pieces) == 1:
+        return []
+    groups = [f"(?P<v{i}>.+?)" for i in range(1, len(pieces), 2)]
+    match = re.fullmatch("".join(groups[i // 2] if i % 2 else re.escape(p) for i, p in enumerate(pieces)), bound, re.S)
+    if not match:
+        return None
+    values: dict[int, str] = {}
+    for i in range(1, len(pieces), 2):
+        if values.setdefault(int(pieces[i]), match[f"v{i}"]) != match[f"v{i}"]:
+            return None  # one parameter bound to two values
+    return [values[n] for n in range(1, max(values) + 1)] if set(values) == set(range(1, max(values) + 1)) else None
+
+
+def write_probe_suite(directory: Path, binding: list[str]) -> Path:
+    """The smallest suite (one tuple at the default binding, no transactions) for checking that a harness reads the
+    suite environment before the query's own suite is frozen."""
+    shutil.rmtree(directory, ignore_errors=True)
+    (directory / TXNS).mkdir(parents=True)
+    (directory / PARAMS).write_text(", ".join(binding) + "\n", encoding="utf-8")
+    return directory
 
 
 def frozen_problem(art: Path, suite: Path) -> str:

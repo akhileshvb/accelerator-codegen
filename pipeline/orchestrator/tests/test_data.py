@@ -803,3 +803,19 @@ def test_a_cut_writes_null_bare_and_the_empty_string_quoted(tmp_path):
 
     data_mod._write_cut(Rows(), {"t": "SELECT 1"}, tmp_path / "cut")
     assert (tmp_path / "cut" / "t.tbl").read_text() == '1||""|"a""b"|\n'
+
+
+def test_the_default_binding_is_what_the_bound_query_has_where_the_template_has_parameters():
+    from accel_pipeline.data import default_binding
+
+    template = "-- region as $2\nSELECT a FROM t WHERE d BETWEEN $1 AND $1 + 1 AND r = $2 ORDER BY a"
+    assert default_binding(template, "SELECT a FROM t WHERE d BETWEEN 7 AND 7 + 1 AND r = 'x' ORDER BY a") == ["7", "'x'"]
+    assert default_binding(template, "SELECT b FROM t") is None  # they do not line up: no probe suite
+    assert default_binding(template, "SELECT a FROM t WHERE d BETWEEN 7 AND 8 + 1 AND r = 'x' ORDER BY a") is None
+
+
+def test_a_probe_suite_holds_one_tuple_and_no_transactions(tmp_path):
+    from accel_pipeline.data import PARAMS, TXNS, write_probe_suite
+
+    suite = write_probe_suite(tmp_path / "probe", ["7", "'x'"])
+    assert (suite / PARAMS).read_text() == "7, 'x'\n" and (suite / TXNS).is_dir() and not any((suite / TXNS).iterdir())
