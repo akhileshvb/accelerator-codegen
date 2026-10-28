@@ -13,6 +13,7 @@ from __future__ import annotations
 import csv
 import io
 import json
+import math
 import sys
 from pathlib import Path
 
@@ -70,9 +71,18 @@ def check_cost_model(path: str) -> str:
         model = json.loads(Path(path).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return "clause calibrate-cost-model: the calibrator wrote no cost model JSON at the path it was given"
-    if bad := [k for k in COST_MODEL_KEYS if not float(model.get(k) or 0) > 0]:
-        return f"clause calibrate-cost-model: the cost model needs {' and '.join(bad)} > 0 (host_contract.md)"
+    # >= 0 only: the module conformance runs on declines, so there is no maintenance whose interference to measure;
+    # the implementation's exit (aux_cost_model_calibrate) requires the measured costs > 0
+    if bad := [k for k in COST_MODEL_KEYS if not _non_negative(model.get(k))]:
+        return f"clause calibrate-cost-model: the cost model needs {' and '.join(bad)} as numbers >= 0 (host_bootstrap.md)"
     return ""
+
+
+def _non_negative(value) -> bool:
+    try:
+        return math.isfinite(number := float(value)) and number >= 0
+    except (TypeError, ValueError):
+        return False
 
 
 def main(argv: list[str]) -> int:

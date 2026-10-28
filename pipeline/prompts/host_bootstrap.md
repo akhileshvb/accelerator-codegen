@@ -60,7 +60,7 @@ The `host_bootstrap` gate builds every target and smokes it with `--help`; then 
 - **`differential`**: the differential exits 0, with the query's frozen suite when `ACCEL_SUITE_DIR` is set (clause `suite-report` in `host_contract.md`, "Test suite").
 - **`concurrent`**: the multi-connection and cross-accelerator harnesses exit 0 beside the differential on one instance, so none may hold the instance's database for writing (an engine may allow one writer per file): a harness that writes works on its own copy.
 - **`bench-*`**: the bench's clauses in `pipeline/prompts/aux_state/shared/bench_sweep_contract.md`.
-- **`calibrate-cost-model`**: the calibrator exits 0 and its JSON has `interference_delta_per_query_us > 0` and `interference_rebuild_per_query_us > 0`.
+- **`calibrate-cost-model`**: the calibrator exits 0 and its JSON has `interference_delta_per_query_us` and `interference_rebuild_per_query_us` as measured numbers (`>= 0` here, where the module declines and nothing is maintained; the query's implementation exit requires them `> 0` with its real module).
 
 A write that leaves the query's answer unchanged is normal, not an error: take the writes that change it from the backend api's invalidating probes and the suite's transactions.
 

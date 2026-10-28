@@ -45,12 +45,17 @@ def test_a_declining_module_hits_nothing_so_there_is_no_hit_rate_to_compare(repo
     ({"FAKE_BENCH_NO_PROFILE": "1"}, "bench-profile-window"),
     ({"FAKE_BENCH_BUILDS": "0"}, "bench-state-builds"),
     ({"FAKE_BENCH_CONSTANT": "1"}, "bench-hit-rate"),
-    ({"FAKE_COST_DELTA": "0"}, "calibrate-cost-model"),
+    ({"FAKE_COST_DELTA": "null"}, "calibrate-cost-model"),
 ])
 def test_a_broken_clause_fails_naming_itself_and_the_harness_as_owner(repo, env, clause):
     proc, _, data = conformance(repo, **env)
     assert proc.returncode == 1
     assert data["reason"].startswith(f"clause {clause}:") and data["owner"] == "harness"
+
+
+def test_a_calibrator_that_measures_no_interference_on_the_declining_module_conforms(repo):
+    proc, _, data = conformance(repo, FAKE_COST_DELTA="0")  # nothing is maintained: no interference to measure
+    assert proc.returncode == 0, data
 
 
 def test_a_failed_harness_names_its_exit_code_and_the_query(repo):
