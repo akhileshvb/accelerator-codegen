@@ -309,7 +309,7 @@ def completed_kernels(ctx: VerusContext) -> str:
                 try:
                     b = json.loads(rep.read_text()).get("bench_verus") or {}
                     mixes = ", ".join(f"{m['write_fraction']:g}: {m['speedup']:.1f}x" for m in b.get("mixes", []))
-                    speed = f"; audited at SF1: reads {b.get('read_speedup', 0):.1f}x, write mixes {mixes}"
+                    speed = f"; audited on the iteration dataset: reads {b.get('read_speedup', 0):.1f}x, write mixes {mixes}"
                 except (ValueError, KeyError, TypeError):
                     pass
         note = f"\n  review: {notes[name]}" if name in notes else ""
@@ -388,7 +388,7 @@ def preflight(r: Run) -> None:
         if not p or not Path(p).exists():
             problems.append(f"{what}: {p or '(unset)'} not found (set verus.{what.split()[0]}... in the workload)")
     if not (Path(ctx.build_dir) / "CMakeCache.txt").is_file() and not r.dry_run:
-        Path(ctx.build_dir).mkdir(parents=True, exist_ok=True)
+        Path(ctx.build_dir).resolve().mkdir(parents=True, exist_ok=True)  # the tree's build-release links to build/
         with actions.file_lock(Path(ctx.build_dir) / ".verus_build.lock"):  # parallel pipelines, one tree
             done = (Path(ctx.build_dir) / "CMakeCache.txt").is_file()
             cfg = {"ok": True} if done else actions.configure_build(ctx)
@@ -409,12 +409,17 @@ def preflight(r: Run) -> None:
         built = actions.ensure_runner(ctx)  # the agents' SQL tool runs it from the first stage
         if not built["ok"]:
             problems.append(f"verus_kit_runner does not build: {built['error'][-500:]}")
+        else:
+            try:  # the test database takes the iteration dataset's keys (every test copy does)
+                actions.drop_db(actions.db_copy(ctx, "test", "preflight_keys"))
+            except RuntimeError as exc:
+                problems.append(str(exc))
     if problems and not r.dry_run:
         raise PipelineStop("preflight: " + "; ".join(problems))
     ignored = [k for k in IGNORED_WORKLOAD_FIELDS if r.workload.get(k)]
     if ignored:
         r.note(f"ignored under --mode verus (C++ pipeline context): {', '.join(ignored)}")
-    create_workspace(ctx, r.workload)
+    create_workspace(ctx, r.workload, measure=not r.dry_run)
     if not r.dry_run:
         actions.sql2verus_bin(ctx)
     r.note(f"workspace {ctx.workspace}; crate {ctx.crate}; accelerator {ctx.accel_id}")
@@ -535,7 +540,7 @@ def _analysis(r: Run) -> None:
             return
         feedback = "The critic asks for a revision:\n" + json.dumps(failed or crit.get("objections") or crit, indent=2)
         if crit.get("estimates"):
-            feedback += "\nIts SF3000 estimates of your design:\n" + json.dumps(crit["estimates"], indent=2)
+            feedback += "\nIts production-scale estimates of your design:\n" + json.dumps(crit["estimates"], indent=2)
     raise PipelineStop(f"analysis: inputs still refused after {revisions + 1} rounds: {feedback[:2000]}")
 
 
@@ -673,7 +678,7 @@ def _kernel_gates(r: Run, *, snapshots_too: bool = False, proofs: bool = True) -
     c["verified"] = b.get("verified")
     c["verify_seconds"] = b.get("verify_seconds")
     if c["ok"]:
-        # correct on the small test data: now also fast enough on SF1 (code first, and again once proved,
+        # correct on the small test data: now also fast enough on the iteration dataset (code first, and again once proved,
         # so a proof-driven rewrite cannot quietly make it slow)
         cost = r.gate("cost_check", actions.cost_check(ctx))
         if not cost["ok"]:

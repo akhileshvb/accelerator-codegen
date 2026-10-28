@@ -1,0 +1,1 @@
+SELECT id FROM t WHERE a > 5 AND b IS NULL ORDER BY id

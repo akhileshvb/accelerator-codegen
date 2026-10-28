@@ -282,7 +282,7 @@
   "engine": 7
  },
  "pipeline/orchestrator/accel_pipeline/mcp.py": {
-  "path": 3
+  "path": 1
  },
  "pipeline/orchestrator/accel_pipeline/optimization/bench.py": {
   "engine": 4
@@ -291,12 +291,8 @@
   "engine": 6,
   "symbol": 7
  },
- "pipeline/orchestrator/accel_pipeline/pack.py": {
-  "engine": 1,
-  "path": 1
- },
  "pipeline/orchestrator/accel_pipeline/prompts.py": {
-  "path": 2,
+  "path": 1,
   "symbol": 1
  },
  "pipeline/orchestrator/accel_pipeline/runlog.py": {
@@ -306,7 +302,7 @@
   "symbol": 1
  },
  "pipeline/orchestrator/accel_pipeline/verus/actions.py": {
-  "engine": 11,
+  "engine": 15,
   "engine_branch": 1,
   "target": 3
  },
@@ -382,7 +378,7 @@
   "path": 2
  },
  "pipeline/orchestrator/tests/test_optimization_bench.py": {
-  "engine": 6
+  "engine": 5
  },
  "pipeline/orchestrator/tests/test_optimization_loop.py": {
   "engine": 11,
@@ -471,9 +467,7 @@
   "target": 2
  },
  "scripts/check_backend_query_free.py": {
-  "engine": 4,
-  "path": 2,
-  "symbol": 2
+  "engine": 2
  },
  "scripts/check_doc_paths.py": {
   "engine": 10,
@@ -506,9 +500,6 @@
  "scripts/make_tpch_magnitude_dbs.sh": {
   "engine": 9
  },
- "scripts/make_verus_clean_tree.sh": {
-  "path": 2
- },
  "scripts/materialize_tpch_sf1_from_manifests.py": {
   "path": 1
  },
@@ -533,7 +524,7 @@
  },
  "scripts/run_verus_kit_tests.sh": {
   "engine": 3,
-  "path": 2,
+  "path": 1,
   "target": 4
  },
  "scripts/run_verus_sf20_sweep.sh": {
@@ -565,6 +556,11 @@
  },
  "scripts/summarize_tpch_aux_sf20_sweep.py": {
   "engine": 3
+ },
+ "scripts/test_null_double_kit.sh": {
+  "engine": 2,
+  "path": 2,
+  "target": 2
  },
  "scripts/validate_tpch_refresh_sets.py": {
   "engine": 5
@@ -606,7 +602,17 @@
   "path": 1
  },
  "substrate/verus/sql2verus/src/main.rs": {
-  "engine": 9
+  "engine": 23,
+  "engine_branch": 3
+ },
+ "substrate/verus/sql2verus/tests/builtins/expected.txt": {
+  "engine": 1
+ },
+ "substrate/verus/sql2verus/tests/sec/s24.inputs": {
+  "symbol": 1
+ },
+ "substrate/verus/sql2verus/tests/sec/s4.inputs": {
+  "symbol": 2
  },
  "workloads/sec_edgar/test_db_subset.sql": {
   "engine": 2

@@ -1,0 +1,1 @@
+SELECT id FROM t WHERE NOT (a > 3) ORDER BY id

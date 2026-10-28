@@ -29,8 +29,10 @@ DEST="$(mkdir -p "${DEST}" && cd "${DEST}" && pwd)"
 git -C "${SRC}" archive HEAD | tar -x -C "${DEST}"
 cd "${DEST}"
 shopt -s nullglob
+# a benchmark's build.cmake and Verus world name the queries removed here (the pipeline regenerates both)
 remove=(
-  accelerators/tpch/q[0-9]* accelerators/sec_edgar/q[0-9]*
+  accelerators/*/q[0-9]*
+  accelerators/*/build.cmake accelerators/*/verus_world
   workloads/*/q[0-9]*.inputs
   pipeline/artifacts pipeline/verus_runs
 )
@@ -47,7 +49,9 @@ git init -q && git add -A && git -c user.name="clean tree" -c user.email="clean@
 
 [[ -f "${SRC}/.env" ]] && cp "${SRC}/.env" .env
 # the Verus binary, used in place (the sandbox mounts it): the pipeline reads VERUS_BIN from .env
-grep -q '^VERUS_BIN=' .env 2>/dev/null || echo "VERUS_BIN=${SRC}/tools/verus/verus-x86-linux/verus" >> .env
+VERUS="${VERUS_BIN:-${SRC}/tools/verus/verus-x86-linux/verus}"
+[[ -x "${VERUS}" ]] || { echo "no Verus binary at ${VERUS} (set VERUS_BIN)" >&2; exit 1; }
+grep -q '^VERUS_BIN=' .env 2>/dev/null || echo "VERUS_BIN=${VERUS}" >> .env
 mkdir -p pipeline/.codex
 for f in config.toml run_mcp_server.sh; do
   [[ -f "${SRC}/pipeline/.codex/${f}" ]] && cp "${SRC}/pipeline/.codex/${f}" "pipeline/.codex/${f}"
@@ -57,7 +61,6 @@ done
 python3 -m venv pipeline/orchestrator/.venv
 pipeline/orchestrator/.venv/bin/pip install -q -e pipeline/orchestrator
 
-VERUS="${SRC}/tools/verus/verus-x86-linux/verus"
 cat <<EOF
 clean tree: ${DEST}  ($(git log --oneline | wc -l) commit, no history)
 removed: ${remove[*]}

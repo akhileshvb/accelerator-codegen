@@ -6,6 +6,8 @@
 //   verus_kit_runner snapshots    <db> <accel_id> <spec_dir> [writes=200] [readers=4] [seed=1]
 //   verus_kit_runner bench        <db> <accel_id> <spec_dir> [reps=5] [mixes=0.01,0.05,0.1] [ops=200]
 //   verus_kit_runner sql          <db> <query> [max_rows=50]   (read-only exploration)
+//   verus_kit_runner exec         <db> <statements>              (changes the database: its keys)
+//   verus_kit_runner bench_writes <db> <spec_dir> [rounds=3]     (the bench's writes apply on its database)
 //   verus_kit_runner record       <db> <accel_id> <spec_dir> <probes_file> <out_dir>
 //     (glue contract check: with ACCEL_VERUS_RECORD_DIR=<out_dir>, the C ABI
 //     logs what the glue passes; this dumps each probe query (a line
@@ -444,7 +446,7 @@ int Bench(const std::string &path, const std::string &id, const Spec &spec, int 
   // mixes: ops operations, each a write with probability f, else a query
   std::string mix_json = "[";
   double maint_us_sum = 0, plain_write_us_sum = 0;
-  int maint_n = 0, plain_write_n = 0;
+  int maint_n = 0, plain_write_n = 0, write_errors = 0; // failed writes time nothing: reported
   for (std::size_t m = 0; m < mixes.size(); ++m) {
     const double f = mixes[m];
     double base_us = 0, accel_us = 0;
@@ -460,8 +462,10 @@ int Bench(const std::string &path, const std::string &id, const Spec &spec, int 
           if (pass == 0) {
             const auto w0 = Clock::now();
             auto r = plain.Query("BEGIN; " + sql + (rf ? "; ROLLBACK;" : "; COMMIT;"));
-            if (r && r->HasError())
+            if (r && r->HasError()) {
               plain.Query("ROLLBACK");
+              ++write_errors;
+            }
             plain_write_us_sum += us(w0);
             ++plain_write_n;
           } else {
@@ -469,6 +473,7 @@ int Bench(const std::string &path, const std::string &id, const Spec &spec, int 
             try {
               rt.ApplyWrite(sql);
             } catch (const std::exception &) {
+              ++write_errors;
             }
             maint_us_sum += us(w0);
             ++maint_n;
@@ -494,7 +499,8 @@ int Bench(const std::string &path, const std::string &id, const Spec &spec, int 
   std::cout << "{\"mode\":\"bench\",\"build_ms\":" << build_ms << ",\"read_speedup\":" << read_speedup
             << ",\"per_params\":" << per << ",\"mixes\":" << mix_json << ",\"write_us_mean\":"
             << (maint_n ? maint_us_sum / maint_n : 0.0) << ",\"plain_write_us_mean\":"
-            << (plain_write_n ? plain_write_us_sum / plain_write_n : 0.0) << ",\"write_mode\":" << Json(write_mode)
+            << (plain_write_n ? plain_write_us_sum / plain_write_n : 0.0) << ",\"write_errors\":" << write_errors
+            << ",\"writes\":" << plain_write_n + maint_n << ",\"write_mode\":" << Json(write_mode)
             << ",\"rf_chunk\":" << rf_chunk << "," << StoreFields(rt) << "}" << std::endl;
   return 0;
 }
@@ -566,6 +572,45 @@ int Sql(const std::string &path, const std::string &sql, std::size_t max_rows) {
   return 0;
 }
 
+// The benchmark's writes on its own database (no accelerator): every bench transaction applied `rounds`
+// times, round-robin and committed, as the mixes replay them -- so a write that holds on the test data but
+// not on the benchmark's (a key that exists there, a row a subquery no longer finds) fails here, not
+// silently inside a measurement.
+int BenchWrites(const std::string &path, const Spec &spec, int rounds) {
+  duckdb::DuckDB db(path);
+  duckdb::Connection c(db);
+  if (const auto schema = SchemaSql("ACCEL_VERUS_SCHEMA_SQL"); !schema.empty())
+    Q(c, schema);
+  std::vector<std::string> errors;
+  int failed = 0;
+  for (int round = 0; round < rounds; ++round)
+    for (std::size_t i = 0; i < spec.bench_txns.size(); ++i) {
+      auto r = c.Query("BEGIN; " + spec.bench_txns[i] + "; COMMIT;");
+      if (r && !r->HasError())
+        continue;
+      c.Query("ROLLBACK");
+      ++failed;
+      if (errors.size() < 5)
+        errors.push_back("write " + std::to_string(i + 1) + " of bench_txns, application " + std::to_string(round + 1) +
+                         ": " + (r ? r->GetError() : std::string("failed")));
+    }
+  std::string ej = "[";
+  for (std::size_t i = 0; i < errors.size(); ++i)
+    ej += (i ? "," : "") + Json(errors[i]);
+  std::cout << "{\"mode\":\"bench_writes\",\"writes\":" << spec.bench_txns.size() * rounds << ",\"failed\":" << failed
+            << ",\"errors\":" << ej << "]}" << std::endl;
+  return failed ? 1 : 0;
+}
+
+// Statements that change the database itself (the pipeline aligns a test database's keys with it).
+int Exec(const std::string &path, const std::string &sql) {
+  duckdb::DuckDB db(path);
+  duckdb::Connection c(db);
+  Q(c, sql);
+  std::cout << "{\"ok\":true}" << std::endl;
+  return 0;
+}
+
 int main(int argc, char **argv) {
   try {
     if (argc >= 7 && std::string(argv[1]) == "record")
@@ -574,6 +619,10 @@ int main(int argc, char **argv) {
       return Validate(argv[2], LoadKitSpec(argv[3]), ReadFile(argv[4]), SchemaSql("ACCEL_VERUS_SCHEMA_SQL"));
     if (argc >= 4 && std::string(argv[1]) == "sql")
       return Sql(argv[2], argv[3], argc > 4 ? std::stoul(argv[4]) : 50);
+    if (argc >= 4 && std::string(argv[1]) == "exec")
+      return Exec(argv[2], argv[3]);
+    if (argc >= 4 && std::string(argv[1]) == "bench_writes")
+      return BenchWrites(argv[2], LoadKitSpec(argv[3]), argc > 4 ? std::stoi(argv[4]) : 3);
     Require(argc >= 5, "usage: verus_kit_runner differential|snapshots|bench <db> <accel_id> <spec_dir> [...]");
     const std::string mode = argv[1], db = argv[2], id = argv[3];
     const Spec spec = LoadKitSpec(argv[4]);

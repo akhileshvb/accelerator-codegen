@@ -821,7 +821,7 @@ def make_data_tools(ctx: DataToolContext) -> dict[str, Callable[..., str]]:
             ds = Dataset(ctx)
             seconds = ctx.limits.query_seconds
             text = build_data_shape_markdown(sql, ds.runner, ds.schema, f"engine `{ds.runner.engine}`",
-                                             seconds, 3 * seconds)
+                                             seconds, 3 * seconds, ctx.workload.get("production"))
             return text, {"sql": "(derived from the query template)", "rows": text.count("\n")}
 
         return logged("query_shape", {}, run)

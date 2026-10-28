@@ -1,0 +1,9 @@
+-- Text-key rescans over NULL-able columns: the num / pre rows of the given filings.
+scan sub AS SubRt: SELECT adsh AS adsh, cik AS cik, sic AS sic FROM sub;
+scan tag AS TagRt: SELECT tag AS tag, version AS version, abstract AS abstract_, tlabel AS tlabel FROM tag;
+rescan nums AS NumRt KEYS adsh: SELECT adsh AS adsh, tag AS tag, version AS version, uom AS uom, value AS value FROM num;
+rescan pres AS PreRt KEYS adsh: SELECT adsh AS adsh, stmt AS stmt, tag AS tag, version AS version FROM pre;
+delta num AS NumDelta OF NumRt: SELECT adsh AS adsh, tag AS tag, version AS version, uom AS uom, value AS value FROM num;
+delta pre AS PreDelta OF PreRt: SELECT adsh AS adsh, stmt AS stmt, tag AS tag, version AS version FROM pre;
+delta sub AS SubDelta OF SubRt: SELECT adsh AS adsh, cik AS cik, sic AS sic FROM sub;
+delta tag AS TagDelta OF TagRt: SELECT tag AS tag, version AS version, abstract AS abstract_, tlabel AS tlabel FROM tag;

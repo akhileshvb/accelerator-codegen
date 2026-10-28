@@ -1,7 +1,7 @@
 """One agent turn: the codex step, its sandbox, session continuity and the budgets it runs under.
 
 A stage builds a `StageRunRequest`, `create_agent_backend` returns the backend for the stage, and its `run_stage`
-runs codex (with an OpenRouter model provider and the MCP server), supervises it (wall deadline, idle and
+runs codex (with a configurable model provider, OpenRouter by default, and the MCP server), supervises it (wall deadline, idle and
 no-progress watchdog, exit gate, report_blocker) and checks what it wrote against the stage's ownership.
 
 A role keeps one codex session across rounds and phases (resumed, or replaced with a handoff once retired). While a
@@ -151,6 +151,15 @@ def create_agent_backend(
 # What never enters the agent's sandbox, by its env or the MCP sidecar: the run's delegated cgroup (its /sys is
 # read-only; the cap the session runs under, made outside it, bounds what runs inside).
 OUTSIDE_AGENT_SANDBOX = ("ACCEL_CGROUP",)
+
+
+def _provider_overrides(provider: dict[str, str]) -> list[str]:
+    """`-c` overrides selecting the model provider (codex reads model_providers from -c as from CODEX_HOME)."""
+    if not provider:
+        return ["-c", 'model_provider="openrouter"']
+    name = provider["name"]
+    spec = f'{{name="{name}", base_url="{provider["base_url"]}", env_key="{provider["env_key"]}", wire_api="responses"}}'
+    return ["-c", f'model_provider="{name}"', "-c", f"model_providers.{name}={spec}"]
 
 
 def _forwarded_to_mcp(key: str) -> bool:
@@ -426,8 +435,7 @@ class CodexExecBackend:
             cmd = head + ["--skip-git-repo-check"] + ([] if resume or fork else ["-C", str(self._pipeline_config.repo_root)]) + [
                 "-m",
                 model,
-                "-c",
-                'model_provider="openrouter"',
+                *_provider_overrides(self._model_config.codex_provider),
                 "-c",
                 f"mcp_servers.accel_pipeline.env={mcp_env_toml}",
                 "-c",

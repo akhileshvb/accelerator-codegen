@@ -31,8 +31,9 @@ fi
     mapfile -t kits < <(grep -oE '^pub type S[0-9]+ = [a-z0-9_]+_verus::' "$WORLD_RS" | sed -E 's/.* = ([a-z0-9_]+)_verus::/\1/')
   fi
   if ! printf '%s\n' "${kits[@]}" | grep -qx "$KIT"; then
-    # every kit in query order (tpch_q2_vgen before tpch_q10_vgen)
-    mapfile -t kits < <(printf '%s\n' "${kits[@]}" "$KIT" | grep . | sort -t q -k2,2n -u)
+    # every kit in query order (tpch_q2_vgen before tpch_q10_vgen): by the number after the last "_q"
+    mapfile -t kits < <(printf '%s\n' "${kits[@]}" "$KIT" | grep . | sort -u |
+      awk '{ n = $0; sub(/.*_q/, "", n); print n + 0 "\t" $0 }' | sort -n -s -k1,1 | cut -f2-)
     echo "world ${BENCH}_world: adding $KIT (${#kits[@]} kits)"
     python3 "$ROOT/scripts/gen_verus_world.py" "$BENCH" "${kits[@]}"
   fi

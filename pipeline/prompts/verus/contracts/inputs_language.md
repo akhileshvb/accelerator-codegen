@@ -17,9 +17,11 @@ Rules (sql2verus enforces them; `verus_check_inputs` shows its verdict):
 * **rescan**: a scan restricted to rows whose `KEYS` column (which must be one
   of the SELECT columns) is in a key list the kernel computes during apply
   (`rescan_<name>_keys`, which the host passes back to apply unchanged). It reads the database **after** the transaction.
-  Use it when a change needs rows the state does not keep (e.g. an order
-  becomes relevant and its lines were never tracked). Cost: one keyed query
-  per transaction that needs it.
+  Use it when a change needs rows the state does not keep (e.g. a parent
+  becomes relevant and its child rows were never tracked). The key may be
+  integer-like or text (`Vec<u8>`, compared as bytes), and NULL-able (a row
+  whose key is NULL matches no key). Cost: one keyed query per transaction
+  that needs it.
 * **delta**: every table the query reads has exactly one delta: the
   transaction's changes to it as signed rows (+1 insert, -1 delete; an update
   is both). A *lossless* delta selects exactly the columns the spec reads of
@@ -29,9 +31,18 @@ Rules (sql2verus enforces them; `verus_check_inputs` shows its verdict):
   fields may only compare columns with literals (`o_orderstatus = 'F'`,
   `AND`/`OR`/`NOT`), because the host glue computes them.
 * **types**: integer -> i64, DECIMAL(p,s) -> i64 (value × 10^s), DATE -> i32
-  (days since 1970-01-01), text -> Vec<u8>, boolean -> u8. A row type without
+  (days since 1970-01-01), TIMESTAMP -> i64 (ns), text -> Vec<u8>, boolean ->
+  u8, DOUBLE -> u64 (its IEEE-754 bits, finite; the spec value is
+  `verus_common::rel::f64_val`: sum exactly, round once). A row type without
   text is `#[repr(C)]` and passed as a slice (cheap); one with text is passed
   column by column (a Vec of rows).
+* **NULL**: a column the schema does not declare NOT NULL (or PRIMARY KEY)
+  may hold NULL, and NULL is inside the envelope: the kernel must handle it.
+  Its field carries a flag `<field>__null` (nonzero: NULL, the value is then
+  unspecified), so a row type with one needs `AS <Type>`. A scan's WHERE keeps
+  a row only where its predicate is true (a comparison with NULL is false). A
+  lossy delta's fields must be NOT NULL: a computed field over a NULL-able
+  column is refused (use a lossless delta, which carries the flags).
 * Without an inputs file the default is every table scanned whole and every
   change captured whole: always valid, rarely fast.
 

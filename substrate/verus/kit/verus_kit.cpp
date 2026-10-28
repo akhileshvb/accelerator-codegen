@@ -10,6 +10,7 @@
 #include <cstdio>
 #include <cmath>
 #include <cstdlib>
+#include <cstring>
 #include <limits>
 #include <map>
 #include <mutex>
@@ -950,6 +951,24 @@ uint8_t Bool(const core::AuxRow &row, std::size_t i) {
   throw Declined("not a boolean cell");
 }
 
+bool IsNull(const core::AuxRow &row, std::size_t i) { return i >= row.values.size() || row.values[i].is_null; }
+
+const std::string kNoText;
+
+uint64_t F64(const core::AuxRow &row, std::size_t i) {
+  const auto &v = Cell(row, i);
+  double d;
+  if (const auto *x = std::get_if<double>(&v.payload))
+    d = *x;
+  else
+    throw Declined("not a floating-point cell");
+  if (!std::isfinite(d))
+    throw Declined("non-finite DOUBLE");
+  uint64_t bits;
+  std::memcpy(&bits, &d, sizeof bits);
+  return bits;
+}
+
 const std::string &Text(const core::AuxRow &row, std::size_t i) {
   const auto &v = Cell(row, i);
   if (const auto *x = std::get_if<std::string>(&v.payload))
@@ -1054,6 +1073,12 @@ core::AuxValue OutI64(int64_t v) { return core::AuxValue::Of(core::AuxType::Int6
 core::AuxValue OutDate(int32_t days) { return core::AuxValue::Of(core::AuxType::Date, core::AuxDate{days}); }
 core::AuxValue OutBool(uint8_t v) { return core::AuxValue::Of(core::AuxType::Boolean, v != 0); }
 
+core::AuxValue OutF64(uint64_t bits) {
+  double d;
+  std::memcpy(&d, &bits, sizeof d);
+  return core::AuxValue::Of(core::AuxType::Double, d);
+}
+
 core::AuxValue OutTs(int64_t ns) {
   int64_t days = ns / 86400000000000LL, rem = ns % 86400000000000LL;
   if (rem < 0) {
@@ -1106,12 +1131,27 @@ std::string Host::Quote(const std::string &identifier) const {
   return out + "\"";
 }
 
-void QueryKeys(Host &host, const std::string &sql_text, const std::string &key_column,
-               const std::vector<int64_t> &keys, const RowFn &row) {
-  // the glue's statement becomes a subquery: no trailing `;` (or whitespace)
+std::string Host::QuoteText(const std::string &text) const {
+  std::string out = "'";
+  for (char c : text) {
+    if (c == '\'')
+      out.push_back('\'');
+    out.push_back(c);
+  }
+  return out + "'";
+}
+
+// the glue's statement becomes a subquery: no trailing `;` (or whitespace)
+static std::string AsSubquery(const std::string &sql_text) {
   std::string sql = sql_text;
   while (!sql.empty() && (sql.back() == ';' || std::isspace(static_cast<unsigned char>(sql.back()))))
     sql.pop_back();
+  return sql;
+}
+
+void QueryKeys(Host &host, const std::string &sql_text, const std::string &key_column,
+               const std::vector<int64_t> &keys, const RowFn &row) {
+  const std::string sql = AsSubquery(sql_text);
   if (keys.empty())
     return;
   // Engines with a parameter path bind the list as one BIGINT[] value instead
@@ -1132,6 +1172,23 @@ void QueryKeys(Host &host, const std::string &sql_text, const std::string &key_c
   }
   list += "]::BIGINT[]";
   host.Query("SELECT verus_kit_rescan.* FROM (" + sql + ") AS verus_kit_rescan WHERE verus_kit_rescan." +
+                 host.Quote(key_column) + " IN (SELECT unnest(" + list + "))",
+             row);
+}
+
+void QueryKeys(Host &host, const std::string &sql_text, const std::string &key_column,
+               const std::vector<std::string> &keys, const RowFn &row) {
+  if (keys.empty())
+    return;
+  // one query, semi-joined like the BIGINT keys; a NULL key column never matches
+  std::string list = "[";
+  for (std::size_t i = 0; i < keys.size(); ++i) {
+    if (i)
+      list += ',';
+    list += host.QuoteText(keys[i]);
+  }
+  list += "]::VARCHAR[]";
+  host.Query("SELECT verus_kit_rescan.* FROM (" + AsSubquery(sql_text) + ") AS verus_kit_rescan WHERE verus_kit_rescan." +
                  host.Quote(key_column) + " IN (SELECT unnest(" + list + "))",
              row);
 }

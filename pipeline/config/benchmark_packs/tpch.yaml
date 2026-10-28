@@ -4,6 +4,18 @@ artifact_namespace: tpch
 dataset_key: tpch_sf1
 scale_dataset_key: tpch_sf10
 db_env_var: ACCEL_TPCH_DB
+test_dataset_key: tpch_test
+params_generator: eval/compare/gen_tpch_params.py
+
+# The data the accelerator must serve in production, relative to the iteration dataset (dataset_key):
+# tables grow `scale`-fold except the `fixed` ones; `writes` is what the application writes.
+production:
+  scale: 3000
+  fixed: [nation, region]
+  writes: >-
+    Refresh functions: new orders arrive with their lineitems (RF1) and old orders are deleted with
+    their lineitems (RF2), each about 0.1% of orders per refresh, keys spread uniformly; part, supplier,
+    customer and partsupp change rarely.
 
 write_paths:
   - accelerators/tpch/**

@@ -1,0 +1,1 @@
+SELECT MAX(x) AS hi FROM m

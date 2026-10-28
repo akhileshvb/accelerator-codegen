@@ -20,6 +20,7 @@ import json
 import os
 import re
 import shutil
+import struct
 import subprocess
 import time
 from collections import Counter
@@ -34,7 +35,15 @@ from accel_pipeline.agent import HOME, READONLY_LAYERS
 from accel_pipeline.gates import build_jobs, tail_marked
 from accel_pipeline.layout import PROOFLIB
 from accel_pipeline.prims import file_lock
-from accel_pipeline.verus.context import Draw, VerusContext, draw_env, draw_summary, new_draw
+from accel_pipeline.verus.context import (
+    Draw,
+    VerusContext,
+    draw_env,
+    draw_summary,
+    new_draw,
+    prooflib_lib,
+    refresh_prooflib,
+)
 
 GEN_FILES = ("gen_spec.rs", "gen_obligations.rs", "gen_world.rs", "gen_ffi.rs")
 LIB_RS_REQUIRED = ("gen_spec", "gen_obligations", "kernel", "gen_world", "gen_ffi")
@@ -458,7 +467,7 @@ def machine_slot(ctx: VerusContext, kind: str, slots: int, note=None) -> Iterato
 
 
 def drop_db(db: Path) -> None:
-    """Remove a scratch database copy (an SF1 copy is ~300 MB; benches make many)."""
+    """Remove a scratch database copy (an iteration-dataset copy is GBs; benches make many)."""
     for p in (db, Path(str(db) + ".wal")):
         p.unlink(missing_ok=True)
 
@@ -472,18 +481,42 @@ def db_copy(ctx: VerusContext, which: str, tag: str) -> Path:
         if p.exists():
             p.unlink()
     shutil.copy2(src, dst)
+    if which == "test":
+        align_keys(ctx, dst)
     return dst
 
 
-_NOT_NULL = re.compile(r"^\s*(\w+)\s+.*\bNOT\s+NULL\b", re.I)
+_KEYS_SQL = "SELECT table_name, constraint_text FROM duckdb_constraints() WHERE constraint_type = 'PRIMARY KEY' ORDER BY ALL"
+
+
+def _primary_keys(ctx: VerusContext, db: str) -> list[str]:
+    res = _runner(ctx, ["sql", db, _KEYS_SQL, "10000"], timeout=120)
+    if "rows" not in res:
+        raise RuntimeError(f"reading the keys of {db}: {str(res.get('error'))[:500]}")
+    return [f"ALTER TABLE {table} ADD {text}" for table, text in res["rows"]]
+
+
+def align_keys(ctx: VerusContext, db: Path) -> None:
+    """Give a test-database copy the primary keys the iteration dataset declares and it lacks, so a write the
+    benchmarks' database refuses (a second filing under one key) fails in the tests too."""
+    missing = [k for k in _primary_keys(ctx, ctx.bench_db) if k not in _primary_keys(ctx, str(db))]
+    if missing:
+        res = _runner(ctx, ["exec", str(db), "; ".join(missing)], timeout=600)
+        if not res.get("ok"):
+            raise RuntimeError(f"the test database violates a key of the iteration dataset ({'; '.join(missing)}): "
+                               f"{str(res.get('error'))[:500]}")
+
+
+_NOT_NULL = re.compile(r"^\s*(\w+)\s+.*\b(?:NOT\s+NULL|PRIMARY\s+KEY)\b", re.I)
+_PRIMARY_KEY = re.compile(r"^\s*(?:CONSTRAINT\s+\w+\s+)?PRIMARY\s+KEY\s*\(([^)]*)\)", re.I)
 
 
 def schema_constraints(ctx: VerusContext) -> Path:
-    """The declared schema's NOT NULL columns as ALTER statements, for every database the
-    runner opens: the test data then stays in the world the spec describes (the generated
-    TPC-H databases do not declare these constraints themselves)."""
+    """The declared schema's NOT NULL columns (primary key columns included, as sql2verus reads them) as
+    ALTER statements, for every database the runner opens: the test data then stays in the world the spec
+    describes (dataset databases need not declare these constraints themselves)."""
     out = Path(ctx.run_dir) / "schema_constraints.sql"
-    stmts = []
+    columns: list[tuple[str, str]] = []
     table = None
     for line in Path(ctx.schema_sql).read_text(encoding="utf-8").splitlines():
         m = re.match(r"\s*CREATE\s+TABLE\s+(\w+)", line, re.I)
@@ -493,9 +526,13 @@ def schema_constraints(ctx: VerusContext) -> Path:
         if table and line.strip().startswith(")"):
             table = None
             continue
-        c = _NOT_NULL.match(line)
-        if table and c and c.group(1).upper() not in ("PRIMARY", "CONSTRAINT", "UNIQUE", "FOREIGN", "CHECK"):
-            stmts.append(f"ALTER TABLE {table} ALTER COLUMN {c.group(1)} SET NOT NULL;")
+        if not table:
+            continue
+        if pk := _PRIMARY_KEY.match(line):
+            columns += [(table, c.strip()) for c in pk.group(1).split(",") if c.strip()]
+        elif (c := _NOT_NULL.match(line)) and c.group(1).upper() not in ("CONSTRAINT", "UNIQUE", "FOREIGN", "CHECK"):
+            columns.append((table, c.group(1)))
+    stmts = [f"ALTER TABLE {t} ALTER COLUMN {c} SET NOT NULL;" for t, c in dict.fromkeys(columns)]
     text = "\n".join(stmts) + ("\n" if stmts else "")
     out.parent.mkdir(parents=True, exist_ok=True)
     if not out.is_file() or out.read_text(encoding="utf-8") != text:
@@ -574,6 +611,20 @@ def validate_tests(ctx: VerusContext) -> dict[str, Any]:
     r["ok"] = r.get("exit") == 0 and r.get("txns", 0) > 0
     if r.get("txns", 0) == 0:
         r.setdefault("errors", []).append("tests/txns/ has no transactions")
+    drop_db(db)
+    # the benchmarks replay bench_txns/ (else txns/) many times on the iteration dataset: they must apply there
+    db = Path(ctx.run_dir) / "dbs" / "validate_bench_writes.duckdb"
+    try:  # not timed: no bench lock
+        db = db_copy(ctx, "bench", "validate_bench_writes")
+        w = _runner(ctx, ["bench_writes", str(db), str(tests_dir(ctx)), "3"], timeout=1200)
+    finally:
+        drop_db(db)
+    r["bench_writes"] = {k: w.get(k) for k in ("writes", "failed")}
+    if w.get("exit") != 0:
+        r["ok"] = False
+        r.setdefault("errors", []).extend(
+            [f"on the iteration dataset (the benchmarks' database; each bench write is applied 3 times, committed): {e}"
+             for e in w.get("errors") or [w.get("error") or "bench_writes failed"]])
     return r
 
 
@@ -689,11 +740,46 @@ def explain_fault(f: str) -> str:
     }.get(f, f"the changes to table {f.split(':', 1)[-1]} are dropped" if f.startswith("drop_delta:") else f)
 
 
-def sql(ctx: VerusContext, query: str, max_rows: int = 50) -> dict[str, Any]:
+def sql(ctx: VerusContext, query: str, max_rows: int = 50, iteration: bool = False) -> dict[str, Any]:
+    """`query` on the test database, or (iteration) on the iteration dataset, read-only."""
     built = ensure_runner(ctx)
     if not built["ok"]:
         return {"error": "could not build verus_kit_runner for SQL", "detail": built["error"]}
-    return _runner(ctx, ["sql", ctx.test_db, query, str(max_rows)], timeout=300)
+    return _runner(ctx, ["sql", ctx.bench_db if iteration else ctx.test_db, query, str(max_rows)], timeout=300)
+
+
+class _IterationSql:
+    """data_shape_stats.Runner over the iteration dataset (in-process DuckDB scans it fast: exact statistics)."""
+
+    dialect = "duckdb"
+    sample_rows = 10**12
+
+    def __init__(self, ctx: VerusContext) -> None:
+        self.ctx = ctx
+
+    def rows(self, sql: str, seconds: float) -> list[list[str | None]]:
+        res = _runner(self.ctx, ["sql", self.ctx.bench_db, sql, str(10**9)], timeout=seconds)
+        if "rows" not in res:
+            raise RuntimeError(str(res.get("error"))[:500])
+        return [[None if c == "NULL" else c for c in r] for r in res["rows"]]
+
+
+def data_shape(ctx: VerusContext, production: dict[str, Any] | None) -> str:
+    """The statistics the query's SQL implies, measured on the iteration dataset (cached per query and dataset)."""
+    from accel_pipeline.data import build_data_shape_markdown, read_schema
+
+    db = Path(ctx.bench_db)
+    sql_text = Path(ctx.query_sql).read_text(encoding="utf-8")
+    key = hashlib.sha256(json.dumps([sql_text, str(db), db.stat().st_size, db.stat().st_mtime,
+                                     production]).encode()).hexdigest()[:16]
+    cache = Path(ctx.run_dir) / f"data_shape_{key}.md"
+    if not cache.is_file():
+        runner = _IterationSql(ctx)
+        text = build_data_shape_markdown(sql_text, runner, read_schema(runner, 60), f"the iteration dataset `{db.name}`",
+                                         60, 300, production)
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        cache.write_text(text + "\n", encoding="utf-8")
+    return cache.read_text(encoding="utf-8")
 
 
 def glue_contract(ctx: VerusContext) -> dict[str, Any]:
@@ -755,9 +841,10 @@ def bench_size(ctx: VerusContext, mixes: list[float]) -> tuple[int, int]:
 
 
 def cost_check(ctx: VerusContext) -> dict[str, Any]:
-    """A quick SF1 measurement of a kernel that passes its tests: correct is not enough, it must also be
-    fast at scale.  The tests' database is tiny, where per-write copies of the whole state or whole-state
-    scans per read are invisible; on SF1 they make the accelerator slower than the plain query."""
+    """A quick measurement on the iteration dataset of a kernel that passes its tests: correct is not enough,
+    it must also be fast at scale.  The tests' database is tiny, where per-write copies of the whole state or
+    whole-state scans per read are invisible; on the iteration dataset they make the accelerator slower than
+    the plain query."""
     cfg = ctx.setting("cost_check", {}) or {}
     if not cfg.get("enabled", True):
         return {"ok": True, "skipped": True}
@@ -780,8 +867,8 @@ def cost_check(ctx: VerusContext) -> dict[str, Any]:
                 r = r2
     if not r["ok"]:
         return {"ok": False, "error": (
-            f"the SF1 cost check did not finish ({tail_marked(str(r.get('error', '')), 600)}): {cfg.get('ops', 20)} reads/"
-            f"writes on SF1 took longer than {cfg.get('timeout_sec', 420)} s, so some read or write does work in "
+            f"the cost check did not finish ({tail_marked(str(r.get('error', '')), 600)}): {cfg.get('ops', 20)} reads/"
+            f"writes on the iteration dataset took longer than {cfg.get('timeout_sec', 420)} s, so some read or write does work in "
             "proportion to the whole state or a whole table")}
     read = float(r.get("read_speedup") or 0.0)
     mixed = float((r.get("mixes") or [{}])[0].get("speedup") or 0.0)
@@ -795,7 +882,7 @@ def cost_check(ctx: VerusContext) -> dict[str, Any]:
            "plain_write_us": round(plain_w), "accel_write_us": round(accel_w), "build_ms": r.get("build_ms")}
     if not ok:
         res["error"] = (
-            f"correct but too slow at SF1: reads {read:.2f}x the plain query (need >= {min_read}), a "
+            f"correct but too slow on the iteration dataset: reads {read:.2f}x the plain query (need >= {min_read}), a "
             f"{mix:.0%}-write mix {mixed:.2f}x (need >= {min_mix}). "
             + ("Reads do too much work: they should touch only what the query needs (the analysis's read path), "
                "not scan a structure or table. " if read < min_read else "")
@@ -831,6 +918,9 @@ def bench(ctx: VerusContext, mixes: list[float], *, store: str = "verus_global",
         drop_db(db)
     r["ok"] = r.get("exit") == 0 and "error" not in r
     r["size"] = {"reps": reps, "ops": ops}
+    if r.get("write_errors"):
+        r["write_errors_note"] = (f"{r['write_errors']} of {r.get('writes')} writes failed on the benchmark's database: "
+                                  "the mixes timed fewer writes than they ran")
     return r
 
 
@@ -1027,9 +1117,7 @@ def leak_check(ctx: VerusContext) -> dict[str, Any]:
 
 def prooflib_verify(ctx: VerusContext) -> dict[str, Any]:
     """Verify the workspace's copy of the proof library on its own (before publishing it)."""
-    from accel_pipeline.verus import workspace as _ws
-
-    _ws.refresh_prooflib(ctx)
+    refresh_prooflib(ctx)
     ws_lib = ctx.ws / "prooflib" / "src" / "lib.rs"
     lib_dir = Path(ctx.lib_dir)
     t0 = time.monotonic()
@@ -1051,14 +1139,12 @@ def prooflib_verify(ctx: VerusContext) -> dict[str, Any]:
 
 def prooflib_publish(ctx: VerusContext, note: str) -> dict[str, Any]:
     """Publish the workspace's proof library: additions only, re-verified with every dependent."""
-    from accel_pipeline.verus import workspace as _ws
-
     ws_lib = ctx.ws / "prooflib" / "src" / "lib.rs"
-    tree_lib = _ws.prooflib_lib(ctx)  # accelerators/prooflib/src/lib.rs
+    tree_lib = prooflib_lib(ctx)  # accelerators/prooflib/src/lib.rs
     with file_lock(Path(ctx.pipeline_root) / "verus_runs" / ".prooflib.lock"):
         # take in what others published since this workspace's copy was made, keeping this
         # agent's additions (else a stale copy looks like it removes their lemmas)
-        _ws.refresh_prooflib(ctx)
+        refresh_prooflib(ctx)
         old = tree_lib.read_text(encoding="utf-8")
         new = ws_lib.read_text(encoding="utf-8")
         removed = [l for l in old.splitlines() if l.strip() and l not in new.splitlines()]
@@ -1193,6 +1279,8 @@ def _ns_of(text: str) -> int:
 
 
 def norm_recorded(v: Any, tag: str) -> Any:
+    if v is None:
+        return None
     if tag == "text":
         return bytes.fromhex(v)
     if tag == "date":
@@ -1201,6 +1289,8 @@ def norm_recorded(v: Any, tag: str) -> Any:
         return "true" if int(v) else "false"
     if tag == "ts":
         return int(v)
+    if tag == "f64":
+        return struct.unpack("<d", struct.pack("<Q", int(v)))[0]
     if tag.startswith("dec"):
         return Decimal(int(v)).scaleb(-int(tag[3:])).normalize()
     return int(v)
@@ -1218,6 +1308,8 @@ def norm_sql(v: str, tag: str) -> Any:
             return "true" if v.lower() in ("true", "1", "t") else "false"
         if tag == "ts":
             return _ns_of(v)
+        if tag == "f64":
+            return float(v)
         if tag.startswith("dec"):
             return Decimal(v).normalize()
         return int(Decimal(v))
@@ -1546,15 +1638,17 @@ def verus_check_inputs(ctx: VerusContext) -> Any:
 
 
 @_tool(read_only=True)
-def verus_sql(ctx: VerusContext, query: str, max_rows: int = 50) -> Any:
-    """Read-only SQL on the test dataset database, to explore the data."""
-    return sql(ctx, query, max_rows)
+def verus_sql(ctx: VerusContext, query: str, max_rows: int = 50, iteration: bool = False) -> Any:
+    """Read-only SQL on the test database; iteration=true: on the iteration dataset (the benchmarks' data:
+    measure sizes, fan-outs and distributions there)."""
+    return sql(ctx, query, max_rows, iteration)
 
 
 @_tool()
 def verus_validate_tests(ctx: VerusContext) -> Any:
-    """Check tests/ under the schema's NOT NULL constraints: setup.sql runs, every params.sql tuple runs the query,
-    and the txns apply in sequence (committed, as the tests run them)."""
+    """Check tests/ under the schema's constraints: setup.sql runs, every params.sql tuple runs the query, the txns
+    apply in sequence (committed, as the tests run them), and the bench writes (bench_txns/, else txns/) apply
+    repeatedly on the iteration dataset, as the benchmarks replay them."""
     return validate_tests(ctx)
 
 
@@ -1580,7 +1674,7 @@ def verus_test(ctx: VerusContext, snapshots: bool = False, proofs: bool = True) 
 
 @_tool()
 def verus_bench(ctx: VerusContext, write_mixes: str = "0.01,0.05") -> Any:
-    """Build and benchmark on SF1 (Verus store): read speedup per parameter tuple, write mixes, score."""
+    """Build and benchmark on the iteration dataset (Verus store): read speedup per parameter tuple, write mixes, score."""
     if not (b := build_runner(ctx))["ok"]:
         return b
     r = bench(ctx, [float(x) for x in write_mixes.split(",") if x.strip()], tag="agent_bench")
@@ -1589,7 +1683,7 @@ def verus_bench(ctx: VerusContext, write_mixes: str = "0.01,0.05") -> Any:
 
 @_tool()
 def verus_profile(ctx: VerusContext) -> Any:
-    """Steady-state perf profiles on SF1 (build excluded), one per axis: `reads` and `maintenance` (writes);
+    """Steady-state perf profiles on the iteration dataset (build excluded), one per axis: `reads` and `maintenance` (writes);
     hotspots by symbol and area (kernel, glue, store, engine)."""
     return b if not (b := build_runner(ctx))["ok"] else profile(ctx)
 

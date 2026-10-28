@@ -1,0 +1,2 @@
+scan t_a: SELECT a FROM t;
+delta t AS TDelta OF TRt: SELECT id, a, b, c, d, e, f, ts FROM t;

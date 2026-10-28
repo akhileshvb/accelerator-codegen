@@ -18,7 +18,7 @@
 // A construct without a lemma here (e.g. a join of several indexes inside
 // EXISTS) makes `skip` non-empty: the spec is then emitted without the
 // section, with a comment saying why.
-use crate::{as_bag, bool_code, camel, cut, key_cols, key_tuple_args, key_tuple_ty, key_tuple_val, row_expr, table_field, verus_ty, Block, Shape, Top};
+use crate::{as_bag, bool_code, camel, cut, key_cols, key_tuple_args, key_tuple_ty, key_tuple_val, key_ty, row_expr, Block, Shape, Top};
 use std::fmt::Write;
 
 const HIDE: &str = "    /*HIDE*/\n";
@@ -256,7 +256,7 @@ impl Perm {
             self.lemma(&fname, "", &a, Kind::Bag, &call, &deps, &body);
         }
         let keys = &b.keys;
-        let kargs: Args = keys.iter().map(|(g, v)| (g.clone(), verus_ty(v.ty).to_string())).collect();
+        let kargs: Args = keys.iter().map(|(g, v)| (g.clone(), key_ty(v))).collect();
         let kv = vals(&kargs);
         let cond = keys.iter().map(|(g, v)| format!("{} == {g}", v.code)).collect::<Vec<_>>().join(" && ");
         let t1 = format!("{p}tuples(db, params{oa})");
@@ -298,34 +298,49 @@ impl Perm {
                     to_db2(&keep)
                 )
             };
-            let gv = format!("{p}group_vals(db, params{oa}{kv}, f)");
-            let gv2 = to_db2(&gv);
+            // the same over the tuples where `keep` holds (the non-NULL ones)
+            let vals_where_bag = {
+                let keep = if cond.is_empty() { "keep".to_string() } else { format!("|t: {tt}| {cond} && keep(t)") };
+                format!(
+                    "        assert(bag_eq({t1}, {t2}));\n        let k1 = {keep};\n        let k2 = {};\n        assert forall|a: {tt}| #[trigger] k1(a) == k2(a) by {{}}\n        lemma_bag_eq_map_where({t1}, {t2}, k1, k2, f, f);\n",
+                    to_db2(&keep)
+                )
+            };
             let all = format!("{rtext} {htext}");
-            for (fun, lem) in [("min_of", "lemma_min_of_perm"), ("max_of", "lemma_max_of_perm")] {
-                if mentions(&all, fun) {
-                    let call = format!("{fun}({gv})");
-                    let body = format!("{vals_bag}        {lem}({gv}, {gv2});\n");
-                    self.keep = vec![format!("{p}group_vals")];
-                    self.lemma(&format!("{p}group_{fun}"), "", &af, Kind::Eq, &call, &format!("{p}tuples( {cond}"), &body);
-                    self.fns.pop();
-                    let last = self.reg.pop().unwrap();
-                    self.reg.push((format!("{fun}({p}group_vals("), last.1));
-                }
-            }
             if mentions(&all, "min_text") || mentions(&all, "max_text") {
                 self.unsupported("MIN / MAX over text");
             }
-            if mentions(&all, "distinct_count") {
-                for (suffix, ty) in [("int", "int"), ("text", "Seq<u8>")] {
-                    let mut ad = ak.clone();
-                    ad.push(("f".into(), format!("spec_fn({tt}) -> {ty}")));
-                    let call = format!("distinct_count({gv})");
-                    let body = format!("{vals_bag}        lemma_distinct_count_perm({gv}, {gv2});\n");
-                    self.keep = vec![format!("{p}group_vals")];
-                    self.lemma(&format!("{p}group_distinct_{suffix}"), "", &ad, Kind::Eq, &call, &format!("{p}tuples( {cond}"), &body);
-                    self.fns.pop();
-                    let last = self.reg.pop().unwrap();
-                    self.reg.push((format!("distinct_count({p}group_vals("), last.1));
+            for (gvf, bag, extra) in [("group_vals", &vals_bag, ""), ("group_vals_where", &vals_where_bag, ", keep")] {
+                let mut af = ak.clone();
+                if gvf == "group_vals_where" {
+                    af.push(("keep".into(), format!("spec_fn({tt}) -> bool")));
+                }
+                af.push(("f".into(), format!("spec_fn({tt}) -> int")));
+                let gv = format!("{p}{gvf}(db, params{oa}{kv}{extra}, f)");
+                let gv2 = to_db2(&gv);
+                for (fun, lem) in [("min_of", "lemma_min_of_perm"), ("max_of", "lemma_max_of_perm")] {
+                    if mentions(&all, &format!("{fun}({p}{gvf}(")) {
+                        let call = format!("{fun}({gv})");
+                        let body = format!("{bag}        {lem}({gv}, {gv2});\n");
+                        self.keep = vec![format!("{p}{gvf}")];
+                        self.lemma(&format!("{p}{}_{fun}", gvf.replace("group_vals", "group")), "", &af, Kind::Eq, &call, &format!("{p}tuples( {cond}"), &body);
+                        self.fns.pop();
+                        let last = self.reg.pop().unwrap();
+                        self.reg.push((format!("{fun}({p}{gvf}("), last.1));
+                    }
+                }
+                if mentions(&all, &format!("distinct_count({p}{gvf}(")) {
+                    for (suffix, ty) in [("int", "int"), ("text", "Seq<u8>")] {
+                        let mut ad = af.clone();
+                        *ad.last_mut().unwrap() = ("f".into(), format!("spec_fn({tt}) -> {ty}"));
+                        let call = format!("distinct_count({gv})");
+                        let body = format!("{bag}        lemma_distinct_count_perm({gv}, {gv2});\n");
+                        self.keep = vec![format!("{p}{gvf}")];
+                        self.lemma(&format!("{p}{}_distinct_{suffix}", gvf.replace("group_vals", "group")), "", &ad, Kind::Eq, &call, &format!("{p}tuples( {cond}"), &body);
+                        self.fns.pop();
+                        let last = self.reg.pop().unwrap();
+                        self.reg.push((format!("distinct_count({p}{gvf}("), last.1));
+                    }
                 }
             }
             // output row
@@ -430,7 +445,7 @@ impl Perm {
         let mut body = String::new();
         match b.shape {
             Shape::Grouped if !as_bag(b) => {
-                let gq: Vec<String> = keys.iter().map(|(g, v)| format!("{g}: {}", verus_ty(v.ty))).collect();
+                let gq: Vec<String> = keys.iter().map(|(g, v)| format!("{g}: {}", key_ty(v))).collect();
                 let gm: Vec<String> = key_cols(b)
                     .iter()
                     .enumerate()

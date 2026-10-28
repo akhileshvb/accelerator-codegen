@@ -1,0 +1,1 @@
+SELECT id, CASE WHEN a > 1 THEN b ELSE 0 END AS c FROM t

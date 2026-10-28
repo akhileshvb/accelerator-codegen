@@ -4,7 +4,7 @@ Make one measured improvement to the accelerator, keeping it verified and
 correct. The pipeline accepts your change only if it still verifies with
 nothing added to the trusted base, passes the frozen tests (differential and
 concurrent snapshots, on the Verus global store), and raises the score (steady-state read speedup ×
-write-mix speedup, measured by the pipeline on SF1; build time excluded) by more than the noise.
+write-mix speedup, measured by the pipeline on the iteration dataset; build time excluded) by more than the noise.
 Otherwise your change is reverted.
 
 Current best score: {{best_score}} (run-to-run noise {{noise_pct}}%).
@@ -18,7 +18,7 @@ cost of keeping the aux state current under writes (maintenance). The build
 is a one-time cost: it is not in the score and not worth optimizing, and the
 profiles below exclude it.
 
-Profiles of the current best (perf on SF1, steady state only): `reads` samples
+Profiles of the current best (perf on the iteration dataset, steady state only): `reads` samples
 accelerated queries; `maintenance` samples writes applied through the
 accelerator (it includes the engine executing the write itself, which you
 cannot remove; `overhead_us_per_write` is what the accelerator adds to a
@@ -40,15 +40,15 @@ How to work:
 * Pick a target from the profile (or the owed list): a kernel function, the
   read path, maintenance (writes), or a structural change of the aux state.
   Read `contracts/scale_principles.md`: prefer changes that also hold at
-  SF3000.
-* The score is measured on parameter values drawn at random from the TPC-H
-  domain, new on every run (not shown ahead, the same for the best and the
+  production scale (`query/workload.json`).
+* The score is measured on parameter values drawn at random from the
+  query's domain, new on every run (not shown ahead, the same for the best and the
   candidate within one decision). Never specialize to particular parameter
   values: the kit must stay correct and fast for any value of the domain,
   and answer every other value of the parameter's type (no declines inside
   the envelope; the obligations enforce it).
 * Memory footprint is the third objective (`scale_principles`, "Memory
-  footprint"). Do not raise the score by growing the state past its SF20
+  footprint"). Do not raise the score by growing the state past its
   budget (e.g. a per-key container, an extra copy of the facts, wider
   stored values); when two ways to a speedup are close, take the smaller.
 * Measure with `verus_bench` (write mixes `{{mixes}}` this attempt) and
