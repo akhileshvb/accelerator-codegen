@@ -644,7 +644,9 @@ def build_data_shape_markdown(sql: str, runner: Any, schema: dict[str, dict[str,
 SUBSET_ROOT_ROWS = 40_000  # rows of the largest table in the quick cut
 TINY_ROOT_ROWS = 1_500  # the adversarial phase needs a few rows the point-write probes can invalidate
 CUT_STATEMENT_SECONDS = 900.0
-FORMAT_VERSION = 7
+FORMAT_VERSION = 8
+ANSWER_KEY_SHARE = 4  # the binding's keys fill at most 1/this of a root's sample
+ANSWER_KEY_SECONDS = 300.0
 _IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
@@ -694,10 +696,10 @@ def key_links(schema: dict[str, dict[str, str]]) -> list[tuple[tuple[str, str], 
 
 
 def cut_selects(tables: list[str], joins: list[tuple[tuple[str, str], tuple[str, str]]], rows: dict[str, int],
-                integer_columns: dict[str, list[str]], root_rows: int) -> dict[str, str]:
+                integer_columns: dict[str, list[str]], root_rows: int, answer_keys: AnswerKeys | None = None) -> dict[str, str]:
     """One SELECT per table returning its rows in the cut. Each group of tables the joins connect has a root, its
-    largest table, sampled by key on an integer column (a join key when it has one); every other table
-    keeps the rows that join to its neighbour nearer the root."""
+    largest table, sampled by key on an integer column (a join key when it has one) plus the keys the query answers
+    from (`answer_keys`); every other table keeps the rows that join to its neighbour nearer the root."""
     adjacent: dict[str, list[tuple[str, str, str]]] = {t: [] for t in tables}  # table -> (its column, other, other's column)
     for (ta, ca), (tb, cb) in joins:
         if ta in adjacent and tb in adjacent:
@@ -707,7 +709,10 @@ def cut_selects(tables: list[str], joins: list[tuple[tuple[str, str], tuple[str,
     for root in sorted(tables, key=lambda t: -rows[t]):
         if root in selects:
             continue
-        selects[root] = _sample(root, rows[root], root_rows, [c for c, _, _ in adjacent[root]], integer_columns[root])
+        join_columns = [c for c, _, _ in adjacent[root]]
+        key = _key_column(join_columns, integer_columns[root])
+        extra = answer_keys(root, key, integer_columns[root], root_rows) if answer_keys and key and rows[root] > root_rows else []
+        selects[root] = _sample(root, rows[root], root_rows, join_columns, integer_columns[root], extra)
         queue = [root]
         while queue:
             parent = queue.pop(0)
@@ -718,12 +723,17 @@ def cut_selects(tables: list[str], joins: list[tuple[tuple[str, str], tuple[str,
     return selects
 
 
-def _sample(table: str, rows: int, root_rows: int, join_columns: list[str], integers: list[str]) -> str:
+def _key_column(join_columns: list[str], integers: list[str]) -> str | None:
+    """The column a root is sampled by: an integer join key, else the first join key."""
+    return next((c for c in join_columns if c in integers), join_columns[0] if join_columns else None)
+
+
+def _sample(table: str, rows: int, root_rows: int, join_columns: list[str], integers: list[str], extra_keys: list[str]) -> str:
     """Every P-th key value, P a prime near rows / root_rows: an even spread over the key range (no bias to early
     keys), and a prime stride cannot line up with the blocks a generator numbers its keys in. An integer join key is
     sampled by value; a text one by its rank among the distinct keys (a modulo of another integer column would keep
-    whatever few values happen to divide, e.g. none of a handful of dates). A table no key links to any other has no
-    neighbour to stay consistent with: its first rows."""
+    whatever few values happen to divide, e.g. none of a handful of dates). `extra_keys` (SQL literals) are kept too.
+    A table no key links to any other has no neighbour to stay consistent with: its first rows."""
     if rows <= root_rows:
         return f"SELECT * FROM {table}"
     if not join_columns:
@@ -732,11 +742,71 @@ def _sample(table: str, rows: int, root_rows: int, join_columns: list[str], inte
     stride = math.ceil(rows / root_rows)
     while any(stride % d == 0 for d in range(2, math.isqrt(stride) + 1)):
         stride += 1
-    if column := next((c for c in join_columns if c in integers), None):
-        return f"SELECT * FROM {table} WHERE {column} % {stride} = 0"
-    key = join_columns[0]
-    ranked = f"SELECT {key}, ROW_NUMBER() OVER (ORDER BY {key}) AS key_rank FROM (SELECT DISTINCT {key} FROM {table}) AS keys"
-    return f"SELECT * FROM {table} WHERE {key} IN (SELECT {key} FROM ({ranked}) AS ranked WHERE key_rank % {stride} = 0)"
+    key = _key_column(join_columns, integers)
+    if key in integers:
+        even = f"{key} % {stride} = 0"
+    else:
+        ranked = f"SELECT {key}, ROW_NUMBER() OVER (ORDER BY {key}) AS key_rank FROM (SELECT DISTINCT {key} FROM {table}) AS keys"
+        even = f"{key} IN (SELECT {key} FROM ({ranked}) AS ranked WHERE key_rank % {stride} = 0)"
+    answered = f" OR {key} IN ({', '.join(extra_keys)})" if extra_keys else ""
+    return f"SELECT * FROM {table} WHERE {even}{answered}"
+
+
+class AnswerKeys:
+    """The keys of the rows a query answers from at its binding. Each select of the bound query that reads a table
+    gives a key-only select over the same FROM/JOIN/WHERE (ordered as the query is, so a top-k keeps its top rows
+    first); the keys of a root are bounded to a share of its sample."""
+
+    def __init__(self, runner: HostSql, sql: str, schema: dict[str, dict[str, str]], rows: dict[str, int]) -> None:
+        self.runner, self.rows = runner, rows
+        self.dialect = runner.dialect or None
+        try:
+            self.scopes = traverse_scope(qualify(parse_template(sql, self.dialect), schema=schema, validate_qualify_columns=False))[::-1]
+        except sqlglot.errors.SqlglotError:
+            self.scopes = []
+        self.fetched: dict[tuple[str, str], list[str]] = {}
+        self.distinct: dict[tuple[str, str], int] = {}
+
+    def __call__(self, table: str, column: str, integers: list[str], root_rows: int) -> list[str]:
+        """SQL literals of the `table` keys on `column` that fit the share of a sample of root_rows rows."""
+        if (table, column) not in self.fetched:
+            self.fetched[table, column] = self._fetch(table, column, SUBSET_ROOT_ROWS)
+        keys = self.fetched[table, column][: self._bound(table, column, root_rows)]
+        return [str(int(k)) if column in integers else "'" + k.replace("'", "''") + "'" for k in keys]
+
+    def _bound(self, table: str, column: str, root_rows: int) -> int:
+        """Keys that stay within the share, at the table's average rows per key."""
+        if (table, column) not in self.distinct:
+            counted = self.runner.rows(f"SELECT COUNT(DISTINCT {column}) FROM {table}", CUT_STATEMENT_SECONDS)
+            self.distinct[table, column] = int(counted[0][0] or 1)
+        return max(1, root_rows // ANSWER_KEY_SHARE * self.distinct[table, column] // max(self.rows[table], 1))
+
+    def _fetch(self, table: str, column: str, root_rows: int) -> list[str]:
+        limit = self._bound(table, column, root_rows)
+        keys: dict[str, None] = {}
+        for scope in self.scopes:
+            for alias, source in scope.sources.items():
+                if isinstance(source, exp.Table) and source.name.lower() == table.lower() and isinstance(scope.expression, exp.Select):
+                    try:
+                        found = self.runner.rows(self._key_select(scope.expression, alias, column, limit), ANSWER_KEY_SECONDS)
+                    except (RuntimeError, TimeoutError):
+                        continue  # e.g. a select correlated with its outer query: the even sample stands
+                    keys.update((row[0], None) for row in found if row[0] is not None)
+        return list(keys)
+
+    def _key_select(self, select: exp.Select, alias: str, column: str, limit: int) -> str:
+        aliases = {e.alias: e.this for e in select.expressions if isinstance(e, exp.Alias)}
+        keyed = select.copy()
+        for arg in ("group", "having", "qualify", "distinct", "offset"):
+            keyed.set(arg, None)
+        keyed.set("expressions", [exp.column(column, table=alias)])
+        keyed.set("limit", exp.Limit(expression=exp.Literal.number(limit)))
+        if order := keyed.args.get("order"):
+            order = order.transform(lambda n: aliases[n.name].copy() if isinstance(n, exp.Column) and not n.table and n.name in aliases else n)
+            if order.find(exp.AggFunc, exp.Window) or any(isinstance(o.this, exp.Literal) for o in order.expressions):
+                order = None  # ordered by an aggregate or a select position, not by this table's columns
+            keyed.set("order", order)
+        return keyed.sql(dialect=self.dialect)
 
 
 def _write_cut(runner: HostSql, selects: dict[str, str], directory: Path) -> dict[str, int]:
@@ -756,12 +826,18 @@ def _write_cut(runner: HostSql, selects: dict[str, str], directory: Path) -> dic
     return counts
 
 
+def _bound_sql(workload: dict[str, Any]) -> str:
+    """The query at its default binding (the workload's reference SQL); empty when there is none."""
+    path = Path(str(workload.get("reference_sql_path") or ""))
+    return path.read_text(encoding="utf-8") if path.is_file() else ""
+
+
 def _key(cfg: PipelineConfig, workload: dict[str, Any], query: int, source: Path) -> str:
     bench = str(workload.get("benchmark_name") or "")
     sql = catalog_sql(workload, cfg.repo_root, query)
     schema = cfg.repo_root / workload_schema_sql(str(workload.get("dataset_benchmark") or bench))
     digest = hashlib.sha256(f"{FORMAT_VERSION} {SUBSET_ROOT_ROWS} {TINY_ROOT_ROWS} {source.resolve()}".encode())
-    digest.update(sql.encode() + (schema.read_bytes() if schema.is_file() else b""))
+    digest.update(sql.encode() + (schema.read_bytes() if schema.is_file() else b"") + _bound_sql(workload).encode())
     for tbl in sorted(source.glob("*.tbl")):
         digest.update(f"{tbl.name}{tbl.stat().st_size}{tbl.stat().st_mtime_ns}".encode())
     return digest.hexdigest()[:16]
@@ -782,9 +858,10 @@ def _cut(cfg: PipelineConfig, workload: dict[str, Any], query: int, source: Path
     joins = (analyze_query(catalog_sql(workload, cfg.repo_root, query), schema, runner.dialect).joins
              + foreign_key_links(schema_sql) + key_links(schema))
     integers = {t: [c for c, dtype in schema[t].items() if is_integer(dtype)] for t in tables}
+    answer_keys = AnswerKeys(runner, bound, schema, rows) if (bound := _bound_sql(workload)) else None
     manifest: dict[str, Any] = {"source_rows": rows}
     for name, root_rows in (("subset", SUBSET_ROOT_ROWS), ("tiny", TINY_ROOT_ROWS)):
-        manifest[f"{name}_rows"] = _write_cut(runner, cut_selects(tables, joins, rows, integers, root_rows), destination / name)
+        manifest[f"{name}_rows"] = _write_cut(runner, cut_selects(tables, joins, rows, integers, root_rows, answer_keys), destination / name)
     return manifest
 
 
