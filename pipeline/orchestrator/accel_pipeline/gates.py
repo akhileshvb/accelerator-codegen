@@ -91,6 +91,7 @@ from accel_pipeline.data import (
     instance_env,
     instance_tag,
     parse_aux_benchmark_output,
+    run_host_verb,
     suite_path,
     workload_dataset_dir,
 )
@@ -1444,6 +1445,82 @@ WRITE_MIX_PCT = 50  # share of operations that are writes in the write-path prof
 
 
 @dataclass(frozen=True)
+class HostRun:
+    """The one way to run anything on the engine: `host.sh run` in an engine instance (host_contract.md), after `up`,
+    `load` and `build` through the same host. `instance`: engine_instance, engine_state_dir and the dataset loaded."""
+    cfg: PipelineConfig
+    workload: dict[str, Any]
+    instance: dict[str, str]
+
+    @classmethod
+    def worker(cls, cfg: PipelineConfig, workload: dict[str, Any]) -> HostRun:
+        """The instance this worker's own benchmarks and smoke run in, loaded with the workload's dataset."""
+        own = instance_env(cfg.repo_root, str(workload.get("engine_name") or ""), cfg.build_dir)
+        return cls(cfg, workload, {"engine_instance": own["ACCEL_ENGINE_INSTANCE"] + "-bench",
+                                   "engine_state_dir": own["ACCEL_ENGINE_STATE_DIR"] + "-bench",
+                                   "dataset": workload_dataset_dir(workload)})
+
+    @property
+    def engine(self) -> str:
+        return str(self.workload.get("engine_name") or "")
+
+    def env(self, extra: Mapping[str, str] = {}) -> dict[str, str]:
+        """This process's environment, the instance's variables of the contract, then `extra`."""
+        return {**os.environ, **instance_env(self.cfg.repo_root, self.engine, self.cfg.build_dir),
+                "ACCEL_ENGINE_INSTANCE": self.instance["engine_instance"],
+                "ACCEL_ENGINE_STATE_DIR": self.instance["engine_state_dir"],
+                "ACCEL_DATASET_DIR": self.instance["dataset"], **extra}
+
+    def build(self, *targets: str) -> str | None:
+        """`up`, then `build` of `targets` (one build of a build dir at a time); None, or why not."""
+        env = self.env()
+        with build_lock(self.cfg.build_dir):
+            for verb, args in (("up", ()), ("build", targets)):
+                done = run_host_verb(self.cfg.repo_root, self.engine, verb, *args, build_dir=self.cfg.build_dir, env=env)
+                if done.returncode not in (0, 77):
+                    return f"host.sh {verb} failed (exit {done.returncode})\n{((done.stdout or '') + (done.stderr or ''))[-2000:]}"
+        return None
+
+    def load(self) -> str | None:
+        """The instance up with the dataset loaded; None, or why not."""
+        return ensure_dataset_loaded(self.workload, self.cfg.repo_root, self.cfg.build_dir, instance_env={
+            "ACCEL_ENGINE_INSTANCE": self.instance["engine_instance"],
+            "ACCEL_ENGINE_STATE_DIR": self.instance["engine_state_dir"],
+            "ACCEL_DATASET_DIR": self.instance["dataset"]})
+
+    def ready(self, *targets: str) -> str | None:
+        """The instance up with the dataset loaded and `targets` built; None, or why not."""
+        return self.load() or self.build(*targets)
+
+    def run(self, command: list[str], *, env: Mapping[str, str] | None = None, timeout: float | None = None,
+            measured: str = "") -> subprocess.CompletedProcess[str]:
+        """`command` through `host.sh run`, killed with its children at `timeout`. A non-empty `measured` (the reason)
+        queues it for the measurement lease and pins it to the lease's CPUs; the queueing is outside `timeout` and
+        the stderr ends with the line that reports it (pack.waited_seconds)."""
+        from accel_pipeline.pack import Window, holder_name, measurement_window
+
+        with (measurement_window(holder_name(), measured) if measured else contextlib.nullcontext(Window())) as window:
+            argv = window.argv([str(host_script(self.cfg.repo_root, self.engine)), "run", *command])
+            with subprocess.Popen(argv, cwd=self.cfg.repo_root, env={**(env or self.env()), **window.env}, stdout=subprocess.PIPE,
+                                  stderr=subprocess.PIPE, text=True, start_new_session=True) as proc:
+                try:
+                    out, err = proc.communicate(timeout=timeout)
+                except subprocess.TimeoutExpired:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                    out, err = proc.communicate()
+                    raise subprocess.TimeoutExpired(argv, timeout, out, err) from None
+        return subprocess.CompletedProcess(argv, proc.returncode, out, err + (f"\n{window.line()}\n" if measured else ""))
+
+    def perf_runner(self):
+        """subprocess.run that sends the outermost `perf` command (the bench inside it) through host.sh."""
+        def run(command, *, env, **kwargs):
+            if Path(command[0]).name == "perf" and command[1] in ("stat", "record"):
+                command = [str(host_script(self.cfg.repo_root, self.engine)), "run", *command]
+            return subprocess.run(command, env=env, **kwargs)
+        return run
+
+
+@dataclass(frozen=True)
 class Bench:
     """The aux bench binary on the quick instance (`instance`: the gate result's engine_instance, engine_state_dir, dataset)."""
     cfg: PipelineConfig
@@ -1452,23 +1529,17 @@ class Bench:
     instance: dict[str, str]
 
     @property
-    def engine(self) -> str:
-        return str(self.workload.get("engine_name") or "")
+    def host(self) -> HostRun:
+        return HostRun(self.cfg, self.workload, self.instance)
 
     @property
     def target(self) -> Path:
         return self.cfg.build_dir / resolve_workload_paths(self.cfg, self.workload, self.query)["aux_bench_target"]
 
     def env(self, work_dir: str, queries: int, pct: int = 0) -> dict[str, str]:
-        """The bench's environment: this process's, the instance's, the write frequency and the repetitions
-        (bench_sweep_contract.md)."""
+        """The bench's environment: the instance's, the write frequency and the repetitions (bench_sweep_contract.md)."""
         paths = resolve_workload_paths(self.cfg, self.workload, self.query)
-        return {
-            **os.environ,
-            **instance_env(self.cfg.repo_root, self.engine, self.cfg.build_dir),
-            "ACCEL_ENGINE_INSTANCE": self.instance["engine_instance"],
-            "ACCEL_ENGINE_STATE_DIR": self.instance["engine_state_dir"],
-            "ACCEL_DATASET_DIR": self.instance["dataset"],
+        return self.host.env({
             f"ACCEL_Q{self.query}_BENCH_SUITE": paths["aux_bench_suites"],
             "ACCEL_AUX_BENCHMARK": str(self.workload.get("benchmark_name") or ""),
             "ACCEL_AUX_BENCH_WORK_DIR": work_dir,
@@ -1478,15 +1549,13 @@ class Bench:
             "ACCEL_BENCH_REF_SAMPLES": "2",
             "ACCEL_BENCH_BASE_WRITE_SAMPLES": "1",
             "ACCEL_BENCH_SKIP_PARTITION_REBUILD_CALIB": "1",
-        }
+        })
 
     def command(self, pct: int = 0) -> list[str]:
         return [str(self.target), "--query", str(self.query), str(pct)]
 
     def run(self, command: list[str], env: dict[str, str]) -> subprocess.CompletedProcess[str]:
-        """`command` through `host.sh run` (it reaches the instance and applies its env file)."""
-        return subprocess.run([str(host_script(self.cfg.repo_root, self.engine)), "run", *command], cwd=self.cfg.repo_root,
-                              env=env, capture_output=True, text=True, check=False, timeout=BENCH_SECONDS)
+        return self.host.run(command, env=env, timeout=BENCH_SECONDS)
 
     def row(self, pct: int = 0) -> dict[str, Any]:
         """One short bench run at write frequency `pct`: its result row (medians of the engine's SQL and of the
@@ -1507,7 +1576,7 @@ class Bench:
             return {"unavailable": gap}
         with tempfile.TemporaryDirectory(prefix="accel-bench-") as work:
             read = perf_bench.profile_hit_path(self.command(), self.env(work, 1), cwd=self.cfg.repo_root,
-                                               runner=self.perf_runner(), hit_us=row["accel_hit_median_us"],
+                                               runner=self.host.perf_runner(), hit_us=row["accel_hit_median_us"],
                                                loop_seconds=COUNTER_LOOP_SECONDS, record=False)
             build = self.run(["perf", "stat", "-x,", "-e", "instructions,cycles,cache-misses", "-o", f"{work}/build.stat",
                               "--", *self.command()], self.env(work, 1))
@@ -1530,26 +1599,18 @@ class Bench:
             op_us = (float(row["accel_hit_median_us"]) * (100 - pct) + float(row.get("accel_write_median_us") or 0) * pct) / 100.0
             with tempfile.TemporaryDirectory(prefix="accel-bench-") as work:
                 out[path] = perf_bench.profile_hit_path(
-                    self.command(pct), self.env(work, 1, pct), cwd=self.cfg.repo_root, runner=self.perf_runner(), hit_us=op_us,
+                    self.command(pct), self.env(work, 1, pct), cwd=self.cfg.repo_root, runner=self.host.perf_runner(), hit_us=op_us,
                     loop_seconds=seconds, diagnostics=row if pct == 0 else None)
         with tempfile.TemporaryDirectory(prefix="accel-bench-") as work:
             out["build"] = perf_bench.profile_build(self.command(), self.env(work, 1), cwd=self.cfg.repo_root,
-                                                    runner=self.perf_runner())
+                                                    runner=self.host.perf_runner())
         return out
 
     def profile_gap(self) -> str:
         """Why the bench cannot be profiled with perf on this engine ("" when it can)."""
         from accel_pipeline.optimization import bench as perf_bench
 
-        return perf_bench.engine_profile_gap(host_info(self.cfg.repo_root, self.engine, self.cfg.build_dir))
-
-    def perf_runner(self):
-        """subprocess.run that sends the outermost `perf` command (the bench inside it) through host.sh."""
-        def run(command, *, env, **kwargs):
-            if Path(command[0]).name == "perf" and command[1] in ("stat", "record"):
-                command = [str(host_script(self.cfg.repo_root, self.engine)), "run", *command]
-            return subprocess.run(command, env=env, **kwargs)
-        return run
+        return perf_bench.engine_profile_gap(host_info(self.cfg.repo_root, self.host.engine, self.cfg.build_dir))
 
 
 MIN_TIMED_BUILD_S = 1.0  # a subset build shorter than this is mostly fixed cost (per-partition scans, thread start):

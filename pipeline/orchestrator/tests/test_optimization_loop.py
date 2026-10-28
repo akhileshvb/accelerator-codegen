@@ -325,9 +325,8 @@ def _quick_benchmark_world(monkeypatch, tmp_path, rows):
     art.mkdir()
     (art / loop.ACTIVE_TRIAL_FILE).write_text(json.dumps(
         {"trial_id": "t", "reference_score": 1.0, "last_metrics": {"stale": True}, "last_score": 9.0}))
-    paths = {"aux_bench_target": "bench", "dataset_db": "/d", "db_env_var": "X", "aux_bench_suites": "s"}
-    monkeypatch.setattr(bench, "_private_paths", lambda cfg, wl, q: paths)
-    monkeypatch.setattr(bench, "_build_benchmark", lambda cfg, target: None)
+    monkeypatch.setattr(bench, "resolve_workload_paths", lambda *a: {"aux_bench_target": "bench", "aux_bench_suites": "s"})
+    monkeypatch.setattr(bench.HostRun, "ready", lambda self, *targets: None)
     monkeypatch.setattr(bench, "_run_aux_sweep", lambda *a, **k: (rows, "out"))
     monkeypatch.setattr(bench, "write_aux_profile_artifacts", lambda *a, **k: None)
     monkeypatch.setattr(loop, "query_artifacts_dir", lambda root, q, workload=None: art)
