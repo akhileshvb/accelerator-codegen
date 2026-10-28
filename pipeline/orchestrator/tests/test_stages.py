@@ -139,7 +139,9 @@ def test_materialize_registration_fills_the_engines_template_once(tmp_path, monk
 
     stateless = {**workload, "workload_kind": "base"}  # a stateless query has no analysis accelerator_id and no aux module
     assert materialize_registration(config, stateless, 1)["created"] == [] and not (repo / register).exists()
-    assert materialize_registration(config, workload, 1) == {"created": [register]}
+    finalize = register.replace("register.cpp", "finalize.cpp")  # the file layout every aux module has
+    assert materialize_registration(config, workload, 1) == {"created": [register, finalize]}
+    assert (repo / finalize).is_file()
     text = (repo / register).read_text()
     assert '1 toybench_q1_aux accel_toybench_q1_aux {"INTEGER"} {"t", "u"}' in text and "u.c > $1" in text
     (repo / register).write_text("// the implementation's registration")

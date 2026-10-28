@@ -1115,7 +1115,12 @@ def materialize_registration(pipeline_config: PipelineConfig, workload: dict[str
     }
     content = _substitute(template.read_text(encoding="utf-8"), values)
     _write_if_missing(repo / destination, content)
-    return {"created": [destination]}
+    # The aux module's discovery file (cmake/AuxState.cmake builds a query's aux state from it): with it the declining
+    # module has the files every module has, and the harnesses' builds see that layout before an implementation.
+    finalize = Path(destination).with_name("finalize.cpp")
+    _write_if_missing(repo / finalize, f"// SCAFFOLD (pipeline): the aux module of {benchmark} Q{query} has no state yet; "
+                      "its implementation replaces this file.\nnamespace accelerator_codegen {}\n")
+    return {"created": [destination, str(finalize)]}
 
 
 REQUEST_FILENAME = "structural_reanalysis_request.json"
