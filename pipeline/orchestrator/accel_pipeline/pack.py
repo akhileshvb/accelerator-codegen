@@ -592,24 +592,6 @@ def isolation_summary(pipeline_config: PipelineConfig) -> dict[str, Any]:
     }
 
 
-def ensure_private_dataset_db(pipeline_config: PipelineConfig, dataset_db: str | Path, *, query: int) -> Path:
-    """A worker-private DuckDB path for concurrent pack benchmarks: DuckDB takes an exclusive file lock, so
-    workers sharing one SF1 file would conflict; the file is copied into the worker's build dir instead."""
-    src = Path(dataset_db)
-    build_dir = Path(pipeline_config.build_dir)
-    if not (pipeline_config.worker_id or (build_dir.name.startswith("build-release-") and build_dir.name != "build-release")):
-        return src
-    if not src.is_file():
-        raise FileNotFoundError(f"dataset db missing: {src}")
-    build_dir.mkdir(parents=True, exist_ok=True)
-    dest = build_dir / f"worker_q{query}_{src.name}"
-    if not dest.is_file() or dest.stat().st_size != src.stat().st_size or dest.stat().st_mtime < src.stat().st_mtime:
-        tmp = dest.with_suffix(dest.suffix + ".tmp")
-        shutil.copy2(src, tmp)
-        tmp.replace(dest)
-    return dest
-
-
 # --- per-worker git worktrees: concurrent opts cannot crosstalk on sources. A worker checks out an isolated tree
 # --- under pipeline/worktrees/<worker_id>; artifacts and CODEX_HOME stay on the primary repo.
 

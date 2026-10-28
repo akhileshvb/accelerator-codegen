@@ -690,7 +690,7 @@ def test_the_outermost_perf_command_goes_through_the_host(bench, monkeypatch):
     seen = []
     monkeypatch.setattr(gates.subprocess, "run", lambda command, **kw: seen.append(command))
     monkeypatch.setattr(perf_bench, "perf_binary", lambda: "/usr/bin/perf")
-    run = b.perf_runner()
+    run = b.host.perf_runner()
     run(["/usr/bin/perf", "stat", "--", "bench"], env={})
     run(["/usr/bin/perf", "report", "-i", "x"], env={})
     assert seen[0][1:3] == ["run", "/usr/bin/perf"] and seen[0][0].endswith("host.sh")
@@ -1270,13 +1270,8 @@ def setup(tmp_path, monkeypatch):
     build.mkdir()
     (build / "CMakeCache.txt").write_text("")
     config = SimpleNamespace(repo_root=root, build_dir=build, quick_tier=QuickTierConfig())
-    builds: list[list[str]] = []
-
-    def fake_run(cmd, **kwargs):
-        builds.append(cmd)
-        return SimpleNamespace(returncode=0, stdout="ok", stderr="")
-
-    monkeypatch.setattr(optimization_loop, "subprocess", SimpleNamespace(run=fake_run))
+    builds: list[tuple[str, ...]] = []
+    monkeypatch.setattr(optimization_loop.HostRun, "build", lambda self, *targets: builds.append(targets))
     monkeypatch.setattr(optimization_loop, "ensure_build_dir", lambda *a, **k: None)
     monkeypatch.setattr(optimization_loop, "resolve_workload_paths",
                         lambda *a: {"aux_bench_target": "bench_t", "aux_test_target": "test_t"})
@@ -1286,9 +1281,9 @@ def setup(tmp_path, monkeypatch):
 def test_the_second_build_of_unchanged_code_is_a_no_op(setup):
     config, builds = setup
     assert optimization_loop.run_build(config, BUILD_WORKLOAD, 4)[0]
-    assert len(builds) == 2
+    assert len(builds) == 1
     ok, out = optimization_loop.run_build(config, BUILD_WORKLOAD, 4)
-    assert ok and "skipped" in out and len(builds) == 2
+    assert ok and "skipped" in out and len(builds) == 1
 
 
 def test_an_edit_builds_again(setup):
@@ -1296,15 +1291,12 @@ def test_an_edit_builds_again(setup):
     optimization_loop.run_build(config, BUILD_WORKLOAD, 4)
     (config.repo_root / "accelerators" / "demo" / "q4" / "module.cpp").write_text("// v2\n")
     optimization_loop.run_build(config, BUILD_WORKLOAD, 4)
-    assert len(builds) == 4
+    assert len(builds) == 2
 
 
 def test_a_failed_build_is_not_remembered(setup, monkeypatch):
     config, builds = setup
-    monkeypatch.setattr(
-        optimization_loop, "subprocess",
-        SimpleNamespace(run=lambda cmd, **k: builds.append(cmd) or SimpleNamespace(returncode=1, stdout="", stderr="boom")),
-    )
+    monkeypatch.setattr(optimization_loop.HostRun, "build", lambda self, *targets: builds.append(targets) or "boom")
     assert not optimization_loop.run_build(config, BUILD_WORKLOAD, 4)[0]
     assert not optimization_loop.run_build(config, BUILD_WORKLOAD, 4)[0]
     assert len(builds) == 2
@@ -1315,7 +1307,7 @@ def test_an_unconfigured_build_dir_always_builds(setup):
     optimization_loop.run_build(config, BUILD_WORKLOAD, 4)
     (config.build_dir / "CMakeCache.txt").unlink()
     optimization_loop.run_build(config, BUILD_WORKLOAD, 4)
-    assert len(builds) == 4
+    assert len(builds) == 2
 
 
 def test_the_cache_can_be_turned_off(setup):
@@ -1323,4 +1315,4 @@ def test_the_cache_can_be_turned_off(setup):
     config.quick_tier = QuickTierConfig(build_stamp_cache=False)
     optimization_loop.run_build(config, BUILD_WORKLOAD, 4)
     optimization_loop.run_build(config, BUILD_WORKLOAD, 4)
-    assert len(builds) == 4
+    assert len(builds) == 2

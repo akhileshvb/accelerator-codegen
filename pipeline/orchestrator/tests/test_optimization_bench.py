@@ -688,11 +688,7 @@ def test_aux_quick_write_frequencies_samples_locked(tmp_path):
 
 
 def test_quick_benchmark_env_aux_uses_fast_settings():
-    paths = {
-        "db_env_var": "TPCH_SF1_DB",
-        "dataset_db": "/data/tpch_sf1.duckdb",
-        "aux_bench_suites": "lineitem_only",
-    }
+    paths = {"aux_bench_suites": "lineitem_only"}
     workload = {
         "workload_kind": "aux_state",
         "aux_bench_sweep_optimization": {
@@ -708,11 +704,10 @@ def test_quick_benchmark_env_aux_uses_fast_settings():
     assert env["ACCEL_BENCH_WARMUP"] == "3"
     assert env["ACCEL_AUX_CUSTOM_PROFILE"] == "1"
     assert "ACCEL_BENCH_PROFILE" not in env
-    assert env["ACCEL_DB"] == env[paths["db_env_var"]] == str(paths["dataset_db"])  # the host contract's variable too
 
 
 def test_quick_tier_env_is_the_cheap_read_only_sweep():
-    paths = {"db_env_var": "TPCH_SF1_DB", "dataset_db": "/d.db", "aux_bench_suites": "lineitem_only"}
+    paths = {"aux_bench_suites": "lineitem_only"}
     workload = {
         "workload_kind": "aux_state",
         "aux_bench_sweep_optimization": {"write_frequencies": [0], "bench_warmup": 3, "quick_bench_queries": 10,
@@ -738,19 +733,71 @@ def test_quick_tier_never_samples_write_mixes_but_acceptance_does(tmp_path):
     assert len(_aux_write_frequencies(workload, art_dir=tmp_path, optimization_iter=1, attempt=1)) == 3
 
 
-def test_a_quick_bench_that_overruns_its_limit_reports_it(monkeypatch, tmp_path):
-    def hang(*a, **k):
-        raise subprocess.TimeoutExpired("bench", k["timeout"])
+FAKE_HOST = """#!/usr/bin/env bash
+echo "$1 instance=$ACCEL_ENGINE_INSTANCE state=$ACCEL_ENGINE_STATE_DIR :: ${*:2}" >>"$FAKE_HOST_LOG"
+case "$1" in
+  run) [[ -z "$FAKE_BENCH_HANG" ]] || exec sleep 60
+       case "$2" in
+         *bench_aux) echo "suite,write_frequency_pct,engine_ref_query_median_us,accel_hit_median_us,accel_hit_rate,workload_speedup,b,c,d,e,f"
+                     echo "lineitem_only,${5},2000.0,250.0,1.00,8.0,0,0,0,0,0" ;;
+         *) echo smoke ok ;;
+       esac ;;
+esac
+"""
 
-    monkeypatch.setattr(bench.subprocess, "run", hang)
-    paths = {"db_env_var": "X", "dataset_db": "/d", "aux_bench_suites": "s", "aux_bench_target": "bench"}
-    monkeypatch.setattr(bench, "_private_paths", lambda cfg, wl, q: paths)
-    monkeypatch.setattr(bench, "_build_benchmark", lambda cfg, target: None)
-    config = SimpleNamespace(repo_root=tmp_path, build_dir=tmp_path / "build", measurement=MeasurementConfig())
-    workload = {"workload_kind": "aux_state", "aux_bench_sweep_quick": {"bench_timeout_sec": 7}}
-    error = bench.measure_quick_benchmark(config, workload, 6, art=tmp_path, optimization_iter=1, attempt=1,
+
+@pytest.fixture()
+def fake_host_world(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    host = repo / "backends" / "fake" / "host.sh"
+    host.parent.mkdir(parents=True)
+    host.write_text(FAKE_HOST)
+    host.chmod(0o755)
+    schema = repo / layout.workload_schema_sql("acme")
+    schema.parent.mkdir(parents=True)
+    schema.write_text("")
+    monkeypatch.setenv("FAKE_HOST_LOG", str(tmp_path / "host.log"))
+    monkeypatch.setattr(bench, "resolve_workload_paths", lambda *a: {"aux_bench_target": "bench_aux", "aux_bench_suites": "s"})
+    monkeypatch.setattr("accel_pipeline.optimization.loop.resolve_workload_paths", lambda *a: {"aux_ctest_smoke_regex": "smoke"})
+    config = SimpleNamespace(repo_root=tmp_path / "repo", build_dir=tmp_path / "build", measurement=MeasurementConfig(),
+                             worker_id="w7")
+    workload = {"workload_kind": "aux_state", "engine_name": "fake", "benchmark_name": "acme", "dataset_dir": "/data",
+                "aux_bench_sweep_quick": {"bench_timeout_sec": 2, "write_frequencies": [0, 5]}}
+    return config, workload, tmp_path / "host.log"
+
+
+def test_every_bench_and_smoke_command_goes_through_the_host_in_the_workers_instance(fake_host_world):
+    from accel_pipeline.optimization import loop
+
+    config, workload, log = fake_host_world
+    measured = bench.measure_quick_benchmark(config, workload, 6, art=config.build_dir.parent, optimization_iter=1, attempt=1,
+                                             include_profile=False, acceptance=False)
+    assert not isinstance(measured, str), measured
+    assert loop.run_smoke_correctness(config, workload, 6).passed
+    lines = log.read_text().splitlines()
+    instance = lines[0].split()[1]
+    assert instance.startswith("instance=") and instance.endswith("-bench")
+    assert all(line.split()[1] == instance for line in lines)  # the one instance of this worker, never the quick or default one
+    assert [line.split()[0] for line in lines].count("run") == 3  # two sweep points, one ctest
+    assert {line.split()[0] for line in lines} == {"up", "load", "build", "run"}
+    assert any(line.split(" :: ")[1].startswith(f"{config.build_dir}/bench_aux --query 6 5") for line in lines)
+    assert any(" :: ctest --test-dir" in line for line in lines)
+
+
+def test_an_acceptance_bench_queues_for_the_lease_through_the_host(fake_host_world, monkeypatch):
+    config, workload, log = fake_host_world
+    monkeypatch.setenv("ACCEL_MEASURE_LEASE", "0")
+    done = bench.HostRun.worker(config, workload).run(["bench_aux", "--query", "6", "0"], measured="optimization benchmark")
+    assert done.returncode == 0 and "[measurement-lease]" in done.stderr
+    assert log.read_text().count("run instance=") == 1
+
+
+def test_a_quick_bench_that_overruns_its_limit_reports_it(fake_host_world, monkeypatch):
+    config, workload, _ = fake_host_world
+    monkeypatch.setenv("FAKE_BENCH_HANG", "1")
+    error = bench.measure_quick_benchmark(config, workload, 6, art=config.build_dir.parent, optimization_iter=1, attempt=1,
                                           include_profile=False, acceptance=False)
-    assert isinstance(error, str) and "timed out after 7s" in error and "acceptance=True lifts the limit" in error
+    assert isinstance(error, str) and "timed out after 2s" in error and "acceptance=True lifts the limit" in error
 
 
 def test_parse_custom_profile_events():

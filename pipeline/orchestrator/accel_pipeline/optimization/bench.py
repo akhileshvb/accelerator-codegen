@@ -45,8 +45,8 @@ from accel_pipeline.data import (
     read_write_mix,
     suite_path,
 )
-from accel_pipeline.gates import build_jobs, build_lock
-from accel_pipeline.pack import FairLock, ensure_private_dataset_db, host_lock_dir, run_measured
+from accel_pipeline.gates import HostRun
+from accel_pipeline.pack import FairLock, host_lock_dir
 from accel_pipeline.repair import Failure
 
 
@@ -1758,12 +1758,6 @@ def _aux_write_frequencies(
     )
 
 
-def database_env(paths: dict[str, str]) -> dict[str, str]:
-    """The worker's private copy of the dataset, under the host contract's ACCEL_DB (what the workload harnesses
-    read when the bench runs outside host.sh) and the workload's own variable."""
-    return {"ACCEL_DB": str(paths["dataset_db"]), paths["db_env_var"]: str(paths["dataset_db"])}
-
-
 def _aux_bench_env(
     paths: dict[str, str], *, query: int, workload: dict[str, Any], freqs: list[int], acceptance: bool = True,
     include_profile: bool = False,
@@ -1773,7 +1767,6 @@ def _aux_bench_env(
         if acceptance else _quick_tier_settings(workload)
     )
     env = {
-        **database_env(paths),
         f"ACCEL_Q{query}_BENCH_SUITE": paths["aux_bench_suites"],
         "ACCEL_AUX_WRITE_FREQUENCIES": ",".join(str(f) for f in freqs),
         "ACCEL_BENCH_WARMUP": str(int(tier["bench_warmup"])),
@@ -1789,9 +1782,8 @@ def _aux_bench_env(
     return env
 
 
-def _base_benchmark_env(paths: dict[str, str], *, query: int, include_profile: bool) -> dict[str, str]:
+def _base_benchmark_env(*, query: int, include_profile: bool) -> dict[str, str]:
     env = {
-        **database_env(paths),
         "ACCEL_BENCH_WARMUP": "1",
         "ACCEL_BENCH_ITERS": "3",
         "ACCEL_BENCH_FILTER": f"seed_1_q{query}",
@@ -1809,27 +1801,6 @@ def _log_benchmark(msg: str) -> None:
     print(f"[pipeline] {msg}", file=sys.stderr, flush=True)
 
 
-def _build_benchmark(pipeline_config: PipelineConfig, target: str) -> str | None:
-    """Build the bench target; the build output when it fails."""
-    _log_benchmark(f"building benchmark target {target}")
-    with build_lock(pipeline_config.build_dir):
-        build = subprocess.run(
-            ["cmake", "--build", str(pipeline_config.build_dir), "--target", target, "-j", str(build_jobs())],
-            cwd=pipeline_config.repo_root, capture_output=True, text=True, check=False,
-        )
-    if build.returncode != 0:
-        return f"build failed\n{(build.stdout or '') + (build.stderr or '')[-2000:]}"
-    return None
-
-
-def _run_bench(cmd: list[str], *, acceptance: bool, reason: str = "optimization benchmark", **kwargs):
-    """Acceptance runs are measurements: they queue for the measurement lease and run on its CPUs. The quick
-    tier (direction only) runs at once, on the worker's own CPUs."""
-    if acceptance:
-        return run_measured(cmd, reason=reason, **kwargs)
-    return subprocess.run(cmd, **kwargs)
-
-
 def _sweep_csv(outputs: list[str]) -> str:
     """One CSV from per-point bench outputs: the header once, then each run's data rows (as the sweep gate keeps them)."""
     lines: list[str] = []
@@ -1844,18 +1815,19 @@ def _sweep_csv(outputs: list[str]) -> str:
 
 
 def _run_aux_sweep(
-    bin_path: Path, *, repo: Path, query: int, env: dict[str, str], freqs: list[int], acceptance: bool,
+    host: HostRun, bin_path: Path, *, query: int, env: dict[str, str], freqs: list[int], acceptance: bool,
     reason: str, timeout: float | None,
 ) -> tuple[list[dict[str, Any]] | None, str]:
     """The aux bench at each write frequency, one bench run per point (bench_sweep_contract.md); the CSV rows,
     or None with what went wrong. A pathological write mix (or lock contention under pack fan-out) must not
-    stall the worker, hence the timeout."""
+    stall the worker, hence the timeout. Acceptance runs are measurements: they queue for the measurement lease and
+    run on its CPUs; the quick tier (direction only) runs at once, on the worker's own CPUs."""
     env = {k: v for k, v in env.items() if k != f"ACCEL_Q{query}_WRITE_FREQUENCY_PCT"}
     outputs: list[str] = []
     for pct in freqs:
         try:
-            proc = _run_bench([str(bin_path), "--query", str(query), str(pct)], acceptance=acceptance, reason=reason,
-                              cwd=repo, capture_output=True, text=True, env=env, check=False, timeout=timeout)
+            proc = host.run([str(bin_path), "--query", str(query), str(pct)], env=env, timeout=timeout,
+                            measured=reason if acceptance else "")
         except subprocess.TimeoutExpired as exc:
             partial = "".join(x for x in (exc.stdout, exc.stderr) if isinstance(x, str))
             return None, f"benchmark timed out after {timeout:.0f}s (write {pct}%)\n{partial[-2000:]}"
@@ -1933,45 +1905,35 @@ def _optimization_signal(metrics: dict[str, Any]) -> str | None:
 
 
 def _run_base_once(
-    bin_path: str, *, repo: Path, paths: dict[str, str], query: int, include_profile: bool, acceptance: bool = True,
+    host: HostRun, bin_path: Path, *, query: int, include_profile: bool, acceptance: bool = True,
 ) -> tuple[dict[str, Any] | None, str]:
-    proc = _run_bench(
-        [bin_path], acceptance=acceptance, cwd=repo, capture_output=True, text=True, check=False,
-        env={**os.environ, **_base_benchmark_env(paths, query=query, include_profile=include_profile)},
-    )
+    proc = host.run([str(bin_path)], env=host.env(_base_benchmark_env(query=query, include_profile=include_profile)),
+                    measured="optimization benchmark" if acceptance else "")
     output = (proc.stdout or "") + (proc.stderr or "")
     if proc.returncode != 0:
         return None, output
     return (parse_benchmark_log(output) or None), output
 
 
-def _private_paths(pipeline_config: PipelineConfig, workload: dict[str, Any], query: int) -> dict[str, str]:
-    """The workload's paths, with the dataset db this worker alone writes."""
-    paths = resolve_workload_paths(pipeline_config, workload, query)
-    return {**paths, "dataset_db": str(ensure_private_dataset_db(pipeline_config, paths["dataset_db"], query=query))}
-
-
 def run_single_benchmark(
     pipeline_config: PipelineConfig, workload: dict[str, Any], query: int, *, include_profile: bool = False
 ) -> tuple[dict[str, Any] | None, str]:
     """Run one benchmark invocation; return (metrics, output_or_error)."""
-    try:
-        paths = _private_paths(pipeline_config, workload, query)
-    except Exception as exc:  # noqa: BLE001
-        return None, f"private dataset db setup failed: {exc}"
+    paths = resolve_workload_paths(pipeline_config, workload, query)
     target = _benchmark_target(paths, workload)
-    if build_err := _build_benchmark(pipeline_config, target):
-        return None, build_err
+    host = HostRun.worker(pipeline_config, workload)
+    _log_benchmark(f"building benchmark target {target}")
+    if problem := host.ready(target):
+        return None, problem
     bin_path = pipeline_config.build_dir / target
-    repo = pipeline_config.repo_root
     if not is_aux_workload(workload):
-        return _run_base_once(str(bin_path), repo=repo, paths=paths, query=query, include_profile=include_profile)
-    freqs = _aux_write_frequencies(workload, art_dir=query_artifacts_dir(repo, query, workload=workload))
-    env = {**os.environ, **_aux_bench_env(paths, query=query, workload=workload, freqs=freqs)}
+        return _run_base_once(host, bin_path, query=query, include_profile=include_profile)
+    freqs = _aux_write_frequencies(workload, art_dir=query_artifacts_dir(pipeline_config.repo_root, query, workload=workload))
+    env = host.env(_aux_bench_env(paths, query=query, workload=workload, freqs=freqs))
     _log_benchmark(f"aux quick sweep ({len(freqs)} runs): freqs={freqs} queries={env.get('ACCEL_BENCH_QUERIES')} "
                    f"warmup={env.get('ACCEL_BENCH_WARMUP')}")
     timeout = int(_opt_sweep(workload).get("bench_timeout_sec") or os.environ.get("ACCEL_BENCH_TIMEOUT_SEC") or 300)
-    rows, output = _run_aux_sweep(bin_path, repo=repo, query=query, env=env, freqs=freqs, acceptance=True,
+    rows, output = _run_aux_sweep(host, bin_path, query=query, env=env, freqs=freqs, acceptance=True,
                                   reason="optimization benchmark", timeout=timeout)
     return (aux_metrics(rows) if rows else None), output
 
@@ -2304,25 +2266,22 @@ def measure_quick_benchmark(
 ) -> QuickBenchmark | str:
     """The agent's A/B benchmark call: build, run the quick tier (or, with `acceptance`, the optimization
     tier), reduce to metrics. A string is the error to hand back to the agent."""
-    try:
-        paths = _private_paths(pipeline_config, workload, query)
-    except Exception as exc:  # noqa: BLE001
-        return f"private dataset db setup failed: {exc}"
+    paths = resolve_workload_paths(pipeline_config, workload, query)
     repo = pipeline_config.repo_root
     target = _benchmark_target(paths, workload)
     bin_path = pipeline_config.build_dir / target
-    if build_error := _build_benchmark(pipeline_config, target):
-        return build_error
+    host = HostRun.worker(pipeline_config, workload)
+    if problem := host.ready(target):
+        return problem
     if not is_aux_workload(workload):
-        metrics, output = _run_base_once(str(bin_path), repo=repo, paths=paths, query=query,
-                                         include_profile=include_profile, acceptance=acceptance)
+        metrics, output = _run_base_once(host, bin_path, query=query, include_profile=include_profile, acceptance=acceptance)
         return QuickBenchmark(metrics, output, []) if metrics else f"benchmark failed\n{output[-2000:]}"
     freqs = _aux_write_frequencies(workload, art_dir=art, optimization_iter=optimization_iter, attempt=attempt,
                                    acceptance=acceptance)
-    env = {**os.environ, **_aux_bench_env(paths, query=query, workload=workload, freqs=freqs, acceptance=acceptance,
-                                          include_profile=include_profile)}
+    env = host.env(_aux_bench_env(paths, query=query, workload=workload, freqs=freqs, acceptance=acceptance,
+                                  include_profile=include_profile))
     timeout = None if acceptance else float(_quick_tier_settings(workload)["bench_timeout_sec"])
-    rows, output = _run_aux_sweep(bin_path, repo=repo, query=query, env=env, freqs=freqs, acceptance=acceptance,
+    rows, output = _run_aux_sweep(host, bin_path, query=query, env=env, freqs=freqs, acceptance=acceptance,
                                   reason="run_quick_benchmark acceptance", timeout=timeout)
     if not rows:
         lift = "" if acceptance or "timed out" not in output else " (quick tier; acceptance=True lifts the limit)"

@@ -42,7 +42,7 @@ from accel_pipeline.config import (
     resolve_stage_provider,
     resolve_workload_paths,
 )
-from accel_pipeline.gates import build_jobs, build_lock, ensure_build_dir, run_gate
+from accel_pipeline.gates import HostRun, ensure_build_dir, run_gate
 from accel_pipeline.layout import code_stamp, query_dir
 from accel_pipeline.mcp import ToolContext, none_default
 from accel_pipeline.optimization import bench, memory
@@ -50,7 +50,6 @@ from accel_pipeline.optimization.bench import (
     AttemptOutcome,
     MultiSampleBenchmark,
     aux_optimization_score,
-    database_env,
     build_win,
     check_measurement,
     eval_config_from_pipeline,
@@ -266,8 +265,7 @@ def rebuild_workload_targets(pipeline_config, workload, query) -> bool:
     paths = resolve_workload_paths(pipeline_config, workload, query)
     bench_target = paths.get("aux_bench_target", "") if is_aux_workload(workload) else paths["bench_target"]
     targets = [t for t in (paths.get("test_target", ""), bench_target, "accelerator_codegen") if t]
-    cmd = ["cmake", "--build", str(pipeline_config.build_dir), "--target", *targets, "-j", str(build_jobs())]
-    return subprocess.run(cmd, cwd=pipeline_config.repo_root, capture_output=True, text=True).returncode == 0
+    return HostRun.worker(pipeline_config, workload).build(*targets) is None
 
 
 def maybe_restore_best_kernel(
@@ -468,11 +466,10 @@ def run_smoke_correctness(pipeline_config: PipelineConfig, workload: dict, query
     paths = resolve_workload_paths(pipeline_config, workload, query)
     if not (regex := _smoke_regex(workload, paths)):
         return SmokeResult(passed=False, output="no smoke test regex configured")
-    build_dir = pipeline_config.build_dir
-    ctest = build_dir / "ctest"
-    env = {**os.environ, **(database_env(paths) if paths.get("dataset_db") else {})}
-    proc = subprocess.run([str(ctest if ctest.is_file() else "ctest"), "--test-dir", str(build_dir), "-R", regex, "--output-on-failure"],
-                          cwd=pipeline_config.repo_root, capture_output=True, text=True, check=False, timeout=timeout_sec, env=env)
+    host = HostRun.worker(pipeline_config, workload)
+    if problem := host.load():
+        return SmokeResult(passed=False, output=problem, regex=regex)
+    proc = host.run(["ctest", "--test-dir", str(pipeline_config.build_dir), "-R", regex, "--output-on-failure"], timeout=timeout_sec)
     return SmokeResult(passed=proc.returncode == 0, output=((proc.stdout or "") + (proc.stderr or ""))[-6000:], regex=regex)
 
 
@@ -507,18 +504,12 @@ def run_build(pipeline_config: PipelineConfig, workload: dict, query: int) -> tu
     stamp_file = build_dir / ".build_stamps" / f"run_build_q{query}"
     if stamp and (build_dir / "CMakeCache.txt").is_file() and _read_text(stamp_file) == stamp:
         return True, "build skipped: the code is unchanged since the last successful build"
-    combined: list[str] = []
-    with build_lock(build_dir):
-        for target in targets:
-            proc = subprocess.run(["cmake", "--build", str(build_dir), "--target", target, "-j", str(build_jobs())],
-                                  cwd=pipeline_config.repo_root, capture_output=True, text=True, check=False)
-            combined.append(((proc.stdout or "") + (proc.stderr or ""))[-1500:])
-            if proc.returncode != 0:
-                return False, "\n".join(combined)
+    if problem := HostRun.worker(pipeline_config, workload).build(*targets):
+        return False, problem
     if stamp:
         stamp_file.parent.mkdir(parents=True, exist_ok=True)
         stamp_file.write_text(stamp, encoding="utf-8")
-    return True, "\n".join(combined)
+    return True, "built"
 
 
 def _read_text(path: Path) -> str:
@@ -1538,13 +1529,11 @@ def _reference_score(ctx: AbToolContext) -> float:
     return float(read_json(ctx.art / SNAPSHOT_DIRNAME / MANIFEST_NAME).get("speedup_median") or 0.0)
 
 
-def _build_bench_target(ctx: AbToolContext) -> subprocess.CompletedProcess:
+def _build_bench_target(ctx: AbToolContext) -> str | None:
+    """Rebuild the bench target through the host; why not, or None."""
     cfg = ctx.pipeline_config
     paths = resolve_workload_paths(cfg, ctx.workload, ctx.query)
-    target = paths["aux_bench_target" if ctx.is_aux else "bench_target"]
-    with build_lock(cfg.build_dir):
-        return subprocess.run(["cmake", "--build", str(cfg.build_dir), "--target", target, "-j", str(build_jobs())],
-                              cwd=cfg.repo_root, capture_output=True, text=True, check=False)
+    return HostRun.worker(cfg, ctx.workload).build(paths["aux_bench_target" if ctx.is_aux else "bench_target"])
 
 
 def make_ab_tools(ctx: AbToolContext):
@@ -1640,8 +1629,8 @@ def make_ab_tools(ctx: AbToolContext):
         restored: list[str] = []
         if not keep:
             restored = _restore_files(cfg.repo_root, active.get("files") or [], checkpoint)
-            if (rebuild := _build_bench_target(ctx)).returncode != 0:
-                return f"ERROR: rebuild after restore failed\n{(rebuild.stdout or '') + (rebuild.stderr or '')[-1500:]}"
+            if problem := _build_bench_target(ctx):
+                return f"ERROR: rebuild after restore failed\n{problem}"
         memory.record_attempt(art, repo_root=cfg.repo_root, workload=ctx.workload, query=ctx.query, attempt=trial_id,
                               hypothesis=str(active.get("hypothesis") or ""), verdict="trial_kept" if keep else "trial_discarded",
                               metrics=metrics, kept=keep, source="ab_trial")
