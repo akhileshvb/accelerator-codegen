@@ -923,13 +923,13 @@ pub fn remove(pages: &mut Pages, ranked: Ranked) -> (result: bool)
 }
 
 pub open spec fn passes(value: int, limit: int) -> bool {
-    1000000000 * value > limit
+    1000000000000 * value > limit
 }
 
 pub fn passes_exec(value: i128, limit: &Wide) -> (result: bool)
     ensures result == passes(value as int, limit@),
 {
-    let scaled = Wide::from_i128(value).mul(&Wide::from_i128(1000000000i128));
+    let scaled = Wide::from_i128(value).mul(&Wide::from_i128(1000000000000i128));
     limit.lt(&scaled)
 }
 

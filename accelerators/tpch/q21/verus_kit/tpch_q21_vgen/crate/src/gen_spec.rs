@@ -26,7 +26,7 @@
 //
 // Query-specific notes (host contract):
 //  * CHAR(n) text: compared as bytes like VARCHAR, trailing spaces significant; the host delivers text unchanged (DuckDB: CHAR(n) is an alias of VARCHAR).
-//  * $1 is params.p1: text bytes.
+//  * $1 is params.p1: text bytes; None = NULL.
 //  * Text order is bytes_lt: the host runs only under a C (byte) collation.
 #![allow(unused_imports)]
 use vstd::prelude::*;
@@ -88,8 +88,8 @@ pub struct Db {
 
 /// The query parameters.
 pub struct Params {
-    /// $1: text bytes
-    pub p1: Seq<u8>,
+    /// $1: text bytes; None = NULL
+    pub p1: Option<Seq<u8>>,
 }
 
 /// The WHERE clause of EXISTS (TableScan: lineitem <- SubqueryAlias: l2 <- Filter: l2.l_orderkey = outer_ref(l1.l_orderkey) AND l2.l_suppkey != outer_ref(l1.l_suppkey) <- Projection: l2.l_orderkey, l2.l_partkey, l2.l_suppkey, l2.l_linenumber, l2.l_quantity, l2.l_extended ...)
@@ -136,7 +136,7 @@ pub open spec fn where_clause(db: Db, params: Params, supplier: SupplierRow, l1:
     &&& exists_1(db, l1)
     &&& !exists_2(db, l1)
     &&& supplier.s_nationkey == nation.n_nationkey
-    &&& nation.n_name == params.p1
+    &&& (params.p1 is Some && nation.n_name == params.p1->0)
 }
 
 /// The FROM-clause tuples of the query (bag product) that satisfy WHERE.

@@ -1,0 +1,1 @@
+SELECT id FROM t WHERE d BETWEEN $1 AND $2 AND a + $3 > 5 ORDER BY id

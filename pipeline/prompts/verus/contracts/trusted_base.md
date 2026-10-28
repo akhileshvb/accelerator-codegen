@@ -2,7 +2,9 @@
 
 Trusted (not proved): the spec generated from the SQL (frozen, audited), the
 scan / capture contracts in gen_obligations.rs (the host's promises), the
-generated glue and C ABI, vstd and the Verus toolchain.
+generated glue and C ABI, vstd and the Verus toolchain.  Query parameters are
+non-NULL unless the spec declares them `Option` (`None` = NULL, three-valued like a
+NULL-able column); the host answers with SQL for a NULL it cannot pass.
 
 Proved: everything in your kernel. So your files may NOT contain (the gate
 rejects them):

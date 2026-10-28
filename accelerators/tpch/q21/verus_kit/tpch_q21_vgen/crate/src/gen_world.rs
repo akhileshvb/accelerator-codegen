@@ -106,11 +106,11 @@ pub fn stage_invalid(head: &QHead) -> (p: QStaged)
 /// database the snapshot sees.  None: the host answers with SQL.
 pub fn answer(
     reading: &QReading,
-    p1: &[u8],
+    p1: Option<&[u8]>,
 ) -> (r: Option<Vec<(Vec<u8>, i64)>>)
     ensures
-        r matches Some(out) ==> query_result(reading.db(), params(p1@), out_view(out@)),
-        reading.contract() ==> (r matches Some(out) ==> query_result(reading.snapshot_db(), params(p1@), out_view(out@))),
+        r matches Some(out) ==> query_result(reading.db(), params(match p1 { Some(x) => Some(x@), None => None }), out_view(out@)),
+        reading.contract() ==> (r matches Some(out) ==> query_result(reading.snapshot_db(), params(match p1 { Some(x) => Some(x@), None => None }), out_view(out@))),
 {
     match reading.state() {
         Some(state) => ob_execute(state, p1),

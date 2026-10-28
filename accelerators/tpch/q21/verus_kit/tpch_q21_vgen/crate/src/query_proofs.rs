@@ -13,22 +13,23 @@ pub open spec fn tuple_weight(name: Seq<u8>) -> spec_fn(Tuple) -> int {
 }
 
 pub proof fn lemma_group_by_nation(db: Db, parameter: Params, name: Seq<u8>)
+    requires parameter.p1 is Some,
     ensures group_count(db, parameter, name) == sum(db.nation, |nation: NationRow|
-        if nation.n_name == parameter.p1 { bucket(db, nation.n_nationkey, name) } else { 0 }),
+        if nation.n_name == parameter.p1->0 { bucket(db, nation.n_nationkey, name) } else { 0 }),
 {
     lemma_group_count(db, parameter, name);
-    let pair = |supplier: SupplierRow, nation: NationRow| if supplier.s_name == name && nation.n_name == parameter.p1
+    let pair = |supplier: SupplierRow, nation: NationRow| if supplier.s_name == name && nation.n_name == parameter.p1->0
         && supplier.s_nationkey == nation.n_nationkey { waiting(db, supplier.s_suppkey) } else { 0 };
-    let supplier_term = |supplier: SupplierRow| if supplier.s_name == name { waiting(db, supplier.s_suppkey) * nation_multiplicity(db, supplier.s_nationkey, parameter.p1) } else { 0 };
-    let nation_term = |nation: NationRow| if nation.n_name == parameter.p1 { bucket(db, nation.n_nationkey, name) } else { 0 };
+    let supplier_term = |supplier: SupplierRow| if supplier.s_name == name { waiting(db, supplier.s_suppkey) * nation_multiplicity(db, supplier.s_nationkey, parameter.p1->0) } else { 0 };
+    let nation_term = |nation: NationRow| if nation.n_name == parameter.p1->0 { bucket(db, nation.n_nationkey, name) } else { 0 };
     assert forall|supplier: SupplierRow| #[trigger] supplier_term(supplier) == sum(db.nation, |nation: NationRow| pair(supplier, nation)) by {
-        let indicator = |nation: NationRow| if nation.n_nationkey == supplier.s_nationkey && nation.n_name == parameter.p1 { 1int } else { 0int };
+        let indicator = |nation: NationRow| if nation.n_nationkey == supplier.s_nationkey && nation.n_name == parameter.p1->0 { 1int } else { 0int };
         let weight = if supplier.s_name == name { waiting(db, supplier.s_suppkey) } else { 0int };
         lemma_sum_scale(db.nation, indicator, |nation: NationRow| pair(supplier, nation), weight);
-        assert(weight * nation_multiplicity(db, supplier.s_nationkey, parameter.p1) == supplier_term(supplier));
+        assert(weight * nation_multiplicity(db, supplier.s_nationkey, parameter.p1->0) == supplier_term(supplier));
     }
     assert forall|nation: NationRow| #[trigger] nation_term(nation) == sum(db.supplier, |supplier: SupplierRow| pair(supplier, nation)) by {
-        if nation.n_name == parameter.p1 {
+        if nation.n_name == parameter.p1->0 {
             lemma_sum_ext(db.supplier, |supplier: SupplierRow| pair(supplier, nation), |supplier: SupplierRow|
                 if supplier.s_nationkey == nation.n_nationkey && supplier.s_name == name { waiting(db, supplier.s_suppkey) } else { 0 });
         } else { lemma_sum_zero(db.supplier, |supplier: SupplierRow| pair(supplier, nation)); }
@@ -39,7 +40,7 @@ pub proof fn lemma_group_by_nation(db: Db, parameter: Params, name: Seq<u8>)
 pub open spec fn matches_for(matches: Counts, db: Db, parameter: Params) -> bool {
     &&& positive(matches)
     &&& forall|key: KeyView| #![trigger count(matches, key)] count(matches, key) ==
-        if key.1 == Seq::<u8>::empty() { nation_multiplicity(db, key.0, parameter.p1) } else { 0 }
+        if key.1 == Seq::<u8>::empty() { nation_multiplicity(db, key.0, parameter.p1->0) } else { 0 }
 }
 
 pub open spec fn indexed_group(matches: Counts, buckets: Slices, name: Seq<u8>) -> int {
@@ -47,21 +48,21 @@ pub open spec fn indexed_group(matches: Counts, buckets: Slices, name: Seq<u8>) 
 }
 
 pub proof fn lemma_matches_for(nations: &Slices, matches: &Counts, db: Db, parameter: Params)
-    requires nations_for(*nations, db), nations.at((0int, parameter.p1)) == Some(*matches),
+    requires parameter.p1 is Some, nations_for(*nations, db), nations.at((0int, parameter.p1->0)) == Some(*matches),
     ensures matches_for(*matches, db, parameter),
 {
     nations.model();
-    let position = choose|position: int| #![auto] 0 <= position < nations.entries().len() && nations.entries()[position].0 == (0int, parameter.p1);
+    let position = choose|position: int| #![auto] 0 <= position < nations.entries().len() && nations.entries()[position].0 == (0int, parameter.p1->0);
     assert(nations.entries()[position].1 == *matches);
     assert forall|key: KeyView| #![trigger count(*matches, key)] count(*matches, key) ==
-        if key.1 == Seq::<u8>::empty() { nation_multiplicity(db, key.0, parameter.p1) } else { 0 } by {
-        assert(count(*matches, key) == nested_count(*nations, (0int, parameter.p1), key));
+        if key.1 == Seq::<u8>::empty() { nation_multiplicity(db, key.0, parameter.p1->0) } else { 0 } by {
+        assert(count(*matches, key) == nested_count(*nations, (0int, parameter.p1->0), key));
     }
 }
 
 #[verifier::rlimit(20)]
 pub proof fn lemma_group_indexed(db: Db, parameter: Params, matches: &Counts, buckets: &Slices, name: Seq<u8>)
-    requires matches_for(*matches, db, parameter), buckets_for(*buckets, db),
+    requires parameter.p1 is Some, matches_for(*matches, db, parameter), buckets_for(*buckets, db),
     ensures group_count(db, parameter, name) == indexed_group(*matches, *buckets, name),
 {
     hide(Tree::at);
@@ -69,19 +70,19 @@ pub proof fn lemma_group_indexed(db: Db, parameter: Params, matches: &Counts, bu
     hide(Tree::wf);
     matches.model();
     lemma_group_by_nation(db, parameter, name);
-    let pair = |nation: NationRow, row: (KeyView, Wide)| if nation.n_name == parameter.p1 && row.0 == (nation.n_nationkey, Seq::<u8>::empty()) {
+    let pair = |nation: NationRow, row: (KeyView, Wide)| if nation.n_name == parameter.p1->0 && row.0 == (nation.n_nationkey, Seq::<u8>::empty()) {
         bucket(db, nation.n_nationkey, name)
     } else { 0 };
     let left = |nation: NationRow| sum(matches.entries(), |row: (KeyView, Wide)| pair(nation, row));
     let right = |row: (KeyView, Wide)| sum(db.nation, |nation: NationRow| pair(nation, row));
     lemma_sum_swap(db.nation, matches.entries(), pair, left, right);
-    let full = |nation: NationRow| if nation.n_name == parameter.p1 { bucket(db, nation.n_nationkey, name) } else { 0 };
+    let full = |nation: NationRow| if nation.n_name == parameter.p1->0 { bucket(db, nation.n_nationkey, name) } else { 0 };
     assert forall|position: int| #![trigger db.nation[position]] 0 <= position < db.nation.len() implies left(db.nation[position]) == full(db.nation[position]) by {
         let nation = db.nation[position];
         let weight = |row: (KeyView, Wide)| pair(nation, row);
-        if nation.n_name == parameter.p1 {
+        if nation.n_name == parameter.p1->0 {
             let key = (nation.n_nationkey, Seq::<u8>::empty());
-            let indicator = |other: NationRow| if other.n_nationkey == nation.n_nationkey && other.n_name == parameter.p1 { 1int } else { 0int };
+            let indicator = |other: NationRow| if other.n_nationkey == nation.n_nationkey && other.n_name == parameter.p1->0 { 1int } else { 0int };
             lemma_sum_ge_term(db.nation, indicator, position);
             assert(count(*matches, key) > 0);
             assert(matches.at(key).is_some());
@@ -100,9 +101,9 @@ pub proof fn lemma_group_indexed(db: Db, parameter: Params, matches: &Counts, bu
         let row = matches.entries()[position];
         assert(count(*matches, row.0) == row.1@);
         assert(row.0.1 == Seq::<u8>::empty());
-        let indicator = |nation: NationRow| if nation.n_nationkey == row.0.0 && nation.n_name == parameter.p1 { 1int } else { 0int };
+        let indicator = |nation: NationRow| if nation.n_nationkey == row.0.0 && nation.n_name == parameter.p1->0 { 1int } else { 0int };
         lemma_sum_scale(db.nation, indicator, |nation: NationRow| pair(nation, row), bucket(db, row.0.0, name));
-        assert(bucket(db, row.0.0, name) * nation_multiplicity(db, row.0.0, parameter.p1) == nation_multiplicity(db, row.0.0, parameter.p1) * bucket(db, row.0.0, name)) by(nonlinear_arith);
+        assert(bucket(db, row.0.0, name) * nation_multiplicity(db, row.0.0, parameter.p1->0) == nation_multiplicity(db, row.0.0, parameter.p1->0) * bucket(db, row.0.0, name)) by(nonlinear_arith);
     }
     lemma_sum_ext(matches.entries(), right, indexed);
 }
@@ -138,16 +139,17 @@ pub proof fn lemma_tuple_count(db: Db, parameter: Params, supplier: SupplierRow,
 }
 
 pub proof fn lemma_nation_count(db: Db, parameter: Params, supplier: SupplierRow, line: LineitemRow, order: OrdersRow, name: Seq<u8>)
+    requires parameter.p1 is Some,
     ensures sum(tuples_3(db, parameter, supplier, line, order), tuple_weight(name)) ==
         if supplier.s_name == name && line_join(db, supplier, line) && order_join(line, order) {
-            nation_multiplicity(db, supplier.s_nationkey, parameter.p1)
+            nation_multiplicity(db, supplier.s_nationkey, parameter.p1->0)
         } else { 0 },
 {
     let extension = |nation: NationRow| tuples_4(db, parameter, supplier, line, order, nation);
     let actual = |nation: NationRow| sum(extension(nation), tuple_weight(name));
-    let predicate = |nation: NationRow| if nation.n_nationkey == supplier.s_nationkey && nation.n_name == parameter.p1 { 1int } else { 0int };
+    let predicate = |nation: NationRow| if nation.n_nationkey == supplier.s_nationkey && nation.n_name == parameter.p1->0 { 1int } else { 0int };
     let enabled = supplier.s_name == name && line_join(db, supplier, line) && order_join(line, order);
-    let weight = |nation: NationRow| if enabled && nation.n_nationkey == supplier.s_nationkey && nation.n_name == parameter.p1 { 1int } else { 0int };
+    let weight = |nation: NationRow| if enabled && nation.n_nationkey == supplier.s_nationkey && nation.n_name == parameter.p1->0 { 1int } else { 0int };
     lemma_sum_flat_map(db.nation, extension, tuple_weight(name));
     assert forall|position: int| #![trigger db.nation[position]] 0 <= position < db.nation.len() implies actual(db.nation[position]) == weight(db.nation[position]) by {
         lemma_tuple_count(db, parameter, supplier, line, order, db.nation[position], name);
@@ -157,15 +159,16 @@ pub proof fn lemma_nation_count(db: Db, parameter: Params, supplier: SupplierRow
 }
 
 pub proof fn lemma_order_count(db: Db, parameter: Params, supplier: SupplierRow, line: LineitemRow, name: Seq<u8>)
+    requires parameter.p1 is Some,
     ensures sum(tuples_2(db, parameter, supplier, line), tuple_weight(name)) ==
         if supplier.s_name == name && line_join(db, supplier, line) {
-            finished(db, line.l_orderkey) * nation_multiplicity(db, supplier.s_nationkey, parameter.p1)
+            finished(db, line.l_orderkey) * nation_multiplicity(db, supplier.s_nationkey, parameter.p1->0)
         } else { 0 },
 {
     let extension = |order: OrdersRow| tuples_3(db, parameter, supplier, line, order);
     let actual = |order: OrdersRow| sum(extension(order), tuple_weight(name));
     let enabled = supplier.s_name == name && line_join(db, supplier, line);
-    let nations = nation_multiplicity(db, supplier.s_nationkey, parameter.p1);
+    let nations = nation_multiplicity(db, supplier.s_nationkey, parameter.p1->0);
     let weight = |order: OrdersRow| if enabled && order_join(line, order) { nations } else { 0int };
     let predicate = |order: OrdersRow| if order_join(line, order) { 1int } else { 0int };
     lemma_sum_flat_map(db.orders, extension, tuple_weight(name));
@@ -179,14 +182,15 @@ pub proof fn lemma_order_count(db: Db, parameter: Params, supplier: SupplierRow,
 }
 
 pub proof fn lemma_line_count(db: Db, parameter: Params, supplier: SupplierRow, name: Seq<u8>)
+    requires parameter.p1 is Some,
     ensures sum(tuples_1(db, parameter, supplier), tuple_weight(name)) ==
         if supplier.s_name == name {
-            waiting(db, supplier.s_suppkey) * nation_multiplicity(db, supplier.s_nationkey, parameter.p1)
+            waiting(db, supplier.s_suppkey) * nation_multiplicity(db, supplier.s_nationkey, parameter.p1->0)
         } else { 0 },
 {
     let extension = |line: LineitemRow| tuples_2(db, parameter, supplier, line);
     let actual = |line: LineitemRow| sum(extension(line), tuple_weight(name));
-    let nations = nation_multiplicity(db, supplier.s_nationkey, parameter.p1);
+    let nations = nation_multiplicity(db, supplier.s_nationkey, parameter.p1->0);
     let weight = |line: LineitemRow| if supplier.s_name == name && line_join(db, supplier, line) {
         finished(db, line.l_orderkey) * nations
     } else { 0int };
@@ -208,13 +212,14 @@ pub proof fn lemma_line_count(db: Db, parameter: Params, supplier: SupplierRow, 
 }
 
 pub proof fn lemma_group_count(db: Db, parameter: Params, name: Seq<u8>)
+    requires parameter.p1 is Some,
     ensures group_count(db, parameter, name) == sum(db.supplier, |supplier: SupplierRow|
-        if supplier.s_name == name { waiting(db, supplier.s_suppkey) * nation_multiplicity(db, supplier.s_nationkey, parameter.p1) } else { 0 }),
+        if supplier.s_name == name { waiting(db, supplier.s_suppkey) * nation_multiplicity(db, supplier.s_nationkey, parameter.p1->0) } else { 0 }),
 {
     let extension = |supplier: SupplierRow| tuples_1(db, parameter, supplier);
     let actual = |supplier: SupplierRow| sum(extension(supplier), tuple_weight(name));
     let weight = |supplier: SupplierRow| if supplier.s_name == name {
-        waiting(db, supplier.s_suppkey) * nation_multiplicity(db, supplier.s_nationkey, parameter.p1)
+        waiting(db, supplier.s_suppkey) * nation_multiplicity(db, supplier.s_nationkey, parameter.p1->0)
     } else { 0int };
     lemma_sum_flat_map(db.supplier, extension, tuple_weight(name));
     assert forall|position: int| #![trigger db.supplier[position]] 0 <= position < db.supplier.len() implies actual(db.supplier[position]) == weight(db.supplier[position]) by {
@@ -224,17 +229,17 @@ pub proof fn lemma_group_count(db: Db, parameter: Params, name: Seq<u8>)
 }
 
 pub proof fn lemma_no_nation_result(db: Db, parameter: Params)
-    requires forall|position: int| #![trigger db.nation[position]] 0 <= position < db.nation.len() ==> db.nation[position].n_name != parameter.p1,
+    requires parameter.p1 is Some, forall|position: int| #![trigger db.nation[position]] 0 <= position < db.nation.len() ==> db.nation[position].n_name != parameter.p1->0,
     ensures query_result(db, parameter, Seq::<OutRow>::empty()),
 {
     assert forall|name: Seq<u8>| #[trigger] group_count(db, parameter, name) == 0 by {
         lemma_group_count(db, parameter, name);
         let weight = |supplier: SupplierRow| if supplier.s_name == name {
-            waiting(db, supplier.s_suppkey) * nation_multiplicity(db, supplier.s_nationkey, parameter.p1)
+            waiting(db, supplier.s_suppkey) * nation_multiplicity(db, supplier.s_nationkey, parameter.p1->0)
         } else { 0int };
         assert forall|position: int| #![trigger db.supplier[position]] 0 <= position < db.supplier.len() implies weight(db.supplier[position]) == 0 by {
             let supplier = db.supplier[position];
-            lemma_sum_zero(db.nation, |row: NationRow| if row.n_nationkey == supplier.s_nationkey && row.n_name == parameter.p1 { 1int } else { 0int });
+            lemma_sum_zero(db.nation, |row: NationRow| if row.n_nationkey == supplier.s_nationkey && row.n_name == parameter.p1->0 { 1int } else { 0int });
         }
         lemma_sum_zero(db.supplier, weight);
     }
@@ -244,19 +249,60 @@ pub proof fn lemma_no_nation_result(db: Db, parameter: Params)
 }
 
 pub proof fn lemma_missing_nation(nations: &Slices, db: Db, parameter: Params)
-    requires nations_for(*nations, db), nations.at((0int, parameter.p1)).is_none(),
+    requires parameter.p1 is Some, nations_for(*nations, db), nations.at((0int, parameter.p1->0)).is_none(),
     ensures query_result(db, parameter, Seq::<OutRow>::empty()),
 {
-    assert forall|position: int| #![trigger db.nation[position]] 0 <= position < db.nation.len() implies db.nation[position].n_name != parameter.p1 by {
-        if db.nation[position].n_name == parameter.p1 {
+    assert forall|position: int| #![trigger db.nation[position]] 0 <= position < db.nation.len() implies db.nation[position].n_name != parameter.p1->0 by {
+        if db.nation[position].n_name == parameter.p1->0 {
             let nation = db.nation[position];
-            let weight = |row: NationRow| if row.n_nationkey == nation.n_nationkey && row.n_name == parameter.p1 { 1int } else { 0int };
+            let weight = |row: NationRow| if row.n_nationkey == nation.n_nationkey && row.n_name == parameter.p1->0 { 1int } else { 0int };
             lemma_sum_ge_term(db.nation, weight, position);
-            assert(nested_count(*nations, (0int, parameter.p1), (nation.n_nationkey, Seq::<u8>::empty())) == 0);
-            assert(nation_multiplicity(db, nation.n_nationkey, parameter.p1) == 0);
+            assert(nested_count(*nations, (0int, parameter.p1->0), (nation.n_nationkey, Seq::<u8>::empty())) == 0);
+            assert(nation_multiplicity(db, nation.n_nationkey, parameter.p1->0) == 0);
         }
     }
     lemma_no_nation_result(db, parameter);
+}
+
+/// A NULL parameter: no nation name equals it, so no tuple qualifies and the answer is empty.
+pub proof fn lemma_null_parameter_result(db: Db, parameter: Params)
+    requires parameter.p1 is None,
+    ensures query_result(db, parameter, Seq::<OutRow>::empty()),
+{
+    assert forall|name: Seq<u8>| #[trigger] group_count(db, parameter, name) == 0 by {
+        let weight = tuple_weight(name);
+        let by_supplier = |supplier: SupplierRow| tuples_1(db, parameter, supplier);
+        let actual_supplier = |supplier: SupplierRow| sum(by_supplier(supplier), weight);
+        lemma_sum_flat_map(db.supplier, by_supplier, weight);
+        assert forall|i: int| 0 <= i < db.supplier.len() implies actual_supplier(#[trigger] db.supplier[i]) == 0 by {
+            let supplier = db.supplier[i];
+            let by_line = |line: LineitemRow| tuples_2(db, parameter, supplier, line);
+            let actual_line = |line: LineitemRow| sum(by_line(line), weight);
+            lemma_sum_flat_map(db.lineitem, by_line, weight);
+            assert forall|j: int| 0 <= j < db.lineitem.len() implies actual_line(#[trigger] db.lineitem[j]) == 0 by {
+                let line = db.lineitem[j];
+                let by_order = |order: OrdersRow| tuples_3(db, parameter, supplier, line, order);
+                let actual_order = |order: OrdersRow| sum(by_order(order), weight);
+                lemma_sum_flat_map(db.orders, by_order, weight);
+                assert forall|k: int| 0 <= k < db.orders.len() implies actual_order(#[trigger] db.orders[k]) == 0 by {
+                    let order = db.orders[k];
+                    let by_nation = |nation: NationRow| tuples_4(db, parameter, supplier, line, order, nation);
+                    let actual_nation = |nation: NationRow| sum(by_nation(nation), weight);
+                    lemma_sum_flat_map(db.nation, by_nation, weight);
+                    assert forall|m: int| 0 <= m < db.nation.len() implies actual_nation(#[trigger] db.nation[m]) == 0 by {
+                        lemma_tuple_count(db, parameter, supplier, line, order, db.nation[m], name);
+                    }
+                    lemma_sum_zero(db.nation, actual_nation);
+                }
+                lemma_sum_zero(db.orders, actual_order);
+            }
+            lemma_sum_zero(db.lineitem, actual_line);
+        }
+        lemma_sum_zero(db.supplier, actual_supplier);
+    }
+    let empty = Seq::<OutRow>::empty();
+    assert(full_result(db, parameter, empty));
+    assert(query_result(db, parameter, empty));
 }
 
 }

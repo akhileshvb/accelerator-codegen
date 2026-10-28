@@ -279,11 +279,12 @@ void *Apply(const void *state, const kit::Changes &changes, kit::Host &host,
 template <class Call>
 bool Run(const kit::core::QueryArguments &args, std::vector<kit::core::AuxRow> &out, Call call) {
   std::string nation;
-  if (!kit::ArgText(args, 0, nation)) {
+  const bool nation_null = kit::ArgIsNull(args, 0); // $1 may be NULL: no row qualifies
+  if (!nation_null && !kit::ArgText(args, 0, nation)) {
     return false;
   }
 
-  tpchq21vgen_result *result = call(reinterpret_cast<const uint8_t *>(nation.data()), nation.size());
+  tpchq21vgen_result *result = call(nation_null ? nullptr : reinterpret_cast<const uint8_t *>(nation.data()), nation.size());
   if (result == nullptr) {
     return false;
   }

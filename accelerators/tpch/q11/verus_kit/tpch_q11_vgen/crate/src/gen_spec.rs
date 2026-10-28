@@ -19,7 +19,7 @@
 // Query-specific notes (host contract):
 //  * CHAR(n) text: compared as bytes like VARCHAR, trailing spaces significant; the host delivers text unchanged (DuckDB: CHAR(n) is an alias of VARCHAR).
 //  * $1 is params.p1: text bytes.
-//  * $2 is params.p2: DECIMAL, value * 10^9.
+//  * $2 is params.p2: DECIMAL, value * 10^12.
 //  * Text order is bytes_lt: the host runs only under a C (byte) collation.
 #![allow(unused_imports)]
 use vstd::prelude::*;
@@ -72,7 +72,7 @@ pub struct Db {
 pub struct Params {
     /// $1: text bytes
     pub p1: Seq<u8>,
-    /// $2: DECIMAL, value * 10^9
+    /// $2: DECIMAL, value * 10^12
     pub p2: int,
 }
 
@@ -129,7 +129,7 @@ pub open spec fn scalar_1_group_vals<V>(db: Db, params: Params, f: spec_fn(Scala
 
 /// One output row of block scalar_1.
 pub struct Scalar1Row {
-    /// sum(partsupp.ps_supplycost * partsupp.ps_availqty) * $2 (DECIMAL, value * 10^11; None = NULL)
+    /// sum(partsupp.ps_supplycost * partsupp.ps_availqty) * $2 (DECIMAL, value * 10^14; None = NULL)
     pub sum_partsupp_ps_supplycost_partsupp_ps_availqty_2: Option<int>,
 }
 
@@ -219,7 +219,7 @@ pub open spec fn row_of(db: Db, params: Params, g_ps_partkey: int) -> OutRow {
 
 /// HAVING (true when absent).
 pub open spec fn having(db: Db, params: Params, g_ps_partkey: int) -> bool {
-    (scalar_1_value(db, params) is Some && group_sum(db, params, g_ps_partkey, |t: Tuple| t.partsupp.ps_supplycost * t.partsupp.ps_availqty) * 1000000000 > scalar_1_value(db, params)->0)
+    (scalar_1_value(db, params) is Some && group_sum(db, params, g_ps_partkey, |t: Tuple| t.partsupp.ps_supplycost * t.partsupp.ps_availqty) * 1000000000000 > scalar_1_value(db, params)->0)
 }
 
 /// The result rows of the query, as a bag (in no particular order).

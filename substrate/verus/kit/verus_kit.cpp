@@ -1137,6 +1137,10 @@ ArgFailure LastArgFailure() {
   return g_arg_failure;
 }
 
+bool ArgIsNull(const core::QueryArguments &args, std::size_t i) {
+  return i < args.values.size() && args.values[i].is_null;
+}
+
 bool ArgText(const core::QueryArguments &args, std::size_t i, std::string &out) {
   const auto *v = Arg(args, i);
   if (!v)

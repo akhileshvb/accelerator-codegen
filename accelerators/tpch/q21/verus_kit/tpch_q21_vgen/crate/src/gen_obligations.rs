@@ -248,7 +248,7 @@ pub open spec fn seq_view_i64(s: Seq<i64>) -> Seq<int> {
 
 // ── Parameters and result ──
 
-pub open spec fn params(p1: Seq<u8>) -> Params {
+pub open spec fn params(p1: Option<Seq<u8>>) -> Params {
     Params { p1 }
 }
 
@@ -361,7 +361,7 @@ pub open spec fn scan_nations_ok(db: Db, rows: Seq<NationScan>) -> bool {
 }
 
 /// rescan order_lines: SELECT l_orderkey, l_suppkey, l_commitdate, l_receiptdate FROM lineitem
-///   restricted to the rows whose l_orderkey is one of `keys`.
+///   restricted to the rows whose l_orderkey is one of `keys` (a NULL key matches none).
 pub open spec fn rescan_order_lines_ok(db: Db, keys: Seq<i64>, rows: Seq<OrderLine>) -> bool {
     forall|f: spec_fn(LineitemRow) -> int| #[trigger] sum(order_line_seq_view(rows), f) == sum(
         db.lineitem,
@@ -370,7 +370,7 @@ pub open spec fn rescan_order_lines_ok(db: Db, keys: Seq<i64>, rows: Seq<OrderLi
 }
 
 /// rescan order_finished: SELECT o_orderkey FROM orders WHERE o_orderstatus = 'F'
-///   restricted to the rows whose o_orderkey is one of `keys`.
+///   restricted to the rows whose o_orderkey is one of `keys` (a NULL key matches none).
 pub open spec fn rescan_order_finished_ok(db: Db, keys: Seq<i64>, rows: Seq<OrderFinished>) -> bool {
     forall|f: spec_fn(int) -> int| #[trigger] sum(order_finished_seq_view(rows), f) == sum(
         db.orders,
@@ -539,11 +539,11 @@ pub fn ob_build(
 /// outside the envelope, or when no correct answer exists or one overflows the result's types.
 pub fn ob_execute(
     s: &State,
-    p1: &[u8],
+    p1: Option<&[u8]>,
 ) -> (r: Option<Vec<(Vec<u8>, i64)>>)
     ensures
-        r matches Some(out) ==> query_result(s.db(), params(p1@), out_view(out@)),
-        envelope(s.db()) && answer_fits(s.db(), params(p1@)) ==> r is Some,
+        r matches Some(out) ==> query_result(s.db(), params(match p1 { Some(x) => Some(x@), None => None }), out_view(out@)),
+        envelope(s.db()) && answer_fits(s.db(), params(match p1 { Some(x) => Some(x@), None => None })) ==> r is Some,
 {
     kernel::execute(s, p1)
 }

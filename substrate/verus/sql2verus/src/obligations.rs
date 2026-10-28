@@ -256,6 +256,10 @@ pub(crate) enum Arg {
     Text,
     /// A scalar query parameter (i64 / i32).
     Scalar(&'static str),
+    /// A NULL-able text parameter (Option<&[u8]>; a null pointer is NULL).
+    NullText,
+    /// A NULL-able scalar parameter (Option<i64 / i32>; a flag byte after it is non-zero for NULL).
+    NullScalar(&'static str),
 }
 
 /// A parameter of an obligation function.
@@ -973,10 +977,21 @@ pub(crate) async fn obligations(
             Ty::Flt(_) => bail!("parameter ${n}: DOUBLE parameters have no runtime type"),
             other => bail!("parameter ${n}: {other:?}"),
         };
-        pdefs.push(format!("p{n}: {}", verus_ty(*t)));
+        let null = ob.tr.nullable_params.contains(n);
+        let (spec, vty) = if null {
+            (format!("match p{n} {{ Some(x) => Some({}), None => None }}", spec.replace(&format!("p{n}"), "x")), format!("Option<{}>", verus_ty(*t)))
+        } else {
+            (spec, verus_ty(*t).to_string())
+        };
+        pdefs.push(format!("p{n}: {vty}"));
         pinit.push(format!("p{n}"));
-        let arg = if rt == "&[u8]" { Arg::Text } else { Arg::Scalar(rt) };
-        exec_params.push(P { name: format!("p{n}"), ty: rt.into(), ghost: false, arg });
+        let (arg, ty) = match (rt == "&[u8]", null) {
+            (true, false) => (Arg::Text, rt.to_string()),
+            (true, true) => (Arg::NullText, format!("Option<{rt}>")),
+            (false, false) => (Arg::Scalar(rt), rt.to_string()),
+            (false, true) => (Arg::NullScalar(rt), format!("Option<{rt}>")),
+        };
+        exec_params.push(P { name: format!("p{n}"), ty, ghost: false, arg });
         pargs.push(spec);
     }
     let mut out_tys = vec![];

@@ -3,7 +3,11 @@
 and the C header.  gen_spec.rs and gen_obligations.rs are only compared (the spec is frozen):
 a difference is an error and nothing is written for that kit.
 
-    python3 scripts/regen_verus_kits.py <sql2verus binary> <schema.sql> <inputs dir> [q1 q2 ...]
+    python3 scripts/regen_verus_kits.py [--update q11,q21] <sql2verus binary> <schema.sql> <inputs dir> [q1 q2 ...]
+
+--update: these kits' gen_spec.rs and gen_obligations.rs are rewritten too (a spec change approved
+on purpose: the kernel then has to be re-proved).  A query with workloads/tpch/<q>.nullable-params
+(parameter numbers, comma separated) gets sql2verus --nullable-params.
 
 <inputs dir> holds the kernel inputs of each query as q<N>.inputs (the files the kits'
 gen_obligations.rs were generated from).  Host glue (glue.cpp) is written per kit, not
@@ -27,8 +31,13 @@ def same(generated: pathlib.Path, committed: pathlib.Path) -> bool:
 
 
 def main() -> int:
-    binary, schema, inputs = sys.argv[1], pathlib.Path(sys.argv[2]), pathlib.Path(sys.argv[3])
-    qs = sys.argv[4:] or [f"q{n}" for n in range(1, 23)]
+    argv = sys.argv[1:]
+    update: set[str] = set()
+    if argv[:1] == ["--update"]:
+        update = set(argv[1].split(","))
+        argv = argv[2:]
+    binary, schema, inputs = argv[0], pathlib.Path(argv[1]), pathlib.Path(argv[2])
+    qs = argv[3:] or [f"q{n}" for n in range(1, 23)]
     bad = 0
     for q in qs:
         n = q[1:]
@@ -44,12 +53,19 @@ def main() -> int:
                    "--kernel-stub", t / "kernel_stub.rs", "--world", t / "gen_world.rs",
                    "--ffi", t / "gen_ffi.rs", "--ffi-header", t / f"{name}_verus.h",
                    "--ffi-prefix", f"tpchq{n}vgen"]
+            nullable = ROOT / f"workloads/tpch/{q}.nullable-params"
+            if nullable.exists():
+                cmd += ["--nullable-params", nullable.read_text().strip()]
             r = subprocess.run([str(c) for c in cmd], capture_output=True, text=True)
             if r.returncode != 0:
                 print(f"{q}: sql2verus failed\n{r.stderr[-1500:]}")
                 bad += 1
                 continue
             frozen = [f for f in ("gen_spec.rs", "gen_obligations.rs") if not same(t / f, src / f)]
+            if q in update:
+                for f in frozen:
+                    shutil.copy2(t / f, src / f)
+                frozen = []
             if frozen:
                 print(f"{q}: {', '.join(frozen)} differ from the committed ones; not written")
                 bad += 1
