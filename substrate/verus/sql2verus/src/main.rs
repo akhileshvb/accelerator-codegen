@@ -58,8 +58,9 @@
 //     exact: + - * on scaled integers, and / and AVG give exact rationals
 //     (Rat {num, den}); rounding to the engine's result type is host
 //     formatting.  Division by a non-literal is allowed only in the SELECT
-//     list, where a zero divisor leaves the query without an answer (SQL
-//     raises an error).
+//     list.  A zero divisor leaves the query without an answer where the
+//     engine raises an error; where it computes in IEEE doubles (--div-zero
+//     ieee, the DuckDB default) the answer holds a Rat with den == 0.
 //   * DOUBLE / REAL -> int (the exact value * 2^1074; finite by host
 //     contract).  Comparisons, GROUP BY, MIN / MAX on float values are exact.
 //     SUM / AVG of float expressions are rounded in an engine-chosen order:
@@ -560,6 +561,8 @@ struct Schema {
     /// how the target engine compares CHAR(n): "bytes" or "padded" (and why)
     char_semantics: (&'static str, &'static str),
     engine: String,
+    /// a zero divisor of an exact division gives +-infinity or NaN (else the query raises an error)
+    div_ieee: bool,
     col_ty: HashMap<(String, String), (Option<Ty>, bool)>,
     /// the inclusive value range of a numeric or date column's SQL type
     col_range: HashMap<(String, String), (i128, i128)>,
@@ -669,7 +672,7 @@ async fn load_schema(ctx: &SessionContext, ddl: &str, char_semantics: (&'static 
             other => bail!("schema: statement not supported: {}", other.to_string().lines().next().unwrap_or("")),
         }
     }
-    Ok(Schema { ddl_cols, char_cols, char_semantics, engine, col_ty, col_range })
+    Ok(Schema { ddl_cols, char_cols, char_semantics, engine, div_ieee: false, col_ty, col_range })
 }
 
 /// Verus names for a table: its Db field and its row struct.
@@ -1760,9 +1763,13 @@ impl<'a> Tr<'a> {
             let mut v = meta(Val { den: Some(simp_mul(&den)), prec: 3, ..Val::atom(format!("({})", simp_mul(&num)), Ty::Rat) });
             if op == Divide && rv.int_lit.is_none() {
                 v.nonlit_div = true;
-                let c = format!("{} != 0", rv.wrap(1));
-                if !v.den_conds.contains(&c) {
-                    v.den_conds.push(c);
+                if self.sch.div_ieee {
+                    self.notes.insert("A zero divisor gives a Rat with den == 0: +infinity (num > 0), -infinity (num < 0) or NaN (num == 0), as the engine computes a division.".into());
+                } else {
+                    let c = format!("{} != 0", rv.wrap(1));
+                    if !v.den_conds.contains(&c) {
+                        v.den_conds.push(c);
+                    }
                 }
             }
             return Ok(v);
@@ -3821,7 +3828,18 @@ async fn run() -> Res<()> {
             e => return Err(format!("--engine: duckdb, postgres or mysql, not {e}")),
         },
     };
-    let sch = load_schema(&ctx, &ddl, char_semantics, engine.clone()).await?;
+    // division by zero of the target engine: IEEE (DECIMAL / DECIMAL is a DOUBLE division) or an error
+    let div_ieee = match opt0(&args, "--div-zero").as_deref() {
+        Some("ieee") => true,
+        Some("error") => false,
+        Some(o) => return Err(format!("--div-zero: ieee or error, not {o}")),
+        None => match engine.as_str() {
+            "duckdb" => true,
+            _ => false,
+        },
+    };
+    let mut sch = load_schema(&ctx, &ddl, char_semantics, engine.clone()).await?;
+    sch.div_ieee = div_ieee;
     if engine == "duckdb" {
         // DuckDB's strlen is the byte length
         ctx.register_udf(datafusion::functions::string::octet_length().as_ref().clone().with_aliases(["strlen"]));

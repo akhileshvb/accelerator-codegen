@@ -16,6 +16,7 @@
 //  * $1 is params.p1: DATE, days since 1970-01-01.
 //  * $2 is params.p2: DATE, days since 1970-01-01.
 //  * Text order is bytes_lt: the host runs only under a C (byte) collation.
+//  * A zero divisor gives a Rat with den == 0: +infinity (num > 0), -infinity (num < 0) or NaN (num == 0), as the engine computes a division.
 #![allow(unused_imports)]
 use vstd::prelude::*;
 use verus_common::bytes::*;
@@ -131,7 +132,6 @@ pub open spec fn rows(db: Db, params: Params) -> Seq<OutRow> {
 pub open spec fn row_ok(db: Db, params: Params, r: OutRow) -> bool {
     &&& true
     &&& r.promo_revenue == if group_count(db, params) > 0 { Some(Rat { num: ((10000 * group_sum(db, params, |t: Tuple| (if like_match(t.part.p_type, seq![b'P', b'R', b'O', b'M', b'O', b'%']) { t.lineitem.l_extendedprice * (100 - t.lineitem.l_discount) } else { 0 })) * 10000)) as int, den: (1000000 * group_sum(db, params, |t: Tuple| t.lineitem.l_extendedprice * (100 - t.lineitem.l_discount))) as int }) } else { None }
-    &&& group_count(db, params) > 0 ==> group_sum(db, params, |t: Tuple| t.lineitem.l_extendedprice * (100 - t.lineitem.l_discount)) != 0
 }
 
 /// ORDER BY (none): a sorts strictly before b.
@@ -155,8 +155,6 @@ pub open spec fn query_result(db: Db, params: Params, out: Seq<OutRow>) -> bool 
 
 /// The query has exactly one answer.
 pub proof fn lemma_query_result_iff(db: Db, params: Params, out: Seq<OutRow>)
-    requires
-        row_ok(db, params, row_of(db, params)),
     ensures
         query_result(db, params, rows(db, params)),
         query_result(db, params, out) <==> out == rows(db, params),
@@ -180,9 +178,9 @@ pub proof fn lemma_query_result_iff(db: Db, params: Params, out: Seq<OutRow>)
 
 // ── The answer exists exactly when `defined` (verified by Verus, not trusted) ──
 
-/// No divisor of the query is zero.
+/// No divisor of the query is zero (it has none).
 pub open spec fn defined(db: Db, params: Params) -> bool {
-    &&& group_count(db, params) > 0 ==> group_sum(db, params, |t: Tuple| t.lineitem.l_extendedprice * (100 - t.lineitem.l_discount)) != 0
+    true
 }
 
 /// With non-zero divisors the query has an answer.
@@ -192,7 +190,6 @@ pub proof fn lemma_defined_exists(db: Db, params: Params)
     ensures
         exists|o: Seq<OutRow>| #[trigger] query_result(db, params, o),
 {
-    assert(row_ok(db, params, row_of(db, params)));
     lemma_query_result_iff(db, params, rows(db, params));
     assert(query_result(db, params, rows(db, params)));
 }
@@ -202,16 +199,6 @@ pub proof fn lemma_exists_defined(db: Db, params: Params)
     ensures
         (exists|o: Seq<OutRow>| #[trigger] query_result(db, params, o)) ==> defined(db, params),
 {
-    if exists|o: Seq<OutRow>| #[trigger] query_result(db, params, o) {
-        let o = choose|o: Seq<OutRow>| #[trigger] query_result(db, params, o);
-        let full = o;
-        assert(full_result(db, params, full));
-        assert(full.len() == rows(db, params).len());
-        if full.len() > 0 {
-            assert(row_ok(db, params, full[0]));
-        }
-        assert(defined(db, params));
-    }
 }
 
 // ── Permutation invariance (verified by Verus, not trusted) ──────────────────

@@ -262,10 +262,6 @@ pub fn execute(state: &State, p1: i32, p2: i32) -> (out: Option<Vec<Option<(i128
         }
         return Some(rows);
     }
-    if accumulator.total.is_zero() {
-        proof { lemma_zero_total(state.db(), p1 as int, p2 as int, count, total); }
-        return None;
-    }
     let numerator = accumulator.promo.mul(&Wide::from_i128(100000000i128)).to_i128();
     let denominator = accumulator.total.mul(&Wide::from_i128(1000000i128)).to_i128();
     match (numerator, denominator) {

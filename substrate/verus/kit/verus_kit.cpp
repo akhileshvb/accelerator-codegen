@@ -1245,6 +1245,8 @@ core::AuxValue OutDec(int64_t hi, uint64_t lo, int scale) {
 core::AuxValue OutRat(int64_t num_hi, uint64_t num_lo, int64_t den_hi, uint64_t den_lo) {
   const long double num = static_cast<long double>(I128(num_hi, num_lo));
   const long double den = static_cast<long double>(I128(den_hi, den_lo));
+  if (den == 0) // the engine's DOUBLE division: +-inf, and 0/0 is -NaN (the x86 default NaN)
+    return core::AuxValue::Of(core::AuxType::Double, num > 0 ? HUGE_VAL : num < 0 ? -HUGE_VAL : -std::numeric_limits<double>::quiet_NaN());
   return core::AuxValue::Of(core::AuxType::Double, static_cast<double>(num / den));
 }
 

@@ -94,12 +94,11 @@ pub proof fn lemma_push(db: Db, parameters: Params, output: Seq<OutRow>, row: Ou
     }
 }
 
-/// A group of a defined query with every answer fitting has a non-zero volume sum, and its
-/// answer row's numerator and denominator fit.
+/// A group of a query with every answer fitting has an answer row whose numerator and
+/// denominator fit.
 proof fn lemma_group_row(db: Db, parameters: Params, year: int)
     requires answer_fits(db, parameters), group_count(db, parameters, year) > 0,
     ensures
-        group_sum(db, parameters, year, |tuple: Tuple| tuple.all_nations.volume) != 0,
         i128::MIN <= group_sum(db, parameters, year, |tuple: Tuple| if tuple.all_nations.nation == parameters.p1 { tuple.all_nations.volume } else { 0 }) * 10000 <= i128::MAX,
         i128::MIN <= 10000 * group_sum(db, parameters, year, |tuple: Tuple| tuple.all_nations.volume) <= i128::MAX,
 {
@@ -108,15 +107,6 @@ proof fn lemma_group_row(db: Db, parameters: Params, year: int)
     let index = choose|index: int| 0 <= index < output.len() && (#[trigger] output[index]).o_year == year;
     assert(row_ok(db, parameters, output[index]));
     assert(out_fits(output[index]));
-}
-
-/// The volume sum of a non-empty group is zero: there is no answer.
-pub proof fn lemma_refute_zero_volume(db: Db, parameters: Params, year: int)
-    requires group_count(db, parameters, year) > 0,
-        group_sum(db, parameters, year, |tuple: Tuple| tuple.all_nations.volume) == 0,
-    ensures !answer_fits(db, parameters),
-{
-    if answer_fits(db, parameters) { lemma_group_row(db, parameters, year); }
 }
 
 /// The row's numerator or denominator does not fit: no answer fits.

@@ -24,6 +24,7 @@
 //  * $2 is params.p2: text bytes.
 //  * $3 is params.p3: text bytes.
 //  * Text order is bytes_lt: the host runs only under a C (byte) collation.
+//  * A zero divisor gives a Rat with den == 0: +infinity (num > 0), -infinity (num < 0) or NaN (num == 0), as the engine computes a division.
 #![allow(unused_imports)]
 use vstd::prelude::*;
 use verus_common::bytes::*;
@@ -289,7 +290,6 @@ pub open spec fn row_ok(db: Db, params: Params, r: OutRow) -> bool {
     &&& group_count(db, params, g_o_year) > 0
     &&& having(db, params, g_o_year)
     &&& r.mkt_share == Rat { num: ((group_sum(db, params, g_o_year, |t: Tuple| (if t.all_nations.nation == params.p1 { t.all_nations.volume } else { 0 })) * 10000)) as int, den: (10000 * group_sum(db, params, g_o_year, |t: Tuple| t.all_nations.volume)) as int }
-    &&& group_sum(db, params, g_o_year, |t: Tuple| t.all_nations.volume) != 0
 }
 
 /// Rows a and b are for the same group.
@@ -373,11 +373,6 @@ pub open spec fn answer(db: Db, params: Params) -> Seq<OutRow> {
     sort_by(present(db, params), ext_order())
 }
 
-/// No division by zero in the rows of the groups (else SQL raises an error).
-pub open spec fn defined(db: Db, params: Params) -> bool {
-    forall|i: int| 0 <= i < tuples(db, params).len() ==> #[trigger] row_ok(db, params, present_row(db, params)(tuples(db, params)[i])) || !present_keep(db, params)(tuples(db, params)[i])
-}
-
 proof fn lemma_present(db: Db, params: Params)
     ensures
         strict_order(ext_order()),
@@ -423,8 +418,6 @@ proof fn lemma_group_tuple(db: Db, params: Params, g_o_year: int) -> (k: int)
 
 /// Every row of the answer is a group's row.
 proof fn lemma_answer_rows(db: Db, params: Params)
-    requires
-        defined(db, params),
     ensures
         forall|i: int| 0 <= i < answer(db, params).len() ==> row_ok(db, params, #[trigger] answer(db, params)[i]),
 {
@@ -433,7 +426,7 @@ proof fn lemma_answer_rows(db: Db, params: Params)
     assert forall|i: int| 0 <= i < ans.len() implies row_ok(db, params, #[trigger] ans[i]) by {
         assert(ans.contains(ans[i]));
         let k = choose|k: int| 0 <= k < tuples(db, params).len() && present_keep(db, params)(tuples(db, params)[k]) && present_row(db, params)(tuples(db, params)[k]) == ans[i];
-        assert(row_ok(db, params, present_row(db, params)(tuples(db, params)[k])));
+        lemma_tuple_group(db, params, k);
     }
 }
 
@@ -472,8 +465,6 @@ proof fn lemma_answer_groups(db: Db, params: Params)
 
 /// The answer satisfies full_result.
 pub proof fn lemma_answer_ok(db: Db, params: Params)
-    requires
-        defined(db, params),
     ensures
         full_result(db, params, answer(db, params)),
 {
@@ -552,8 +543,6 @@ pub proof fn lemma_full_result_unique(db: Db, params: Params, out: Seq<OutRow>)
 
 /// The query has an answer, and only one.
 pub proof fn lemma_query_result_iff(db: Db, params: Params, out: Seq<OutRow>)
-    requires
-        defined(db, params),
     ensures
         query_result(db, params, answer(db, params)),
         query_result(db, params, out) <==> out == answer(db, params),
@@ -565,6 +554,11 @@ pub proof fn lemma_query_result_iff(db: Db, params: Params, out: Seq<OutRow>)
 }
 
 // ── The answer exists exactly when `defined` (verified by Verus, not trusted) ──
+
+/// No divisor of the query is zero (it has none).
+pub open spec fn defined(db: Db, params: Params) -> bool {
+    true
+}
 
 /// With non-zero divisors the query has an answer.
 pub proof fn lemma_defined_exists(db: Db, params: Params)
@@ -582,22 +576,6 @@ pub proof fn lemma_exists_defined(db: Db, params: Params)
     ensures
         (exists|o: Seq<OutRow>| #[trigger] query_result(db, params, o)) ==> defined(db, params),
 {
-    if exists|o: Seq<OutRow>| #[trigger] query_result(db, params, o) {
-        let o = choose|o: Seq<OutRow>| #[trigger] query_result(db, params, o);
-        let full = o;
-        assert(full_result(db, params, full));
-        assert forall|i: int| 0 <= i < tuples(db, params).len() implies #[trigger] row_ok(db, params, present_row(db, params)(tuples(db, params)[i])) || !present_keep(db, params)(tuples(db, params)[i]) by {
-            let t = tuples(db, params)[i];
-            if present_keep(db, params)(t) {
-                lemma_tuple_group(db, params, i);
-                assert(group_count(db, params, t.all_nations.o_year) > 0 && having(db, params, t.all_nations.o_year));
-                let j = choose|j: int| 0 <= j < full.len() && (#[trigger] full[j]).o_year == t.all_nations.o_year;
-                assert(row_ok(db, params, full[j]));
-                assert(row_ok(db, params, present_row(db, params)(t)));
-            }
-        }
-        assert(defined(db, params));
-    }
 }
 
 // ── Permutation invariance (verified by Verus, not trusted) ──────────────────

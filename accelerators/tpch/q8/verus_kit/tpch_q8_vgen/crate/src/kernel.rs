@@ -273,10 +273,6 @@ fn year_output(
     if !total.0.is_pos() {
         return Some(None);
     }
-    if total.1.is_zero() {
-        proof { crate::reading::lemma_refute_zero_volume(database, parameters, year as int); }
-        return None;
-    }
     let volume = match nation {
         Some(id) => s.data.numerators.lookup((region, kind, id), (year, 0, 0)).1,
         None => Num::zero(),

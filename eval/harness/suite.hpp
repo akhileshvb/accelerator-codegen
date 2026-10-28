@@ -177,6 +177,8 @@ inline bool SameCell(const std::string &a, const std::string &b) {
   const double x = std::strtod(a.c_str(), &ea), y = std::strtod(b.c_str(), &eb);
   if (ea == a.c_str() || eb == b.c_str() || *ea || *eb)
     return false;
+  if (std::isnan(x) || std::isnan(y) || std::isinf(x) || std::isinf(y)) // NaN equals NaN; infinities must match
+    return (std::isnan(x) && std::isnan(y)) || x == y;
   return std::fabs(x - y) <= 1e-9 * std::max({1.0, std::fabs(x), std::fabs(y)});
 }
 

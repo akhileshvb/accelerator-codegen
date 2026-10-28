@@ -46,7 +46,7 @@ pub open spec fn model_answer(count: int, total: int, promo: int) -> Seq<OutRow>
 
 pub proof fn lemma_model_result(db: Db, start: int, end: int, count: int, total: int, promo: int)
     requires count == interval_count(db, start, end), total == interval_total(db, start, end),
-        promo == interval_promo(db, start, end), count == 0 || total != 0,
+        promo == interval_promo(db, start, end),
     ensures query_result(db, params(start, end), model_answer(count, total, promo)),
 {
     let parameters = params(start, end);
@@ -67,27 +67,12 @@ pub proof fn lemma_model_result(db: Db, start: int, end: int, count: int, total:
     assert(row_ok(db, parameters, model_answer(count, total, promo)[0]));
 }
 
-pub proof fn lemma_zero_total(db: Db, start: int, end: int, count: int, total: int)
-    requires count == interval_count(db, start, end), total == interval_total(db, start, end),
-        count != 0, total == 0,
-    ensures !defined(db, params(start, end)),
-{
-    let parameters = params(start, end);
-    lemma_query_join(db, parameters, false, false);
-    lemma_query_join(db, parameters, true, false);
-    lemma_length_sum(tuples(db, parameters));
-    lemma_sum_ext_all(tuples(db, parameters), |tuple: Tuple| tuple_weight(tuple, false, false), |tuple: Tuple| 1int);
-    lemma_sum_ext_all(tuples(db, parameters), |tuple: Tuple| tuple_weight(tuple, true, false),
-        |tuple: Tuple| tuple.lineitem.l_extendedprice * (100 - tuple.lineitem.l_discount));
-    assert(count == group_count(db, parameters));
-}
-
 pub proof fn lemma_execute_result(db: Db, start: int, end: int, count: int, total: int, promo: int,
     out: Seq<Option<(i128, i128)>>)
     requires count == interval_count(db, start, end), total == interval_total(db, start, end),
         promo == interval_promo(db, start, end), out.len() == 1,
         count == 0 ==> out[0] is None,
-        count != 0 ==> total != 0 && out[0] is Some &&
+        count != 0 ==> out[0] is Some &&
             out[0].unwrap().0 as int == 100000000 * promo && out[0].unwrap().1 as int == 1000000 * total,
     ensures query_result(db, params(start, end), out_view(out)),
 {
