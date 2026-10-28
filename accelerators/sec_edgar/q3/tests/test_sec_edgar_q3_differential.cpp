@@ -511,8 +511,7 @@ void Step(Fixture &f, Gen &gen, Counters &counters) {
     std::vector<core::ColumnId> cols;
     std::string set;
     if (gen.Int(0, 1)) {
-      static const char *to[] = {"USD", "EUR", "shares", "CAD", "pure"};
-      n.uom = to[gen.Int(0, 4)];
+      n.uom = gen.Pick(gen.uom_pool);
       n.uom_null = gen.Int(0, 15) == 0;
       set += std::string("uom = ") + (n.uom_null ? "NULL" : Q(n.uom));
       cols.push_back(5);
@@ -564,7 +563,7 @@ void Step(Fixture &f, Gen &gen, Counters &counters) {
     if (f.num.size() < 50) {
       break;
     }
-    const std::string pred_uom = gen.Int(0, 1) ? "EUR" : "pure";
+    const std::string pred_uom = gen.Pick(gen.uom_pool);
     std::vector<NumM> gone;
     std::vector<NumM> kept;
     for (const auto &r : f.num) {
@@ -580,7 +579,7 @@ void Step(Fixture &f, Gen &gen, Counters &counters) {
       f.Send(kNumTable, core::MutationKind::Delete, std::move(aux), {});
       ++counters.bulk_num;
     }
-    // scale every USD value of one filing
+    // scale every value of one filing
     const std::string adsh = gen.Pick(gen.adsh_pool);
     std::vector<core::AuxRow> before, after;
     std::string tags;
