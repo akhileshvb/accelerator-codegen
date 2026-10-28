@@ -234,13 +234,14 @@ def launch(tree: Path, work: Path, env: dict[str, str], module_args: list[str], 
     """`python -m <module_args>` from the tree, in the real sandbox. `inside` is more environment for the run,
     `data` more read-only paths."""
     python = tree / "pipeline/orchestrator/.venv/bin/python"
-    state = work / "state"
+    state = work / "state"  # what the sandbox binds; the run's instance one level below, so the gates' instances
+    engine_state = state / "main"  # (<dir>-<name>, beside it) are bound too
     state.mkdir(exist_ok=True)
     locks = Path(os.environ.get("ACCEL_HOST_LOCK_DIR") or SMOKE_HOME / "locks")
     instance = f"smoke_{os.getpid()}"
     inside = {
         "PYTHONPATH": str(tree / "pipeline/orchestrator"), "ACCEL_PIPELINE_PYTHON": str(python),
-        **env, "ACCEL_ENGINE_INSTANCE": instance, "ACCEL_ENGINE_STATE_DIR": str(state),
+        **env, "ACCEL_ENGINE_INSTANCE": instance, "ACCEL_ENGINE_STATE_DIR": str(engine_state),
         "ACCEL_CONCURRENT_WORKERS": os.environ.get("ACCEL_CONCURRENT_WORKERS", "4"),
         "CMAKE_BUILD_PARALLEL_LEVEL": BUILD_JOBS,
         **{k: os.environ[k] for k in PASSED_THROUGH if k in os.environ}, **(inside or {}),
@@ -249,7 +250,7 @@ def launch(tree: Path, work: Path, env: dict[str, str], module_args: list[str], 
     command = f"export {exports}; cd {tree} && exec {python} -m " + " ".join(map(sh_quote, module_args))
     outer = {k: v for k, v in os.environ.items() if k != "OPENROUTER_API_KEY"}
     outer.update({
-        "ACCEL_ENGINE_INSTANCE": instance, "ACCEL_ENGINE_STATE_DIR": str(state), "ACCEL_HOST_LOCK_DIR": str(locks),
+        "ACCEL_ENGINE_INSTANCE": instance, "ACCEL_ENGINE_STATE_DIR": str(engine_state), "ACCEL_HOST_LOCK_DIR": str(locks),
         "ACCEL_SANDBOX_DATA": ":".join([*(v for v in env.values() if v.startswith("/") and not v.startswith(str(tree))),
                                         *map(str, data)]),
         "ACCEL_SANDBOX_STATE": str(state), **env,

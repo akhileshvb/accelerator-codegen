@@ -10,8 +10,10 @@
 #   ACCEL_SANDBOX_DATA      read-only data dirs/files, ':'-separated (datasets, DuckDB DBs)
 #   ACCEL_DUCKDB_ROOT       the DuckDB source/build the backends compile against (read-only)
 #   ACCEL_DUCKDB_SEED_DIRS  optional prebuilt in-container DuckDB builds, ':'-separated (read-only)
-#   ACCEL_SANDBOX_STATE     engine-state dir, read-write and at its real path so the Docker
-#                           daemon can mount it (default /flash1/$USER/engine_state, the gates' default)
+#   ACCEL_SANDBOX_STATE     engine-state root, read-write and at its real path so the Docker
+#                           daemon can mount it (default /flash1/$USER/engine_state). A run's
+#                           ACCEL_ENGINE_STATE_DIR goes below it: its gates' instances are <dir>-<name>
+#                           beside it, and everything else under /flash1 is a tmpfs (memory)
 #   ACCEL_HOST_LOCK_DIR     host-wide core-slot and measurement locks, read-write and at its real path so that
 #                           concurrent sandboxes (one per tree) share one partition (the sandbox's /dev/shm is private)
 #   OPENROUTER_API_KEY      passed through for codex when set (else <clean-tree>/.env has it)
@@ -29,6 +31,10 @@ if [[ -n "${ACCEL_SANDBOX_SCOPED:-}" ]]; then
 fi
 TREE="$(realpath "${1:?usage: sandbox.sh <clean-tree> [command...]}")"; shift
 STATE="${ACCEL_SANDBOX_STATE:-/flash1/$(id -un)/engine_state}"
+if [[ -n "${ACCEL_ENGINE_STATE_DIR:-}" && "${ACCEL_ENGINE_STATE_DIR}" != "${STATE}"/?* ]]; then
+  echo "sandbox.sh: ACCEL_ENGINE_STATE_DIR (${ACCEL_ENGINE_STATE_DIR}) must be below ACCEL_SANDBOX_STATE (${STATE})" >&2
+  exit 2
+fi
 mkdir -p "${STATE}" "${TREE}/.home"
 CODEX_BIN="$(readlink -f "$(command -v codex)")"   # the codex CLI and its package (read-only)
 CODEX_PKG="$(dirname "$(dirname "${CODEX_BIN}")")"
