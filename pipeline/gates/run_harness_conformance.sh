@@ -110,11 +110,14 @@ PROFILE_FIFO="${RUNS}/profile.ctl"
 mkfifo "${PROFILE_FIFO}"
 exec 3<>"${PROFILE_FIFO}"
 
+SINGLE_RUN_MB="${ACCEL_ENGINE_MEMORY_MB}"
+export ACCEL_ENGINE_MEMORY_MB="$(engine_memory_budget 4)"  # four runs side by side
 for target in "${DIFF_BINARY}" "${MULTI_CONN_TARGET}" "${CROSS_ACCEL_TARGET}"; do
   launch "${target}" engine_run "${target}" "${QUERY}"
 done
 ACCEL_PROFILE_CONTROL="${PROFILE_FIFO}" launch bench_forced bench_points
 settle
+export ACCEL_ENGINE_MEMORY_MB="${SINGLE_RUN_MB}"
 failed_run "${DIFF_BINARY}" differential
 failed_run "${MULTI_CONN_TARGET}" concurrent
 failed_run "${CROSS_ACCEL_TARGET}" concurrent

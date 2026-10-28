@@ -84,6 +84,16 @@ setup_engine_host() {
 	# Same default as engine_host.cmake_args.
 	export ACCEL_CMAKE_ARGS="${ACCEL_CMAKE_ARGS:--G Ninja -DCMAKE_BUILD_TYPE=Release -DACCELERATOR_CODEGEN_BUILD_${ENGINE_NAME^^}=ON -DACCEL_CODEGEN_ENGINE=${ENGINE_NAME}}"
 	mkdir -p "${ACCEL_ENGINE_STATE_DIR}"
+	# A run's scratch (database copies) lives with its instance on disk, never in a RAM-backed TMPDIR; its engine
+	# keeps to a memory budget (host_contract.md), split by a gate that starts runs side by side.
+	export TMPDIR="${ACCEL_ENGINE_STATE_DIR}/tmp"
+	mkdir -p "${TMPDIR}"
+	export ACCEL_ENGINE_MEMORY_MB="${ACCEL_ENGINE_MEMORY_MB:-$(engine_memory_budget 1)}"
+}
+
+# engine_memory_budget <runs>: MB each of <runs> engine runs started together may use (80% of what is free now).
+engine_memory_budget() {
+	awk -v runs="$1" '/^MemAvailable:/ { printf "%d\n", $2 / 1024 * 0.8 / (runs > 0 ? runs : 1) }' /proc/meminfo
 }
 
 engine_host() { "${ENGINE_HOST}" "$@"; }
@@ -148,6 +158,7 @@ build_stamp() {
 	local scope=()
 	[[ -z "${BENCHMARK_NAME:-}" ]] || scope=(--query-dir "accelerators/${BENCHMARK_NAME}/q${GATE_QUERY}")
 	PYTHONPATH="${GATE_ROOT}/pipeline/orchestrator" python3 -m accel_pipeline.layout stamp "${GATE_ROOT}" "${scope[@]}" \
+		--exclude "${ACCEL_ENGINE_STATE_DIR}" \
 		"$*" "${ACCEL_CMAKE_ARGS}" "${ACCEL_BUILD_DIR}" "${ACCEL_ENGINE_INSTANCE}" 2>/dev/null
 }
 

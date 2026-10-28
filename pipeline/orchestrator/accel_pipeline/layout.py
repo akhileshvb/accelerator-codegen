@@ -792,15 +792,18 @@ def is_relevant(path: str, query_dir: str) -> bool:
     return not (query_dir and _QUERY_DIR.match(path) and not path.startswith(query_dir.rstrip("/") + "/"))
 
 
-def code_stamp(repo_root: Path, *, query_dir: str = "", extra: Sequence[str] = ()) -> str:
-    """Digest of HEAD plus the relevant uncommitted files for `query_dir` (repo-relative), mixed with `extra`.
+def code_stamp(repo_root: Path, *, query_dir: str = "", extra: Sequence[str] = (), exclude: Sequence[Path] = ()) -> str:
+    """Digest of HEAD plus the relevant uncommitted files for `query_dir` (repo-relative), mixed with `extra`;
+    `exclude`: directories that are never source (an engine instance's state, its scratch), wherever they lie.
     "" when the tree is not a git checkout: no stamp matches anything."""
+    skipped = [str(d.resolve().relative_to(repo_root.resolve())) + "/" for d in exclude
+               if d.resolve().is_relative_to(repo_root.resolve())]
     try:
         digest = hashlib.sha256(git(repo_root, "rev-parse", "HEAD"))
     except (OSError, subprocess.CalledProcessError):
         return ""
     for path, signature in sorted((tree_snapshot(repo_root) or {}).items()):
-        if is_relevant(path, query_dir):
+        if is_relevant(path, query_dir) and not path.startswith(tuple(skipped)):
             digest.update(f"\0{path}\0{signature}".encode())
     for item in extra:
         digest.update(f"\0{item}".encode())
@@ -816,12 +819,16 @@ def main(argv: list[str]) -> int:
         print("usage: python3 -m accel_pipeline.layout stamp <repo_root> [--query-dir DIR] [EXTRA ...]\n"
               "       python3 -m accel_pipeline.layout build-owner <query dir> [harness target ...] < build log", file=sys.stderr)
         return 2
-    args, query_dir = argv[1:], ""
-    if "--query-dir" in args:
-        at = args.index("--query-dir")
-        query_dir = args[at + 1]
+    args, query_dir, exclude = argv[1:], "", []
+    while "--query-dir" in args or "--exclude" in args:
+        flag = "--query-dir" if "--query-dir" in args else "--exclude"
+        at = args.index(flag)
+        if flag == "--query-dir":
+            query_dir = args[at + 1]
+        else:
+            exclude.append(Path(args[at + 1]))
         del args[at : at + 2]
-    print(code_stamp(Path(args[0]), query_dir=query_dir, extra=args[1:]))
+    print(code_stamp(Path(args[0]), query_dir=query_dir, extra=args[1:], exclude=exclude))
     return 0
 
 

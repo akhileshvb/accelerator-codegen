@@ -2303,6 +2303,14 @@ def instance_env(repo_root: Path, engine: str, build_dir: Path) -> dict[str, str
     }
 
 
+def engine_memory_budget(runs: int = 1) -> int:
+    """MB each of `runs` engine runs started together may use (80% of what is free now), as aux_gate_common.sh."""
+    for line in Path("/proc/meminfo").read_text().splitlines():
+        if line.startswith("MemAvailable:"):
+            return int(int(line.split()[1]) / 1024 * 0.8 / max(1, runs))
+    return 0
+
+
 def cmake_args(engine: str) -> str:
     """How `host.sh build` configures the build dir: the root CMake's backend switch
     (cmake/Backend.cmake) and this engine's query sources. Same default as aux_gate_common.sh."""

@@ -23,6 +23,7 @@ rc_var="FAKE_RC_${verb}"
 case "${verb}" in
   info) echo "{\"engine\": \"fake\", \"embedded\": ${FAKE_EMBEDDED:-false}, \"verbs\": []${FAKE_MULTI_POINT:+, \"bench_multi_point\": true}}" ;;
   run)
+    echo "${1##*/} tmp=${TMPDIR:-} state=${ACCEL_ENGINE_STATE_DIR:-} mem=${ACCEL_ENGINE_MEMORY_MB:-}" >> "${FAKE_LOG%.log}.env.log"
     [[ -z "${FAKE_RUN_HANG:-}" ]] || sleep 30
     if [[ -n "${FAKE_TSAN_REPORT:-}" && "$1" == diff_bin ]]; then  # a TSAN report whose stack has FAKE_TSAN_REPORT as a frame
       path="${TSAN_OPTIONS##*log_path=}"
@@ -443,3 +444,11 @@ def test_every_gate_charges_a_failed_engine_step_to_its_owner(api_repo):
         _, _, _, gj, out = run_gate(api_repo, script, "0", ctx_extra=ctx, env_extra=env, kind=kind)
         data = json.loads(out.read_text()) if script != "run_host_bootstrap.sh" else result(gj, gate)
         assert data["status"] == "fail" and data["owner"] == owner, (script, env, data.get("reason"))
+
+
+def test_a_run_has_its_scratch_on_disk_with_its_instance_and_a_memory_budget(repo):
+    proc, *_ = run_gate(repo, "run_correctness.sh", "5")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    line = (repo / "host.env.log").read_text().splitlines()[0]
+    fields = dict(f.split("=", 1) for f in line.split()[1:])
+    assert fields["tmp"] == fields["state"] + "/tmp" and int(fields["mem"]) > 0

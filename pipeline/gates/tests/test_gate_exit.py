@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import pytest
 
+import subprocess
+
 from test_gate_plumbing import GATES, repo, result, run_gate  # noqa: F401  (repo is a fixture)
 from test_gate_threads import bench_calls
 
@@ -91,3 +93,12 @@ def test_the_exit_speaks_for_the_owner_the_routing_deals_with_first(repo, tmp_pa
     from accel_pipeline.layout import OWNER_PRECEDENCE
     owners = {exit_result["owner"], *exit_result["elsewhere"].values()}
     assert exit_result["owner"] == min(owners, key=OWNER_PRECEDENCE.index)
+
+
+def test_the_phases_run_side_by_side_share_the_memory_budget(repo, tmp_path):
+    proc, *_ = exit_run(repo, tmp_path, ACCEL_EXIT_PHASES="correctness multi_connection")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    budgets = {int(line.rsplit("mem=", 1)[1]) for line in (repo / "host.env.log").read_text().splitlines()}
+    single = int(subprocess.run(["bash", "-c", f"source {GATES}/aux_gate_common.sh; engine_memory_budget 1"],
+                                capture_output=True, text=True).stdout)
+    assert budgets and max(budgets) <= single * 0.6  # two phases: about half each

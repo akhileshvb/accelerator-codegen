@@ -89,6 +89,7 @@ from accel_pipeline.data import (
     host_info,
     host_script,
     inject_host_runtime_into_gate_env,
+    engine_memory_budget,
     instance_env,
     instance_tag,
     parse_aux_benchmark_output,
@@ -1491,11 +1492,14 @@ class HostRun:
         return str(self.workload.get("engine_name") or "")
 
     def env(self, extra: Mapping[str, str] = {}) -> dict[str, str]:
-        """This process's environment, the instance's variables of the contract, then `extra`."""
+        """This process's environment, the instance's variables of the contract, then `extra`: the run's scratch on
+        disk with its instance, and its engine's memory budget, as the gates give them."""
+        scratch = Path(self.instance["engine_state_dir"]) / "tmp"
         return {**os.environ, **instance_env(self.cfg.repo_root, self.engine, self.cfg.build_dir),
                 "ACCEL_ENGINE_INSTANCE": self.instance["engine_instance"],
                 "ACCEL_ENGINE_STATE_DIR": self.instance["engine_state_dir"],
-                "ACCEL_DATASET_DIR": self.instance["dataset"], **extra}
+                "ACCEL_DATASET_DIR": self.instance["dataset"], "TMPDIR": str(scratch),
+                "ACCEL_ENGINE_MEMORY_MB": os.environ.get("ACCEL_ENGINE_MEMORY_MB") or str(engine_memory_budget()), **extra}
 
     def build(self, *targets: str) -> str | None:
         """`up`, then `build` of `targets` (one build of a build dir at a time); None, or why not."""
@@ -1525,9 +1529,12 @@ class HostRun:
         the stderr ends with the line that reports it (pack.waited_seconds)."""
         from accel_pipeline.pack import Window, holder_name, measurement_window
 
+        env = {**(env or self.env())}
+        if Path(env["TMPDIR"]).parent.is_dir():  # the instance is up: its scratch lives in its state dir
+            Path(env["TMPDIR"]).mkdir(exist_ok=True)
         with (measurement_window(holder_name(), measured) if measured else contextlib.nullcontext(Window())) as window:
             argv = window.argv([str(host_script(self.cfg.repo_root, self.engine)), "run", *command])
-            with subprocess.Popen(argv, cwd=self.cfg.repo_root, env={**(env or self.env()), **window.env}, stdout=subprocess.PIPE,
+            with subprocess.Popen(argv, cwd=self.cfg.repo_root, env={**env, **window.env}, stdout=subprocess.PIPE,
                                   stderr=subprocess.PIPE, text=True, start_new_session=True) as proc:
                 try:
                     out, err = proc.communicate(timeout=timeout)

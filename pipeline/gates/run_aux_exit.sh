@@ -66,6 +66,7 @@ start() {
   RUNNING[${name}]=$!
 }
 
+export ACCEL_ENGINE_MEMORY_MB="$(engine_memory_budget "${#PHASES[@]}")"  # the phases run side by side
 for name in "${PHASES[@]}"; do
   [[ -n "${GATE[${name}]:-}" ]] || emit_result "${JSON}" aux_exit fail "unknown phase ${name}" ""
   start "${name}"

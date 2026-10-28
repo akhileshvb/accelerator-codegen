@@ -109,7 +109,7 @@ def stamped_repo(repo):
     (repo / "accelerators" / "tpch" / "q5" / "module.cpp").write_text("// v1\n")
     (repo / "accelerators" / "tpch" / "q6").mkdir()
     (repo / "accelerators" / "tpch" / "q6" / "module.cpp").write_text("// v1\n")
-    (repo / ".gitignore").write_text("ctx.json\nhost.log\ngate_out.*\nart/\nstate/\nbuild-release/\ncost_model.json\n")
+    (repo / ".gitignore").write_text("ctx.json\nhost.log\nhost.env.log\ngate_out.*\nart/\nstate/\nbuild-release/\ncost_model.json\n")
     git = ["git", "-c", "user.name=t", "-c", "user.email=t@t"]
     subprocess.run([*git[:1], "init", "-q"], cwd=repo, check=True)
     subprocess.run([*git, "add", "-A"], cwd=repo, check=True)
