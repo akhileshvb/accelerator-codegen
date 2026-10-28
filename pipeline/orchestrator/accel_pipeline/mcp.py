@@ -479,6 +479,9 @@ def register_core(tool, call) -> None:
     ) -> str:
         """Request a bounded structural re-analysis (max 2 per pipeline run).
 
+        bottleneck_type: exactly one of residual_read_path, scan_for_scan, wrong_partition_grain,
+        maintenance_infeasible, insufficient_state_expressiveness, other (describe it in evidence).
+
         Use only when a structural bottleneck is confirmed — e.g. residual O(n) state scan,
         scan-for-scan swap, wrong partition grain, or maintenance semantics that cannot be fixed
         by cost-model tuning or switching among viable alternates already in analysis.json.

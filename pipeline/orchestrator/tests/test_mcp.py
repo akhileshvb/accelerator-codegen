@@ -387,3 +387,13 @@ def test_escaped_tokens_and_errors():
                {"op": "add", "path": "design", "value": 1}):
         with pytest.raises(PatchError):
             apply(DOC, [op])
+
+
+def test_the_reanalysis_tool_names_every_bottleneck_type_it_accepts():
+    import re
+
+    from accel_pipeline.stages import BOTTLENECK_TYPES
+
+    text = (Path(__file__).parents[1] / "accel_pipeline" / "mcp.py").read_text()
+    named = re.search(r"bottleneck_type: exactly one of ([^(]+)\(", text).group(1)
+    assert {t.strip() for t in named.replace("\n", " ").split(",")} == set(BOTTLENECK_TYPES)
