@@ -164,7 +164,7 @@ pub proof fn lemma_old_call_fits(old_parts: Parts, old_edges: Edges, old_blocker
         scanned_edges(old_edges, db), scanned_edges(new_edges, db2),
         verus_prooflib::ordered::ordered_rows(entries), forall|position: int| 0 <= position < entries.len() ==> (#[trigger] entries[position]).0.1 == Seq::<u8>::empty(),
         0 <= count < entries.len(), envelope(db), envelope(db2),
-    ensures !crate::counts::out_of_range(
+    ensures !crate::counts::wide_out_of_range(
         sum(entries.take(count), |row: (KeyView, i128)|
             supplier_contribution(new_parts, new_edges, new_blockers, row.0.0, key)
                 - supplier_contribution(old_parts, old_edges, old_blockers, row.0.0, key))
@@ -185,7 +185,7 @@ pub proof fn lemma_new_call_fits(old_parts: Parts, old_edges: Edges, old_blocker
         scanned_edges(old_edges, db), scanned_edges(new_edges, db2),
         verus_prooflib::ordered::ordered_rows(entries), forall|position: int| 0 <= position < entries.len() ==> (#[trigger] entries[position]).0.1 == Seq::<u8>::empty(),
         0 <= count < entries.len(), envelope(db), envelope(db2),
-    ensures !crate::counts::out_of_range(
+    ensures !crate::counts::wide_out_of_range(
         sum(entries.take(count), |row: (KeyView, i128)|
             supplier_contribution(new_parts, new_edges, new_blockers, row.0.0, key)
                 - supplier_contribution(old_parts, old_edges, old_blockers, row.0.0, key))

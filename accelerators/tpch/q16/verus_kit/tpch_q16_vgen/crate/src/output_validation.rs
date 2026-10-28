@@ -16,10 +16,14 @@ use verus_prooflib::like_match_exec;
 
 verus! {
 
-pub type RuntimeRow = (Vec<u8>, Vec<u8>, i64, i64);
+pub type RuntimeRow = (Vec<u8>, Vec<u8>, i64, i128);
 
 pub open spec fn row_view(row: RuntimeRow) -> OutRow {
     OutRow { p_brand: row.0@, p_type: row.1@, p_size: row.2 as int, supplier_cnt: row.3 as int }
+}
+
+pub open spec fn rows_view(rows: Seq<RuntimeRow>) -> Seq<OutRow> {
+    rows.map_values(|row: RuntimeRow| row_view(row))
 }
 
 pub open spec fn row_key(row: OutRow) -> KeyView {
@@ -212,24 +216,24 @@ pub proof fn lemma_sorted_selected(cells: Seq<Arc<Cell>>, sorted: Seq<Arc<Cell>>
 pub fn materialize(vocab: &Vocab, cells: &Vec<Arc<Cell>>, Ghost(counts): Ghost<Counts>, Ghost(excluded): Ghost<Seq<u8>>, Ghost(pattern): Ghost<Seq<u8>>, Ghost(sizes): Ghost<Seq<i64>>) -> (result: Option<Vec<RuntimeRow>>)
     requires vocab.ok(), cells_source(cells@, counts), cells_selected(cells@, excluded, pattern, sizes),
     ensures result is None ==> !cells_sorted(cells@),
-        result matches Some(rows) ==> rows_source(out_view(rows@), counts)
-        && rows_selected(out_view(rows@), excluded, pattern, sizes) && rows_ordered(out_view(rows@))
+        result matches Some(rows) ==> rows_source(rows_view(rows@), counts)
+        && rows_selected(rows_view(rows@), excluded, pattern, sizes) && rows_ordered(rows_view(rows@))
         && rows.len() == cells.len()
-        && forall|index: int| 0 <= index < rows.len() ==> (#[trigger] out_view(rows@)[index]) == cell_row(*cells@[index]),
+        && forall|index: int| 0 <= index < rows.len() ==> (#[trigger] rows_view(rows@)[index]) == cell_row(*cells@[index]),
 {
     proof { lemma_ext_order(); }
     let mut rows = Vec::with_capacity(cells.len());
     let mut position = 0;
     while position < cells.len()
         invariant position <= cells.len(), rows.len() == position, vocab.ok(),
-            cells_source(cells@, counts), rows_source(out_view(rows@), counts),
-            cells_selected(cells@, excluded, pattern, sizes), rows_selected(out_view(rows@), excluded, pattern, sizes),
+            cells_source(cells@, counts), rows_source(rows_view(rows@), counts),
+            cells_selected(cells@, excluded, pattern, sizes), rows_selected(rows_view(rows@), excluded, pattern, sizes),
             strict_order(ext_order()),
             forall|index: int| 0 <= index < position ==>
-                (#[trigger] out_view(rows@)[index]) == cell_row(*cells@[index]),
+                (#[trigger] rows_view(rows@)[index]) == cell_row(*cells@[index]),
             forall|first: int, last: int| 0 <= first < last < position ==>
-                !same_group(#[trigger] out_view(rows@)[first], #[trigger] out_view(rows@)[last])
-                    && row_lt(out_view(rows@)[first], out_view(rows@)[last]),
+                !same_group(#[trigger] rows_view(rows@)[first], #[trigger] rows_view(rows@)[last])
+                    && row_lt(rows_view(rows@)[first], rows_view(rows@)[last]),
         decreases cells.len() - position,
     {
         let cell = &*cells[position];
@@ -245,18 +249,18 @@ pub fn materialize(vocab: &Vocab, cells: &Vec<Arc<Cell>>, Ghost(counts): Ghost<C
         rows.push((copy_bytes(brand_bytes(vocab, cell)), copy_bytes(kind_bytes(vocab, cell)), cell.size, cell.count));
         proof {
             assert forall|index: int| 0 <= index < rows.len() implies {
-                let row = #[trigger] out_view(rows@)[index];
+                let row = #[trigger] rows_view(rows@)[index];
                 row.supplier_cnt > 0 && row.supplier_cnt == count_at(counts, row_key(row))
             } by {
-                if index < position { assert(out_view(rows@)[index] == out_view(before@)[index]); }
-                else { assert(row_key(out_view(rows@)[index]) == cell.group.key()); }
+                if index < position { assert(rows_view(rows@)[index] == rows_view(before@)[index]); }
+                else { assert(row_key(rows_view(rows@)[index]) == cell.group.key()); }
             }
-            assert(out_view(rows@)[position as int] == cell_row(*cell));
+            assert(rows_view(rows@)[position as int] == cell_row(*cell));
             assert forall|index: int| 0 <= index < rows.len() implies {
-                let row = #[trigger] out_view(rows@)[index];
+                let row = #[trigger] rows_view(rows@)[index];
                 row.p_brand != excluded && !like_match(row.p_type, pattern) && seq_view_i64(sizes).contains(row.p_size)
             } by {
-                if index < position { assert(out_view(rows@)[index] == out_view(before@)[index]); }
+                if index < position { assert(rows_view(rows@)[index] == rows_view(before@)[index]); }
                 else {
                     assert(cell_selected(*cell, excluded, pattern, sizes));
                     let selected = choose|selected: int| 0 <= selected < sizes.len()
@@ -265,33 +269,33 @@ pub fn materialize(vocab: &Vocab, cells: &Vec<Arc<Cell>>, Ghost(counts): Ghost<C
                 }
             }
             assert forall|index: int| 0 <= index < rows.len() implies
-                (#[trigger] out_view(rows@)[index]) == cell_row(*cells@[index]) by {
-                if index < position { assert(out_view(rows@)[index] == out_view(before@)[index]); }
+                (#[trigger] rows_view(rows@)[index]) == cell_row(*cells@[index]) by {
+                if index < position { assert(rows_view(rows@)[index] == rows_view(before@)[index]); }
             }
-            let current = out_view(rows@)[position as int];
+            let current = rows_view(rows@)[position as int];
             assert forall|earlier: int| 0 <= earlier < position implies
-                !same_group(#[trigger] out_view(rows@)[earlier], current)
-                    && row_lt(out_view(rows@)[earlier], current) by {
+                !same_group(#[trigger] rows_view(rows@)[earlier], current)
+                    && row_lt(rows_view(rows@)[earlier], current) by {
                 if earlier < position as int - 1 {
-                    let middle = out_view(rows@)[position as int - 1];
-                    assert(out_view(rows@)[earlier] == out_view(before@)[earlier]);
-                    assert(middle == out_view(before@)[position as int - 1]);
-                    lemma_row_lt_ext(out_view(rows@)[earlier], middle);
+                    let middle = rows_view(rows@)[position as int - 1];
+                    assert(rows_view(rows@)[earlier] == rows_view(before@)[earlier]);
+                    assert(middle == rows_view(before@)[position as int - 1]);
+                    lemma_row_lt_ext(rows_view(rows@)[earlier], middle);
                     lemma_row_lt_ext(middle, current);
-                    lemma_row_lt_ext(out_view(rows@)[earlier], current);
+                    lemma_row_lt_ext(rows_view(rows@)[earlier], current);
                 }
-                if same_group(out_view(rows@)[earlier], current) {
-                    assert(out_view(rows@)[earlier].supplier_cnt == current.supplier_cnt);
+                if same_group(rows_view(rows@)[earlier], current) {
+                    assert(rows_view(rows@)[earlier].supplier_cnt == current.supplier_cnt);
                     lemma_bytes_lt_irrefl(current.p_brand);
                     lemma_bytes_lt_irrefl(current.p_type);
                 }
             }
             assert forall|first: int, last: int| 0 <= first < last < rows.len() implies
-                !same_group(#[trigger] out_view(rows@)[first], #[trigger] out_view(rows@)[last])
-                    && row_lt(out_view(rows@)[first], out_view(rows@)[last]) by {
+                !same_group(#[trigger] rows_view(rows@)[first], #[trigger] rows_view(rows@)[last])
+                    && row_lt(rows_view(rows@)[first], rows_view(rows@)[last]) by {
                 if last < position {
-                    assert(out_view(rows@)[first] == out_view(before@)[first]);
-                    assert(out_view(rows@)[last] == out_view(before@)[last]);
+                    assert(rows_view(rows@)[first] == rows_view(before@)[first]);
+                    assert(rows_view(rows@)[last] == rows_view(before@)[last]);
                 }
             }
         }
@@ -299,10 +303,10 @@ pub fn materialize(vocab: &Vocab, cells: &Vec<Arc<Cell>>, Ghost(counts): Ghost<C
     }
     proof {
         assert forall|first: int, last: int| 0 <= first < last < rows.len() implies
-            !same_group(#[trigger] out_view(rows@)[first], #[trigger] out_view(rows@)[last])
-                && !row_lt(out_view(rows@)[last], out_view(rows@)[first]) by {
-            lemma_row_lt_ext(out_view(rows@)[first], out_view(rows@)[last]);
-            lemma_row_lt_ext(out_view(rows@)[last], out_view(rows@)[first]);
+            !same_group(#[trigger] rows_view(rows@)[first], #[trigger] rows_view(rows@)[last])
+                && !row_lt(rows_view(rows@)[last], rows_view(rows@)[first]) by {
+            lemma_row_lt_ext(rows_view(rows@)[first], rows_view(rows@)[last]);
+            lemma_row_lt_ext(rows_view(rows@)[last], rows_view(rows@)[first]);
         }
     }
     Some(rows)
@@ -358,4 +362,30 @@ pub proof fn lemma_output_model(counts: Counts, ranks: Ranks, rows: Seq<OutRow>,
     }
 }
 
+
+/// The rows as the result type; None when a count does not fit it.
+pub fn narrow_rows(rows: &Vec<RuntimeRow>) -> (out: Option<Vec<(Vec<u8>, Vec<u8>, i64, i64)>>)
+    ensures out matches Some(narrowed) ==> out_view(narrowed@) == rows_view(rows@),
+        out is None ==> exists|index: int| 0 <= index < rows.len() && !(i64::MIN <= (#[trigger] rows@[index]).3 <= i64::MAX),
+{
+    let mut narrowed: Vec<(Vec<u8>, Vec<u8>, i64, i64)> = Vec::with_capacity(rows.len());
+    let mut position = 0;
+    while position < rows.len()
+        invariant position <= rows.len(), narrowed.len() == position,
+            forall|index: int| 0 <= index < position ==> (#[trigger] out_view(narrowed@)[index]) == rows_view(rows@)[index],
+        decreases rows.len() - position,
+    {
+        let row = &rows[position];
+        if row.3 < i64::MIN as i128 || row.3 > i64::MAX as i128 { return None; }
+        let before = Ghost(narrowed@);
+        narrowed.push((copy_bytes(row.0.as_slice()), copy_bytes(row.1.as_slice()), row.2, row.3 as i64));
+        proof {
+            assert forall|index: int| 0 <= index < position + 1 implies (#[trigger] out_view(narrowed@)[index]) == rows_view(rows@)[index] by {
+                if index < position { assert(out_view(narrowed@)[index] == out_view(before@)[index]); }
+            }
+        }
+        position += 1;
+    }
+    Some(narrowed)
+}
 }

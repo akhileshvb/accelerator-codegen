@@ -788,20 +788,18 @@ pub fn apply(
             value.slot = Some(bucket.len);
             if !bucket.push(key as i64) {
                 proof {
-                    if envelope(s.db()) && envelope(db2) {
-                        assert forall|member: i64| original_view.contains(member) implies -2147483648 <= member <= 2147483647 by {
+                    if envelope(db2) {
+                        assert forall|member: i64| original_view.contains(member) implies sum(db2.lineitem, nw(member as int)) > 0 by {
                             assert(bucket_member(before_buckets, value_quantity, member));
                             if order_keys@.take(index as int).contains(member as i128) {
                                 assert(eligible_order(orders.at(member as i128), value_quantity));
-                                assert(line_count(orders.at(member as i128)) == sum(db2.lineitem, nw(member as int)));
-                                lemma_line_key_range(db2, member as int);
                             } else {
                                 assert(s.bucket_has(value_quantity, member));
-                                assert(s.n(member as int) > 0);
-                                lemma_line_key_range(s.db(), member as int);
+                                assert(eligible_order(orders.at(member as i128), value_quantity));
                             }
+                            assert(line_count(orders.at(member as i128)) == sum(db2.lineitem, nw(member as int)));
                         }
-                        lemma_distinct_keys_few(original_view);
+                        lemma_distinct_keys_few(db2, original_view);
                         assert(original_view.len() == usize::MAX);
                         assert(false);
                     }

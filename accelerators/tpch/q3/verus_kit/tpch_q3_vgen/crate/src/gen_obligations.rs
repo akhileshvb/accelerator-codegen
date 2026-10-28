@@ -151,7 +151,7 @@ pub open spec fn scan_shipments_ok(db: Db, rows: Seq<ShipmentInput>) -> bool {
 }
 
 /// rescan orders_by_key: SELECT o_orderkey, o_custkey, o_orderdate, o_shippriority FROM orders
-///   restricted to the rows whose o_orderkey is one of `keys`.
+///   restricted to the rows whose o_orderkey is one of `keys` (a NULL key matches none).
 pub open spec fn rescan_orders_by_key_ok(db: Db, keys: Seq<i64>, rows: Seq<OrderInput>) -> bool {
     forall|f: spec_fn(OrdersRow) -> int| #[trigger] sum(order_input_seq_view(rows), f) == sum(
         db.orders,
@@ -160,7 +160,7 @@ pub open spec fn rescan_orders_by_key_ok(db: Db, keys: Seq<i64>, rows: Seq<Order
 }
 
 /// rescan shipments_by_key: SELECT l_orderkey, l_shipdate, l_extendedprice, l_discount FROM lineitem
-///   restricted to the rows whose l_orderkey is one of `keys`.
+///   restricted to the rows whose l_orderkey is one of `keys` (a NULL key matches none).
 pub open spec fn rescan_shipments_by_key_ok(db: Db, keys: Seq<i64>, rows: Seq<ShipmentInput>) -> bool {
     forall|f: spec_fn(LineitemRow) -> int| #[trigger] sum(shipment_input_seq_view(rows), f) == sum(
         db.lineitem,
@@ -244,12 +244,12 @@ pub open spec fn max_history() -> int {
 
 /// Each value of customer lies in the range of its column's SQL type.
 pub open spec fn customer_in_type(r: CustomerRow) -> bool {
-    -2147483648 <= r.c_custkey <= 2147483647
+    -9223372036854775808 <= r.c_custkey <= 9223372036854775807
 }
 
 /// Each value of lineitem lies in the range of its column's SQL type.
 pub open spec fn lineitem_in_type(r: LineitemRow) -> bool {
-    -2147483648 <= r.l_orderkey <= 2147483647
+    -9223372036854775808 <= r.l_orderkey <= 9223372036854775807
     && -999999999999999 <= r.l_extendedprice <= 999999999999999
     && -999999999999999 <= r.l_discount <= 999999999999999
     && -2147483648 <= r.l_shipdate <= 2147483647
@@ -257,8 +257,8 @@ pub open spec fn lineitem_in_type(r: LineitemRow) -> bool {
 
 /// Each value of orders lies in the range of its column's SQL type.
 pub open spec fn orders_in_type(r: OrdersRow) -> bool {
-    -2147483648 <= r.o_orderkey <= 2147483647
-    && -2147483648 <= r.o_custkey <= 2147483647
+    -9223372036854775808 <= r.o_orderkey <= 9223372036854775807
+    && -9223372036854775808 <= r.o_custkey <= 9223372036854775807
     && -2147483648 <= r.o_orderdate <= 2147483647
     && -2147483648 <= r.o_shippriority <= 2147483647
 }

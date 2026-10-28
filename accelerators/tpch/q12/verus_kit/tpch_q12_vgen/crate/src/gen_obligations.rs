@@ -158,7 +158,7 @@ pub open spec fn scan_qualifying_lines_ok(db: Db, rows: Seq<QualifyingLineInput>
 }
 
 /// rescan high_orders_for_keys: SELECT o_orderkey FROM orders WHERE o_orderpriority = '1-URGENT' OR o_orderpriority = '2-HIGH'
-///   restricted to the rows whose o_orderkey is one of `keys`.
+///   restricted to the rows whose o_orderkey is one of `keys` (a NULL key matches none).
 pub open spec fn rescan_high_orders_for_keys_ok(db: Db, keys: Seq<i64>, rows: Seq<OrderKeyInput>) -> bool {
     forall|f: spec_fn(int) -> int| #[trigger] sum(order_key_input_seq_view(rows), f) == sum(
         db.orders,
@@ -167,7 +167,7 @@ pub open spec fn rescan_high_orders_for_keys_ok(db: Db, keys: Seq<i64>, rows: Se
 }
 
 /// rescan low_orders_for_keys: SELECT o_orderkey FROM orders WHERE o_orderpriority <> '1-URGENT' AND o_orderpriority <> '2-HIGH'
-///   restricted to the rows whose o_orderkey is one of `keys`.
+///   restricted to the rows whose o_orderkey is one of `keys` (a NULL key matches none).
 pub open spec fn rescan_low_orders_for_keys_ok(db: Db, keys: Seq<i64>, rows: Seq<OrderKeyInput>) -> bool {
     forall|f: spec_fn(int) -> int| #[trigger] sum(order_key_input_seq_view(rows), f) == sum(
         db.orders,
@@ -176,7 +176,7 @@ pub open spec fn rescan_low_orders_for_keys_ok(db: Db, keys: Seq<i64>, rows: Seq
 }
 
 /// rescan qualifying_lines_for_keys: SELECT l_orderkey, l_receiptdate, l_shipmode FROM lineitem WHERE l_commitdate < l_receiptdate AND l_shipdate < l_commitdate
-///   restricted to the rows whose l_orderkey is one of `keys`.
+///   restricted to the rows whose l_orderkey is one of `keys` (a NULL key matches none).
 pub open spec fn rescan_qualifying_lines_for_keys_ok(db: Db, keys: Seq<i64>, rows: Seq<QualifyingLineInput>) -> bool {
     forall|f: spec_fn((int, int, Seq<u8>)) -> int| #[trigger] sum(qualifying_line_input_seq_view(rows), f) == sum(
         db.lineitem,
@@ -242,7 +242,7 @@ pub open spec fn max_history() -> int {
 
 /// Each value of lineitem lies in the range of its column's SQL type.
 pub open spec fn lineitem_in_type(r: LineitemRow) -> bool {
-    -2147483648 <= r.l_orderkey <= 2147483647
+    -9223372036854775808 <= r.l_orderkey <= 9223372036854775807
     && -2147483648 <= r.l_shipdate <= 2147483647
     && -2147483648 <= r.l_commitdate <= 2147483647
     && -2147483648 <= r.l_receiptdate <= 2147483647
@@ -250,7 +250,7 @@ pub open spec fn lineitem_in_type(r: LineitemRow) -> bool {
 
 /// Each value of orders lies in the range of its column's SQL type.
 pub open spec fn orders_in_type(r: OrdersRow) -> bool {
-    -2147483648 <= r.o_orderkey <= 2147483647
+    -9223372036854775808 <= r.o_orderkey <= 9223372036854775807
 }
 
 /// The databases the DBMS can represent: each table within its row-id space, each

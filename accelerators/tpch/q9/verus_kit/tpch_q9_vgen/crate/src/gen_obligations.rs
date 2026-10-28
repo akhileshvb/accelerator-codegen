@@ -266,7 +266,7 @@ pub open spec fn scan_all_lines_ok(db: Db, rows: Seq<LineIn>) -> bool {
 }
 
 /// rescan lines_for_orders: SELECT l_orderkey, l_partkey, l_suppkey, l_quantity, l_extendedprice, l_discount FROM lineitem
-///   restricted to the rows whose l_orderkey is one of `keys`.
+///   restricted to the rows whose l_orderkey is one of `keys` (a NULL key matches none).
 pub open spec fn rescan_lines_for_orders_ok(db: Db, keys: Seq<i64>, rows: Seq<LineIn>) -> bool {
     forall|f: spec_fn(LineitemRow) -> int| #[trigger] sum(line_in_seq_view(rows), f) == sum(
         db.lineitem,
@@ -275,7 +275,7 @@ pub open spec fn rescan_lines_for_orders_ok(db: Db, keys: Seq<i64>, rows: Seq<Li
 }
 
 /// rescan lines_for_parts: SELECT l_orderkey, l_partkey, l_suppkey, l_quantity, l_extendedprice, l_discount FROM lineitem
-///   restricted to the rows whose l_partkey is one of `keys`.
+///   restricted to the rows whose l_partkey is one of `keys` (a NULL key matches none).
 pub open spec fn rescan_lines_for_parts_ok(db: Db, keys: Seq<i64>, rows: Seq<LineIn>) -> bool {
     forall|f: spec_fn(LineitemRow) -> int| #[trigger] sum(line_in_seq_view(rows), f) == sum(
         db.lineitem,
@@ -284,7 +284,7 @@ pub open spec fn rescan_lines_for_parts_ok(db: Db, keys: Seq<i64>, rows: Seq<Lin
 }
 
 /// rescan lines_for_suppliers: SELECT l_orderkey, l_partkey, l_suppkey, l_quantity, l_extendedprice, l_discount FROM lineitem
-///   restricted to the rows whose l_suppkey is one of `keys`.
+///   restricted to the rows whose l_suppkey is one of `keys` (a NULL key matches none).
 pub open spec fn rescan_lines_for_suppliers_ok(db: Db, keys: Seq<i64>, rows: Seq<LineIn>) -> bool {
     forall|f: spec_fn(LineitemRow) -> int| #[trigger] sum(line_in_seq_view(rows), f) == sum(
         db.lineitem,
@@ -293,7 +293,7 @@ pub open spec fn rescan_lines_for_suppliers_ok(db: Db, keys: Seq<i64>, rows: Seq
 }
 
 /// rescan partsupp_for_parts: SELECT ps_partkey, ps_suppkey, ps_supplycost FROM partsupp
-///   restricted to the rows whose ps_partkey is one of `keys`.
+///   restricted to the rows whose ps_partkey is one of `keys` (a NULL key matches none).
 pub open spec fn rescan_partsupp_for_parts_ok(db: Db, keys: Seq<i64>, rows: Seq<PartsuppIn>) -> bool {
     forall|f: spec_fn(PartsuppRow) -> int| #[trigger] sum(partsupp_in_seq_view(rows), f) == sum(
         db.partsupp,
@@ -302,7 +302,7 @@ pub open spec fn rescan_partsupp_for_parts_ok(db: Db, keys: Seq<i64>, rows: Seq<
 }
 
 /// rescan orders_for_keys: SELECT o_orderkey, o_orderdate FROM orders
-///   restricted to the rows whose o_orderkey is one of `keys`.
+///   restricted to the rows whose o_orderkey is one of `keys` (a NULL key matches none).
 pub open spec fn rescan_orders_for_keys_ok(db: Db, keys: Seq<i64>, rows: Seq<OrderIn>) -> bool {
     forall|f: spec_fn(OrdersRow) -> int| #[trigger] sum(order_in_seq_view(rows), f) == sum(
         db.orders,
@@ -414,9 +414,9 @@ pub open spec fn max_history() -> int {
 
 /// Each value of lineitem lies in the range of its column's SQL type.
 pub open spec fn lineitem_in_type(r: LineitemRow) -> bool {
-    -2147483648 <= r.l_orderkey <= 2147483647
-    && -2147483648 <= r.l_partkey <= 2147483647
-    && -2147483648 <= r.l_suppkey <= 2147483647
+    -9223372036854775808 <= r.l_orderkey <= 9223372036854775807
+    && -9223372036854775808 <= r.l_partkey <= 9223372036854775807
+    && -9223372036854775808 <= r.l_suppkey <= 9223372036854775807
     && -999999999999999 <= r.l_quantity <= 999999999999999
     && -999999999999999 <= r.l_extendedprice <= 999999999999999
     && -999999999999999 <= r.l_discount <= 999999999999999
@@ -429,25 +429,25 @@ pub open spec fn nation_in_type(r: NationRow) -> bool {
 
 /// Each value of orders lies in the range of its column's SQL type.
 pub open spec fn orders_in_type(r: OrdersRow) -> bool {
-    -2147483648 <= r.o_orderkey <= 2147483647
+    -9223372036854775808 <= r.o_orderkey <= 9223372036854775807
     && -2147483648 <= r.o_orderdate <= 2147483647
 }
 
 /// Each value of part lies in the range of its column's SQL type.
 pub open spec fn part_in_type(r: PartRow) -> bool {
-    -2147483648 <= r.p_partkey <= 2147483647
+    -9223372036854775808 <= r.p_partkey <= 9223372036854775807
 }
 
 /// Each value of partsupp lies in the range of its column's SQL type.
 pub open spec fn partsupp_in_type(r: PartsuppRow) -> bool {
-    -2147483648 <= r.ps_partkey <= 2147483647
-    && -2147483648 <= r.ps_suppkey <= 2147483647
+    -9223372036854775808 <= r.ps_partkey <= 9223372036854775807
+    && -9223372036854775808 <= r.ps_suppkey <= 9223372036854775807
     && -999999999999999 <= r.ps_supplycost <= 999999999999999
 }
 
 /// Each value of supplier lies in the range of its column's SQL type.
 pub open spec fn supplier_in_type(r: SupplierRow) -> bool {
-    -2147483648 <= r.s_suppkey <= 2147483647
+    -9223372036854775808 <= r.s_suppkey <= 9223372036854775807
     && -2147483648 <= r.s_nationkey <= 2147483647
 }
 

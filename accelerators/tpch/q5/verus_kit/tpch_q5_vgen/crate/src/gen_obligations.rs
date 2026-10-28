@@ -304,7 +304,7 @@ pub open spec fn scan_lines_ok(db: Db, rows: Seq<LineitemInput>) -> bool {
 }
 
 /// rescan lines_for_orders: SELECT l_orderkey, l_suppkey, l_extendedprice, l_discount FROM lineitem
-///   restricted to the rows whose l_orderkey is one of `keys`.
+///   restricted to the rows whose l_orderkey is one of `keys` (a NULL key matches none).
 pub open spec fn rescan_lines_for_orders_ok(db: Db, keys: Seq<i64>, rows: Seq<LineitemInput>) -> bool {
     forall|f: spec_fn(LineitemRow) -> int| #[trigger] sum(lineitem_input_seq_view(rows), f) == sum(
         db.lineitem,
@@ -313,7 +313,7 @@ pub open spec fn rescan_lines_for_orders_ok(db: Db, keys: Seq<i64>, rows: Seq<Li
 }
 
 /// rescan lines_for_suppliers: SELECT l_orderkey, l_suppkey, l_extendedprice, l_discount FROM lineitem
-///   restricted to the rows whose l_suppkey is one of `keys`.
+///   restricted to the rows whose l_suppkey is one of `keys` (a NULL key matches none).
 pub open spec fn rescan_lines_for_suppliers_ok(db: Db, keys: Seq<i64>, rows: Seq<LineitemInput>) -> bool {
     forall|f: spec_fn(LineitemRow) -> int| #[trigger] sum(lineitem_input_seq_view(rows), f) == sum(
         db.lineitem,
@@ -425,14 +425,14 @@ pub open spec fn max_history() -> int {
 
 /// Each value of customer lies in the range of its column's SQL type.
 pub open spec fn customer_in_type(r: CustomerRow) -> bool {
-    -2147483648 <= r.c_custkey <= 2147483647
+    -9223372036854775808 <= r.c_custkey <= 9223372036854775807
     && -2147483648 <= r.c_nationkey <= 2147483647
 }
 
 /// Each value of lineitem lies in the range of its column's SQL type.
 pub open spec fn lineitem_in_type(r: LineitemRow) -> bool {
-    -2147483648 <= r.l_orderkey <= 2147483647
-    && -2147483648 <= r.l_suppkey <= 2147483647
+    -9223372036854775808 <= r.l_orderkey <= 9223372036854775807
+    && -9223372036854775808 <= r.l_suppkey <= 9223372036854775807
     && -999999999999999 <= r.l_extendedprice <= 999999999999999
     && -999999999999999 <= r.l_discount <= 999999999999999
 }
@@ -445,8 +445,8 @@ pub open spec fn nation_in_type(r: NationRow) -> bool {
 
 /// Each value of orders lies in the range of its column's SQL type.
 pub open spec fn orders_in_type(r: OrdersRow) -> bool {
-    -2147483648 <= r.o_orderkey <= 2147483647
-    && -2147483648 <= r.o_custkey <= 2147483647
+    -9223372036854775808 <= r.o_orderkey <= 9223372036854775807
+    && -9223372036854775808 <= r.o_custkey <= 9223372036854775807
     && -2147483648 <= r.o_orderdate <= 2147483647
 }
 
@@ -457,7 +457,7 @@ pub open spec fn region_in_type(r: RegionRow) -> bool {
 
 /// Each value of supplier lies in the range of its column's SQL type.
 pub open spec fn supplier_in_type(r: SupplierRow) -> bool {
-    -2147483648 <= r.s_suppkey <= 2147483647
+    -9223372036854775808 <= r.s_suppkey <= 9223372036854775807
     && -2147483648 <= r.s_nationkey <= 2147483647
 }
 

@@ -273,7 +273,7 @@ pub fn build(
                 assert(joined_count(parts, *edges, key) == sum(edges.entries(), |row: (verus_prooflib::ordered::KeyView, i128)| row.1 as int * part_at(parts, row.0.0, key)));
             }
             if envelope(db) {
-                assert forall|key: verus_prooflib::ordered::KeyView| !out_of_range(count_at(counts, key) + contribution(groups, key, 1)) by {
+                assert forall|key: verus_prooflib::ordered::KeyView| !wide_out_of_range(count_at(counts, key) + contribution(groups, key, 1)) by {
                     lemma_edges_prefix_bound(parts, edge_map, blocked, db, processed@, key);
                     lemma_suppliers_in_type(db);
                 }
@@ -418,7 +418,7 @@ pub fn execute(
 ) -> (r: Option<Vec<(Vec<u8>, Vec<u8>, i64, i64)>>)
     ensures
         r matches Some(out) ==> query_result(s.db(), params(p1@, p2@, p3 as int, p4 as int, p5 as int, p6 as int, p7 as int, p8 as int, p9 as int, p10 as int), out_view(out@)),
-        r is Some,
+        answer_fits(s.db(), params(p1@, p2@, p3 as int, p4 as int, p5 as int, p6 as int, p7 as int, p8 as int, p9 as int, p10 as int)) ==> r is Some,
 {
     proof { use_type_invariant(s); }
     let sizes = [p3, p4, p5, p6, p7, p8, p9, p10];
@@ -437,11 +437,23 @@ pub fn execute(
         },
     };
     proof {
-        crate::output_validation::lemma_output_model(s.counts, s.ranks, out_view(out@), cells@, p1@, p2@, sizes@);
+        crate::output_validation::lemma_output_model(s.counts, s.ranks, crate::output_validation::rows_view(out@), cells@, p1@, p2@, sizes@);
         crate::semantic_proofs::lemma_execute_result(s.db(), s.counts,
-            params(p1@, p2@, p3 as int, p4 as int, p5 as int, p6 as int, p7 as int, p8 as int, p9 as int, p10 as int), out_view(out@));
+            params(p1@, p2@, p3 as int, p4 as int, p5 as int, p6 as int, p7 as int, p8 as int, p9 as int, p10 as int), crate::output_validation::rows_view(out@));
     }
-    Some(out)
+    match crate::output_validation::narrow_rows(&out) {
+        Some(narrowed) => Some(narrowed),
+        None => {
+            proof {
+                let given = params(p1@, p2@, p3 as int, p4 as int, p5 as int, p6 as int, p7 as int, p8 as int, p9 as int, p10 as int);
+                if answer_fits(s.db(), given) {
+                    let index = choose|index: int| 0 <= index < out.len() && !(i64::MIN <= (#[trigger] out@[index]).3 <= i64::MAX);
+                    assert(out_fits(crate::output_validation::rows_view(out@)[index]));
+                }
+            }
+            None
+        },
+    }
 }
 
 pub fn rescan_edges_for_parts_keys(

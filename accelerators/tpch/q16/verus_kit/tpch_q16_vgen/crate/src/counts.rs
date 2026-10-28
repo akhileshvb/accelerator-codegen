@@ -162,10 +162,6 @@ pub fn share_integers(source: &Index<i128>) -> (out: Index<i128>)
     out
 }
 
-pub open spec fn out_of_range(value: int) -> bool {
-    value > i64::MAX as int || value < i64::MIN as int
-}
-
 pub open spec fn wide_out_of_range(value: int) -> bool {
     value > i128::MAX as int || value < i128::MIN as int
 }
@@ -179,13 +175,11 @@ pub fn add_wide(left: i128, right: i128) -> (out: Option<i128>)
     else { Some(left + right) }
 }
 
-pub fn add(left: i64, right: i64) -> (out: Option<i64>)
+pub fn add(left: i128, right: i128) -> (out: Option<i128>)
     ensures out matches Some(value) ==> value as int == left as int + right as int,
-        out is None ==> out_of_range(left as int + right as int),
+        out is None ==> wide_out_of_range(left as int + right as int),
 {
-    let value = left as i128 + right as i128;
-    if value < i64::MIN as i128 || value > i64::MAX as i128 { None }
-    else { Some(value as i64) }
+    add_wide(left, right)
 }
 
 pub fn bump(map: &mut Index<i128>, key: Key, change: i128) -> (ok: bool)
@@ -220,14 +214,17 @@ pub fn bump(map: &mut Index<i128>, key: Key, change: i128) -> (ok: bool)
     true
 }
 
-pub fn bump_group(map: &mut Counts, group: Arc<Group>, change: i64) -> (ok: bool)
+/// Most distinct suppliers a state can count; keeps `-count` a 64-bit rank key.
+pub const MAX_COUNT: i128 = 9223372036854775808;
+
+pub fn bump_group(map: &mut Counts, group: Arc<Group>, change: i128) -> (ok: bool)
     requires group.valid(), cell_keys_valid(*map),
     ensures cell_keys_valid(*final(map)),
         positive_counts(*old(map)) && change >= 0 ==> positive_counts(*final(map)),
         ok ==> forall|query: verus_prooflib::ordered::KeyView|
         #[trigger] count_at(*final(map), query) == count_at(*old(map), query)
             + if query == group.key() { change as int } else { 0 },
-        !ok ==> out_of_range(count_at(*old(map), group.key()) + change as int),
+        !ok ==> wide_out_of_range(count_at(*old(map), group.key()) + change as int),
 {
     let key = key_for(&*group);
     let before = match map.get(&key) { Some(value) => value.count, None => 0 };
@@ -744,15 +741,16 @@ pub fn load_brand(brands: &Index<BrandRanks>, counts: &Counts, size: i64, brand:
 }
 
 #[verifier::rlimit(20)]
-pub fn update_total(counts: &mut Counts, ranks: &mut Ranks, group: Arc<Group>, change: i64) -> (ok: bool)
+pub fn update_total(counts: &mut Counts, ranks: &mut Ranks, group: Arc<Group>, change: i128) -> (ok: bool)
     requires group.valid(), cell_keys_valid(*counts),
     ensures cell_keys_valid(*final(counts)),
         positive_counts(*old(counts)) ==> positive_counts(*final(counts)),
         ok && ranks_valid(*old(ranks), *old(counts)) ==> ranks_valid(*final(ranks), *final(counts)),
         ok ==> forall|key: verus_prooflib::ordered::KeyView| #[trigger] count_at(*final(counts), key)
             == count_at(*old(counts), key) + if key == group.key() { change as int } else { 0int },
-        !ok ==> out_of_range(count_at(*old(counts), group.key()) + change as int)
-            || count_at(*old(counts), group.key()) + (change as int) < 0,
+        !ok ==> count_at(*old(counts), group.key()) > MAX_COUNT as int
+            || count_at(*old(counts), group.key()) + (change as int) < 0
+            || count_at(*old(counts), group.key()) + (change as int) > MAX_COUNT as int,
 {
     hide(stream_valid);
     hide(brands_valid);
@@ -764,8 +762,9 @@ pub fn update_total(counts: &mut Counts, ranks: &mut Ranks, group: Arc<Group>, c
     let preserve = Ghost(ranks_valid(*ranks, *counts));
     let group_key = key_for(&*group);
     let before = match counts.get(&group_key) { Some(cell) => cell.count, None => 0 };
+    if before > MAX_COUNT { return false; }
     let after = match add(before, change) { Some(value) => value, None => return false };
-    if after < 0 { return false; }
+    if after < 0 || after > MAX_COUNT { return false; }
     let size_key = Key::number(group.size);
     let brand_key = Key::composite(0, copy_bytes(group.brand.as_slice()));
     let (mut brands, mut size_rows) = load_size(ranks, counts, &size_key, preserve);
@@ -787,8 +786,8 @@ pub fn update_total(counts: &mut Counts, ranks: &mut Ranks, group: Arc<Group>, c
     let previous_stream = Ghost(stream);
     let previous_brands = Ghost(brands);
     if before > 0 {
-        stream.remove(&Key::composite(-before, copy_bytes(group.kind.as_slice())));
-        size_rows.remove(&group.order.with_number(-before));
+        stream.remove(&Key::composite((-before) as i64, copy_bytes(group.kind.as_slice())));
+        size_rows.remove(&group.order.with_number((-before) as i64));
         proof {
             if preserve@ {
                 lemma_rank_remove(&previous_stream@, &stream, group_stream_key(&*target@, before as int, Some((*target@.brand)@)));
@@ -799,8 +798,8 @@ pub fn update_total(counts: &mut Counts, ranks: &mut Ranks, group: Arc<Group>, c
     let unranked_size_rows = Ghost(size_rows);
     let unranked_stream = Ghost(stream);
     if after > 0 {
-        let rank = group.order.with_number(-after);
-        let kind = Key::composite(-after, copy_bytes(group.kind.as_slice()));
+        let rank = group.order.with_number((-after) as i64);
+        let kind = Key::composite((-after) as i64, copy_bytes(group.kind.as_slice()));
         let cell = Arc::new(Cell::new(group, after));
         stream.put(kind, cell.clone());
         size_rows.put(rank, cell.clone());
@@ -853,7 +852,7 @@ pub open spec fn contribution(groups: Counts, key: KeyView, sign: i64) -> int {
 
 pub fn collect_contribution(counts: &mut Counts, groups: &Counts, sign: i64, Ghost(fits): Ghost<bool>) -> (ok: bool)
     requires cell_keys_valid(*groups), cell_keys_valid(*old(counts)),
-        fits ==> forall|key: KeyView| !out_of_range(count_at(*old(counts), key) + contribution(*groups, key, sign)),
+        fits ==> forall|key: KeyView| !wide_out_of_range(count_at(*old(counts), key) + contribution(*groups, key, sign)),
     ensures cell_keys_valid(*final(counts)),
         !ok ==> !fits,
         ok ==> (positive_counts(*old(counts)) && sign >= 0 ==> positive_counts(*final(counts))),
@@ -866,7 +865,7 @@ pub fn collect_contribution(counts: &mut Counts, groups: &Counts, sign: i64, Gho
     let mut processed: Ghost<int> = Ghost(0);
     loop
         invariant cell_keys_valid(*groups), cell_keys_valid(*counts), initial@ == *old(counts),
-            fits ==> forall|key: KeyView| !out_of_range(count_at(initial@, key) + contribution(*groups, key, sign)),
+            fits ==> forall|key: KeyView| !wide_out_of_range(count_at(initial@, key) + contribution(*groups, key, sign)),
             positive_counts(initial@) && sign >= 0 ==> positive_counts(*counts),
             0 <= processed@ <= groups.entries().len(), cursor.remaining() == groups.entries().skip(processed@),
             forall|position: int| 0 <= position < groups.entries().len() ==>
@@ -916,7 +915,7 @@ pub fn collect_contribution(counts: &mut Counts, groups: &Counts, sign: i64, Gho
         }
         let before = Ghost(*counts);
         if cell.count > 0 {
-            if !bump_group(counts, cell.group.clone(), sign) { proof { if fits { assert(false); } } return false; }
+            if !bump_group(counts, cell.group.clone(), sign as i128) { proof { if fits { assert(false); } } return false; }
         }
         proof {
             assert forall|query: KeyView| #[trigger] count_at(*counts, query) == count_at(initial@, query)

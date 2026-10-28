@@ -162,7 +162,7 @@ pub open spec fn scan_qualifying_orders_ok(db: Db, rows: Seq<DatePriorityInput>)
 }
 
 /// rescan orders_for_line_changes: SELECT o_orderkey, o_orderdate, o_orderpriority FROM orders
-///   restricted to the rows whose o_orderkey is one of `keys`.
+///   restricted to the rows whose o_orderkey is one of `keys` (a NULL key matches none).
 pub open spec fn rescan_orders_for_line_changes_ok(db: Db, keys: Seq<i64>, rows: Seq<OrderInput>) -> bool {
     forall|f: spec_fn(OrdersRow) -> int| #[trigger] sum(order_input_seq_view(rows), f) == sum(
         db.orders,
@@ -171,7 +171,7 @@ pub open spec fn rescan_orders_for_line_changes_ok(db: Db, keys: Seq<i64>, rows:
 }
 
 /// rescan qualifying_lines_for_keys: SELECT l_orderkey FROM lineitem WHERE l_commitdate < l_receiptdate
-///   restricted to the rows whose l_orderkey is one of `keys`.
+///   restricted to the rows whose l_orderkey is one of `keys` (a NULL key matches none).
 pub open spec fn rescan_qualifying_lines_for_keys_ok(db: Db, keys: Seq<i64>, rows: Seq<QualifyingLineKeyInput>) -> bool {
     forall|f: spec_fn(int) -> int| #[trigger] sum(qualifying_line_key_input_seq_view(rows), f) == sum(
         db.lineitem,
@@ -229,14 +229,14 @@ pub open spec fn max_history() -> int {
 
 /// Each value of lineitem lies in the range of its column's SQL type.
 pub open spec fn lineitem_in_type(r: LineitemRow) -> bool {
-    -2147483648 <= r.l_orderkey <= 2147483647
+    -9223372036854775808 <= r.l_orderkey <= 9223372036854775807
     && -2147483648 <= r.l_commitdate <= 2147483647
     && -2147483648 <= r.l_receiptdate <= 2147483647
 }
 
 /// Each value of orders lies in the range of its column's SQL type.
 pub open spec fn orders_in_type(r: OrdersRow) -> bool {
-    -2147483648 <= r.o_orderkey <= 2147483647
+    -9223372036854775808 <= r.o_orderkey <= 9223372036854775807
     && -2147483648 <= r.o_orderdate <= 2147483647
 }
 

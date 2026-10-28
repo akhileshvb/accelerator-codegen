@@ -170,13 +170,13 @@ pub open spec fn max_history() -> int {
 
 /// Each value of customer lies in the range of its column's SQL type.
 pub open spec fn customer_in_type(r: CustomerRow) -> bool {
-    -2147483648 <= r.c_custkey <= 2147483647
+    -9223372036854775808 <= r.c_custkey <= 9223372036854775807
 }
 
 /// Each value of orders lies in the range of its column's SQL type.
 pub open spec fn orders_in_type(r: OrdersRow) -> bool {
-    -2147483648 <= r.o_orderkey <= 2147483647
-    && -2147483648 <= r.o_custkey <= 2147483647
+    -9223372036854775808 <= r.o_orderkey <= 9223372036854775807
+    && -9223372036854775808 <= r.o_custkey <= 9223372036854775807
 }
 
 /// The databases the DBMS can represent: each table within its row-id space, each

@@ -166,7 +166,7 @@ pub open spec fn max_history() -> int {
 
 /// Each value of lineitem lies in the range of its column's SQL type.
 pub open spec fn lineitem_in_type(r: LineitemRow) -> bool {
-    -2147483648 <= r.l_suppkey <= 2147483647
+    -9223372036854775808 <= r.l_suppkey <= 9223372036854775807
     && -999999999999999 <= r.l_extendedprice <= 999999999999999
     && -999999999999999 <= r.l_discount <= 999999999999999
     && -2147483648 <= r.l_shipdate <= 2147483647
@@ -174,7 +174,7 @@ pub open spec fn lineitem_in_type(r: LineitemRow) -> bool {
 
 /// Each value of supplier lies in the range of its column's SQL type.
 pub open spec fn supplier_in_type(r: SupplierRow) -> bool {
-    -2147483648 <= r.s_suppkey <= 2147483647
+    -9223372036854775808 <= r.s_suppkey <= 9223372036854775807
 }
 
 /// The databases the DBMS can represent: each table within its row-id space, each

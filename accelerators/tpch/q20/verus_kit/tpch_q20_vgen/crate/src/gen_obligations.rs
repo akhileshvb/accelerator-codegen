@@ -218,7 +218,7 @@ pub open spec fn scan_nations_ok(db: Db, rows: Seq<NationInput>) -> bool {
 }
 
 /// rescan stocks_for_parts: SELECT ps_partkey, ps_suppkey, ps_availqty FROM partsupp
-///   restricted to the rows whose ps_partkey is one of `keys`.
+///   restricted to the rows whose ps_partkey is one of `keys` (a NULL key matches none).
 pub open spec fn rescan_stocks_for_parts_ok(db: Db, keys: Seq<i64>, rows: Seq<StockInput>) -> bool {
     forall|f: spec_fn(PartsuppRow) -> int| #[trigger] sum(stock_input_seq_view(rows), f) == sum(
         db.partsupp,
@@ -227,7 +227,7 @@ pub open spec fn rescan_stocks_for_parts_ok(db: Db, keys: Seq<i64>, rows: Seq<St
 }
 
 /// rescan shipments_for_parts: SELECT l_partkey, l_suppkey, l_quantity, l_shipdate FROM lineitem
-///   restricted to the rows whose l_partkey is one of `keys`.
+///   restricted to the rows whose l_partkey is one of `keys` (a NULL key matches none).
 pub open spec fn rescan_shipments_for_parts_ok(db: Db, keys: Seq<i64>, rows: Seq<ShipmentInput>) -> bool {
     forall|f: spec_fn(LineitemRow) -> int| #[trigger] sum(shipment_input_seq_view(rows), f) == sum(
         db.lineitem,
@@ -323,8 +323,8 @@ pub open spec fn max_history() -> int {
 
 /// Each value of lineitem lies in the range of its column's SQL type.
 pub open spec fn lineitem_in_type(r: LineitemRow) -> bool {
-    -2147483648 <= r.l_partkey <= 2147483647
-    && -2147483648 <= r.l_suppkey <= 2147483647
+    -9223372036854775808 <= r.l_partkey <= 9223372036854775807
+    && -9223372036854775808 <= r.l_suppkey <= 9223372036854775807
     && -999999999999999 <= r.l_quantity <= 999999999999999
     && -2147483648 <= r.l_shipdate <= 2147483647
 }
@@ -336,19 +336,19 @@ pub open spec fn nation_in_type(r: NationRow) -> bool {
 
 /// Each value of part lies in the range of its column's SQL type.
 pub open spec fn part_in_type(r: PartRow) -> bool {
-    -2147483648 <= r.p_partkey <= 2147483647
+    -9223372036854775808 <= r.p_partkey <= 9223372036854775807
 }
 
 /// Each value of partsupp lies in the range of its column's SQL type.
 pub open spec fn partsupp_in_type(r: PartsuppRow) -> bool {
-    -2147483648 <= r.ps_partkey <= 2147483647
-    && -2147483648 <= r.ps_suppkey <= 2147483647
-    && -2147483648 <= r.ps_availqty <= 2147483647
+    -9223372036854775808 <= r.ps_partkey <= 9223372036854775807
+    && -9223372036854775808 <= r.ps_suppkey <= 9223372036854775807
+    && -9223372036854775808 <= r.ps_availqty <= 9223372036854775807
 }
 
 /// Each value of supplier lies in the range of its column's SQL type.
 pub open spec fn supplier_in_type(r: SupplierRow) -> bool {
-    -2147483648 <= r.s_suppkey <= 2147483647
+    -9223372036854775808 <= r.s_suppkey <= 9223372036854775807
     && -2147483648 <= r.s_nationkey <= 2147483647
 }
 
