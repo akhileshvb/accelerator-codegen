@@ -1,5 +1,5 @@
 // GENERATED BACKEND — engine <-> runtime-skeleton ADVERSARIAL harness (validation-owned).
-// Spec: pipeline/prompts/engine_backend/docs/adversarial_tests.md
+// Spec: pipeline/prompts/engine_backend/adversarial_tests.md
 // Build: test_{{engine_name}}_adversarial   CTest: engine_{{engine_name}}_adversarial
 //
 // Unseen by implementation. Do not duplicate the layer harnesses

@@ -12,7 +12,7 @@ start a later layer. Every later layer's gate reaches the engine through this sc
 - **host_runtime.kind:** `{{host_runtime_kind}}`
 
 Spec: the host contract below (binding) and the `hostctl` section of
-`pipeline/prompts/engine_backend/docs/layer_contracts.md`. Checklist rules owned by this layer:
+`pipeline/prompts/engine_backend/layer_contracts.md`. Checklist rules owned by this layer:
 `{{layer_rules}}` (`acceptance_checklist.md`).
 
 ## Engine profile (this layer's sections)

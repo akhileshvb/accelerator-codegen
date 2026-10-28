@@ -1,7 +1,7 @@
 benchmark_name: sec_edgar
 query_number: 6
 engines: [duckdb]
-reference_sql_path: workloads/sec_edgar/q6.sql
+reference_sql_path: workloads/sec_edgar/instances/seed_1/06.sql
 parameters:   # spec: eval/bench/sec_edgar/params/q6.json (zero-arg function = defaults)
   - {name: fy, type: BIGINT, default: 2023, domain: [2021, 2022, 2023, 2024]}
   - {name: stmt, type: VARCHAR, default: "IS", domain: ["BS", "IS", "CF", "EQ", "CI"]}

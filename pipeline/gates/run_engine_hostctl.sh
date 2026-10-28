@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Engine hostctl gate (layer `hostctl`): backends/<engine>/host.sh speaks the host
-# contract (pipeline/prompts/engine_backend/docs/host_contract.md). `info` names the engine and
-# its verbs; up, load, sql and down work on a fresh instance; a second load is a no-op.
+# contract (pipeline/prompts/engine_backend/host_contract.md). `info` names the engine and
+# its verbs; up, load, sql and down work on a fresh instance; a second load is a no-op. The backend's
+# api/ and host.sh name no benchmark (a directory under workloads/).
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 export ROOT
@@ -16,6 +17,15 @@ JSON="${ACCEL_GATE_OUT:-/tmp/engine_hostctl.json}"
 fail() { engine_host down >/dev/null 2>&1 || true; emit_result "${JSON}" engine_hostctl fail "$1" "${2:-}" "engine=${ENGINE_NAME}"; }
 
 [[ -x "${ENGINE_HOST}" ]] || fail "missing or non-executable ${ENGINE_HOST}"
+# The backend's API and host serve any benchmark: the benchmark is an input, never named in their code.
+BENCH_FILES=()
+while IFS= read -r file; do BENCH_FILES+=(--file "${file}"); done < <(cd "${ROOT}" &&
+  find "backends/${ENGINE_NAME}/api" -type f \( -name '*.cpp' -o -name '*.hpp' -o -name '*.h' -o -name '*.cmake' \) | sort
+  echo "backends/${ENGINE_NAME}/host.sh")
+if ! BENCH_LOG="$(cd "${ROOT}" && python3 scripts/check_backend_query_free.py "${BENCH_FILES[@]}" --bench-free 2>&1)"; then
+  fail "backends/${ENGINE_NAME}/api and host.sh must name no benchmark (it is an input); still naming one at: $(grep -oE '^[^: ]+:[0-9]+' <<<"${BENCH_LOG}" | head -5 | paste -sd' ')" "${BENCH_LOG}"
+fi
+
 INFO="$(engine_host info)" || fail "host.sh info failed" "${INFO}"
 python3 - "${INFO}" "${ENGINE_NAME}" <<'PY' || fail "host.sh info does not match the contract" "${INFO}"
 import json, sys
@@ -29,7 +39,7 @@ PY
 
 [[ -n "${SCHEMA_SQL}" && -n "${ACCEL_DATASET_DIR}" ]] || fail "gate context has no schema_sql / dataset_dir"
 [[ "${SCHEMA_SQL}" == /* ]] || SCHEMA_SQL="${ROOT}/${SCHEMA_SQL}"
-engine_steps "up" "load ${SCHEMA_SQL}" "load ${SCHEMA_SQL}" || fail "${ENGINE_FAIL}" "${ENGINE_LOG}"
+engine_steps "up" "load ${SCHEMA_SQL}" "load ${SCHEMA_SQL}" || { engine_host down >/dev/null 2>&1 || true; engine_not_ready "${JSON}" engine_hostctl "engine=${ENGINE_NAME}"; }
 [[ -s "${ACCEL_ENGINE_STATE_DIR}/env" ]] || fail "up wrote no ${ACCEL_ENGINE_STATE_DIR}/env" "${ENGINE_LOG}"
 OUT="$(echo "SELECT 1 AS one;" | engine_host sql -)" || fail "host.sh sql failed" "${OUT}"
 rows="$(grep -v '^[[:space:]]*$' <<<"${OUT}")"

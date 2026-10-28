@@ -21,11 +21,11 @@ if [[ ! -d "${BUILD}" ]]; then
   exit 0
 fi
 if [[ -z "${DIFF_BINARY}" ]]; then
-  emit_result "${JSON}" correctness fail "no differential target in the gate context (engine_host.differential_binary). ${HOST_HINT}" ""
+  emit_result "${JSON}" correctness fail "no differential target in the gate context (engine_host.differential_binary). ${HOST_HINT}" "" "owner=pipeline"
 fi
 
 if ! engine_ready "${DIFF_BINARY}"; then
-  emit_result "${JSON}" correctness fail "${ENGINE_FAIL}" "${ENGINE_LOG}" "query:=${QUERY}"
+  engine_not_ready "${JSON}" correctness "query:=${QUERY}"
 fi
 # The differential calls this workload's own SQL entry (a base kernel's, not the aux one the
 # templates name).

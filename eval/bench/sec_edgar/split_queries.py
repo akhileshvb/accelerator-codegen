@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Split queries.sql into per-query files under queries/."""
+"""Split queries.sql into the literal per-query instances under workloads/sec_edgar/instances/seed_1/ (NN.sql)."""
 
 from __future__ import annotations
 
@@ -26,13 +26,13 @@ def parse_queries(content: str) -> dict[str, str]:
 def main() -> int:
     script_dir = Path(__file__).parent
     queries_path = script_dir / "queries.sql"
-    out_dir = script_dir / "../../../workloads/sec_edgar"
+    out_dir = script_dir / "../../../workloads/sec_edgar/instances/seed_1"
     out_dir.mkdir(parents=True, exist_ok=True)
 
     content = queries_path.read_text(encoding="utf-8")
     queries = parse_queries(content)
     for name, sql in sorted(queries.items(), key=lambda x: int(x[0][1:])):
-        out_path = out_dir / f"{name.lower()}.sql"
+        out_path = out_dir / f"{int(name[1:]):02d}.sql"
         out_path.write_text(sql + "\n", encoding="utf-8")
         print(f"wrote {out_path}")
 

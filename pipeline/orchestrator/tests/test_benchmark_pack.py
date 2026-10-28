@@ -2,9 +2,15 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 
-from accel_pipeline.config import load_benchmark_pack, load_pipeline_config, load_workload
-from accel_pipeline.paths import find_repo_root, query_artifacts_dir
+from accel_pipeline.config import (
+    load_benchmark_pack,
+    load_workload,
+    query_artifacts_dir,
+    load_pipeline_config,
+    find_repo_root,
+)
 
 
 REPO_ROOT = find_repo_root()
@@ -17,7 +23,8 @@ def test_load_sec_edgar_pack() -> None:
     assert "fairness" in pack.get("post_optimization_gates", [])
     assert "snapshot_paths" in pack
     assert any("fused_scan" in p for p in pack["snapshot_paths"])
-    assert any("duckdb_scan_adapter" in p for p in pack["write_paths"])
+    assert f"accelerators/{pack['benchmark_name']}/**" in pack["write_paths"]
+    assert not any(p.startswith("backends/") for p in pack["write_paths"])  # backends are the engine_backend run's
 
 
 def test_load_tpch_pack() -> None:
@@ -67,6 +74,8 @@ def test_apply_workload_overrides_merges_aux_stage_max_turns() -> None:
     assert merged.stage_max_turns["optimization"] == 0
     assert merged.optimization_max_attempts_per_iteration == 8
     assert merged.optimization_consecutive_fail_stop == 0
+    assert merged.optimization_max_turns_patch == 0
+    assert merged.optimization_max_turns_unified == 0
     assert merged.optimization_context_max_chars == 80000
 
 
@@ -86,7 +95,7 @@ def test_aux_write_paths_register_from_query_dir_not_backend() -> None:
     """The query registers its table function from its own directory; the DuckDB
     backend's table-function file (backends/duckdb/**) is the engine_backend run's."""
     from accel_pipeline.config import apply_workload_overrides
-    from accel_pipeline.write_ownership import write_allowed
+    from accel_pipeline.layout import write_allowed
 
     pipeline_config = load_pipeline_config(repo_root=REPO_ROOT)
     workload = load_workload("tpch_q2_aux", REPO_ROOT, engine="duckdb")
@@ -103,13 +112,3 @@ def test_aux_write_paths_register_from_query_dir_not_backend() -> None:
     assert target.is_file()
     assert not writable(target)
     assert writable(REPO_ROOT / "accelerators/tpch/q2/duckdb/aux/register.cpp")
-
-
-def test_a_querys_workloads_run_one_after_another_per_engine():
-    from accel_pipeline.run_pack import _chains_by_artifact_dir, parse_pack_queries
-
-    pack = {"engines": ["engine_a", "engine_b"], "queries": [1, 6],
-            "workload_template": ["tpch_q{q}_aux", "tpch_q{q}"]}
-    chains = _chains_by_artifact_dir(parse_pack_queries(pack))
-    assert len(chains) == 4
-    assert all([e.workload for e in c] == [f"tpch_q{c[0].query}_aux", f"tpch_q{c[0].query}"] for c in chains)

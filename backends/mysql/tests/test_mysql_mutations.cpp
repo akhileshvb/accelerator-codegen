@@ -1,5 +1,5 @@
 // GENERATED BACKEND — layer harness for mutations (Mutation capture).
-// Spec: pipeline/prompts/engine_backend/docs/layers.md
+// Spec: pipeline/prompts/engine_backend/layers.md
 // Build: test_mysql_mutations   CTest: engine_mysql_mutations
 //
 // Rule: mutation_hooks

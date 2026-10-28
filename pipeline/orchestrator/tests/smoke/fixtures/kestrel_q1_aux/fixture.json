@@ -1,0 +1,13 @@
+{
+  "benchmark": "kestrel",
+  "query": 1,
+  "environment": {
+    "ACCEL_DATASET_DIR": "/flash1/akhilvb/datasets/kestrel_tbl",
+    "ACCEL_BENCH_TIMEOUT_SEC": "300"
+  },
+  "databases": {
+    "ACCEL_KESTREL_DB": "/flash1/akhilvb/datasets/kestrel.duckdb"
+  },
+  "base_sources": [],
+  "registration_probe": "accelerators/kestrel/q1/{engine}/aux/register.cpp"
+}

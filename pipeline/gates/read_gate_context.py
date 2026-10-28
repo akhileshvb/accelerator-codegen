@@ -48,11 +48,15 @@ def shell_variables(ctx: dict, *, aux: bool) -> dict[str, str]:
             "AUX_CTEST_SMOKE_REGEX": ctx.get("aux_ctest_smoke_regex", ""),
             "BENCH_TARGET": ctx["bench_target"],
             "COST_MODEL_CONFIG": ctx.get("cost_model_config", ""),
-            "AUX_BENCH_SUITES": ctx.get("aux_bench_suites", "lineitem_only"),
+            "AUX_BENCH_SUITES": ctx.get("aux_bench_suites", ""),
             "AUX_BENCH_WORK_DIR_SUFFIX": ctx.get("aux_bench_work_dir_suffix", ""),
             "AUX_WRITE_FREQUENCIES_CTX": ctx.get("aux_write_frequencies", ""),
             "HARNESS_BENCH_TARGET": host.get("bench_target") or "",
             "HARNESS_CALIBRATE_TARGET": host.get("calibrate_target") or "",
+            # every target host_bootstrap's harness.cmake defines for this query, the module test included
+            "HARNESS_TARGETS": " ".join(filter(None, (
+                host.get("differential_binary"), host.get("multi_conn_target"), host.get("cross_accel_target"),
+                host.get("bench_target"), host.get("calibrate_target"), ctx.get("aux_test_target")))),
         }
     )
     return variables

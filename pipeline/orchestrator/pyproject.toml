@@ -21,8 +21,8 @@ dev = [
 ]
 
 [project.scripts]
-accel-pipeline = "accel_pipeline.run_pipeline:main"
-accel-pipeline-pack = "accel_pipeline.run_pack:main"
+accel = "accel_pipeline.cli:main"
+accel-pipeline-pack = "accel_pipeline.pack:main"
 
 [tool.setuptools.packages.find]
 where = ["."]

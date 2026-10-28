@@ -7,7 +7,6 @@ workload_kind: engine_backend
 engine_name: duckdb
 allow_update_existing: false
 
-hide_foreign_engines: true
 agent_hidden_trees:
   - backends/postgres
   - backends/mysql
@@ -117,11 +116,11 @@ engine_profile:
     reload_semantics: "SET threads changes the task scheduler's thread count for the instance immediately."
 
   query_host:
-    dataset_env: ACCEL_TPCH_DB
+    dataset_env: ACCEL_DB
     work_db_suffix: ".duckdb"
 
   oracle:
-    differential_db: "TPC-H DuckDB database file (ACCEL_TPCH_DB; a private copy per test)."
+    differential_db: "The workload's DuckDB database file (ACCEL_DB; a private copy per test)."
     sql_client: "The duckdb command-line shell on the database file (duckdb <file> < statements.sql), or any DuckDB client library; one process opens the file at a time for writing."
 
   data_sql:

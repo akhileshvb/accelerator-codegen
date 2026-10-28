@@ -1,5 +1,5 @@
 // VALIDATION-OWNED — engine ↔ substrate ADVERSARIAL harness for mysql.
-// Spec: pipeline/prompts/engine_backend/docs/adversarial_tests.md
+// Spec: pipeline/prompts/engine_backend/adversarial_tests.md
 // Build: test_mysql_adversarial   CTest: engine_mysql_adversarial
 //
 // Unseen by implementation layer harnesses. Cases below are not copies of

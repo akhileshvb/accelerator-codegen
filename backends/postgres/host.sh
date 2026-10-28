@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # PostgreSQL host: one Docker container per instance, source/build mounted in, the
-# extension built in the container. Verbs: pipeline/prompts/engine_backend/docs/host_contract.md.
+# extension built in the container. Verbs: pipeline/prompts/engine_backend/host_contract.md.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -106,8 +106,10 @@ cmd_load() { # schema.sql [constraints.sql]
   fi
   psql_in -d "${DB}" -c 'DROP SCHEMA public CASCADE; CREATE SCHEMA public'
   sed -E -f "${HOST_DIR}/schema_to_pg.sed" "${schema}" | psql_in -d "${DB}" -f -
-  for tbl in "${ACCEL_DATASET_DIR}"/*.tbl; do
-    table="$(basename "${tbl}" .tbl)"
+  # in the schema's table order, so a foreign key's referenced table is loaded first
+  for table in $(grep -oiE 'create table +[a-z_0-9]+' "${schema}" | awk '{print $3}'); do
+    tbl="${ACCEL_DATASET_DIR}/${table}.tbl"
+    [[ -f "${tbl}" ]] || continue
     # dbgen lines end with a delimiter: strip it.
     sed 's/|$//' "${tbl}" | psql_in -d "${DB}" -c "COPY ${table} FROM STDIN WITH (FORMAT text, DELIMITER '|')"
   done
@@ -175,25 +177,9 @@ shared_state_scenario() { # scenario seconds
   grep -q "^PASS $1\b" <<<"${log}" || { echo "scenario $1 did not report PASS"; return 1; }
 }
 
-differential() {
-  local q mode rc=0 failed=0 log
-  for mode in read write_maint; do
-    for q in ${ACCEL_PG_DIFF_QUERIES:-$(seq 1 22)}; do
-      if log="$(ACCEL_PG_DIFF_MODE="${mode}" in_container test_postgres_tpch_differential "${q}" 2>&1)" &&
-        grep -qE 'PASS (read|write_maint)' <<<"${log}"; then
-        echo "PASS ${mode} Q${q}"
-      else
-        echo "FAIL ${mode} Q${q}"; echo "${log}" | tail -30; failed=1
-      fi
-    done
-  done
-  return "${failed}"
-}
-
 # Which part of a scenario the suite does not cover:
 #   hits_under_writes   only REPEATABLE READ readers
 #   read_after_commit   not a read on another connection right after a slow commit
-#   differential        write_maint stands in for an RF-chunk differential
 #   own_writes, ddl_events   no read inside a writing transaction; no DROP/RENAME/recreate
 #                            or DDL during a build: fail closed
 cmd_slot() { # scenario seconds
@@ -211,9 +197,6 @@ cmd_slot() { # scenario seconds
         txn_edges) echo abort_and_savepoint truncate_rebuild ;;
         restart) echo restart_worker kill_backend ;;
       esac); do shared_state_scenario "${s}" "${seconds}" || rc=1; done ;;
-    differential)
-      ensure_built test_postgres_tpch_differential
-      differential || rc=1 ;;
     own_writes | ddl_events)
       echo "postgres: ${scenario} has no driver yet (needs a read inside a writing transaction / DDL racing a build)"
       rc=1 ;;

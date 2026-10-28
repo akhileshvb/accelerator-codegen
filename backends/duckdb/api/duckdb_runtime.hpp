@@ -124,8 +124,11 @@ private:
 
   ::duckdb::Connection &connection_;
   const SharedQueryCatalogEntry &entry_;
-  std::shared_ptr<DuckdbHost> host_;
+  DuckdbHost &host_;
   DuckdbAccelerator &accelerator_;
+  // Reads the state could serve that the module answered from SQL anyway (its Execute fell back): the runtime
+  // counted them as hits; Stats() reports them as the fallbacks they were.
+  std::atomic<uint64_t> servable_reads_answered_from_sql_{0};
 };
 
 // The DuckDB side of core::CalibrateFromWrites: a captured write on the

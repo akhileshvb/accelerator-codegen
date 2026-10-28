@@ -1,7 +1,7 @@
 // The canary suite's view of an engine backend: SQL sessions, the registration of the suite's own
 // accelerators by table name, the runtime's counters, and the typed build scan modules use. It
 // names no engine type; a backend binds it in backends/<engine>/tests/test_<engine>_canary.cpp
-// (pipeline/prompts/engine_backend/docs/canary_contract.md).
+// (pipeline/prompts/engine_backend/canary_contract.md).
 #pragma once
 
 #include <cstddef>

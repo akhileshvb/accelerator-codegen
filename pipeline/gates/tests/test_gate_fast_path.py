@@ -47,7 +47,7 @@ def old_loader_values(ctx: dict) -> dict[str, str]:
         "AUX_CALIBRATE_TARGET": ctx.get("aux_calibrate_target", ""),
         "AUX_CTEST_SMOKE_REGEX": ctx.get("aux_ctest_smoke_regex", ""), "BENCH_TARGET": ctx["bench_target"],
         "COST_MODEL_CONFIG": ctx.get("cost_model_config", ""),
-        "AUX_BENCH_SUITES": ctx.get("aux_bench_suites", "lineitem_only"),
+        "AUX_BENCH_SUITES": ctx.get("aux_bench_suites", ""),
         "AUX_BENCH_WORK_DIR_SUFFIX": ctx.get("aux_bench_work_dir_suffix", ""),
         "AUX_WRITE_FREQUENCIES_CTX": ctx.get("aux_write_frequencies", ""),
         "HARNESS_BENCH_TARGET": host.get("bench_target") or "",
@@ -103,12 +103,13 @@ def stamped_repo(repo):
     """The fake repo as a git checkout with the stamp tool, so engine_ready can stamp builds."""
     target = repo / "pipeline" / "orchestrator" / "accel_pipeline"
     target.mkdir(parents=True)
-    shutil.copy(ORCHESTRATOR / "build_stamp.py", target)
+    shutil.copy(ORCHESTRATOR / "__init__.py", target)
+    shutil.copy(ORCHESTRATOR / "layout.py", target)
     (repo / "accelerators" / "tpch" / "q5").mkdir(parents=True)
     (repo / "accelerators" / "tpch" / "q5" / "module.cpp").write_text("// v1\n")
     (repo / "accelerators" / "tpch" / "q6").mkdir()
     (repo / "accelerators" / "tpch" / "q6" / "module.cpp").write_text("// v1\n")
-    (repo / ".gitignore").write_text("ctx.json\nhost.log\ngate_out.*\nart/\nstate/\nbuild-release/\ncost_model.json\n")
+    (repo / ".gitignore").write_text("ctx.json\nhost.log\nhost.env.log\ngate_out.*\nart/\nstate/\nbuild-release/\ncost_model.json\n")
     git = ["git", "-c", "user.name=t", "-c", "user.email=t@t"]
     subprocess.run([*git[:1], "init", "-q"], cwd=repo, check=True)
     subprocess.run([*git, "add", "-A"], cwd=repo, check=True)
@@ -180,7 +181,7 @@ def test_the_quick_tier_loads_the_subset_into_its_own_instance(repo):
     assert proc.returncode == 0, proc.stdout + proc.stderr
     first = log.read_text().splitlines()[0]
     assert "instance=w7-fake-quick" in first and "data=/data/subset" in first
-    assert "state/full-quick" in first
+    assert "state/full/quick" in first  # inside the state dir, which the agents' sandbox mounts
 
 
 def test_the_full_tier_ignores_the_subset(repo):
@@ -195,7 +196,7 @@ def suite_ctx(repo, suite_yaml: str) -> dict:
     orchestrator = repo / "pipeline" / "orchestrator"
     orchestrator.symlink_to(GATES.parents[0] / "orchestrator")
     sys.path.insert(0, str(orchestrator))
-    from accel_pipeline import test_suite as ts
+    from accel_pipeline import data as ts
 
     suite = repo / "suite"
     suite.mkdir()
@@ -208,10 +209,10 @@ def suite_ctx(repo, suite_yaml: str) -> dict:
                            "schema_sql": "", "config": asdict(ts.SuiteConfig()), "param_names": [], "aux": True}}
 
 
-def test_the_quick_tier_caps_the_differential_probes(repo):
+def test_the_quick_tier_caps_the_differential_probes_and_requires_none(repo):
     ctx = suite_ctx(repo, "point_writes: {max_probes: 9, min_count: 6}\n")
     host = repo / "backends" / "fake" / "host.sh"
-    host.write_text('#!/usr/bin/env bash\n[[ "$1" != run ]] || echo "$2 probes=${ACCEL_ADV_MAX_PROBES:-unset}" >> "${FAKE_LOG}.probes"\n')
+    host.write_text('#!/usr/bin/env bash\n[[ "$1" != run ]] || echo "$2 probes=${ACCEL_ADV_MAX_PROBES:-unset}/${ACCEL_ADV_MIN_PROBES:-unset}" >> "${FAKE_LOG}.probes"\n')
     seen = {}
     for tier in ("quick", "full"):
         proc, *_ = run_gate(repo, "run_aux_correctness.sh", "5", ctx_extra=ctx, env_extra={"ACCEL_GATE_TIER": tier})
@@ -219,7 +220,7 @@ def test_the_quick_tier_caps_the_differential_probes(repo):
         probes = (repo / "host.log.probes").read_text().splitlines()
         seen[tier] = next(line for line in probes if line.startswith("diff_bin")).split("=")[1]
         (repo / "host.log.probes").unlink()
-    assert seen == {"quick": "3", "full": "9"}
+    assert seen == {"quick": "3/0", "full": "9/6"}  # the subset may hold fewer answer-changing rows than min_count
 
 
 def test_the_iterate_tier_uses_the_minimum_probes_the_full_dataset_and_one_thread_count(repo):
@@ -321,3 +322,11 @@ def test_a_failing_build_stops_the_quick_check_before_any_run(repo):
                                      env_extra={"ACCEL_GATE_NAME": "quick_check", "FAKE_RC_build": "1"})
     assert proc.returncode == 1 and not any(call.startswith("run") for call in calls)
     assert result(gj, "quick_check")["step"] == "build"
+
+
+def test_quick_check_makes_the_benchmarks_test_database_when_the_build_dir_has_none(repo):
+    (repo / "build-release" / "test_dbs" / "tpch_test.db").unlink()
+    proc, calls, _, _, _ = run_gate(repo, "run_aux_quick_check.sh", "5")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    runs = [c for c in calls if c.startswith("run ")]
+    assert "-R ^tpch_test_db_fixture$" in runs[0] and runs[1] == "run aux_unit_bin"

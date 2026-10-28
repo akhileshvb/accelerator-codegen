@@ -11,7 +11,6 @@ allow_update_existing: false
 # canary binding): they skip instead of failing.
 known_gaps: [engine_hit_contract, engine_canary]
 
-hide_foreign_engines: true
 agent_hidden_trees:
   - backends/duckdb
   - backends/mysql

@@ -60,7 +60,6 @@ SharedProbe BuildTpchQ16Probe(::duckdb::MaterializedQueryResult &result,
 }
 
 const SharedQueryRegistrar kEntry{SharedQueryCatalogEntry{16,
-     SharedWorkloadKind::Tpch,
      "tpch",
      query::TpchQ16Layout::kAccelerator,
      "SELECT p_brand, p_type, p_size, COUNT(DISTINCT ps_suppkey) AS supplier_cnt "

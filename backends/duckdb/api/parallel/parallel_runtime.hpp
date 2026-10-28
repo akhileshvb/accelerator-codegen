@@ -62,16 +62,6 @@ bool DrainParallelAssignmentChunks(NativeParallelScanHandle &handle, duckdb::Tab
 bool DrainParallelAssignmentFiltered(NativeParallelScanHandle &handle, duckdb::TableScanState &scan_state,
                                      const duckdb::FilteredScanConsumer &consumer);
 
-//! TPC-H o_orderkey spans ~4× orders cardinality (SF1: 1.5M rows → keys ≤ 6M).
-inline int64_t EstimateTpchDenseOrderCapacity(duckdb::ClientContext &context,
-                                              const duckdb::FunctionData &bind_data) {
-	NativeParallelScanHandle handle;
-	handle.Initialize(context, bind_data);
-	const auto rows = handle.storage->GetTotalRows();
-	const auto estimated = static_cast<int64_t>(rows) * 4 + 1;
-	return estimated < 1 ? 1 : estimated;
-}
-
 //! Run N OS-thread workers that each loop claim → drain chunks → consume via native
 //! DataTable::NextParallelScan. Workers are ephemeral per query (no persistent aux state).
 void RunParallelChunkScan(duckdb::ClientContext &context, const duckdb::FunctionData &bind_data,

@@ -86,7 +86,7 @@ while (( iter < max_iters )); do
   fi
   (
     cd "${ORCH}"
-    python -m accel_pipeline.run_pack \
+    python -m accel_pipeline.pack \
       --pack "${PACK}" \
       --models-config "${MODELS}" || true
   )

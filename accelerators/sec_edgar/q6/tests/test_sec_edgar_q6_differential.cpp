@@ -134,7 +134,7 @@ public:
     runtime_ = std::make_unique<support::ModuleRuntime>(
         connection, module_,
         core::LoadAuxCostModelJson(harness::SharedCostModelConfigPath(
-            engine::LookupSharedQuery(engine::SharedWorkloadKind::SecEdgar, 6))));
+            engine::LookupSharedQuery("sec_edgar", 6))));
   }
 
   void Build() { runtime_->Build(); }

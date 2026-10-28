@@ -44,7 +44,6 @@ SharedProbe BuildSecEdgarQ24Probe(::duckdb::MaterializedQueryResult &result,
 }
 
 const SharedQueryRegistrar kEntry{SharedQueryCatalogEntry{24,
-     SharedWorkloadKind::SecEdgar,
      "sec_edgar",
      core::SecEdgarQ24Layout::kAccelerator,
      "SELECT n.tag, n.version, COUNT(*) AS cnt, SUM(n.value) AS total "

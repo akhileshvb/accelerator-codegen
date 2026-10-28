@@ -1,4 +1,54 @@
 {
+ "kestrel_q1": {
+  "dependent_tables": [
+   {
+    "name": "sale",
+    "watched_columns": [
+     "shop_code",
+     "sku",
+     "qty",
+     "price",
+     "sold"
+    ]
+   },
+   {
+    "name": "shop",
+    "watched_columns": [
+     "shop_code",
+     "region"
+    ]
+   },
+   {
+    "name": "item",
+    "watched_columns": [
+     "sku",
+     "family"
+    ]
+   }
+  ],
+  "output_schema": [
+   {
+    "name": "region",
+    "type": "VARCHAR"
+   },
+   {
+    "name": "family",
+    "type": "VARCHAR"
+   },
+   {
+    "name": "sales",
+    "type": "BIGINT"
+   },
+   {
+    "name": "revenue",
+    "type": "DECIMAL"
+   },
+   {
+    "name": "avg_price",
+    "type": "DOUBLE"
+   }
+  ]
+ },
  "sec_edgar_q1": {
   "dependent_tables": [
    {

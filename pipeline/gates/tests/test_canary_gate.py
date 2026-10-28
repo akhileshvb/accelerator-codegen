@@ -1,4 +1,4 @@
-"""run_engine_canary.sh and run_engine_quick.sh against a fake backends/fake/host.sh: the canary binary is
+"""run_engine_canary.sh against a fake backends/fake/host.sh: the canary binary is
 reached only through host.sh, its JSON lines become the gate result (owning layers of the failures), and
 sanitizer reports and hangs fail the gate."""
 
@@ -112,31 +112,6 @@ def test_a_backend_without_the_binding_fails_unless_it_is_a_known_gap(repo):
 def test_a_subset_selection_reaches_the_binary(repo):
     _, log, _ = run(repo, FAKE_OUTPUT=PASS_LINE, ACCEL_CANARY_CHECKS="a b", ACCEL_CANARY_OWNERS="scan")
     assert log[-1].startswith("run test_fake_canary --check a --check b --owner scan")
-
-
-LAYERS = [{"id": "hostctl", "cmake_target": ""}, {"id": "scan", "cmake_target": "test_fake_scan"}]
-
-
-def test_quick_layer_builds_runs_once_and_reports_phase_seconds(repo):
-    proc, log, result = run(repo, "run_engine_quick.sh", "engine_quick", layers=LAYERS, ACCEL_QUICK_LAYER="scan", FAKE_OUTPUT="")
-    assert proc.returncode == 0, proc.stdout + proc.stderr
-    assert result["status"] == "pass" and set(result["phase_seconds"]) >= {"up", "build", "harness"}
-    assert [line.split()[0] + " " + line.split()[1] if line.startswith(("build", "run")) else line for line in log] == [
-        "up", "build test_fake_scan", "run test_fake_scan", "build test_fake_canary", "run test_fake_canary"]
-    assert log[-1].endswith("asan=")  # the canary subset of the layer, no sanitizer
-    assert "--owner scan" in log[-1]
-
-
-def test_quick_layer_stops_at_the_first_failing_phase(repo):
-    proc, log, result = run(repo, "run_engine_quick.sh", "engine_quick", layers=LAYERS, ACCEL_QUICK_LAYER="scan",
-                            FAKE_OUTPUT="", FAKE_RC_run=1)
-    assert proc.returncode == 1 and result["status"] == "fail" and "harness" in result["phase_seconds"]
-    assert not any("canary" in line for line in log)
-
-
-def test_quick_layer_without_a_target_points_at_the_layer_gate(repo):
-    proc, _, result = run(repo, "run_engine_quick.sh", "engine_quick", layers=LAYERS, ACCEL_QUICK_LAYER="hostctl")
-    assert proc.returncode == 1 and "run_layer_gate" in result["reason"]
 
 
 def _report(*frames, kind="data race"):

@@ -11,12 +11,12 @@ from pathlib import Path
 
 import pytest
 
-from accel_pipeline.config import apply_workload_overrides, load_pipeline_config, load_workload
-from accel_pipeline.engine_host import host_info
-from accel_pipeline.gate_context import build_gate_context
+from accel_pipeline.config import apply_workload_overrides, load_workload, load_pipeline_config
+from accel_pipeline.data import host_info
+from accel_pipeline.gates import build_gate_context
 from accel_pipeline.prompts import render_prompt
-from accel_pipeline.run_pack import parse_pack_queries
-from accel_pipeline.scaffold_stubs import materialize_workload_stubs, read_api_manifest
+from accel_pipeline.pack import parse_pack_queries
+from accel_pipeline.stages import materialize_workload_stubs, read_api_manifest
 
 REAL_PIPELINE = Path(__file__).resolve().parents[2]
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -31,9 +31,9 @@ def repo(tmp_path: Path) -> Path:
     shutil.copytree(REAL_PIPELINE.parent / "workloads", tmp_path / "workloads")
     shutil.copy(FIXTURES / "engine_toydb.yaml", pipeline / "config" / "workloads")
     shutil.copytree(FIXTURES / "toydb" / "backends", tmp_path / "backends")
-    workload = pipeline / "config" / "workloads" / f"{WORKLOAD}.yaml"
-    workload.write_text(
-        workload.read_text(encoding="utf-8").replace("engines: [duckdb, postgres, mysql]", "engines: [duckdb, postgres, mysql, toydb]"),
+    template = pipeline / "config" / "workloads" / "tpch_q_aux.template.yaml"
+    template.write_text(
+        template.read_text(encoding="utf-8").replace("engines: [duckdb, postgres, mysql]", "engines: [duckdb, postgres, mysql, toydb]"),
         encoding="utf-8",
     )
     return tmp_path

@@ -57,7 +57,7 @@ inline std::string DataDbPath(const std::string &file_name) {
   return (std::filesystem::path(DuckDbDataDir()) / file_name).string();
 }
 
-inline std::string TpchDbPath() { return EnvOr("ACCEL_TPCH_DB", DataDbPath("tpch_sf1.duckdb")); }
+inline std::string TpchDbPath() { return EnvOr("ACCEL_TPCH_DB", EnvOr("ACCEL_DB", DataDbPath("tpch_sf1.duckdb"))); }
 inline std::string TpchSf10DbPath() { return EnvOr("ACCEL_TPCH_SF10_DB", DataDbPath("tpch_sf10.duckdb")); }
 inline std::string TpchTestDbPath() { return EnvOr("ACCEL_TPCH_TEST_DB", DataDbPath("tpch_test.duckdb")); }
 inline std::string SecEdgarDbPath() { return EnvOr("ACCEL_SEC_EDGAR_DB", DataDbPath("sec_edgar_sf3.duckdb")); }

@@ -3,12 +3,16 @@
 # Usage: source aux_gate_common.sh; load_aux_gate_context "${ROOT}" "${QUERY}"
 
 # Wall seconds of each phase, one "name=seconds" line each. The EXIT trap leaves them in
-# <gate json>.phases, which gates.run_gate folds into the result's phase_timings.
+# <gate json>.phases, which gates.run_gate folds into the result's phase_timings, and folds the last harness
+# run's outcome (run_outcome.py: its exit code, its reason, the stacks at a deadline) into a failed result.
 PHASE_LOG=""
-flush_phase_log() {
-	[[ -z "${ACCEL_GATE_OUT:-}" ]] || printf '%s' "${PHASE_LOG}" >"${ACCEL_GATE_OUT%.json}.phases"
+RUN_OUTCOME="$(dirname "${BASH_SOURCE[0]}")/run_outcome.py"
+on_gate_exit() {
+	[[ -n "${ACCEL_GATE_OUT:-}" ]] || return 0
+	printf '%s' "${PHASE_LOG}" >"${ACCEL_GATE_OUT%.json}.phases"
+	[[ ! -f "${ACCEL_GATE_OUT%.json}.run.json" ]] || python3 "${RUN_OUTCOME}" fold "${ACCEL_GATE_OUT}"
 }
-trap flush_phase_log EXIT
+trap on_gate_exit EXIT
 now_us() { echo "${EPOCHREALTIME/./}"; }
 
 # record_phase <name> <start_us>: add the seconds since start_us to <name>.
@@ -16,6 +20,9 @@ record_phase() {
 	local us=$(($(now_us) - $2))
 	PHASE_LOG+="$1=$((us / 1000000)).$(printf '%03d' $((us % 1000000 / 1000)))"$'\n'
 }
+
+# set_phase <text>: what this gate is doing now (gate_status shows <gate json>.phase)
+set_phase() { [[ -z "${ACCEL_GATE_OUT:-}" ]] || printf '%s\n' "$*" >"${ACCEL_GATE_OUT%.json}.phase"; }
 
 # time_phase <name> <command...>: run in this shell, record its seconds, keep its status.
 time_phase() {
@@ -57,7 +64,7 @@ load_aux_gate_context() {
 # unique on the host), its state under the worker's build dir, so parallel runs never collide.
 # Sets ENGINE_HOST; exports the host contract env.
 # ACCEL_GATE_TIER=quick with ACCEL_SUBSET_DATASET_DIR set loads that small dataset into
-# its own instance (<instance>-quick), so the full instance stays loaded and warm.
+# its own instance (<instance>-quick, state in <state dir>/quick), so the full instance stays loaded and warm.
 setup_engine_host() {
 	local root="$1" tier_suffix=""
 	if [[ "${ACCEL_GATE_TIER:-full}" == quick && -n "${ACCEL_SUBSET_DATASET_DIR:-}" ]]; then
@@ -66,7 +73,8 @@ setup_engine_host() {
 		export ACCEL_DATASET_DIR="${DATASET_DIR}"
 	fi
 	ENGINE_HOST="${root}/backends/${ENGINE_NAME}/host.sh"
-	[[ -z "${tier_suffix}" || -z "${ACCEL_ENGINE_STATE_DIR:-}" ]] || ACCEL_ENGINE_STATE_DIR+="${tier_suffix}"
+	# inside the state dir, which the agents' sandbox mounts (a sibling would exist only in one agent session)
+	[[ -z "${tier_suffix}" || -z "${ACCEL_ENGINE_STATE_DIR:-}" ]] || ACCEL_ENGINE_STATE_DIR+="/${tier_suffix#-}"
 	export ACCEL_ENGINE_INSTANCE="${ACCEL_ENGINE_INSTANCE:-${ACCEL_INSTANCE_TAG:-${ACCEL_PIPELINE_WORKER_ID:-w0}}-${ENGINE_NAME}${tier_suffix}}"
 	export ACCEL_BUILD_DIR="${ACCEL_PIPELINE_BUILD_DIR:-${ACCEL_BUILD_DIR:-${root}/build-release}}"
 	export ACCEL_ENGINE_STATE_DIR="${ACCEL_ENGINE_STATE_DIR:-${ACCEL_BUILD_DIR}/engine_state/${ACCEL_ENGINE_INSTANCE}}"
@@ -76,6 +84,19 @@ setup_engine_host() {
 	# Same default as engine_host.cmake_args.
 	export ACCEL_CMAKE_ARGS="${ACCEL_CMAKE_ARGS:--G Ninja -DCMAKE_BUILD_TYPE=Release -DACCELERATOR_CODEGEN_BUILD_${ENGINE_NAME^^}=ON -DACCEL_CODEGEN_ENGINE=${ENGINE_NAME}}"
 	mkdir -p "${ACCEL_ENGINE_STATE_DIR}"
+	# A run's scratch (database copies) lives with its instance on disk, never in a RAM-backed TMPDIR; its engine
+	# keeps to a memory budget (host_contract.md), split by a gate that starts runs side by side.
+	export TMPDIR="${ACCEL_ENGINE_STATE_DIR}/tmp"
+	mkdir -p "${TMPDIR}"
+	[[ -n "${ACCEL_RUN_MEMORY_MB:-}" ]] || memory_budget 1
+}
+
+# memory_budget <runs>: what each of <runs> runs started together may use: ACCEL_RUN_MEMORY_MB, 90% of what is free
+# over <runs>, a cap the run dies past (run_outcome.py); ACCEL_ENGINE_MEMORY_MB, half of it, for its engines (the
+# rest is the accelerator's state).
+memory_budget() {
+	export ACCEL_RUN_MEMORY_MB="$(awk -v runs="$1" '/^MemAvailable:/ { printf "%d\n", $2 / 1024 * 0.9 / (runs > 0 ? runs : 1) }' /proc/meminfo)"
+	export ACCEL_ENGINE_MEMORY_MB="$((ACCEL_RUN_MEMORY_MB / 2))"
 }
 
 engine_host() { "${ENGINE_HOST}" "$@"; }
@@ -85,33 +106,62 @@ engine_trait() {
 	engine_host info 2>/dev/null | python3 -c "import json,sys; print(json.load(sys.stdin).get(sys.argv[1], ''))" "$1"
 }
 
+# Whose fault a failed host step is: the dataset's (load), the backend's (up), a build's by the files its errors
+# name (layout.build_error_owner).
+step_owner() {
+	case "$1" in
+	load) echo data ;;
+	up) echo backend ;;
+	*)
+		[[ -n "${BENCHMARK_NAME:-}" ]] || { echo backend; return; }  # an engine gate has no query: a build failure is the backend's
+		# shellcheck disable=SC2086
+		PYTHONPATH="${ACCEL_PIPELINE_PYTHONPATH:-${GATE_ROOT}/pipeline/orchestrator}" python3 -m accel_pipeline.layout build-owner \
+			"accelerators/${BENCHMARK_NAME}/q${GATE_QUERY}" ${HARNESS_TARGETS:-} <<<"$2"
+		;;
+	esac
+}
+
 # Run host.sh steps in order (each argument is one "verb args" string). On failure
-# sets ENGINE_FAIL and returns 1; ENGINE_LOG collects every step's output. Builds of one
-# build dir run one at a time (build_stamp.build_lock takes the same lock).
+# sets ENGINE_FAIL, ENGINE_STEP and ENGINE_OWNER (step_owner) and returns 1; ENGINE_LOG has a line per step and the
+# failed step's output. Builds of one build dir run one at a time (gates.build_lock takes the same lock).
 engine_steps() {
 	ENGINE_LOG=""
+	ENGINE_OWNER=query
 	local step out rc started runner
 	for step in "$@"; do
 		started="$(now_us)"
+		set_phase "host ${step}"
 		runner=("${ENGINE_HOST}")
 		[[ "${step%% *}" != build ]] || runner=(flock "${ACCEL_BUILD_DIR}.build.lock" "${ENGINE_HOST}")
 		# shellcheck disable=SC2086
 		out="$("${runner[@]}" ${step} 2>&1)" && rc=0 || rc=$?
 		record_phase "host_${step%% *}" "${started}"
-		ENGINE_LOG+="[host.sh ${step}] rc=${rc}"$'\n'"${out}"$'\n'
+		ENGINE_LOG+="[host.sh ${step}] rc=${rc}"$'\n'
 		if [[ ${rc} -ne 0 && ${rc} -ne 77 ]]; then
-			ENGINE_FAIL="host.sh ${step%% *} failed (exit ${rc})"
+			ENGINE_LOG+="${out}"$'\n'
+			ENGINE_STEP="${step%% *}"
+			ENGINE_OWNER="$(step_owner "${ENGINE_STEP}" "${out}")"
+			ENGINE_OWNER="${ENGINE_OWNER:-query}"
+			ENGINE_FAIL="host.sh ${ENGINE_STEP} failed (exit ${rc})"
 			return 1
 		fi
 	done
 }
 
-# Stamp of the code a build of these targets depends on (build_stamp.py): the query's files and
+# Leave the gate with the failure engine_steps/engine_ready left in ENGINE_*, charged to its owner; extras as emit_result.
+engine_not_ready() {
+	local json="$1" gate="$2"
+	shift 2
+	emit_result "${json}" "${gate}" fail "${ENGINE_FAIL}" "${ENGINE_LOG}" "owner=${ENGINE_OWNER}" "$@"
+}
+
+# Stamp of the code a build of these targets depends on (layout.code_stamp): the query's files and
 # the shared files changed since the commit, the targets, the cmake arguments, the build dir and the instance.
 build_stamp() {
 	local scope=()
 	[[ -z "${BENCHMARK_NAME:-}" ]] || scope=(--query-dir "accelerators/${BENCHMARK_NAME}/q${GATE_QUERY}")
-	python3 "${GATE_ROOT}/pipeline/orchestrator/accel_pipeline/build_stamp.py" "${GATE_ROOT}" "${scope[@]}" \
+	PYTHONPATH="${GATE_ROOT}/pipeline/orchestrator" python3 -m accel_pipeline.layout stamp "${GATE_ROOT}" "${scope[@]}" \
+		--exclude "${ACCEL_ENGINE_STATE_DIR}" \
 		"$*" "${ACCEL_CMAKE_ARGS}" "${ACCEL_BUILD_DIR}" "${ACCEL_ENGINE_INSTANCE}" 2>/dev/null
 }
 
@@ -120,6 +170,7 @@ build_stamp() {
 # turns the cache off).
 engine_ready() {
 	local started stamp="" stamp_file
+	harness_unclaimed "$@" || return 1
 	stamp_file="${ACCEL_ENGINE_STATE_DIR}/build_stamps/$(printf '%s' "$*" | sha1sum | cut -c1-16)"
 	if [[ "${ACCEL_BUILD_STAMP_CACHE:-1}" != 0 ]]; then
 		started="$(now_us)"
@@ -169,43 +220,80 @@ engine_ready_for_ctest() {
 	[[ ${#targets[@]} -eq 0 ]] || engine_ready "${targets[@]}"
 }
 
-# Run a built target through the host; sets RC and LOG.
-# Run a built target through host.sh with a time limit (ACCEL_GATE_RUN_TIMEOUT seconds,
-# default 900), so a hung harness fails the gate instead of stalling the run. Sets LOG, RC and,
-# on a timeout, RUN_REASON.
-engine_run() { _engine_run "" "$@"; }
+# The harness targets are host_bootstrap's (backends/<engine>/tests/harness.cmake): a benchmark's build.cmake that
+# names one redefines what the gates measure. Sets ENGINE_FAIL and returns 1 when one does.
+harness_unclaimed() {
+	local target file
+	for target in "$@"; do
+		[[ " ${HARNESS_TARGETS:-} " == *" ${target} "* ]] || continue
+		for file in "${GATE_ROOT}"/accelerators/*/build.cmake; do
+			[[ -f "${file}" ]] && grep -Eq "(^|[^A-Za-z0-9_])${target}([^A-Za-z0-9_]|$)" "${file}" || continue
+			ENGINE_STEP=build
+			ENGINE_OWNER=query
+			ENGINE_FAIL="${file#"${GATE_ROOT}"/} names the harness target ${target}: the workload harnesses belong to host_bootstrap; build the query's own targets only"
+			ENGINE_LOG="$(grep -En "(^|[^A-Za-z0-9_])${target}([^A-Za-z0-9_]|$)" "${file}")"
+			return 1
+		done
+	done
+}
 
-# engine_run for a benchmark: queues for the host-wide measurement lease (outside the time limit), runs
-# pinned to the measurement CPUs, and records the queueing as the phase measurement_lease_wait.
+# Seconds one run may take: ACCEL_GATE_RUN_TIMEOUT, else what the build time the last full run measured allows
+# (<gates dir>/build_seconds: a run builds the module a few times, and again for each write it cannot maintain),
+# else an hour (phases that run side by side start before any build was measured).
+run_limit() {
+	local built
+	[[ -z "${ACCEL_GATE_RUN_TIMEOUT:-}" ]] || { echo "${ACCEL_GATE_RUN_TIMEOUT}"; return; }
+	built="$(cat "${GATE_OUT:-/nonexistent}/build_seconds" 2>/dev/null)" || built=""
+	python3 -c "import sys; b = float(sys.argv[1] or 0); print(int(max(1800, 8 * b + 600)) if b else 3600)" "${built}"
+}
+
+# Run a built target through host.sh with a time limit (run_limit, run_outcome.py), so a hung harness fails the gate
+# instead of stalling the run, with every thread's stack at the deadline. Sets LOG, RC and, on a timeout, RUN_REASON.
+# The output goes to <gate json>.run.<random>.log while it runs (gate_status shows its last line).
+engine_run() { _engine_run "" "$@"; }
+# What the last engine_run left (a gate may skip every run: a sanitizer quick_check without a differential).
+RC=0 LOG="" RUN_REASON=""
+
+# engine_run for a benchmark: queues for the host-wide measurement lease (outside the time limit), exports the
+# measurement CPUs for the bench to pin its measured part to (ACCEL_RUN_CPUS: to those instead), and
+# records the queueing as the phase measurement_lease_wait.
 engine_measure() { _engine_run "${ACCEL_GATE_NAME:-${GATE_QUERY:-gate}}" "$@"; }
 
 _engine_run() {
-	local lease="$1" limit="${ACCEL_GATE_RUN_TIMEOUT:-900}" started waited wrap=()
+	local lease="$1" limit started waited wrap=() pin=() live
 	shift
+	limit="$(run_limit)"
 	started="$(now_us)"
+	set_phase "run $1"
+	live="$(mktemp "${ACCEL_GATE_OUT:-${TMPDIR:-/tmp}/gate.json}.run.XXXXXX.log")"
 	[[ -z "${lease}" ]] ||
-		wrap=(env "PYTHONPATH=${ACCEL_PIPELINE_PYTHONPATH:-${GATE_ROOT}/pipeline/orchestrator}:${PYTHONPATH:-}" python3 -m accel_pipeline.measurement_lease
+		wrap=(env "PYTHONPATH=${ACCEL_PIPELINE_PYTHONPATH:-${GATE_ROOT}/pipeline/orchestrator}:${PYTHONPATH:-}" python3 -m accel_pipeline.pack measure
 			--holder "${ACCEL_INSTANCE_TAG:-${ACCEL_PIPELINE_WORKER_ID:-w0}}" --reason "${lease}" --)
-	LOG="$("${wrap[@]}" timeout --kill-after=15 "${limit}" "${ENGINE_HOST}" run "$@" 2>&1)" && RC=0 || RC=$?
+	[[ -z "${ACCEL_RUN_CPUS:-}" ]] || pin=(env "ACCEL_MEASURE_CPUS=${ACCEL_RUN_CPUS}")   # a wider set than the lease's
+	"${wrap[@]}" "${pin[@]}" python3 "${RUN_OUTCOME}" run "${limit}" "${ACCEL_GATE_OUT:+${ACCEL_GATE_OUT%.json}.run.json}" "${1##*/}" -- \
+		"${ENGINE_HOST}" run "$@" >"${live}" 2>&1 && RC=0 || RC=$?
+	LOG="$(<"${live}")"
+	rm -f "${live}"
 	record_phase "run_${1##*/}" "${started}"
 	if [[ -n "${lease}" ]]; then
 		waited="$(sed -n 's/.*waited \([0-9.]*\) s for the measurement lease.*/\1/p' <<<"${LOG}" | head -n1)"
 		[[ -z "${waited}" ]] || PHASE_LOG+="measurement_lease_wait=${waited}"$'\n'
 	fi
 	RUN_REASON=""
-	[[ ${RC} -ne 124 && ${RC} -ne 137 ]] ||
-		RUN_REASON="$1 did not finish within ${limit}s: it hangs (a deadlock, or a wait that never ends)"
+	[[ ${RC} -ne 124 ]] || RUN_REASON="${1##*/} did not finish within ${limit}s"
 }
 
 # write_result <json> <gate> <status> <reason> <log> [key=value ...]
 # Writes and prints the gate result (extras: key=string, key:=json); returns 0
-# only for pass or skip.
+# only for pass or skip. A failing result names its owner (the extra owner=, else the query).
 write_result() {
 	python3 - "$@" <<'PY'
 import json, sys, pathlib, os
 out, gate, status, reason, log, *extra = sys.argv[1:]
 payload = {"gate": gate, "status": status, "reason": reason, "log_tail": log[-6000:],
            "engine_name": os.environ.get("ENGINE_NAME", "")}
+if status not in ("pass", "skip"):
+    payload["owner"] = "query"
 for kv in extra:
     k, _, v = kv.partition("=")
     if k.endswith(":"):
@@ -249,7 +337,7 @@ engine_target_gate() {
 
 # Threads the gate's processes may use: ACCEL_AUX_THREADS, else the CPUs of this process's affinity (the
 # worker's core budget). With `measure`, one lease window of the measurement set (ACCEL_MEASURE_SET split into
-# ACCEL_MEASURE_SLOTS windows), the CPUs the lease pins a benchmark to.
+# ACCEL_MEASURE_SLOTS windows), the CPUs the lease gives a benchmark.
 gate_threads() {
 	if [[ -n "${ACCEL_AUX_THREADS:-}" ]]; then echo "${ACCEL_AUX_THREADS}"; return; fi
 	if [[ "${1:-}" == measure && -n "${ACCEL_MEASURE_SET:-}" ]]; then
@@ -263,6 +351,17 @@ print(max(1, n // max(1, int(sys.argv[2]))))" "${ACCEL_MEASURE_SET}" "${ACCEL_ME
 		return
 	fi
 	nproc
+}
+
+# worker_cpus <n>: the first n CPUs of the worker's own core set (ACCEL_CORE_SET, else the CPUs of this process), as a
+# taskset list, and how many there were (fewer than n when the set is smaller).
+worker_cpus() {
+	python3 -c "
+import os, sys
+cpus = sorted(int(c) for part in (os.environ.get('ACCEL_CORE_SET') or '').split(',') if part
+              for c in range(int(part.partition('-')[0]), int(part.rpartition('-')[2]) + 1))
+cpus = (cpus or sorted(os.sched_getaffinity(0)))[:int(sys.argv[1])]
+print(','.join(map(str, cpus)), len(cpus))" "$1"
 }
 
 # thread_lint: the query's sources hold no hard-coded thread counts or hardware_concurrency (the thread-budget

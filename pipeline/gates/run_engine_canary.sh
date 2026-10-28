@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# The pipeline-owned canary suite (pipeline/canary, prompts/engine_backend/docs/canary_contract.md):
+# The pipeline-owned canary suite (pipeline/canary, prompts/engine_backend/canary_contract.md):
 # what an accelerator needs from the backend, under realistic conditions, judged against the engine's
 # own SQL. The backend only binds it (tests/test_<engine>_canary.cpp); the checks are not its to write.
 # One script serves three gates by name:
 #   engine_canary        every check, the plain build
 #   engine_canary_asan   every check, our code under ASan + UBSan (embedded engines)
 #   engine_canary_tsan   the concurrency checks, our code under TSan (embedded engines)
-# ACCEL_CANARY_CHECKS ("id id ...") and ACCEL_CANARY_OWNERS ("layer ...") select a subset (quick_layer).
+# ACCEL_CANARY_CHECKS ("id id ...") and ACCEL_CANARY_OWNERS ("layer ...") select a subset.
 # A sanitizer report fails the gate with the report in the log: whether it is in the backend's code or
-# only in the engine's decides who must fix it (triage.py), never whether it counts.
+# only in the engine's decides who must fix it (repair.py), never whether it counts.
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 export ROOT
@@ -29,7 +29,7 @@ if [[ ! -f "${ROOT}/${SOURCE}" ]]; then
   if [[ -n "${KNOWN_GAP}" ]]; then
     emit_result "${OUT_JSON}" "${GATE}" skip "known gap: ${ENGINE_NAME} predates the canary suite (no ${SOURCE})" "" "engine=${ENGINE_NAME}"
   fi
-  emit_result "${OUT_JSON}" "${GATE}" fail "missing ${SOURCE}: bind the canary suite to this backend (pipeline/templates/engine_backend/canary_binding.cpp.tpl, prompts/engine_backend/docs/canary_contract.md)" "" "engine=${ENGINE_NAME}" "owner_layer=api"
+  emit_result "${OUT_JSON}" "${GATE}" fail "missing ${SOURCE}: bind the canary suite to this backend (pipeline/templates/engine_backend/canary_binding.cpp.tpl, prompts/engine_backend/canary_contract.md)" "" "engine=${ENGINE_NAME}" "owner_layer=api"
 fi
 
 checks=() owners=()

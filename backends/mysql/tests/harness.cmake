@@ -20,3 +20,8 @@ if(BUILD_TESTING)
     add_test(NAME test_mysql_cross_accel COMMAND test_mysql_cross_accel)
     add_test(NAME test_mysql_aux_multi_connection_stress COMMAND test_mysql_aux_multi_connection_stress)
 endif()
+
+# The workload bench and calibrate harnesses (host_bootstrap's, as every target of this file).
+# Shared TPC-H aux bench and cost-model calibrator: one binary each, `--query N`.
+accel_add_backend_exe(mysql benchmark_mysql_tpch_aux backends/mysql/bench/benchmark_mysql_tpch_aux.cpp)
+accel_add_backend_exe(mysql calibrate_mysql_tpch_aux_cost_model backends/mysql/bench/calibrate_mysql_tpch_aux_cost_model.cpp)

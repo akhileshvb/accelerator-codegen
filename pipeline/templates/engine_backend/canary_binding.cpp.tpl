@@ -1,5 +1,5 @@
 // GENERATED BACKEND: binds the pipeline's canary suite (pipeline/canary) to {{engine_name}}.
-// Spec: pipeline/prompts/engine_backend/docs/canary_contract.md. A pass-through: no checks live here.
+// Spec: pipeline/prompts/engine_backend/canary_contract.md. A pass-through: no checks live here.
 // Build: test_{{engine_name}}_canary   Gate: engine_canary, engine_canary_asan, engine_canary_tsan
 #include <memory>
 #include <stdexcept>

@@ -1,9 +1,0 @@
-benchmark_name: tpch
-query_number: 7
-engines: [duckdb, postgres]
-reference_sql_path: workloads/tpch/instances/seed_1/07.sql
-parameters:
-  - name: nation1
-    type: VARCHAR
-  - name: nation2
-    type: VARCHAR

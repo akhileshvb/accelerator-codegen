@@ -18,13 +18,13 @@ A profile field given as `{na: reason}` declares that mechanic absent on this en
 
 ## Inputs (read these)
 
-- **Layer spec:** `pipeline/prompts/engine_backend/docs/layers.md`
-- **Closed checklist:** `pipeline/prompts/engine_backend/docs/acceptance_checklist.md`
-- **Substrate contracts:** `pipeline/prompts/engine_backend/docs/layer_contracts.md`
-- Hard constraints: `pipeline/prompts/engine_backend/docs/contract_tests.md`
-- Boundary: `pipeline/prompts/engine_backend/docs/agent_boundary.md`
-- Native scan (scan layer only): `pipeline/prompts/engine_backend/docs/native_scan_contract.md`
-- Slot contracts: `pipeline/prompts/shared/docs/engine_interfaces.md` ("Backend contract")
+- **Layer spec:** `pipeline/prompts/engine_backend/layers.md`
+- **Closed checklist:** `pipeline/prompts/engine_backend/acceptance_checklist.md`
+- **Substrate contracts:** `pipeline/prompts/engine_backend/layer_contracts.md`
+- Hard constraints: `pipeline/prompts/engine_backend/contract_tests.md`
+- Boundary: `pipeline/prompts/engine_backend/agent_boundary.md`
+- Native scan (scan layer only): `pipeline/prompts/engine_backend/native_scan_contract.md`
+- Slot contracts: `pipeline/prompts/shared/engine_interfaces.md` ("Backend contract")
 - Analysis: `{{artifacts_path}}/backend_analysis.json`
 - Not findings: `host.sh slot` failing closed with "not wired yet" (validation wires it, after this
   audit); behaviour the frozen substrate or a contract defines as process-wide (the substrate's

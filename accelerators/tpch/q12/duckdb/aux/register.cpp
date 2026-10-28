@@ -59,7 +59,6 @@ SharedProbe BuildTpchQ12Probe(::duckdb::MaterializedQueryResult &result,
 }
 
 const SharedQueryRegistrar kEntry{SharedQueryCatalogEntry{12,
-     SharedWorkloadKind::Tpch,
      "tpch",
      core::TpchQ12Layout::kAccelerator,
      "SELECT l_shipmode, "

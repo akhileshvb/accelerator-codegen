@@ -7,9 +7,11 @@ A report is the query's own when, in the stack of any of its accesses, the first
 header or runtime library is a source path under the query directory (the fragment, e.g.
 accelerators/<bench>/q<N>/): the racing access is in the query's code, however deep a container or atomic
 beneath it, or the location the race names (a global, or a heap block allocated by a frame) is under the query
-directory. A race inside the (uninstrumented) engine or the substrate that merely sits under a call from the
-query is not the query's. Every other report is summarized as infrastructure and never fails the check. Prints JSON:
-{"yours": [{"summary", "frames"}], "infra": {"count", "summaries": [...]}}.
+directory (a global defined there, or a heap block whose allocating frame, the first that is not a system one, is
+there). A race inside the (uninstrumented) engine or the substrate that merely sits under a call from the query is
+not the query's. Every other report is summarized as infrastructure and never fails the check. Prints JSON:
+{"yours": [{"summary", "frames"}], "infra": {"count", "summaries": [...]}, "owner"}, where owner is "query" when
+any report is the query's, else "" (the engine's and the substrate's reports fail nothing).
 """
 
 from __future__ import annotations
@@ -78,9 +80,13 @@ def location_lines(rep: list[str]) -> list[str]:
 
 
 def is_yours(rep: list[str], fragment: str) -> bool:
-    if any(fragment in line for line in location_lines(rep)):
+    location = location_lines(rep)
+    allocation = [l.strip() for l in location if FRAME.match(l)]
+    # the location's own line (a global's file), else the frame that allocated the heap block
+    stacks = [*access_stacks(rep), allocation] if allocation else access_stacks(rep)
+    if location and not allocation and fragment in location[0]:
         return True
-    for stack in access_stacks(rep):
+    for stack in stacks:
         first = next((f for f in stack if not SYSTEM.search(" " + f)), None)
         if first and fragment in first:
             return True
@@ -103,6 +109,7 @@ def classify(log_dir: Path, fragment: str) -> dict:
     return {
         "yours": yours[:MAX_YOURS], "yours_count": len(yours),
         "infra": {"count": len(infra), "summaries": sorted(set(infra))[:MAX_INFRA]},
+        "owner": "query" if yours else "",  # the engine's own reports are never a failure, so they name no owner
     }
 
 

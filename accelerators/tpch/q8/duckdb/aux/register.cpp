@@ -57,7 +57,6 @@ SharedProbe BuildTpchQ8Probe(::duckdb::MaterializedQueryResult &result,
 }
 
 const SharedQueryRegistrar kEntry{SharedQueryCatalogEntry{8,
-     SharedWorkloadKind::Tpch,
      "tpch",
      query::TpchQ8Layout::kAccelerator,
      "SELECT o_year, SUM(CASE WHEN nation = 'INDIA' THEN volume ELSE 0 END) / "

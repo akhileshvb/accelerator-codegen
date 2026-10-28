@@ -1,3 +1,4 @@
+-- SEC-EDGAR Q1 (no parameters).
 SELECT stmt, rfile, COUNT(*) AS cnt,
        COUNT(DISTINCT adsh) AS num_filings,
        AVG(line) AS avg_line_num

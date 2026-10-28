@@ -1,41 +1,71 @@
+"""The run's settings and the workload it accelerates.
+
+Settings: every tunable is a field with its default; config/default.yaml and models.yaml only set what
+differs, a workload refines them (apply_workload_overrides), and the model a stage runs is resolved from
+the model config.
+
+Workload: a yaml under config/workloads/, refined by its benchmark pack and the aux-state defaults, and
+pinned to one engine. From it come the engine's profile (facts and hazards of the engine, validated against
+``schemas/engine_profile.schema.json``; a leaf is a value or ``{na: reason}``), the names the naming
+convention derives from a query's benchmark and number (engine-specific symbols are patterns in the profile,
+expanded here), the run's artifact paths, the paths and targets of the query's sources, and the facts that
+are a function of the query's SQL and the benchmark schema.
+
+Tables and the columns read from them come from sqlglot (qualified against the schema); output columns and
+logical types come from DuckDB describing the query over an empty in-memory copy of workloads/<bench>/schema.sql.
+A logical type is the DuckDB type family without precision or scale (DECIMAL(38,4) is DECIMAL); mapping a
+logical type to an engine's own type is the engine backend's business.
+"""
 from __future__ import annotations
 
 import copy
+import dataclasses
+import json
 import os
 import re
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
+import duckdb
+import jsonschema
+import sqlglot
 import yaml
+from sqlglot import exp
+from sqlglot.optimizer.qualify import qualify
+from sqlglot.optimizer.scope import traverse_scope
 
-from accel_pipeline import naming
-from accel_pipeline.engine_profile import (
-    EngineProfileError,
-    host_runtime_of,
-    load_engine_profile,
-    registration_symbol_pattern,
-    validate_engine_profile,
+from accel_pipeline.layout import (
+    backend_glob,
+    DEFAULT_SHARED_PATH_GLOBS,
+    query_dir,
+    query_glob,
+    workload_schema_sql,
 )
-from accel_pipeline.layout import backend_glob, query_dir, query_glob
-from accel_pipeline.paths import find_repo_root, pipeline_root
-from accel_pipeline.shared_file_lease import DEFAULT_SHARED_PATH_GLOBS
-from accel_pipeline.test_suite import SuiteConfig
 
+
+DEFAULT_BUILD_DIR = "build-release"
+DEFAULT_GATES_DIR = "pipeline/gates"
+RUN_OUTCOME = Path(__file__).resolve().parents[2] / "gates" / "run_outcome.py"  # this tree's: caps a run's memory
+SANDBOXES = ("bwrap", "none")
+WRITE_POLICIES = ("enforce", "warn", "off")
+TOOL_CALL_LIMIT_S = float(os.environ.get("ACCEL_TOOL_CALL_LIMIT", 1800))  # the agent client's limit on one tool call
+
+
+# ---- settings ---------------------------------------------------------------------------------
 
 @dataclass
 class ModelConfig:
-    api_key_env: str
-    presets: dict[str, str]
-    stages: dict[str, str]
+    api_key_env: str = "OPENROUTER_API_KEY"
+    presets: dict[str, str] = field(default_factory=dict)
+    stages: dict[str, str] = field(default_factory=dict)
     stage_providers: dict[str, str] = field(default_factory=dict)
     codex_bin: str = "codex"
     codex_config_path: str = "pipeline/.codex/config.toml"
     codex_timeout_sec: int = 7200
     # Headless codex exec cancels MCP tools without this (openai/codex#24135).
     codex_bypass_approvals_and_sandbox: bool = True
-    # Per-stage reasoning effort passed to codex (model_reasoning_effort):
-    # minimal | low | medium | high.  Unset stages use the model's default.
+    # model_reasoning_effort per stage (minimal | low | medium | high); unset stages use the model's default.
     stage_reasoning_effort: dict[str, str] = field(default_factory=dict)
     # Codex knows no OpenRouter model's window: it assumes ~258k and compacts at ~300k, folding a
     # session into a few-kilobyte summary every few turns.  0 leaves Codex's defaults.
@@ -47,37 +77,45 @@ class ModelConfig:
 
 @dataclass(frozen=True)
 class MeasurementConfig:
-    """Thresholds of measurement.check_measurement (the `measurement:` block of default.yaml)."""
+    """Thresholds of measurement.check_measurement: is a benchmark measuring the accelerator?"""
 
     enabled: bool = True
-    min_hit_rate: float = 0.5
+    min_hit_rate: float = 0.5  # accel_hit_rate required at write frequency 0
     max_fallbacks_on_hit: int = 0
     require_state_built: bool = True
-    max_cv: float = 0.5
-    min_ref_us: float = 1.0
+    max_cv: float = 0.5  # sample spread (stdev / mean) beyond which a score is noise
+    min_ref_us: float = 1.0  # plausible range of the reference query time
     max_ref_s: float = 600.0
 
+
+@dataclass(frozen=True)
+class SuiteConfig:
+    """``test_suite:`` of config/default.yaml."""
+
+    acceptance_random_tuples: int = 20
+    differential_every: int = 5
+    iterate_random_tuples: int = 10
+    iterate_every: int = 10
+    validation_random_tuples: int = 12
+    bench_repeats: int = 3
+    write_mix: dict[str, Any] | None = None
+
     @classmethod
-    def from_dict(cls, raw: dict[str, Any] | None) -> "MeasurementConfig":
-        raw = raw or {}
-        return cls(
-            enabled=bool(raw.get("enabled", cls.enabled)),
-            min_hit_rate=float(raw.get("min_hit_rate", cls.min_hit_rate)),
-            max_fallbacks_on_hit=int(raw.get("max_fallbacks_on_hit", cls.max_fallbacks_on_hit)),
-            require_state_built=bool(raw.get("require_state_built", cls.require_state_built)),
-            max_cv=float(raw.get("max_cv", cls.max_cv)),
-            min_ref_us=float(raw.get("min_ref_us", cls.min_ref_us)),
-            max_ref_s=float(raw.get("max_ref_s", cls.max_ref_s)),
-        )
+    def from_dict(cls, raw: dict[str, Any] | None) -> SuiteConfig:
+        raw = dict(raw or {})
+        known = {k: int(raw[k]) for k in cls.__dataclass_fields__ if k != "write_mix" and k in raw}
+        return cls(**known, write_mix=dict(raw.get("write_mix") or {}) or None)
 
 
 @dataclass(frozen=True)
 class RepairConfig:
+    """Failures go to a bounded repair loop: infra failures retry without spending the budget, code failures resume the agent's session."""
+
     max_code_rounds: int = 3
     infra_retries: int = 1
     max_replans: int = 1
     max_orchestrator_retries: int = 1
-    load_factor: float = 1.5
+    load_factor: float = 1.5  # a gate timeout under loadavg > load_factor * cores is infra
     never_quarantine: tuple[str, ...] = ("aux_correctness", "aux_correctness_iterate", "aux_unit")
     provider_retries: int = 3  # network/provider flakes: their own budget, with a growing wait
     provider_backoff_sec: tuple[float, ...] = (30.0, 90.0, 270.0)
@@ -89,22 +127,22 @@ class RepairConfig:
 
 @dataclass(frozen=True)
 class AdvisorConfig:
-    """A stronger model forks the stuck agent's session for a second opinion (accel_pipeline.advisor)."""
+    """A stronger model forks the stuck agent's session for a second opinion (accel_pipeline.repair)."""
 
     max_consults_per_stage: int = 4  # 0 disables the advisor
     stall_rounds: int = 2  # the same failure this many repair rounds in a row triggers an orchestrator consult
-    timeout_sec: float = 480  # under the client's 600 s limit on the agent's ask_advisor call
+    timeout_sec: float = 480  # under the client's limit on the agent's ask_advisor call (TOOL_CALL_LIMIT_S)
 
 
 @dataclass(frozen=True)
 class NoProgressConfig:
-    """Seconds an agent may go without real progress (accel_pipeline.no_progress) before the
+    """Seconds an agent may go without real progress (accel_pipeline.agent) before the
     footer asks it to state its blocker (nudge) and before its turn is ended with a directed
-    resume (redirect); 0 disables. `stages` overrides either per stage."""
+    resume (redirect); 0 disables. `stages` maps a stage to its own nudge_sec / redirect_sec."""
 
     nudge_sec: float = 480
     redirect_sec: float = 1200
-    stages: tuple[tuple[str, tuple[tuple[str, float], ...]], ...] = ()
+    stages: dict[str, dict[str, float]] = field(default_factory=dict)
 
     def for_stage(self, stage: str) -> tuple[float, float]:
         """(nudge, redirect) seconds of one stage."""
@@ -114,7 +152,7 @@ class NoProgressConfig:
 
 @dataclass(frozen=True)
 class DataToolsConfig:
-    """Limits of the agents' data exploration tools (tools/data_tools.py)."""
+    """Limits of the agents' data exploration tools (the data tools in mcp.py)."""
 
     query_seconds: float = 60.0  # time box of one statement
     default_rows: int = 200
@@ -123,15 +161,17 @@ class DataToolsConfig:
 
 @dataclass(frozen=True)
 class SessionConfig:
+    """One codex session per role (accel_pipeline/agent.py) and the wall budgets of an agent run."""
+
     continuity: bool = True
-    soft_deadline_sec: int = 5400
-    stage_soft_deadline_sec: tuple[tuple[str, int], ...] = ()  # per stage, overriding soft_deadline_sec
-    idle_timeout_sec: int = 2400
+    soft_deadline_sec: int = 5400  # MCP tool results start asking the agent to wrap up
+    stage_soft_deadline_sec: dict[str, int] = field(default_factory=dict)  # per stage, instead of soft_deadline_sec
+    idle_timeout_sec: int = 2400  # no rollout, tool or heartbeat activity: killed, then resumed
     hard_deadline_sec: int = 14400
-    max_resumes: int = 25
-    max_context_tokens: int = 0
+    max_resumes: int = 25  # 0: no cap
+    max_context_tokens: int = 0  # 0: no cap; Codex compacts at codex_auto_compact_tokens
     no_progress: NoProgressConfig = field(default_factory=NoProgressConfig)
-    exit_gate: tuple[tuple[str, str], ...] = ()  # stage -> gate whose pass (during the turn) ends the agent's turn
+    exit_gate: dict[str, str] = field(default_factory=dict)  # stage -> gate whose pass during the turn ends the agent's turn
 
     def exit_gate_for(self, stage: str) -> str:
         return dict(self.exit_gate).get(stage, "")
@@ -140,38 +180,19 @@ class SessionConfig:
         return dict(self.stage_soft_deadline_sec).get(stage, self.soft_deadline_sec)
 
 
-# ---- quick tier (workstream C): the fast inner loop and parallel gates ----
 @dataclass(frozen=True)
 class QuickTierConfig:
+    """The fast inner loop: quick_check, the quick bench tier, parallel gates."""
+
     enabled: bool = True
     timeout_sec: float = 120.0
     build_stamp_cache: bool = True
     differential_probes: int = 3
-    background_gates: tuple[str, ...] = (
-        "aux_correctness", "aux_unit", "prims_tests", "aux_multi_connection", "aux_cross_accel",
-    )
     parallel_gates: bool = True
     gate_jobs: int = 0  # concurrent gates in a parallel group; 0 = one per gate
-    build_budget_sec: float = 15.0  # the state build projected to the full dataset (N threads) may take this long; the gates build it several times
-    write_cost_budget_share: float = 0.5  # of one gate differential run's timeout (ACCEL_GATE_RUN_TIMEOUT) that quick_check lets the projected writes and builds use
-    admission_gates: tuple[str, ...] = ("aux_correctness", "aux_bench_sweep", "aux_tsan")  # run only after quick_check passed
-
-
-def _quick_tier_config(data: dict[str, Any]) -> QuickTierConfig:
-    block = dict(data.get("quick_tier") or {})
-    default = QuickTierConfig()
-    return QuickTierConfig(
-        enabled=bool(block.get("enabled", default.enabled)),
-        timeout_sec=float(block.get("timeout_sec", default.timeout_sec)),
-        build_stamp_cache=bool(block.get("build_stamp_cache", default.build_stamp_cache)),
-        differential_probes=int(block.get("differential_probes", default.differential_probes)),
-        background_gates=tuple(str(g) for g in block.get("background_gates", default.background_gates)),
-        parallel_gates=bool(block.get("parallel_gates", default.parallel_gates)),
-        gate_jobs=int(block.get("gate_jobs", default.gate_jobs)),
-        build_budget_sec=float(block.get("build_budget_sec", default.build_budget_sec)),
-        write_cost_budget_share=float(block.get("write_cost_budget_share", default.write_cost_budget_share)),
-        admission_gates=tuple(str(g) for g in block.get("admission_gates", default.admission_gates)),
-    )
+    build_budget_sec: float = 15.0  # quick_check fails when the state build, projected to the full dataset, takes longer
+    write_cost_budget_share: float = 0.5  # of one gate differential run's timeout (ACCEL_GATE_RUN_TIMEOUT): the projected writes and builds may use this much
+    admission_gates: tuple[str, ...] = ("aux_exit", "aux_correctness", "aux_bench_sweep", "aux_tsan")  # request_gate refuses these until quick_check passed on the current code
 
 
 @dataclass(frozen=True)
@@ -183,22 +204,12 @@ class ConcurrencyConfig:
     measure_slots: int | None = None  # benchmarks measuring at once, each on its share of the measurement CPUs; None: one per 2 CPUs
     host_lock_dir: str = ""  # shared by every tree on the host; "": /dev/shm/accel-pipeline-<uid>
     measurement_lease: bool = True
-    measurement_wait_sec: float = 3600.0  # bound on queuing for the measurement lease
     shared_lease_wait_sec: float = 300.0  # bound on queuing for the shared-tree lease
 
-    @classmethod
-    def from_dict(cls, raw: dict[str, Any] | None) -> "ConcurrencyConfig":
-        raw = raw or {}
-        cores = raw.get("measure_cores")
-        return cls(
-            workers=max(1, int(raw.get("workers", cls.workers))),
-            measure_cores=None if cores is None else int(cores),
-            measure_slots=None if raw.get("measure_slots") is None else max(1, int(raw["measure_slots"])),
-            host_lock_dir=str(raw.get("host_lock_dir") or ""),
-            measurement_lease=bool(raw.get("measurement_lease", cls.measurement_lease)),
-            measurement_wait_sec=float(raw.get("measurement_wait_sec", cls.measurement_wait_sec)),
-            shared_lease_wait_sec=float(raw.get("shared_lease_wait_sec", cls.shared_lease_wait_sec)),
-        )
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "workers", max(1, self.workers))
+        if self.measure_slots is not None:
+            object.__setattr__(self, "measure_slots", max(1, self.measure_slots))
 
 
 @dataclass
@@ -206,28 +217,38 @@ class PipelineConfig:
     repo_root: Path
     pipeline_root: Path
     build_dir: Path
-    tpch_db_sf1: Path
     datasets: dict[str, Path] = field(default_factory=dict)
     # Benchmarks whose bench/calibrate harness is one query-parameterised target per engine.
     shared_bench_harness: tuple[str, ...] = ()
-    optimization_max_iterations: int = 3
+    # The optimization stage: `optimization:` of default.yaml, refined by a workload's block.
+    optimization_max_iterations: int = 1
     optimization_no_improvement_stop: int = 2
-    # Wall-clock budget of the whole optimization stage (seconds; 0: none).
-    optimization_stage_budget_sec: float = 7200.0
-    optimization_max_attempts_per_iteration: int = 4
+    optimization_stage_budget_sec: float = 7200.0  # no new iteration or attempt starts after it; 0: none
+    optimization_max_attempts_per_iteration: int = 5
     optimization_improvement_threshold_pct: float = 3.0
     optimization_reject_threshold_pct: float = 2.0
     optimization_consecutive_fail_stop: int = 0
     optimization_quick_benchmark_samples: int = 3
     optimization_context_max_chars: int = 80_000
     optimization_context_max_lines: int = 1200
+    optimization_bootstrap_max_chars: int = 300_000
+    optimization_bootstrap_max_lines_per_file: int = 0
     optimization_smoke_runs: int = 2
+    optimization_max_turns_analysis: int = 0  # the max_turns limits: 0 = unlimited
+    optimization_max_turns_patch: int = 0
+    optimization_max_turns_unified: int = 0
+    # Fix rounds within one attempt until build/smoke pass: 0 = keep going up to the safety cap.
+    optimization_build_fix_max_rounds: int = 0
+    optimization_correctness_fix_max_rounds: int = 0
+    optimization_build_fix_safety_cap: int = 12
+    optimization_correctness_fix_safety_cap: int = 12
+    optimization_fix_log_chars: int = 6000
+    optimization_persistent_worker: bool = True
     optimization_worker_max_turns_per_candidate: int = 0
     optimization_worker_safety_cap_turns: int = 80
     optimization_hot_path_digest_max_chars: int = 25_000
     optimization_turn_delta_max_chars: int = 4_000
-    optimization_checkpoint_file: str = "optimization_worker_checkpoint.json"
-    # Agent may declare OPTIMIZATION_SATURATED when stuck (no numeric floors).
+    # When the agent may declare OPTIMIZATION_SATURATED.
     optimization_early_stop: dict[str, Any] = field(default_factory=dict)
     # Redesigns of the state inside optimization: the full-tier gates they must pass, and the
     # changed-line fraction above which an undeclared attempt counts as one.
@@ -240,418 +261,327 @@ class PipelineConfig:
     write_paths: list[str] = field(default_factory=list)
     allowed_commands: list[str] = field(default_factory=list)
     gates_dir: Path = field(default_factory=Path)
-    # Concurrent pack workers (shared tree + separate builds).
-    worker_id: str = ""
+    worker_id: str = ""  # one of the concurrent pack workers
     codex_home: Path | None = None
-    shared_paths: list[str] = field(default_factory=list)
-    # The run's identity (set by apply_workload_overrides); write_ownership uses it
-    # to apply the per-layer write rules (backends/<engine>/** for engine_backend
-    # runs, accelerators/<bench>/q<N>/** for query runs).
+    shared_paths: list[str] = field(default_factory=lambda: list(DEFAULT_SHARED_PATH_GLOBS))
+    # The run's identity (set by apply_workload_overrides); layout applies the per-layer
+    # write rules by it: backends/<engine>/** for engine_backend runs, accelerators/<bench>/q<N>/** for query runs.
     workload_kind: str = ""
     engine_name: str = ""
     benchmark_name: str = ""
-    # bwrap | none: the OS sandbox of every C++-mode agent step (accel_pipeline.sandbox).
+    # The OS sandbox of every C++-mode agent step (accel_pipeline.agent); `none` runs codex unsandboxed.
     sandbox: str = "bwrap"
-    sandbox_extra_ro: list[str] = field(default_factory=list)
+    sandbox_extra_ro: list[str] = field(default_factory=list)  # more host paths for the sandbox, absolute
     sandbox_extra_rw: list[str] = field(default_factory=list)
-    # enforce | warn | off: the post-stage ownership check (write_ownership.check_stage).
-    write_policy: str = "warn"
+    # The ownership check of an agent stage (layout.StageWriteCheck): enforce refuses gates while the session
+    # has out-of-bounds edits, then reverts them and fails the stage; warn only logs them to the run's events.
+    write_policy: str = "enforce"
     measurement: MeasurementConfig = field(default_factory=MeasurementConfig)
     quick_tier: QuickTierConfig = field(default_factory=QuickTierConfig)
     concurrency: ConcurrencyConfig = field(default_factory=ConcurrencyConfig)
     test_suite: SuiteConfig = field(default_factory=SuiteConfig)
 
-
-def _load_yaml(path: Path) -> dict[str, Any]:
-    with path.open(encoding="utf-8") as f:
-        data = yaml.safe_load(f)
-    return data or {}
-
-
-def load_benchmark_pack(name: str, repo_root: Path | None = None) -> dict[str, Any]:
-    root = repo_root or find_repo_root()
-    path = pipeline_root(root) / "config" / "benchmark_packs" / f"{name}.yaml"
-    if not path.is_file():
-        raise FileNotFoundError(f"benchmark pack not found: {path}")
-    return _load_yaml(path)
+    def __post_init__(self) -> None:
+        for name, allowed in (("sandbox", SANDBOXES), ("write_policy", WRITE_POLICIES)):
+            if getattr(self, name) not in allowed:
+                raise ValueError(f"{name}: {getattr(self, name)!r} (expected one of {', '.join(allowed)})")
 
 
-def _resolve_path(repo_root: Path, value: str | Path) -> Path:
-    path = Path(value)
-    if path.is_absolute():
-        return path
-    return (repo_root / path).resolve()
+# ---- repo roots and the environment -----------------------------------------------------------
+
+def find_repo_root(start: Path | None = None) -> Path:
+    cur = (start or Path.cwd()).resolve()
+    for parent in [cur, *cur.parents]:
+        if (parent / "CMakeLists.txt").is_file() and (parent / "pipeline").is_dir():
+            return parent
+    raise FileNotFoundError("could not locate accelerator-codegen repo root")
 
 
-def _merge_pack_into_workload(
-    workload: dict[str, Any],
-    pack: dict[str, Any],
-    repo_root: Path,
-    pipeline_config: PipelineConfig | None = None,
-) -> dict[str, Any]:
-    merged: dict[str, Any] = dict(pack)
-    merged.update(workload)
-
-    benchmark = str(merged.get("benchmark_name", "tpch"))
-    merged.setdefault("artifact_namespace", benchmark)
-    merged.setdefault("display_name", benchmark)
-
-    dataset_key = merged.get("dataset_key")
-    if dataset_key and pipeline_config and dataset_key in pipeline_config.datasets:
-        merged.setdefault("dataset_db", str(pipeline_config.datasets[dataset_key]))
-    elif "dataset_db" in pack and "dataset_db" not in workload:
-        merged["dataset_db"] = str(_resolve_path(repo_root, pack["dataset_db"]))
-
-    scale_key = merged.get("scale_dataset_key")
-    if scale_key and pipeline_config and scale_key in pipeline_config.datasets:
-        merged.setdefault("scale_db", str(pipeline_config.datasets[scale_key]))
-
-    ref_sql = merged.get("reference_sql_path")
-    if ref_sql:
-        merged["reference_sql_path"] = str(_resolve_path(repo_root, ref_sql))
-
-    for key in ("schema_reference_path", "test_template_path", "benchmark_template_path"):
-        if key in merged and merged[key]:
-            merged[key] = str(_resolve_path(repo_root, merged[key]))
-
-    return merged
+def pipeline_root(repo_root: Path | None = None) -> Path:
+    return (repo_root or find_repo_root()) / "pipeline"
 
 
-def _dataset_path(path: str | Path) -> str:
-    """A dataset database path; empty when the run parameter is unset."""
-    return "" if Path(path) == Path() else str(path)
-
-
-def resolve_workload_paths(
-    pipeline_config: PipelineConfig,
-    workload: dict[str, Any],
-    query: int,
-) -> dict[str, str]:
-    benchmark = str(workload.get("benchmark_name", "tpch"))
-    q = int(workload.get("query_number", query))
-    engine = sanitize_engine_name(str(workload.get("engine_name") or ""))
-    if not engine and workload.get("workload_kind") != "engine_backend":
-        raise ValueError(
-            "resolve_workload_paths: accelerator workload missing engine_name"
-        )
-    # Per-engine query tree: accelerators/{bench}/q{N}/{engine}/... (source_subdir is
-    # relative to accelerators/, the second include root).
-    qdir = query_dir(benchmark, q)
-    eng_seg = f"{engine}/" if engine else ""
-    source_subdir = str(
-        workload.get(
-            "source_subdir",
-            f"{benchmark}/q{q}/{engine}/base/single-threaded" if engine else f"{benchmark}/q{q}/base/single-threaded",
-        )
-    )
-    generated_base = f"{qdir}/{eng_seg}base/single-threaded"
-    # Every engine ships one query-parameterised bench/calibrate harness per benchmark that has one
-    # (backends/<engine>/bench/, made by host_bootstrap); the others keep per-query targets.
-    shared_harness = (
-        bool(engine)
-        and workload.get("workload_kind") != "engine_backend"
-        and benchmark in pipeline_config.shared_bench_harness
-    )
-    harness = harness_targets(engine, benchmark) if shared_harness else {}
-    bench_target = f"benchmark_{engine}_{benchmark}_q{q}" if shared_harness else naming.benchmark_target(benchmark, q)
-    test_target = naming.unit_test_target(benchmark, q)
-
-    paths = {
-        "source_subdir": source_subdir,
-        "function_name": naming.base_function_name(benchmark, q),
-        "create_fn": str(workload.get("create_fn", "")),
-        "test_target": test_target,
-        "bench_target": bench_target,
-        "ctest_smoke_name": naming.smoke_ctest_name(benchmark, q),
-        "ctest_smoke_regex": f"^{naming.smoke_ctest_name(benchmark, q)}$",
-        "dataset_db": _dataset_path(workload.get("dataset_db", pipeline_config.tpch_db_sf1)),
-        "scale_db": _dataset_path(workload.get("scale_db", pipeline_config.datasets.get("tpch_sf10", Path()))),
-        "db_env_var": str(workload.get("db_env_var", "ACCEL_TPCH_DB")),
-        "header_path": f"{qdir}/{eng_seg}base/query.hpp",
-        "kernel_path": f"{generated_base}/kernel.cpp",
-        "package_path": f"{generated_base}/package.cpp",
-        "fused_scan_path": f"{generated_base}/fused_scan.cpp",
-        "runtime_path": f"accelerators/{benchmark}/common/runtime.cpp",
-        "fused_header_path": f"{qdir}/{eng_seg}base/fused.hpp",
-        "aux_module_header_path": f"{qdir}/{eng_seg}aux/module.hpp",
-        "aux_finalize_header_path": f"{qdir}/{eng_seg}aux/finalize.hpp",
-        "catalog_path": f"backends/{engine}/api/catalog/query_catalog.hpp" if engine else "",
-        # Where the query's cost models live (AuxCostModelLocation), for every engine.
-        "cost_model_header_path": f"{qdir}/cost_model.hpp",
-        "test_path": f"{qdir}/tests/{test_target}.cpp",
-        "benchmark_path": f"{qdir}/bench/benchmark_q{q}.cpp",
-        "engine_name": engine,
-    }
-
-    if workload.get("workload_kind") == "aux_state":
-        aux_bench = harness.get("bench_target") or f"{naming.benchmark_target(benchmark, q)}_aux"
-        calibrate = harness.get("calibrate_target") or f"calibrate_{benchmark}_q{q}_aux_cost_model"
-        aux_state_subdir = f"{qdir}/{eng_seg}aux"
-        aux_finalize = "finalize.cpp"
-        if benchmark == "sec_edgar":
-            cost_model_stem = f"sec_edgar_q{q}_aux_cost_model"
-        else:
-            cost_model_stem = f"q{q}_aux_cost_model"
-        # The query-wide default model (cost_model.hpp's location); an engine with its
-        # own calibration keeps it beside the default as <stem>_<engine>.json.
-        default_cost_model = f"{qdir}/config/{cost_model_stem}.json"
-        engine_cost_model = f"{qdir}/config/{cost_model_stem}_{engine}.json"
-        bench_sweep = workload.get("aux_bench_sweep", {})
-        if not isinstance(bench_sweep, dict):
-            bench_sweep = {}
-        if benchmark == "sec_edgar":
-            bench_suffix = f"q{q}_aux_bench_sf3"
-        else:
-            bench_suffix = f"q{q}_aux_bench_sf1"
-        paths.update(
-            {
-                "aux_function_name": naming.aux_function_name(benchmark, q),
-                "aux_test_target": f"{test_target}_aux",
-                "aux_bench_target": aux_bench,
-                "aux_hybrid_bench_target": naming.hybrid_benchmark_target(benchmark, q),
-                "aux_calibrate_target": calibrate,
-                "aux_ctest_smoke_regex": f"^{naming.aux_smoke_ctest_name(benchmark, q)}$",
-                "aux_state_subdir": aux_state_subdir,
-                "aux_finalize_path": f"{aux_state_subdir}/{aux_finalize}",
-                "cost_model_default": default_cost_model,
-                "cost_model_config": engine_cost_model,
-                "aux_bench_work_dir_suffix": str(
-                    workload.get("aux_bench_work_dir_suffix", bench_suffix)
-                ),
-                "aux_bench_suites": str(
-                    bench_sweep.get("suites", workload.get("aux_bench_suites", "lineitem_only"))
-                ),
-            }
-        )
-    return paths
-
-
-def resolve_optimization_edit_paths(
-    pipeline_config: PipelineConfig,
-    workload: dict[str, Any],
-    query: int,
-) -> dict[str, Any]:
-    """Repo-relative paths the optimization loop may edit and profile."""
-    paths = resolve_workload_paths(pipeline_config, workload, query)
-    if workload.get("workload_kind") == "aux_state":
-        aux = paths["aux_state_subdir"]
-        all_paths = [
-            f"{aux}/module.hpp",
-            f"{aux}/module.cpp",
-            f"{aux}/finalize.cpp",
-        ]
-        cost_model = paths.get("cost_model_config")
-        if cost_model:
-            all_paths.append(cost_model)
-        return {
-            "primary_cpp": f"{aux}/module.cpp",
-            "header": f"{aux}/module.hpp",
-            "secondary_cpp": f"{aux}/finalize.cpp",
-            "all_paths": all_paths,
-            "is_aux": True,
-        }
-
-    all_paths = [paths["header_path"], paths["kernel_path"], paths["package_path"]]
-    fused = paths.get("fused_scan_path")
-    if fused:
-        all_paths.append(fused)
-    return {
-        "primary_cpp": paths["kernel_path"],
-        "header": paths["header_path"],
-        "secondary_cpp": paths["package_path"],
-        "all_paths": all_paths,
-        "is_aux": False,
-    }
-
-
-def _choice(data: dict[str, Any], key: str, allowed: tuple[str, ...], default: str) -> str:
-    value = str(data.get(key, default))
-    if value not in allowed:
-        raise ValueError(f"{key}: {value!r} (expected one of {', '.join(allowed)})")
+def _strip_quotes(value: str) -> str:
+    value = value.strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+        return value[1:-1]
     return value
 
 
-def _repair_config(block: dict[str, Any]) -> RepairConfig:
-    defaults = RepairConfig()
-    return RepairConfig(
-        max_code_rounds=int(block.get("max_code_rounds", defaults.max_code_rounds)),
-        infra_retries=int(block.get("infra_retries", defaults.infra_retries)),
-        max_replans=int(block.get("max_replans", defaults.max_replans)),
-        max_orchestrator_retries=int(block.get("max_orchestrator_retries", defaults.max_orchestrator_retries)),
-        load_factor=float(block.get("load_factor", defaults.load_factor)),
-        never_quarantine=tuple(str(g) for g in block.get("never_quarantine", defaults.never_quarantine)),
-        provider_retries=int(block.get("provider_retries", defaults.provider_retries)),
-        provider_backoff_sec=tuple(float(x) for x in block.get("provider_backoff_sec", defaults.provider_backoff_sec)),
-    )
+def load_repo_dotenv(repo_root: Path) -> Path | None:
+    """Load `.env` then `.env.local` from repo_root. Returns path loaded, if any."""
+    loaded: Path | None = None
+    for name in (".env", ".env.local"):
+        path = repo_root / name
+        if not path.is_file():
+            continue
+        for raw_line in path.read_text(encoding="utf-8").splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if line.startswith("export "):
+                line = line[len("export ") :].strip()
+            if "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            key = key.strip()
+            if not key:
+                continue
+            if not os.environ.get(key):  # set and non-empty in the environment wins
+                os.environ[key] = _strip_quotes(value)
+        loaded = path
+    return loaded
 
 
-def _no_progress_config(block: dict[str, Any]) -> NoProgressConfig:
-    defaults = NoProgressConfig()
-    return NoProgressConfig(
-        nudge_sec=float(block.get("nudge_sec", defaults.nudge_sec)),
-        redirect_sec=float(block.get("redirect_sec", defaults.redirect_sec)),
-        stages=tuple((str(stage), tuple((str(k), float(v)) for k, v in (override or {}).items()))
-                     for stage, override in (block.get("stages") or {}).items()),
-    )
+# ---- loading default.yaml and models.yaml -----------------------------------------------------
+
+def load_yaml(path: Path) -> dict[str, Any]:
+    with path.open(encoding="utf-8") as f:
+        return yaml.safe_load(f) or {}
 
 
-def _advisor_config(block: dict[str, Any]) -> AdvisorConfig:
-    defaults = AdvisorConfig()
-    return AdvisorConfig(
-        max_consults_per_stage=int(block.get("max_consults_per_stage", defaults.max_consults_per_stage)),
-        stall_rounds=int(block.get("stall_rounds", defaults.stall_rounds)),
-        timeout_sec=float(block.get("timeout_sec", defaults.timeout_sec)),
-    )
+def config_yaml(repo_root: Path, name: str) -> dict[str, Any]:
+    """pipeline/config/<name>.yaml; empty when the file does not exist."""
+    path = pipeline_root(repo_root) / "config" / f"{name}.yaml"
+    return load_yaml(path) if path.is_file() else {}
 
 
-def _session_config(block: dict[str, Any]) -> SessionConfig:
-    defaults = SessionConfig()
-    return SessionConfig(
-        continuity=bool(block.get("continuity", defaults.continuity)),
-        soft_deadline_sec=int(block.get("soft_deadline_sec", defaults.soft_deadline_sec)),
-        stage_soft_deadline_sec=tuple((str(k), int(v)) for k, v in (block.get("stage_soft_deadline_sec") or {}).items()),
-        idle_timeout_sec=int(block.get("idle_timeout_sec", defaults.idle_timeout_sec)),
-        hard_deadline_sec=int(block.get("hard_deadline_sec", defaults.hard_deadline_sec)),
-        max_resumes=int(block.get("max_resumes", defaults.max_resumes)),
-        max_context_tokens=int(block.get("max_context_tokens", defaults.max_context_tokens)),
-        no_progress=_no_progress_config(block.get("no_progress") or {}),
-        exit_gate=tuple((str(k), str(v)) for k, v in (block.get("exit_gate") or {}).items()),
-    )
+def _coerce(f: dataclasses.Field, value: Any, where: str) -> Any:
+    """`value` as the type of the field's default; a nested settings block becomes its dataclass."""
+    default = f.default_factory() if f.default is dataclasses.MISSING else f.default
+    if dataclasses.is_dataclass(default):
+        return _section(type(default), value, f"{where}.{f.name}")
+    if isinstance(default, (bool, int, float, str, tuple, dict, list)):
+        return type(default)(value)
+    return value
 
 
-def _data_tools_config(block: dict[str, Any]) -> DataToolsConfig:
-    defaults = DataToolsConfig()
-    return DataToolsConfig(
-        query_seconds=float(block.get("query_seconds", defaults.query_seconds)),
-        default_rows=int(block.get("default_rows", defaults.default_rows)),
-        max_rows=int(block.get("max_rows", defaults.max_rows)),
-    )
+def _section(cls: type, raw: dict[str, Any] | None, where: str) -> Any:
+    """A settings dataclass from a yaml block; a key that names no field is an error, a null keeps the default."""
+    fields = {f.name: f for f in dataclasses.fields(cls)}
+    raw = raw or {}
+    unknown = sorted(set(raw) - set(fields))
+    if unknown:
+        raise ValueError(f"{where}: unknown settings {unknown}")
+    return cls(**{k: _coerce(fields[k], v, where) for k, v in raw.items() if v is not None})
 
 
-def load_pipeline_config(
-    config_path: Path | None = None,
-    repo_root: Path | None = None,
-) -> PipelineConfig:
+def optimization_settings(block: dict[str, Any], where: str) -> dict[str, Any]:
+    """PipelineConfig fields set by an `optimization:` block (`max_turns:` maps phases to optimization_max_turns_<phase>)."""
+    flat = {f"optimization_{k}": v for k, v in block.items() if k != "max_turns"}
+    flat.update({f"optimization_max_turns_{phase}": n for phase, n in (block.get("max_turns") or {}).items()})
+    fields = {f.name: f for f in dataclasses.fields(PipelineConfig) if f.name.startswith("optimization_")}
+    unknown = sorted(set(flat) - set(fields))
+    if unknown:
+        raise ValueError(f"{where}: unknown optimization settings {unknown}")
+    return {k: _coerce(fields[k], v, where) for k, v in flat.items()}
+
+
+_YAML_SETTINGS = (
+    "sandbox", "sandbox_extra_ro", "sandbox_extra_rw", "write_policy", "shared_bench_harness", "stage_max_turns",
+    "write_paths", "allowed_commands", "repair", "advisor", "session", "data_tools", "measurement", "quick_tier", "concurrency",
+)
+
+
+def _under(root: Path, path: str | Path) -> Path:
+    path = Path(path)
+    return path if path.is_absolute() else root / path
+
+
+def load_pipeline_config(config_path: Path | None = None, repo_root: Path | None = None) -> PipelineConfig:
     root = repo_root or find_repo_root()
     pipe = pipeline_root(root)
-    cfg_path = config_path or (pipe / "config" / "default.yaml")
-    data = _load_yaml(cfg_path)
-
-    build_rel = data.get("build_dir", "build-release")
-    gates_rel = data.get("gates_dir", "pipeline/gates")
-
-    datasets = {
-        key: Path(os.environ[env_var])
-        for key, env_var in dict(data.get("datasets", {})).items()
-        if os.environ.get(env_var)
-    }
-
-    shared_paths = [str(x) for x in list(data.get("shared_paths") or [])]
-    if not shared_paths:
-        shared_paths = list(DEFAULT_SHARED_PATH_GLOBS)
+    data = load_yaml(config_path or pipe / "config" / "default.yaml")
+    fields = {f.name: f for f in dataclasses.fields(PipelineConfig)}
+    # A dataset is available to the run when the environment variable that default.yaml names for it is set.
+    datasets = {key: Path(os.environ[var]) for key, var in (data.get("datasets") or {}).items() if os.environ.get(var)}
 
     cfg = PipelineConfig(
         repo_root=root,
         pipeline_root=pipe,
-        build_dir=root / build_rel,
-        tpch_db_sf1=datasets.get("tpch_sf1", Path()),
+        build_dir=root / data.get("build_dir", DEFAULT_BUILD_DIR),
+        gates_dir=root / data.get("gates_dir", DEFAULT_GATES_DIR),
         datasets=datasets,
-        shared_bench_harness=tuple(str(b) for b in data.get("shared_bench_harness") or ()),
-        repair=_repair_config(data.get("repair") or {}),
-        advisor=_advisor_config(data.get("advisor") or {}),
-        session=_session_config(data.get("session") or {}),
-        data_tools=_data_tools_config(data.get("data_tools") or {}),
-        stage_max_turns=dict(data.get("stage_max_turns", {})),
-        write_paths=list(data.get("write_paths", [])),
-        allowed_commands=list(data.get("allowed_commands", [])),
-        gates_dir=root / gates_rel,
-        worker_id=str(os.environ.get("ACCEL_PIPELINE_WORKER_ID") or ""),
-        shared_paths=shared_paths,
-        sandbox=_choice(data, "sandbox", ("bwrap", "none"), "bwrap"),
-        sandbox_extra_ro=[str(x) for x in data.get("sandbox_extra_ro") or []],
-        sandbox_extra_rw=[str(x) for x in data.get("sandbox_extra_rw") or []],
-        write_policy=_choice(data, "write_policy", ("enforce", "warn", "off"), "warn"),
-        measurement=MeasurementConfig.from_dict(data.get("measurement")),
-        quick_tier=_quick_tier_config(data),
-        concurrency=ConcurrencyConfig.from_dict(data.get("concurrency")),
+        worker_id=os.environ.get("ACCEL_PIPELINE_WORKER_ID") or "",
         test_suite=SuiteConfig.from_dict(data.get("test_suite")),
+        **optimization_settings(data.get("optimization") or {}, "optimization"),
+        **{k: _coerce(fields[k], data[k], k) for k in _YAML_SETTINGS if data.get(k) is not None},
     )
-    cfg = _apply_optimization_block(cfg, data.get("optimization") or {})
 
-    env_build = os.environ.get("ACCEL_PIPELINE_BUILD_DIR")
-    if env_build:
-        bdir = Path(env_build)
-        if not bdir.is_absolute():
-            bdir = root / bdir
-        from accel_pipeline.worker_isolation import _rewrite_build_dir_patterns
+    if os.environ.get("ACCEL_PIPELINE_BUILD_DIR"):
+        from accel_pipeline.pack import _rewrite_build_dir_patterns
 
-        cfg = replace(
-            cfg,
-            build_dir=bdir,
-            allowed_commands=_rewrite_build_dir_patterns(list(cfg.allowed_commands), bdir.name),
-        )
-    env_codex = os.environ.get("ACCEL_PIPELINE_CODEX_HOME")
-    if env_codex:
-        chome = Path(env_codex)
-        if not chome.is_absolute():
-            chome = root / chome
-        cfg = replace(cfg, codex_home=chome)
+        build_dir = _under(root, os.environ["ACCEL_PIPELINE_BUILD_DIR"])
+        cfg = replace(cfg, build_dir=build_dir,
+                      allowed_commands=_rewrite_build_dir_patterns(cfg.allowed_commands, build_dir.name))
+    if os.environ.get("ACCEL_PIPELINE_CODEX_HOME"):
+        cfg = replace(cfg, codex_home=_under(root, os.environ["ACCEL_PIPELINE_CODEX_HOME"]))
     return cfg
+
+
+def load_model_config(path: Path | None = None, repo_root: Path | None = None) -> ModelConfig:
+    root = repo_root or find_repo_root()
+    models_yaml = _resolve_config_path(root, path or pipeline_root(root) / "config" / "models.yaml")
+    return _section(ModelConfig, load_yaml(models_yaml), "models config")
 
 
 def _resolve_config_path(repo_root: Path, path: Path) -> Path:
     if path.is_absolute():
         return path
     pipe = pipeline_root(repo_root)
-    candidates = (
-        path,
-        repo_root / path,
-        pipe / path,
-        pipe / "config" / path.name,
-    )
-    for candidate in candidates:
+    for candidate in (path, repo_root / path, pipe / path, pipe / "config" / path.name):
         if candidate.is_file():
             return candidate
     return repo_root / path
 
 
-def load_model_config(path: Path | None = None, repo_root: Path | None = None) -> ModelConfig:
-    root = repo_root or find_repo_root()
-    cfg_path = _resolve_config_path(root, path or (pipeline_root(root) / "config" / "models.yaml"))
-    data = _load_yaml(cfg_path)
-    return ModelConfig(
-        api_key_env=str(data.get("api_key_env", "OPENROUTER_API_KEY")),
-        presets=dict(data.get("presets", {})),
-        stages=dict(data.get("stages", {})),
-        stage_providers={str(k): str(v) for k, v in dict(data.get("stage_providers") or {}).items()},
-        codex_bin=str(data.get("codex_bin", "codex")),
-        codex_config_path=str(data.get("codex_config_path", "pipeline/.codex/config.toml")),
-        codex_timeout_sec=int(data.get("codex_timeout_sec", 7200)),
-        codex_bypass_approvals_and_sandbox=bool(
-            data.get("codex_bypass_approvals_and_sandbox", True)
-        ),
-        stage_reasoning_effort={str(k): str(v) for k, v in (data.get("stage_reasoning_effort") or {}).items()},
-        codex_model_context_window=int(data.get("codex_model_context_window") or 0),
-        codex_auto_compact_tokens=int(data.get("codex_auto_compact_tokens") or 0),
-        codex_compact_prompt_file=str(data.get("codex_compact_prompt_file") or ""),
-    )
+# ---- which model a stage runs ----------------------------------------------------------------
+
+_OPTIMIZATION_STAGE_FALLBACKS = (
+    "optimization",
+    "optimization_unified",
+    "optimization_unified_hypothesis",
+    "optimization_unified_patch",
+    "optimization_fix",
+    "optimization_worker",
+)
+
+_STAGE_PROVIDER_PARENTS = {
+    "optimization": "optimization_unified",
+    "optimization_unified_hypothesis": "optimization_unified",
+    "optimization_unified_patch": "optimization_unified",
+    "optimization_fix": "optimization_worker",
+    "optimization_worker": "optimization_unified",
+    "preflight_live": "analysis",  # the live model probe runs the way an analysis turn does
+}
 
 
-def load_aux_state_defaults(repo_root: Path | None = None) -> dict[str, Any]:
-    root = repo_root or find_repo_root()
-    path = pipeline_root(root) / "config" / "aux_state.yaml"
-    if not path.is_file():
-        return {}
-    return _load_yaml(path)
+def is_implementation_stage(stage: str) -> bool:
+    return stage == "implementation" or stage.startswith("impl_")
 
 
-def load_engine_backend_defaults(repo_root: Path | None = None) -> dict[str, Any]:
-    root = repo_root or find_repo_root()
-    path = pipeline_root(root) / "config" / "engine_backend.yaml"
-    if not path.is_file():
-        return {}
-    return _load_yaml(path)
+def is_critique_stage(stage: str) -> bool:
+    return stage == "layer_critique" or stage.startswith("critique_")
 
+
+def resolve_stage_provider(stage: str, model_config: ModelConfig) -> str:
+    """Per-stage provider: the stage's own entry, else its family or parent stage's; unknown stages raise."""
+    providers = model_config.stage_providers
+    if stage in providers:
+        return providers[stage]
+    if is_critique_stage(stage) and "layer_critique" in providers:
+        return providers["layer_critique"]
+    if is_implementation_stage(stage) and "implementation" in providers:
+        return providers["implementation"]
+    parent = _STAGE_PROVIDER_PARENTS.get(stage)
+    if parent and parent in providers:
+        return providers[parent]
+    if stage in _OPTIMIZATION_STAGE_FALLBACKS and "optimization_unified" in providers:
+        return providers["optimization_unified"]
+    raise KeyError(f"no provider configured for stage {stage!r} (stage_providers)")
+
+
+def resolve_preset(stage: str, model_config: ModelConfig, overrides: dict[str, str] | None = None) -> str:
+    overrides = overrides or {}
+    preset_name = overrides.get(stage)
+    if not preset_name and is_implementation_stage(stage):
+        preset_name = overrides.get("implementation")
+    if not preset_name and is_critique_stage(stage):
+        preset_name = overrides.get("layer_critique")
+    if not preset_name:
+        preset_name = model_config.stages.get(stage)
+    if not preset_name and is_critique_stage(stage):
+        preset_name = model_config.stages.get("layer_critique")
+        if not preset_name and "cheap_code" in model_config.presets:
+            preset_name = "cheap_code"
+    if not preset_name and is_implementation_stage(stage):
+        preset_name = model_config.stages.get("implementation")
+    if not preset_name and stage in _OPTIMIZATION_STAGE_FALLBACKS:
+        preset_name = (
+            model_config.stages.get("optimization_unified")
+            or model_config.stages.get("optimization_worker")
+            or "default"
+        )
+    preset_name = preset_name or "default"
+    if preset_name not in model_config.presets:
+        raise KeyError(f"unknown model preset: {preset_name}")
+    return model_config.presets[preset_name]
+
+
+def _require_api_key(model_config: ModelConfig) -> None:
+    if model_config.api_key_env not in os.environ and os.environ.get("ACCEL_PIPELINE_DRY_RUN") != "1":
+        raise EnvironmentError(f"set {model_config.api_key_env} or use --dry-run")
+
+
+def make_model_id(
+    stage: str,
+    pipeline_config: PipelineConfig,  # noqa: ARG001 — reserved for future provider options
+    model_config: ModelConfig,
+    overrides: dict[str, str] | None = None,
+) -> str:
+    """Return the model id string for logging and dry-run display."""
+    provider = resolve_stage_provider(stage, model_config)
+    if provider != "codex_exec":
+        raise ValueError(f"unsupported provider: {provider!r}")
+    _require_api_key(model_config)
+    return resolve_preset(stage, model_config, overrides)
+
+
+SCHEMA_RELATIVE = Path("schemas") / "engine_profile.schema.json"
+ALL_SECTIONS = "all"
+FACTS_FILE = "workload_facts.json"
+HEARTBEAT_FILE = "agent_heartbeat"  # touched while an agent turn or a queued gate shows signs of life
+SCRATCH_DIALECT = "duckdb"  # the scratch SQL engine's sqlglot dialect
+
+
+# ---- derived names -----------------------------------------------------------------------------
+
+def bench_pascal(benchmark: str) -> str:
+    return benchmark.title().replace("_", "")
+
+
+def base_function_name(benchmark: str, query: Any) -> str:
+    return f"accel_{benchmark}_q{query}"
+
+
+def aux_function_name(benchmark: str, query: Any) -> str:
+    return f"{base_function_name(benchmark, query)}_aux"
+
+
+def accelerator_id(benchmark: str, query: Any) -> str:
+    return f"{benchmark}_q{query}_aux"
+
+
+def header_basename(benchmark: str, query: Any) -> str:
+    return f"{benchmark}_q{query}"
+
+
+def unit_test_target(benchmark: str, query: Any) -> str:
+    return f"test_{benchmark}_q{query}"
+
+
+def benchmark_target(benchmark: str, query: Any) -> str:
+    return f"benchmark_{benchmark}_q{query}"
+
+
+def smoke_ctest_name(benchmark: str, query: Any) -> str:
+    return f"{benchmark}_q{query}_smoke_test"
+
+
+def aux_smoke_ctest_name(benchmark: str, query: Any) -> str:
+    return f"{benchmark}_q{query}_aux_smoke_test"
+
+
+def hybrid_benchmark_target(benchmark: str, query: Any) -> str:
+    return f"benchmark_{benchmark}_q{query}_hybrid_eval"
+
+
+def registration_symbol(pattern: str, benchmark: str, query: Any) -> str:
+    """Expand a profile's registration-symbol pattern: {Bench} is the CamelCase benchmark, {N} the query."""
+    return pattern.replace("{Bench}", bench_pascal(benchmark)).replace("{N}", str(query))
+
+
+# ---- the engine --------------------------------------------------------------------------------
 
 def sanitize_engine_name(name: str) -> str:
     """Normalize engine_name to a filesystem / C++ identifier fragment."""
@@ -662,8 +592,25 @@ def sanitize_engine_name(name: str) -> str:
     return cleaned
 
 
-def engine_pascal_name(engine_name: str) -> str:
-    return "".join(part[:1].upper() + part[1:] for part in sanitize_engine_name(engine_name).split("_") if part)
+def workload_engines(workload: dict[str, Any]) -> list[str]:
+    """Engines a workload supports: its `engines:` list."""
+    declared = workload.get("engines")
+    if not declared:
+        raise ValueError(f"workload {workload.get('query_id', '?')!r} declares no `engines:`")
+    return [sanitize_engine_name(e) for e in declared]
+
+
+def select_engine(workload: dict[str, Any], requested: str, name: str) -> str:
+    """The run's engine: `requested`, or the workload's only engine; else an error."""
+    supported = workload_engines(workload)
+    engine = sanitize_engine_name(requested) if requested else ""
+    if not engine and len(supported) == 1:
+        engine = supported[0]
+    if not engine:
+        raise ValueError(f"workload {name!r} supports engines {supported}: pick one (--engine / pack `engines:`)")
+    if engine not in supported:
+        raise ValueError(f"workload {name!r} does not support engine {engine!r} (supports {supported})")
+    return engine
 
 
 def harness_targets(engine: str, bench: str) -> dict[str, str]:
@@ -707,361 +654,170 @@ def engine_host_conventions(
         "work_db_suffix": query_host["work_db_suffix"],
         "smoke_ready": True,
         **targets,
-        "differential_source": f"backends/{engine}/tests/harness/{diff}.cpp",
+        "differential_source": f"backends/{engine}/tests/harness/test_{engine}_differential.cpp",  # one source, a target per benchmark
         "differential_command": f"host.sh run {diff} <query>",
         "query_host_ready_hint": (
             f"The {engine} workload harnesses ({', '.join(targets.values())}) are generated by the "
             f"host_bootstrap stage under backends/{engine}/tests/harness/ and backends/{engine}/bench/; "
-            f"a query only registers from `{register}`. See pipeline/prompts/shared/docs/query_host_bootstrap.md."
+            f"a query only registers from `{register}`. See pipeline/prompts/shared/query_host_bootstrap.md."
         ),
     }
 
 
-def workload_engines(workload: dict[str, Any]) -> list[str]:
-    """Engines a workload supports: its `engines:` list."""
-    declared = workload.get("engines")
-    if not declared:
-        raise ValueError(f"workload {workload.get('query_id', '?')!r} declares no `engines:`")
-    return [sanitize_engine_name(e) for e in declared]
+class EngineProfileError(ValueError):
+    """The workload's engine_profile is missing or does not match the schema."""
 
 
-def select_engine(workload: dict[str, Any], requested: str, name: str) -> str:
-    """The run's engine: `requested`, or the workload's only engine; else an error."""
-    supported = workload_engines(workload)
-    engine = sanitize_engine_name(requested) if requested else ""
-    if not engine and len(supported) == 1:
-        engine = supported[0]
-    if not engine:
-        raise ValueError(
-            f"workload {name!r} supports engines {supported}: pick one (--engine / pack `engines:`)"
-        )
-    if engine not in supported:
-        raise ValueError(f"workload {name!r} does not support engine {engine!r} (supports {supported})")
-    return engine
+def _is_na(value: Any) -> bool:
+    return isinstance(value, dict) and set(value) == {"na"}
 
 
-def _normalize_accelerator_engine(data: dict[str, Any], engine: str, repo_root: Path) -> dict[str, Any]:
-    """Pin the run's engine and attach host conventions for accelerators."""
-    data["engine_name"] = engine
-    # Generated query tree for this engine.
-    bench = str(data.get("benchmark_name") or data.get("benchmark") or "tpch")
-    qnum = data.get("query_number")
-    host = engine_host_conventions(engine, bench, qnum if qnum is not None else "<N>", repo_root)
-    data["engine_host"] = host
-    writes = list(data.get("write_paths") or [])
-    # The query's run owns its directory (one glob); backends/<engine>/** belongs to
-    # the engine_backend run and substrate/** to nobody (write_ownership enforces both).
-    extra = query_glob(bench, qnum) if qnum is not None else ""
-    if extra and extra not in writes:
-        writes.append(extra)
-    data["write_paths"] = _dedupe_preserve(writes)
-    return data
-
-
-def _derive_query_names(data: dict[str, Any], engine: str, root: Path) -> None:
-    """The query's names (naming.py), plus the engine profile's registration symbol."""
-    bench, q = str(data.get("benchmark_name", "tpch")), data.get("query_number")
-    if q is None:
-        return
-    pattern = registration_symbol_pattern(load_engine_profile(engine, pipeline_root(root)))
-    data.update(
-        function_name=naming.base_function_name(bench, q),
-        create_fn=naming.registration_symbol(pattern, bench, q) if pattern else "",
-        header_basename=naming.header_basename(bench, q),
-        test_target=naming.unit_test_target(bench, q),
-        ctest_smoke_regex=f"^{naming.smoke_ctest_name(bench, q)}$",
+def validate_engine_profile(profile: Any, pipeline_root: Path, *, source: str) -> None:
+    if not isinstance(profile, dict):
+        raise EngineProfileError(f"{source}: engine_profile is required (see schemas/engine_profile.schema.json)")
+    schema = json.loads((pipeline_root / SCHEMA_RELATIVE).read_text(encoding="utf-8"))
+    errors = sorted(
+        jsonschema.Draft202012Validator(schema).iter_errors(profile),
+        key=lambda e: [str(p) for p in e.absolute_path],
     )
-    if data.get("workload_kind") == "aux_state":
-        data.update(
-            aux_function_name=naming.aux_function_name(bench, q),
-            accelerator_id=naming.accelerator_id(bench, q),
-            prerequisite_workload=naming.base_workload_name(bench, q),
-        )
+    if errors:
+        lines = [f"- {'.'.join(str(p) for p in e.absolute_path) or '<root>'}: {_describe(e)}" for e in errors[:20]]
+        more = f"\n- ... {len(errors) - 20} more" if len(errors) > 20 else ""
+        raise EngineProfileError(f"{source}: invalid engine_profile\n" + "\n".join(lines) + more)
 
 
-def _expand_engine_placeholders(value: str, engine: str) -> str:
-    return (
-        str(value)
-        .replace("{engine}", engine)
-        .replace("{ENGINE}", engine.upper())
-        .replace("{Engine}", engine_pascal_name(engine))
-    )
+def _describe(error: jsonschema.ValidationError) -> str:
+    if error.validator == "required":
+        return f"missing key {error.message.split(' ')[0]}"
+    if error.validator in ("oneOf", "anyOf"):
+        return "needs a value or {na: reason}"
+    return error.message.splitlines()[0][:160]
 
 
-def _dedupe_preserve(items: list[str]) -> list[str]:
-    seen: set[str] = set()
-    out: list[str] = []
-    for item in items:
-        if item in seen:
-            continue
-        seen.add(item)
-        out.append(item)
-    return out
-
-
-def _normalize_engine_backend_workload(data: dict[str, Any], repo_root: Path) -> dict[str, Any]:
-    """Fill conventional paths/write allowlists for any engine_name."""
-    defaults = load_engine_backend_defaults(repo_root)
-    engine = sanitize_engine_name(str(data.get("engine_name") or ""))
-    data["engine_name"] = engine
-    data.setdefault("benchmark_name", "engine")
-    data.setdefault("artifact_namespace", f"engines/{engine}")
-    data.setdefault("prompt_subdir", str(defaults.get("prompt_subdir") or "engine_backend"))
-    data.setdefault("query_number", 0)
-    # The benchmark whose schema and dataset the backend gates load (the backend names no query).
-    data.setdefault("dataset_benchmark", str(defaults.get("dataset_benchmark") or ""))
-    data.setdefault(
-        "allow_update_existing",
-        bool(defaults.get("allow_update_existing", True)),
-    )
-
-    profile = data.get("engine_profile")
-    validate_engine_profile(profile, pipeline_root(repo_root), source=f"workload {engine}")
-    if profile["identity"]["name"] != engine:
-        raise EngineProfileError(
-            f"workload {engine}: engine_profile.identity.name is {profile['identity']['name']!r}"
-        )
-    data["display_name"] = profile["identity"]["display_name"]
-    data["host_runtime"] = host_runtime_of(profile)
-    data["requires_in_process_host"] = profile["packaging"]["requires_in_process_host"]
-    data["placement_candidates"] = list(profile["packaging"]["placement_candidates"])
-
-    for key in (
-        "post_implementation_gates",
-        "post_validation_gates",
-        "stage_max_turns",
-        "hide_foreign_engines",
-        "agent_hidden_trees",
-        "engine_profile_sections",
-        "architecture_audit_max_rounds",
-        "layer_critique_max_rounds",
-        "layer_gate_max_rounds",
-        "main_session_max_context_tokens",
-        "validation_gate_owners",
-        "implementation_layers",
-    ):
-        if key not in data and key in defaults:
-            data[key] = copy.deepcopy(defaults[key])
-
-    layers = []
-    for raw in list(data.get("implementation_layers") or []):
-        if not isinstance(raw, dict):
-            continue
-        layer = dict(raw)
-        for key in ("harness", "cmake_target", "title", "gate", "id"):
-            if key in layer:
-                layer[key] = _expand_engine_placeholders(str(layer[key]), engine)
-        layers.append(layer)
-    data["implementation_layers"] = layers
-
-    default_targets = {
-        str(k): _expand_engine_placeholders(str(v), engine)
-        for k, v in dict(defaults.get("default_target_paths") or {}).items()
-    }
-    targets = dict(default_targets)
-    targets.update({str(k): str(v) for k, v in dict(data.get("target_paths") or {}).items()})
-    data["target_paths"] = targets
-
-    default_cmake = {
-        str(k): _expand_engine_placeholders(str(v), engine)
-        for k, v in dict(defaults.get("default_cmake") or {}).items()
-    }
-    cmake = dict(default_cmake)
-    cmake.update({str(k): str(v) for k, v in dict(data.get("cmake") or {}).items()})
-    cmake["build_flag"] = profile["build"]["cmake_option"]
-    data["cmake"] = cmake
-
-    expanded_writes = [
-        _expand_engine_placeholders(str(p), engine)
-        for p in list(defaults.get("write_paths") or []) + list(data.get("write_paths") or [])
-    ]
-    # The engine's run owns backends/<engine>/** (incl. api/catalog/), whatever the YAML lists.
-    data["write_paths"] = _dedupe_preserve([backend_glob(engine), *expanded_writes])
-
-    expanded_cmds = [
-        _expand_engine_placeholders(str(c), engine)
-        for c in list(defaults.get("allowed_commands") or []) + list(data.get("allowed_commands") or [])
-    ]
-    data["allowed_commands"] = _dedupe_preserve(expanded_cmds)
-    return data
-
-
-def load_benchmark_aux_state_defaults(
-    benchmark_name: str,
-    repo_root: Path | None = None,
-) -> dict[str, Any]:
-    root = repo_root or find_repo_root()
-    path = pipeline_root(root) / "config" / f"{benchmark_name}_aux_state.yaml"
+def load_engine_profile(engine: str, pipeline_root: Path) -> dict[str, Any]:
+    """The validated profile of `engine` from its engine_backend workload."""
+    path = pipeline_root / "config" / "workloads" / f"engine_{engine}.yaml"
     if not path.is_file():
-        return {}
-    return _load_yaml(path)
+        raise EngineProfileError(f"no engine profile for {engine!r}: {path} is missing")
+    profile = (yaml.safe_load(path.read_text(encoding="utf-8")) or {}).get("engine_profile")
+    validate_engine_profile(profile, pipeline_root, source=str(path))
+    return profile
 
 
-def _expand_fairness_search_paths(workload: dict[str, Any], engine: str) -> None:
-    """Expand {bench}/{engine} in `fairness.kernel_search_paths` for the run."""
-    fairness = workload.get("fairness")
-    paths = fairness.get("kernel_search_paths") if isinstance(fairness, dict) else None
-    if paths:
-        bench = str(workload.get("benchmark_name", "tpch"))
-        fairness["kernel_search_paths"] = [
-            str(p).replace("{bench}", bench).replace("{engine}", engine) for p in paths
-        ]
+def registration_symbol_pattern(profile: dict[str, Any]) -> str:
+    """The profile's per-query registration symbol pattern; empty when the engine has none."""
+    pattern = profile["entry_points"]["registration_symbol"]
+    return "" if _is_na(pattern) else pattern
 
 
-def _merge_aux_defaults(workload: dict[str, Any], repo_root: Path) -> None:
-    aux_defaults = load_aux_state_defaults(repo_root)
-    benchmark = str(workload.get("benchmark_name", "tpch"))
-    bench_aux = load_benchmark_aux_state_defaults(benchmark, repo_root)
-
-    for key in (
-        "post_implementation_gates",
-        "post_optimization_gates",
-        "post_audit_gates",
-        "prompt_subdir",
-        "max_structural_reanalysis",
-        "fairness",
-        "host_bootstrap_gate_max_rounds",
-        "host_bootstrap_critique_max_rounds",
-        "analysis_critique_max_rounds",
-    ):
-        if key in aux_defaults:
-            if key == "fairness":
-                merged_fair = dict(workload.get("fairness") or {})
-                merged_fair.update(dict(aux_defaults["fairness"] or {}))
-                # Prefer aux_state search paths when provided.
-                if aux_defaults["fairness"].get("kernel_search_paths"):
-                    merged_fair["kernel_search_paths"] = copy.deepcopy(
-                        aux_defaults["fairness"]["kernel_search_paths"]
-                    )
-                if "cardinality_constants" not in merged_fair and workload.get("fairness"):
-                    merged_fair["cardinality_constants"] = list(
-                        (workload.get("fairness") or {}).get("cardinality_constants") or []
-                    )
-                workload["fairness"] = merged_fair
-            else:
-                workload[key] = aux_defaults[key]
-    for key in ("requires_base_accelerator", "prerequisite_min_stage", "allow_poor_fitness", "allow_unsuccessful_design"):
-        workload.setdefault(key, aux_defaults[key])
-    if "speedup_verification" in aux_defaults:
-        workload.setdefault("speedup_verification", dict(aux_defaults["speedup_verification"]))
-
-    for key in ("write_paths", "allowed_commands"):
-        merged = list(aux_defaults.get(key, []))
-        merged.extend(bench_aux.get(key, []))
-        pack_extra = list(workload.get(key, []))
-        workload[key] = merged + pack_extra
-
-    workload_sweep = workload.get("aux_bench_sweep")
-    if isinstance(workload_sweep, dict) and workload_sweep:
-        base = dict(bench_aux.get("aux_bench_sweep") or aux_defaults.get("aux_bench_sweep") or {})
-        base.update(workload_sweep)
-        workload["aux_bench_sweep"] = base
-    elif "aux_bench_sweep" in bench_aux:
-        workload["aux_bench_sweep"] = dict(bench_aux["aux_bench_sweep"])
-    elif "aux_bench_sweep" in aux_defaults:
-        workload["aux_bench_sweep"] = dict(aux_defaults["aux_bench_sweep"])
-
-    if "aux_bench_sweep_optimization" in aux_defaults:
-        workload["aux_bench_sweep_optimization"] = dict(aux_defaults["aux_bench_sweep_optimization"])
-    if "aux_bench_sweep_quick" in aux_defaults:
-        workload["aux_bench_sweep_quick"] = dict(aux_defaults["aux_bench_sweep_quick"])
+def host_runtime_of(profile: dict[str, Any]) -> dict[str, Any]:
+    """The profile's host_runtime without its n/a leaves."""
+    return {key: value for key, value in profile["host_runtime"].items() if not _is_na(value)}
 
 
-# The `optimization:` block of default.yaml and of a workload: its keys and the PipelineConfig fields they set.
-_OPTIMIZATION_KEYS = {
-    "max_iterations": "optimization_max_iterations",
-    "no_improvement_stop": "optimization_no_improvement_stop",
-    "stage_budget_sec": "optimization_stage_budget_sec",
-    "max_attempts_per_iteration": "optimization_max_attempts_per_iteration",
-    "improvement_threshold_pct": "optimization_improvement_threshold_pct",
-    "reject_threshold_pct": "optimization_reject_threshold_pct",
-    "consecutive_fail_stop": "optimization_consecutive_fail_stop",
-    "quick_benchmark_samples": "optimization_quick_benchmark_samples",
-    "context_max_chars": "optimization_context_max_chars",
-    "context_max_lines": "optimization_context_max_lines",
-    "smoke_runs": "optimization_smoke_runs",
-    "worker_max_turns_per_candidate": "optimization_worker_max_turns_per_candidate",
-    "worker_safety_cap_turns": "optimization_worker_safety_cap_turns",
-    "hot_path_digest_max_chars": "optimization_hot_path_digest_max_chars",
-    "turn_delta_max_chars": "optimization_turn_delta_max_chars",
-    "checkpoint_file": "optimization_checkpoint_file",
-    "early_stop": "optimization_early_stop",
-    "structural": "optimization_structural",
-}
+def _render_value(value: Any) -> str:
+    if _is_na(value):
+        return f"n/a ({value['na']})"
+    if isinstance(value, list):
+        return "; ".join(str(v) for v in value)
+    if isinstance(value, dict):
+        return ", ".join(f"{k}={v}" for k, v in value.items())
+    return str(value)
 
 
-def _apply_optimization_block(pipeline_config: PipelineConfig, opt: dict[str, Any]) -> PipelineConfig:
-    """Override the optimization settings the block names, each coerced to its field's type."""
-    unknown = sorted(set(opt) - set(_OPTIMIZATION_KEYS))
-    if unknown:
-        raise ValueError(f"unknown optimization settings: {', '.join(unknown)}")
-    changes = {}
-    for key, value in opt.items():
-        name = _OPTIMIZATION_KEYS[key]
-        changes[name] = type(getattr(pipeline_config, name))(value)
-    return replace(pipeline_config, **changes)
+def render_engine_profile(
+    profile: dict[str, Any],
+    sections: list[str] | str,
+    *,
+    layer: str | None = None,
+    host_layer_runs: bool = True,
+) -> str:
+    """Markdown of the requested sections; hazards are narrowed to `layer` when given.
+
+    Without a host layer (embedded engines) the entry points are built in the runtime layer,
+    which then also sees the hazards tagged `host`.
+    """
+    wanted = list(profile) if sections == ALL_SECTIONS else list(sections)
+    out: list[str] = []
+    for name in wanted:
+        if name == "hazards":
+            continue
+        out.append(f"### {name}\n")
+        out.extend(f"- **{key}:** {_render_value(value)}" for key, value in profile[name].items())
+        out.append("")
+    if "hazards" in wanted:
+        shown = {layer, "host"} if layer == "runtime" and not host_layer_runs else {layer}
+        hazards = [h for h in profile["hazards"] if layer is None or shown & set(h["layers"])]
+        out.append("### hazards (engine facts, not instructions)\n")
+        out.extend(
+            f"- *{', '.join(h['layers'])}* — **{h['symptom']}** Engine fact: {h['engine_fact']}" for h in hazards
+        )
+        out.append("")
+    return "\n".join(out).rstrip() + "\n"
 
 
-def apply_workload_overrides(pipeline_config: PipelineConfig, workload: dict[str, Any]) -> PipelineConfig:
-    merged = _apply_workload_overrides(pipeline_config, workload)
-    kind = str(workload.get("workload_kind") or "")
-    engine = str(workload.get("engine_name") or "")
-    if engine:
-        engine = sanitize_engine_name(engine)
-    bench = str(workload.get("benchmark_name") or ("" if kind == "engine_backend" else "tpch"))
-    return replace(merged, workload_kind=kind, engine_name=engine, benchmark_name=bench)
+# ---- loading a workload ------------------------------------------------------------------------
+
+def load_aux_state_defaults(repo_root: Path | None = None) -> dict[str, Any]:
+    return config_yaml(repo_root or find_repo_root(), "aux_state")
 
 
-def _apply_workload_overrides(pipeline_config: PipelineConfig, workload: dict[str, Any]) -> PipelineConfig:
-    engine = sanitize_engine_name(str(workload.get("engine_name") or ""))
-    if workload.get("workload_kind") != "engine_backend" and not engine:
-        raise ValueError("accelerator workload requires explicit engine_name (no default engine)")
-    write_paths = list(workload.get("write_paths", []))
-    allowed_commands = list(workload.get("allowed_commands", []))
-    stage_max_turns = dict(pipeline_config.stage_max_turns)
+def load_engine_backend_defaults(repo_root: Path | None = None) -> dict[str, Any]:
+    return config_yaml(repo_root or find_repo_root(), "engine_backend")
 
-    if workload.get("workload_kind") == "aux_state":
-        aux_defaults = load_aux_state_defaults(pipeline_config.repo_root)
-        write_paths = list(aux_defaults.get("write_paths", [])) + write_paths
-        allowed_commands = list(aux_defaults.get("allowed_commands", [])) + allowed_commands
-        stage_max_turns.update(aux_defaults.get("stage_max_turns") or {})
 
-    # The engine's differential harness, built and run by the accelerator run (its source is the
-    # backend's, made by host_bootstrap).
-    host = workload.get("engine_host") or {}
-    if workload.get("workload_kind") != "engine_backend" and host.get("differential_binary"):
-        binary = re.escape(host["differential_binary"])
-        allowed_commands += [
-            rf"^(\\.\\/)?build-release\\/{binary}( .*)?$",
-            rf"^cmake --build build-release --target {binary}( .*)?$",
-            rf"^ACCEL_[A-Z_]+=\\S+( ACCEL_[A-Z_]+=\\S+)* (\\.\\/)?build-release\\/{binary}( .*)?$",
-        ]
+class WorkloadError(ValueError):
+    """A workload's configuration is incomplete or inconsistent: the pipeline's to fix, never the query's."""
 
-    stage_max_turns.update(workload.get("stage_max_turns") or {})
-    merged = replace(
-        pipeline_config,
-        stage_max_turns=stage_max_turns,
-        write_paths=list(pipeline_config.write_paths) + write_paths,
-        allowed_commands=list(pipeline_config.allowed_commands) + allowed_commands,
-    )
-    return _apply_optimization_block(merged, workload.get("optimization") or {})
+
+def read_workload_file(path: str | Path, what: str) -> str:
+    """The text of a file the workload's bundle must provide; its absence is the workload's configuration error."""
+    if not str(path):
+        raise WorkloadError(f"the workload sets no {what}")
+    try:
+        return Path(path).read_text(encoding="utf-8")
+    except OSError as exc:
+        raise WorkloadError(f"the workload's {what} cannot be read: {path} ({exc.strerror})") from exc
+
+
+def load_benchmark_pack(name: str, repo_root: Path | None = None) -> dict[str, Any]:
+    path = pipeline_root(repo_root or find_repo_root()) / "config" / "benchmark_packs" / f"{name}.yaml"
+    if not path.is_file():
+        raise WorkloadError(f"benchmark pack not found: {path}")
+    return load_yaml(path)
+
+
+_TPCH_WORKLOAD = re.compile(r"tpch_q(\d+)(_aux)?")
+
+
+def _read_workload(root: Path, name: str) -> dict[str, Any] | None:
+    """workloads/<name>.yaml, or a TPC-H query workload built from its template and tpch_queries.yaml; None when neither exists."""
+    workloads = pipeline_root(root) / "config" / "workloads"
+    if (workloads / f"{name}.yaml").is_file():
+        return load_yaml(workloads / f"{name}.yaml")
+    tpch = _TPCH_WORKLOAD.fullmatch(name)
+    queries = load_yaml(workloads / "tpch_queries.yaml") if (workloads / "tpch_queries.yaml").is_file() else {}
+    if not tpch or int(tpch[1]) not in queries:
+        return None
+    q, aux = int(tpch[1]), bool(tpch[2])
+    entry = queries[q]
+    return {
+        **load_yaml(workloads / ("tpch_q_aux.template.yaml" if aux else "tpch_q.template.yaml")),
+        "query_number": q,
+        "reference_sql_path": f"workloads/tpch/instances/seed_1/{q:02d}.sql",
+        "parameters": [{"name": n, "type": t} for n, t in entry["parameters"].items()],
+        **((entry.get("aux") or {}) if aux else {}),
+    }
 
 
 def _read_workload_yaml(name: str, repo_root: Path | None) -> tuple[dict[str, Any], Path]:
-    # Pack worktrees may not contain untracked workload YAMLs; prefer primary.
+    """The workload and the tree it came from: pack worktrees may lack untracked workloads, so the primary tree comes first."""
     primary = os.environ.get("ACCEL_PIPELINE_PRIMARY_REPO")
-    root = Path(primary).resolve() if primary else (repo_root or find_repo_root())
-    path = pipeline_root(root) / "config" / "workloads" / f"{name}.yaml"
-    if not path.is_file():
-        # Fall back to the caller's repo_root (non-pack / single-worker).
-        alt_root = repo_root or find_repo_root()
-        alt = pipeline_root(alt_root) / "config" / "workloads" / f"{name}.yaml"
-        if alt.is_file():
-            root = Path(alt_root)
-            path = alt
-        else:
-            raise FileNotFoundError(f"workload not found: {path}")
-    return _load_yaml(path), root
+    for root in ((Path(primary).resolve(),) if primary else ()) + (repo_root or find_repo_root(),):
+        data = _read_workload(root, name)
+        if data is not None:
+            return data, root
+    raise FileNotFoundError(f"workload not found: {name}")
 
 
 def workload_supported_engines(name: str, repo_root: Path | None = None) -> list[str]:
@@ -1072,28 +828,466 @@ def workload_supported_engines(name: str, repo_root: Path | None = None) -> list
 def load_workload(name: str, repo_root: Path | None = None, *, engine: str = "") -> dict[str, Any]:
     """Load a workload; accelerator workloads are engine-neutral and need `engine` (see select_engine)."""
     data, root = _read_workload_yaml(name, repo_root)
-
     if data.get("workload_kind") == "engine_backend":
         return _normalize_engine_backend_workload(data, root)
 
     engine = select_engine(data, engine, name)
-    benchmark_name = data.get("benchmark_name", "tpch")
-    try:
-        pack = load_benchmark_pack(benchmark_name, root)
-        pipeline_config = load_pipeline_config(repo_root=root)
-        data = _merge_pack_into_workload(data, pack, root, pipeline_config)
-    except FileNotFoundError:
-        data.setdefault("benchmark_name", "tpch")
-        data.setdefault("artifact_namespace", "tpch")
+    pack = load_benchmark_pack(benchmark_of(data), root)
+    data = _merge_benchmark_pack(data, pack, root, load_pipeline_config(repo_root=root).datasets)
 
     if data.get("workload_kind") == "aux_state":
         _merge_aux_defaults(data, root)
-    data.setdefault("prompt_subdir", "base")  # the stateless-kernel pipeline (prompts/base/)
     _expand_fairness_search_paths(data, engine)
     _derive_query_names(data, engine, root)
-    return _normalize_accelerator_engine(data, engine, root)
+    return _pin_engine(data, engine, root)
 
 
 def load_run_workload(pipeline_config: PipelineConfig, name: str) -> dict[str, Any]:
     """`name` loaded for the engine of the run `pipeline_config` belongs to."""
     return load_workload(name, pipeline_config.repo_root, engine=pipeline_config.engine_name)
+
+
+def _merge_benchmark_pack(workload: dict[str, Any], pack: dict[str, Any], repo_root: Path, datasets: dict[str, Path]) -> dict[str, Any]:
+    merged = {**pack, **workload}
+    benchmark = benchmark_of(merged)
+    merged.setdefault("artifact_namespace", benchmark)
+    merged.setdefault("display_name", benchmark)
+    for key, target in (("dataset_key", "dataset_db"), ("scale_dataset_key", "scale_db")):
+        if merged.get(key) in datasets:
+            merged.setdefault(target, str(datasets[merged[key]]))
+    for key in ("reference_sql_path", "schema_reference_path", "test_template_path", "benchmark_template_path"):
+        if merged.get(key):
+            merged[key] = str(_under(repo_root, merged[key]).resolve())
+    return merged
+
+
+# What aux_state.yaml sets on every aux workload, over the benchmark pack's values.
+_AUX_OVERRIDES = (
+    "post_implementation_gates", "post_optimization_gates", "post_audit_gates", "prompt_subdir",
+    "analysis_critique_max_rounds", "aux_bench_sweep_optimization", "aux_bench_sweep_quick",
+)
+
+
+def _merge_aux_defaults(workload: dict[str, Any], repo_root: Path) -> None:
+    aux = load_aux_state_defaults(repo_root)
+    bench = config_yaml(repo_root, f"{benchmark_of(workload)}_aux_state")
+
+    workload.update({key: copy.deepcopy(aux[key]) for key in _AUX_OVERRIDES if key in aux})
+    if "fairness" in aux:
+        workload["fairness"] = {**(workload.get("fairness") or {}), **copy.deepcopy(aux["fairness"])}
+    for key in ("write_paths", "allowed_commands"):
+        workload[key] = [*(aux.get(key) or []), *(bench.get(key) or []), *(workload.get(key) or [])]
+    workload["stage_max_turns"] = {**aux.get("stage_max_turns", {}), **(workload.get("stage_max_turns") or {})}
+    sweep = {**(bench.get("aux_bench_sweep") or aux.get("aux_bench_sweep") or {}), **(workload.get("aux_bench_sweep") or {})}
+    if sweep:
+        workload["aux_bench_sweep"] = sweep
+
+
+def _expand_fairness_search_paths(workload: dict[str, Any], engine: str) -> None:
+    """Expand {bench}/{engine} in `fairness.kernel_search_paths` for the run."""
+    fairness = workload.get("fairness")
+    if isinstance(fairness, dict) and fairness.get("kernel_search_paths"):
+        bench = benchmark_of(workload)
+        fairness["kernel_search_paths"] = [
+            str(p).replace("{bench}", bench).replace("{engine}", engine) for p in fairness["kernel_search_paths"]
+        ]
+
+
+def _derive_query_names(data: dict[str, Any], engine: str, root: Path) -> None:
+    """The query's names (py), plus the engine profile's registration symbol."""
+    bench, q = benchmark_of(data), data.get("query_number")
+    if q is None:
+        return
+    pattern = registration_symbol_pattern(load_engine_profile(engine, pipeline_root(root)))
+    data.update(
+        function_name=base_function_name(bench, q),
+        create_fn=registration_symbol(pattern, bench, q) if pattern else "",
+        header_basename=header_basename(bench, q),
+        test_target=unit_test_target(bench, q),
+        ctest_smoke_regex=f"^{smoke_ctest_name(bench, q)}$",
+    )
+    if data.get("workload_kind") == "aux_state":
+        data.update(
+            aux_function_name=aux_function_name(bench, q),
+            accelerator_id=accelerator_id(bench, q),
+        )
+
+
+def _pin_engine(data: dict[str, Any], engine: str, repo_root: Path) -> dict[str, Any]:
+    """Pin the run's engine, attach its host conventions and let the run own the query's directory."""
+    data["engine_name"] = engine
+    bench = benchmark_of(data)
+    qnum = data.get("query_number")
+    data["engine_host"] = engine_host_conventions(engine, bench, qnum if qnum is not None else "<N>", repo_root)
+    # backends/<engine>/** belongs to the engine_backend run and substrate/** to nobody (layout enforces both).
+    own_dir = [query_glob(bench, qnum)] if qnum is not None else []
+    data["write_paths"] = _dedupe([*(data.get("write_paths") or []), *own_dir])
+    return data
+
+
+def _dedupe(items) -> list[str]:
+    return list(dict.fromkeys(items))
+
+
+def _expand_engine(value: str, engine: str) -> str:
+    return str(value).replace("{engine}", engine)
+
+
+def _normalize_engine_backend_workload(data: dict[str, Any], repo_root: Path) -> dict[str, Any]:
+    """Fill the conventional paths, gates and write allowlists of an engine_backend workload from engine_backend.yaml."""
+    defaults = load_engine_backend_defaults(repo_root)
+    engine = sanitize_engine_name(str(data.get("engine_name") or ""))
+    data["engine_name"] = engine
+    data.setdefault("benchmark_name", "engine")
+    data.setdefault("artifact_namespace", f"engines/{engine}")
+    data.setdefault("query_number", 0)
+
+    profile = data.get("engine_profile")
+    validate_engine_profile(profile, pipeline_root(repo_root), source=f"workload {engine}")
+    if profile["identity"]["name"] != engine:
+        raise EngineProfileError(f"workload {engine}: engine_profile.identity.name is {profile['identity']['name']!r}")
+    data["display_name"] = profile["identity"]["display_name"]
+    data["host_runtime"] = host_runtime_of(profile)
+    data["requires_in_process_host"] = profile["packaging"]["requires_in_process_host"]
+    data["placement_candidates"] = list(profile["packaging"]["placement_candidates"])
+
+    merged_below = ("write_paths", "allowed_commands", "default_target_paths", "default_cmake")
+    for key, value in defaults.items():
+        if key not in merged_below:
+            data.setdefault(key, copy.deepcopy(value))
+
+    data["implementation_layers"] = [
+        {**layer, **{k: _expand_engine(layer[k], engine) for k in ("harness", "cmake_target", "title", "gate", "id") if k in layer}}
+        for layer in data.get("implementation_layers") or []
+    ]
+    data["target_paths"] = {
+        **{k: _expand_engine(v, engine) for k, v in (defaults.get("default_target_paths") or {}).items()},
+        **{str(k): str(v) for k, v in (data.get("target_paths") or {}).items()},
+    }
+    data["cmake"] = {
+        **{k: _expand_engine(v, engine) for k, v in (defaults.get("default_cmake") or {}).items()},
+        **{str(k): str(v) for k, v in (data.get("cmake") or {}).items()},
+        "build_flag": profile["build"]["cmake_option"],
+    }
+    # The engine's run owns backends/<engine>/** (incl. api/catalog/), whatever the YAML lists.
+    data["write_paths"] = _dedupe([
+        backend_glob(engine),
+        *(_expand_engine(p, engine) for p in [*(defaults.get("write_paths") or []), *(data.get("write_paths") or [])]),
+    ])
+    data["allowed_commands"] = _dedupe(
+        _expand_engine(c, engine) for c in [*(defaults.get("allowed_commands") or []), *(data.get("allowed_commands") or [])]
+    )
+    return data
+
+
+# ---- where a workload's query lives ------------------------------------------------------------
+
+def _dataset_path(path: str | Path) -> str:
+    """A dataset database path; empty when the run parameter is unset."""
+    return "" if Path(path) == Path() else str(path)
+
+
+def resolve_workload_paths(
+    pipeline_config: PipelineConfig,
+    workload: dict[str, Any],
+    query: int,
+) -> dict[str, str]:
+    benchmark = benchmark_of(workload)
+    q = int(workload.get("query_number", query))
+    kind = workload.get("workload_kind")
+    engine = sanitize_engine_name(str(workload.get("engine_name") or ""))
+    if not engine and kind != "engine_backend":
+        raise ValueError("resolve_workload_paths: accelerator workload missing engine_name")
+    # Per-engine query tree: accelerators/{bench}/q{N}/{engine}/... (source_subdir is
+    # relative to accelerators/, the second include root).
+    qdir = query_dir(benchmark, q)
+    eng_seg = f"{engine}/" if engine else ""
+    source_subdir = str(workload.get("source_subdir", f"{benchmark}/q{q}/{eng_seg}base/single-threaded"))
+    generated_base = f"{qdir}/{eng_seg}base/single-threaded"
+    # The base kernels' bench: one query-parameterised target per engine for the benchmarks listed in
+    # shared_bench_harness, else one per query. (Aux targets are always the host_bootstrap harness's.)
+    shared_harness = bool(engine) and kind != "engine_backend" and benchmark in pipeline_config.shared_bench_harness
+    bench_target = f"benchmark_{engine}_{benchmark}_q{q}" if shared_harness else benchmark_target(benchmark, q)
+    test_target = unit_test_target(benchmark, q)
+
+    paths = {
+        "source_subdir": source_subdir,
+        "function_name": base_function_name(benchmark, q),
+        "create_fn": str(workload.get("create_fn", "")),
+        "test_target": test_target,
+        "bench_target": bench_target,
+        "ctest_smoke_name": smoke_ctest_name(benchmark, q),
+        "ctest_smoke_regex": f"^{smoke_ctest_name(benchmark, q)}$",
+        # the benchmark's own datasets (its pack's dataset_key), never another benchmark's
+        "dataset_db": _dataset_path(workload.get("dataset_db", "")),
+        "scale_db": _dataset_path(workload.get("scale_db", "")),
+        "db_env_var": str(workload.get("db_env_var", f"ACCEL_{benchmark.upper()}_DB")),
+        "header_path": f"{qdir}/{eng_seg}base/query.hpp",
+        "kernel_path": f"{generated_base}/kernel.cpp",
+        "package_path": f"{generated_base}/package.cpp",
+        "fused_scan_path": f"{generated_base}/fused_scan.cpp",
+        # Where the query's cost models live (AuxCostModelLocation), for every engine.
+        "cost_model_header_path": f"{qdir}/cost_model.hpp",
+        "test_path": f"{qdir}/tests/{test_target}.cpp",
+        "benchmark_path": f"{qdir}/bench/benchmark_q{q}.cpp",
+        "engine_name": engine,
+    }
+
+    if kind == "aux_state":
+        aux_state_subdir = f"{qdir}/{eng_seg}aux"
+        cost_model_stem = f"q{q}_aux_cost_model"  # the query's own config dir already names the benchmark
+        bench_sweep = workload.get("aux_bench_sweep", {})
+        if not isinstance(bench_sweep, dict):
+            bench_sweep = {}
+        paths.update(
+            {
+                "aux_function_name": aux_function_name(benchmark, q),
+                "aux_test_target": f"{test_target}_aux",
+                # host_bootstrap makes every engine's harnesses for every benchmark (benchmark-free sources)
+                "aux_bench_target": harness_targets(engine, benchmark)["bench_target"],
+                "aux_hybrid_bench_target": hybrid_benchmark_target(benchmark, q),
+                "aux_calibrate_target": harness_targets(engine, benchmark)["calibrate_target"],
+                "aux_ctest_smoke_regex": f"^{aux_smoke_ctest_name(benchmark, q)}$",
+                "aux_state_subdir": aux_state_subdir,
+                # The query-wide default model (cost_model.hpp's location); an engine with its
+                # own calibration keeps it beside the default as <stem>_<engine>.json.
+                "cost_model_default": f"{qdir}/config/{cost_model_stem}.json",
+                "cost_model_config": f"{qdir}/config/{cost_model_stem}_{engine}.json",
+                "aux_bench_work_dir_suffix": str(workload.get("aux_bench_work_dir_suffix", f"q{q}_aux_bench")),
+                "aux_bench_suites": str(bench_sweep.get("suites") or workload.get("aux_bench_suites") or ""),
+            }
+        )
+    return paths
+
+
+def resolve_optimization_edit_paths(
+    pipeline_config: PipelineConfig,
+    workload: dict[str, Any],
+    query: int,
+) -> dict[str, Any]:
+    """Repo-relative paths the optimization loop may edit and profile."""
+    paths = resolve_workload_paths(pipeline_config, workload, query)
+    if workload.get("workload_kind") == "aux_state":
+        aux = paths["aux_state_subdir"]
+        all_paths = [f"{aux}/module.hpp", f"{aux}/module.cpp", f"{aux}/finalize.cpp"]
+        if paths.get("cost_model_config"):
+            all_paths.append(paths["cost_model_config"])
+        return {
+            "primary_cpp": f"{aux}/module.cpp",
+            "header": f"{aux}/module.hpp",
+            "secondary_cpp": f"{aux}/finalize.cpp",
+            "all_paths": all_paths,
+            "is_aux": True,
+        }
+
+    all_paths = [paths["header_path"], paths["kernel_path"], paths["package_path"]]
+    if paths.get("fused_scan_path"):
+        all_paths.append(paths["fused_scan_path"])
+    return {
+        "primary_cpp": paths["kernel_path"],
+        "header": paths["header_path"],
+        "secondary_cpp": paths["package_path"],
+        "all_paths": all_paths,
+        "is_aux": False,
+    }
+
+
+def benchmark_of(workload: dict[str, Any]) -> str:
+    if not workload.get("benchmark_name"):
+        raise WorkloadError(f"the workload names no benchmark_name (keys: {sorted(workload)})")
+    return str(workload["benchmark_name"])
+
+
+def workload_benchmark_name(workload: dict[str, Any] | None) -> str:
+    if not workload:
+        raise WorkloadError("a query's artifacts need its workload or a benchmark name")
+    return str(workload.get("artifact_namespace") or benchmark_of(workload))
+
+
+def query_artifacts_dir(
+    repo_root: Path,
+    query_number: int,
+    *,
+    workload: dict[str, Any] | None = None,
+    benchmark_name: str | None = None,
+) -> Path:
+    """artifacts/<bench>/q<N>/<engine>/ for accelerator runs (one per query x engine)."""
+    if workload and workload.get("workload_kind") == "engine_backend":
+        engine = str(workload.get("engine_name") or workload.get("artifact_namespace") or "engine")
+        path = pipeline_root(repo_root) / "artifacts" / "engines" / engine
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    bench = benchmark_name or workload_benchmark_name(workload)
+    path = pipeline_root(repo_root) / "artifacts" / bench / f"q{query_number}"
+    engine = str((workload or {}).get("engine_name") or "")
+    if engine:
+        path = path / engine
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def engine_artifacts_dir(repo_root: Path, engine_name: str) -> Path:
+    path = pipeline_root(repo_root) / "artifacts" / "engines" / engine_name
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def gates_dir_for_query(artifacts_dir: Path) -> Path:
+    return artifacts_dir / "gates"
+
+
+def analysis_artifact_name(workload: dict[str, Any] | None) -> str:
+    """Aux-state workloads use analysis.json; base accelerators use base_analysis.json."""
+    if workload and workload.get("workload_kind") == "aux_state":
+        return "analysis.json"
+    return "base_analysis.json"
+
+
+def analysis_artifact_path(
+    repo_root: Path,
+    query_number: int,
+    *,
+    workload: dict[str, Any] | None = None,
+    benchmark_name: str | None = None,
+) -> Path:
+    art = query_artifacts_dir(repo_root, query_number, workload=workload, benchmark_name=benchmark_name)
+    return art / analysis_artifact_name(workload)
+
+
+def load_query_analysis(
+    repo_root: Path,
+    query_number: int,
+    *,
+    workload: dict[str, Any] | None = None,
+) -> tuple[Path, dict[str, Any]]:
+    art = query_artifacts_dir(repo_root, query_number, workload=workload)
+    path = art / analysis_artifact_name(workload)
+    if not path.is_file():
+        return path, {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return path, {}
+    return path, data if isinstance(data, dict) else {}
+
+
+def read_json(path: Path) -> dict[str, Any]:
+    """The JSON object in `path`; {} when it is missing, unreadable or not an object."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+# ---- facts of the query's SQL ------------------------------------------------------------------
+
+
+def _schema_columns(con: duckdb.DuckDBPyConnection) -> dict[str, dict[str, str]]:
+    rows = con.execute(
+        "SELECT table_name, column_name FROM information_schema.columns ORDER BY table_name, ordinal_position"
+    ).fetchall()
+    schema: dict[str, dict[str, str]] = {}
+    for table, column in rows:
+        schema.setdefault(table, {})[column] = "TEXT"
+    return schema
+
+
+def _output_schema(con: duckdb.DuckDBPyConnection, sql: str) -> list[dict[str, str]]:
+    described = con.execute("DESCRIBE " + sql).fetchall()
+    return [{"name": name, "type": re.sub(r"\(.*", "", dtype)} for name, dtype, *_ in described]
+
+
+def _exists_probes_read_no_columns(tree: exp.Expression) -> None:
+    """`EXISTS (SELECT * ...)` reads no column of its source; qualify would expand the star."""
+    for exists in tree.find_all(exp.Exists):
+        for select in exists.find_all(exp.Select):
+            if any(isinstance(e, exp.Star) for e in select.expressions):
+                select.set("expressions", [exp.Literal.number(1)])
+
+
+def _dependent_tables(sql: str, schema: dict[str, dict[str, str]]) -> list[dict[str, Any]]:
+    tree = sqlglot.parse_one(sql, read=SCRATCH_DIALECT)
+    _exists_probes_read_no_columns(tree)
+    ctes = {cte.alias for cte in tree.find_all(exp.CTE)}
+    appearance = list(dict.fromkeys(t.name for t in tree.find_all(exp.Table) if t.name not in ctes))
+    qualified = qualify(tree, schema=schema, dialect=SCRATCH_DIALECT, validate_qualify_columns=False)
+    read: dict[str, set[str]] = {}
+    for scope in traverse_scope(qualified):
+        for column in scope.columns:
+            source = scope.sources.get(column.table)
+            if isinstance(source, exp.Table):
+                read.setdefault(source.name, set()).add(column.name)
+    return [
+        {"name": table, "watched_columns": [c for c in schema[table] if c in read.get(table, ())]}
+        for table in appearance
+    ]
+
+
+def scratch_connection(path: str = ":memory:", read_only: bool = False) -> Any:
+    """The embedded SQL engine the orchestrator derives facts and test subsets with."""
+    return duckdb.connect(path, read_only=read_only)
+
+
+def derive_query_facts(sql: str, schema_sql: str) -> dict[str, Any]:
+    """output_schema and dependent_tables (with watched_columns) of `sql` over `schema_sql`."""
+    sql = sql.strip().rstrip(";")
+    con = scratch_connection()
+    try:
+        con.execute(schema_sql)
+        return {
+            "output_schema": _output_schema(con, sql),
+            "dependent_tables": _dependent_tables(sql, _schema_columns(con)),
+        }
+    finally:
+        con.close()
+
+
+def workload_facts(repo: Path, workload: dict[str, Any], query: int) -> dict[str, Any]:
+    """The run's derived facts, written to the run's artifacts (workload_facts.json)."""
+    benchmark = benchmark_of(workload)
+    sql = read_workload_file(workload.get("reference_sql_path") or "", "reference SQL (reference_sql_path)")
+    schema_sql = read_workload_file(repo / workload_schema_sql(benchmark), "schema")
+    facts = derive_query_facts(sql, schema_sql)
+    path = query_artifacts_dir(repo, query, workload=workload) / FACTS_FILE
+    text = json.dumps(facts, indent=2) + "\n"
+    if not path.is_file() or path.read_text(encoding="utf-8") != text:
+        path.write_text(text, encoding="utf-8")
+    return facts
+
+
+def with_facts(repo: Path, workload: dict[str, Any], query: int) -> dict[str, Any]:
+    """`workload` plus its derived output_schema and dependent_tables."""
+    return {**workload, **workload_facts(repo, workload, query)}
+
+
+# ---- a workload's refinement of the run's settings ---------------------------------------------
+
+def apply_workload_overrides(pipeline_config: PipelineConfig, workload: dict[str, Any]) -> PipelineConfig:
+    kind = str(workload.get("workload_kind") or "")
+    engine = sanitize_engine_name(str(workload["engine_name"])) if workload.get("engine_name") else ""
+    if kind != "engine_backend" and not engine:
+        raise ValueError("accelerator workload requires explicit engine_name (no default engine)")
+
+    allowed = list(workload.get("allowed_commands") or [])
+    # The engine's differential harness, built and run by the accelerator run (its source is the
+    # backend's, made by host_bootstrap).
+    binary = (workload.get("engine_host") or {}).get("differential_binary")
+    if kind != "engine_backend" and binary:
+        binary = re.escape(binary)
+        allowed += [
+            rf"^(\\.\\/)?build-release\\/{binary}( .*)?$",
+            rf"^cmake --build build-release --target {binary}( .*)?$",
+            rf"^ACCEL_[A-Z_]+=\\S+( ACCEL_[A-Z_]+=\\S+)* (\\.\\/)?build-release\\/{binary}( .*)?$",
+        ]
+    return replace(
+        pipeline_config,
+        **optimization_settings(workload.get("optimization") or {}, "workload optimization"),
+        stage_max_turns={**pipeline_config.stage_max_turns, **(workload.get("stage_max_turns") or {})},
+        write_paths=[*pipeline_config.write_paths, *(workload.get("write_paths") or [])],
+        allowed_commands=[*pipeline_config.allowed_commands, *allowed],
+        workload_kind=kind,
+        engine_name=engine,
+        benchmark_name="" if kind == "engine_backend" else benchmark_of(workload),
+    )

@@ -8,7 +8,7 @@ repair round or a stop means the pipeline's own plumbing is broken. Everything b
 orchestrator, the MCP tooling, the gates, the builds, host.sh, the sandboxes, the freezing, the stamps and the
 measurement lease.
 
-    pipeline_smoke.sh --workload <fixtures/NAME> --engine <fixtures/engines/NAME> [--rev HEAD] [--work DIR]
+    accel smoke --workload <fixtures/NAME> --engine <fixtures/engines/NAME> [--rev HEAD] [--work DIR]
                       [--case NAME | --adversarial [--jobs N]]
 
 --case runs one adversarial case (fixtures/cases.json): the scripted agent misbehaves in one way and the run has
@@ -22,6 +22,7 @@ environment cannot run it.
 from __future__ import annotations
 
 import argparse
+import fcntl
 import hashlib
 import json
 import os
@@ -40,6 +41,7 @@ sys.path.insert(0, str(HERE))
 import smoke_report  # noqa: E402
 SOURCE_ROOT = HERE.parents[3]
 SMOKE_HOME = Path(os.environ.get("ACCEL_SMOKE_HOME", f"/flash1/{os.environ.get('USER', 'smoke')}/smoke"))
+KEEP_RUNS = 3  # a full run is ~7 GB; older runs are deleted when a new one starts
 STAGES = ("analysis", "test_suite", "implementation", "optimization", "audit")
 GIT = ["git", "-c", "user.name=smoke", "-c", "user.email=smoke@localhost"]
 NO_MODEL_ENV = "ACCEL_SMOKE_NO_MODEL"  # what the models config asks for instead of a provider key
@@ -105,12 +107,20 @@ def check_tools() -> None:
 # ---------------------------------------------------------------- the clean tree
 
 def make_base(rev: str, engine: str, workload: dict, env: dict[str, str], dest: Path) -> None:
-    """The clean tree of `rev` plus the engine's reference backend and the harness sources it builds with (the
-    fixtures list them; the build names any that are still missing), committed as the one baseline commit."""
+    """The clean tree of `rev` plus the engine's reference backend without its workload harnesses, which host_bootstrap
+    writes as it does on a clean tree (the build names any other source the backend still needs), committed as the
+    one baseline commit."""
+    from accel_pipeline import layout
+
     run(["bash", str(SOURCE_ROOT / "pipeline/clean_tree/make_clean_tree.sh"), str(SOURCE_ROOT), str(dest), rev])
     sources = [p.format(engine=engine) for p in read_fixture("engines", f"{engine}.json")["base_sources"]
                + workload.get("base_sources", [])]
     git_archive(rev, sources, dest)
+    for harness in (dest / glob.removesuffix("/**") for glob in layout.harness_globs(engine)):
+        if harness.is_dir():
+            shutil.rmtree(harness)
+        else:
+            harness.unlink(missing_ok=True)
     probe = dest / workload["registration_probe"].format(engine=engine)  # a registration makes the build ask for the per-query sources
     probe.parent.mkdir(parents=True)
     probe.touch()
@@ -133,10 +143,14 @@ def base_tree(rev: str, engine: str, workload: dict, env: dict[str, str]) -> Pat
     """The base is kept per source commit: it only changes with the clean-tree tooling or the backend."""
     commit = run(["git", "-C", str(SOURCE_ROOT), "rev-parse", "--short", rev]).stdout.strip()
     base = SMOKE_HOME / "bases" / f"{engine}-{commit}"
-    if not (base / ".git").is_dir():
-        shutil.rmtree(base, ignore_errors=True)
-        base.parent.mkdir(parents=True, exist_ok=True)
-        make_base(rev, engine, workload, env, base)
+    base.parent.mkdir(parents=True, exist_ok=True)
+    with open(base.with_name(base.name + ".lock"), "w") as lock:  # concurrent runs (canaries) share one base
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        if not base.is_dir():
+            partial = base.with_name(f"{base.name}.partial-{os.getpid()}")
+            shutil.rmtree(partial, ignore_errors=True)
+            make_base(rev, engine, workload, env, partial)
+            partial.rename(base)  # appears only complete
     return base
 
 
@@ -144,10 +158,13 @@ def cached_venv(base: Path) -> Path:
     """One virtualenv per requirements file, kept between runs (a tree gets a copy: its python is all the run uses)."""
     requirements = base / "pipeline/orchestrator/requirements.txt"
     venv = SMOKE_HOME / "venvs" / hashlib.sha256(requirements.read_bytes()).hexdigest()[:12]
-    if not (venv / "bin/python").is_file():
-        shutil.rmtree(venv, ignore_errors=True)
-        run([sys.executable, "-m", "venv", str(venv)])
-        run([str(venv / "bin/pip"), "install", "-q", "-r", str(requirements)])
+    venv.parent.mkdir(parents=True, exist_ok=True)
+    with open(venv.with_name(venv.name + ".lock"), "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        if not (venv / "bin/python").is_file():
+            shutil.rmtree(venv, ignore_errors=True)
+            run([sys.executable, "-m", "venv", str(venv)])
+            run([str(venv / "bin/pip"), "install", "-q", "-r", str(requirements)])
     return venv
 
 
@@ -159,13 +176,18 @@ def new_tree(base: Path, work: Path, workload: dict, env: dict[str, str]) -> Pat
     run(["rsync", "-a", f"{cached_venv(base)}/", f"{tree}/pipeline/orchestrator/.venv/"])
     (tree / ".data").mkdir()
     for key in workload.get("databases", {}):
-        copy = tree / ".data" / Path(env[key]).name
-        shutil.copyfile(env[key], copy)
-        env[key] = str(copy)
+        shutil.copyfile(env[key], tree / ".data" / Path(env[key]).name)
+    use_tree_databases(tree, workload, env)
     run(["git", "init", "-q"], cwd=tree)
     run([*GIT, "add", "-A"], cwd=tree)
     run([*GIT, "commit", "-q", "-m", "initial"], cwd=tree)
     return tree
+
+
+def use_tree_databases(tree: Path, workload: dict, env: dict[str, str]) -> None:
+    """Point `env` at the tree's own copies of the databases (a resumed run reuses them)."""
+    for key in workload.get("databases", {}):
+        env[key] = str(tree / ".data" / Path(env[key]).name)
 
 
 def make_kit(work: Path, reference_rev: str, workload: str, fixture: dict, query: int) -> Path:
@@ -212,13 +234,14 @@ def launch(tree: Path, work: Path, env: dict[str, str], module_args: list[str], 
     """`python -m <module_args>` from the tree, in the real sandbox. `inside` is more environment for the run,
     `data` more read-only paths."""
     python = tree / "pipeline/orchestrator/.venv/bin/python"
-    state = work / "state"
+    state = work / "state"  # what the sandbox binds; the run's instance one level below, so the gates' instances
+    engine_state = state / "main"  # (<dir>-<name>, beside it) are bound too
     state.mkdir(exist_ok=True)
     locks = Path(os.environ.get("ACCEL_HOST_LOCK_DIR") or SMOKE_HOME / "locks")
     instance = f"smoke_{os.getpid()}"
     inside = {
         "PYTHONPATH": str(tree / "pipeline/orchestrator"), "ACCEL_PIPELINE_PYTHON": str(python),
-        **env, "ACCEL_ENGINE_INSTANCE": instance, "ACCEL_ENGINE_STATE_DIR": str(state),
+        **env, "ACCEL_ENGINE_INSTANCE": instance, "ACCEL_ENGINE_STATE_DIR": str(engine_state),
         "ACCEL_CONCURRENT_WORKERS": os.environ.get("ACCEL_CONCURRENT_WORKERS", "4"),
         "CMAKE_BUILD_PARALLEL_LEVEL": BUILD_JOBS,
         **{k: os.environ[k] for k in PASSED_THROUGH if k in os.environ}, **(inside or {}),
@@ -227,7 +250,7 @@ def launch(tree: Path, work: Path, env: dict[str, str], module_args: list[str], 
     command = f"export {exports}; cd {tree} && exec {python} -m " + " ".join(map(sh_quote, module_args))
     outer = {k: v for k, v in os.environ.items() if k != "OPENROUTER_API_KEY"}
     outer.update({
-        "ACCEL_ENGINE_INSTANCE": instance, "ACCEL_ENGINE_STATE_DIR": str(state), "ACCEL_HOST_LOCK_DIR": str(locks),
+        "ACCEL_ENGINE_INSTANCE": instance, "ACCEL_ENGINE_STATE_DIR": str(engine_state), "ACCEL_HOST_LOCK_DIR": str(locks),
         "ACCEL_SANDBOX_DATA": ":".join([*(v for v in env.values() if v.startswith("/") and not v.startswith(str(tree))),
                                         *map(str, data)]),
         "ACCEL_SANDBOX_STATE": str(state), **env,
@@ -239,7 +262,7 @@ def launch(tree: Path, work: Path, env: dict[str, str], module_args: list[str], 
 
 
 def pipeline_args(workload: str, query: int, engine: str, models: Path, config: Path, stage: str = "all") -> list[str]:
-    return ["accel_pipeline.run_pipeline", "--workload", workload, "--query", str(query), "--engine", engine, "--stage", stage,
+    return ["accel_pipeline.cli", "--workload", workload, "--query", str(query), "--engine", engine, "--stage", stage,
             "--models-config", str(models), "--config", str(config)]
 
 
@@ -281,11 +304,20 @@ def stop(proc: subprocess.Popen) -> None:
             pass
 
 
+def new_run_dir() -> Path:
+    """A fresh run directory's path; all but the newest KEEP_RUNS - 1 earlier runs are deleted first."""
+    runs = SMOKE_HOME / "runs"
+    earlier = sorted(runs.iterdir()) if runs.is_dir() else []
+    for old in earlier[:max(0, len(earlier) - (KEEP_RUNS - 1))]:
+        shutil.rmtree(old, ignore_errors=True)
+    return runs / time.strftime("%Y%m%d-%H%M%S")
+
+
 def run_case(args, fixture: dict, env: dict[str, str], name: str | None) -> int:
     """One run in a fresh tree: the always-behaving agent (`name` None) or an adversarial case."""
     case = read_fixture("cases.json")[name] if name else {}
     query = int(fixture["query"])
-    work = args.work or SMOKE_HOME / "runs" / time.strftime("%Y%m%d-%H%M%S")
+    work = args.work or new_run_dir()
     work.mkdir(parents=True)
     timings: list[tuple[str, float]] = []
 
@@ -325,7 +357,7 @@ def run_adversarial(args, fixture: dict, env: dict[str, str]) -> int:
     """Every case in its own process (the base tree is made once, first); a table of the verdicts."""
     cases = read_fixture("cases.json")
     base_tree(args.rev, args.engine, fixture, env)
-    root = args.work or SMOKE_HOME / "runs" / time.strftime("%Y%m%d-%H%M%S")
+    root = args.work or new_run_dir()
     root.mkdir(parents=True)
     common = ["--workload", args.workload, "--engine", args.engine, "--rev", args.rev]
     waiting, running, verdicts = list(cases), {}, {}

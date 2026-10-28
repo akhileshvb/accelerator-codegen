@@ -36,10 +36,7 @@ if(ACCEL_ENABLE_PARALLEL_KERNELS)
         accel_glob_sources(_duckdb_parallel_sources "accelerators/*/q*/duckdb/base/parallel/*.cpp")
         accel_apply_base_copts(${_duckdb_parallel_sources})
     endif()
-    target_sources(accelerator_codegen PRIVATE
-        backends/duckdb/api/parallel/parallel_runtime.cpp
-        ${_duckdb_parallel_sources}
-    )
+    target_sources(accelerator_codegen PRIVATE ${_duckdb_parallel_sources})
 endif()
 
 option(ACCEL_ENABLE_PARALLEL_AUX "Build multithreaded SEC EDGAR aux kernels (accel_sec_edgar_q*_aux_parallel)" OFF)
@@ -48,24 +45,14 @@ if(ACCEL_ENABLE_PARALLEL_AUX)
     if(_duckdb_query_engine STREQUAL "duckdb")
         accel_glob_sources(_duckdb_parallel_aux_sources "accelerators/*/q*/duckdb/aux/parallel/*.cpp")
     endif()
-    target_sources(accelerator_codegen PRIVATE
-        backends/duckdb/api/parallel/aux_parallel_scan.cpp
-        ${_duckdb_parallel_aux_sources}
-    )
-    if(NOT ACCEL_ENABLE_PARALLEL_KERNELS)
-        target_sources(accelerator_codegen PRIVATE backends/duckdb/api/parallel/parallel_runtime.cpp)
-    endif()
+    target_sources(accelerator_codegen PRIVATE ${_duckdb_parallel_aux_sources})
 endif()
 
-# Shared TPC-H aux bench and cost-model calibrator: one binary each, `--query N`.
-accel_add_backend_exe(duckdb benchmark_duckdb_tpch_aux
-    backends/duckdb/bench/benchmark_duckdb_tpch_aux.cpp
-    backends/duckdb/bench/aux_benchmark_sweep_session.cpp
-    eval/bench/tpch/single-threaded/tpch_arg_variants.cpp)
-accel_add_backend_exe(duckdb calibrate_duckdb_tpch_aux_cost_model
-    backends/duckdb/bench/calibrate_duckdb_tpch_aux_cost_model.cpp
-    eval/tests/test_support/cross_accel_helpers.cpp
-    eval/tests/test_support/multi_connection_stress.cpp)
+# The scan role's parallel native scan (api/parallel/aux_parallel_scan.hpp) is part of the API every aux
+# accelerator builds through: always compiled, not only with the legacy parallel-kernel options.
+target_sources(accelerator_codegen PRIVATE
+    backends/duckdb/api/parallel/aux_parallel_scan.cpp
+    backends/duckdb/api/parallel/parallel_runtime.cpp)
 
 # The query-agnostic names of the per-query base benches (benchmark_tpch_q<N>).
 function(_accel_duckdb_alias_base_benches)
@@ -79,11 +66,19 @@ endfunction()
 cmake_language(DEFER DIRECTORY ${CMAKE_SOURCE_DIR} CALL _accel_duckdb_alias_base_benches)
 
 # Unit tests of the backend's own state.
-accel_add_backend_exe(duckdb test_shared_aux_state backends/duckdb/tests/harness/test_shared_aux_state.cpp)
+accel_add_backend_exe(duckdb test_shared_aux_state backends/duckdb/tests/test_shared_aux_state.cpp)
+accel_add_backend_exe(duckdb test_duckdb_hit_contract backends/duckdb/tests/test_duckdb_hit_contract.cpp)
 accel_add_backend_exe(duckdb test_wide_types backends/duckdb/tests/test_wide_types.cpp)
 accel_add_backend_exe(duckdb test_versioned_aux_state backends/duckdb/tests/test_versioned_aux_state.cpp)
 accel_add_backend_exe(duckdb test_duckdb_canary backends/duckdb/tests/test_duckdb_canary.cpp)
+accel_add_backend_exe(duckdb test_declining_query backends/duckdb/tests/test_declining_query.cpp)
+accel_add_backend_exe(duckdb test_measured_cpus backends/duckdb/tests/test_measured_cpus.cpp)
+accel_add_backend_exe(duckdb test_sql_answered_reads backends/duckdb/tests/test_sql_answered_reads.cpp)
 if(BUILD_TESTING)
+    add_test(NAME declining_query_unit_test COMMAND test_declining_query)
+    add_test(NAME measured_cpus_unit_test COMMAND test_measured_cpus)
+    add_test(NAME sql_answered_reads_unit_test COMMAND test_sql_answered_reads)
     add_test(NAME wide_types_unit_test COMMAND test_wide_types)
     add_test(NAME versioned_aux_state_unit_test COMMAND test_versioned_aux_state)
+    add_test(NAME host_build_unit_test COMMAND bash ${CMAKE_CURRENT_LIST_DIR}/tests/test_host_build.sh)
 endif()

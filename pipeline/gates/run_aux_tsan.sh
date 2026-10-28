@@ -98,17 +98,15 @@ if [[ "${TARGET}" == "slots" ]]; then
       ACCEL_GATE_OUT="${LOGDIR}/slot_${s}.json" bash "${ROOT}/pipeline/gates/run_slot_gates.sh"
   done
 else
-  if [[ -z "${AUX_TEST_TARGET}" || ( "${BENCHMARK_NAME}" == "tpch" && -z "${DIFF_BINARY}" ) ]]; then
+  if [[ -z "${AUX_TEST_TARGET}" || -z "${DIFF_BINARY}" ]]; then
     STATUS="fail"; REASON="aux test / differential target missing from the gate context"; finish
   fi
-  engine_ready "${AUX_TEST_TARGET}" ${DIFF_BINARY:+"${DIFF_BINARY}"} || {
+  engine_ready "${AUX_TEST_TARGET}" "${DIFF_BINARY}" || {
     printf '%s' "${ENGINE_LOG}" >"${LOGDIR}/build.log"
     STATUS="fail"; REASON="TSAN build failed (${LOGDIR}/build.log)"; finish
   }
   run smoke "${ENGINE_HOST}" run "${AUX_TEST_TARGET}"
-  if [[ "${BENCHMARK_NAME}" == "tpch" ]]; then
-    run differential "${ENGINE_HOST}" run "${DIFF_BINARY}" "${TARGET}"
-  fi
+  run differential "${ENGINE_HOST}" run "${DIFF_BINARY}" "${TARGET}"
 fi
 
 OURS=0

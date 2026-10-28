@@ -1,7 +1,0 @@
-benchmark_name: tpch
-query_number: 14
-engines: [duckdb, postgres]
-reference_sql_path: workloads/tpch/instances/seed_1/14.sql
-parameters:
-  - name: start_date
-    type: DATE

@@ -182,7 +182,7 @@ void RunSecMix(DuckdbRuntime &runtime, Audit &audit) {
 }
 
 // Rows the policy sees, from the database file itself.
-void PrintScaleRows(const std::string &db, const engine::SharedWorkloadKind kind, int query) {
+void PrintScaleRows(const std::string &db, const std::string &kind, int query) {
   duckdb::DBConfig config;
   config.options.access_mode = duckdb::AccessMode::READ_ONLY;
   duckdb::DuckDB database(db, &config);
@@ -193,7 +193,7 @@ void PrintScaleRows(const std::string &db, const engine::SharedWorkloadKind kind
             << std::endl;
 }
 
-void AuditQuery(const std::string &db, const std::string &workload, const engine::SharedWorkloadKind kind,
+void AuditQuery(const std::string &db, const std::string &workload, const std::string &kind,
                 int query) {
   if (workload == "scale-rows") {
     return PrintScaleRows(db, kind, query);
@@ -242,7 +242,7 @@ int main(int argc, char **argv) {
     return 2;
   }
   const std::string workload = argv[2];
-  const auto kind = workload.rfind("sec-", 0) == 0 ? engine::SharedWorkloadKind::SecEdgar : engine::SharedWorkloadKind::Tpch;
+  const std::string kind = workload.rfind("sec-", 0) == 0 ? "sec_edgar" : "tpch";
   int status = 0;
   for (int i = 3; i < argc; ++i) {
     try {

@@ -115,9 +115,12 @@ if(TARGET duckdb_sibling)
     foreach(_subset IN LISTS _accel_test_db_subsets)
         get_filename_component(_dir "${_subset}" DIRECTORY)
         get_filename_component(_workload "${_dir}" NAME)
+        # A benchmark's own maker when it has one, else the generic one (source ACCEL_<BENCH>_DB).
         set(_maker eval/tests/make_${_workload}_test_db.cpp)
+        set(_maker_args)
         if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${_maker}")
-            continue()
+            set(_maker eval/tests/make_test_db.cpp)
+            set(_maker_args ${_workload})
         endif()
         add_executable(make_${_workload}_test_db ${_maker})
         target_link_libraries(make_${_workload}_test_db PRIVATE accelerator_codegen duckdb_sibling)
@@ -128,7 +131,7 @@ if(TARGET duckdb_sibling)
                      COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target make_${_workload}_test_db)
             set_tests_properties(${_workload}_test_db_maker PROPERTIES FIXTURES_SETUP ${_workload}_test_db_maker)
             add_test(NAME ${_workload}_test_db_fixture
-                     COMMAND make_${_workload}_test_db "${_subset}" "${ACCEL_TEST_DB_DIR}/${_workload}_test.duckdb")
+                     COMMAND make_${_workload}_test_db ${_maker_args} "${_subset}" "${ACCEL_TEST_DB_DIR}/${_workload}_test.duckdb")
             set_tests_properties(${_workload}_test_db_fixture PROPERTIES
                 FIXTURES_SETUP ${_workload}_test_db FIXTURES_REQUIRED ${_workload}_test_db_maker
                 SKIP_RETURN_CODE 77)

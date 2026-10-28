@@ -41,7 +41,6 @@ SharedProbe BuildSecEdgarQ2Probe(::duckdb::MaterializedQueryResult &result,
 }
 
 const SharedQueryRegistrar kEntry{SharedQueryCatalogEntry{2,
-     SharedWorkloadKind::SecEdgar,
      "sec_edgar",
      core::SecEdgarQ2Layout::kAccelerator,
      "SELECT s.name, n.tag, n.value "

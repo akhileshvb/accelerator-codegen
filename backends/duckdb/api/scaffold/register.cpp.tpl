@@ -15,7 +15,8 @@ const DecliningQueryRegistrar kScaffold{DecliningQuery{
     {{argument_types}},
     R"SQL({{base_sql}})SQL",
     R"SQL({{fallback_sql}})SQL",
-    {{tables}}}};
+    {{tables}},
+    {{binding}}}};
 
 } // namespace
 } // namespace accelerator_codegen::aux_state::engine::duckdb

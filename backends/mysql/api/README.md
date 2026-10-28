@@ -1,7 +1,7 @@
 # MySQL API manifest
 
 A server plugin (`accelerator_codegen_mysql`) with UDF entry points and an audit plugin.
-Roles and semantics: `pipeline/prompts/engine_backend/docs/api_contract.md`.
+Roles and semantics: `pipeline/prompts/engine_backend/api_contract.md`.
 
 ## Contract roles
 

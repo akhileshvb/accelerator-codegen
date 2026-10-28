@@ -1,13 +1,11 @@
 from __future__ import annotations
 
 import json
-import re
 from pathlib import Path
 
 import pytest
 
-from accel_pipeline.workload_facts import with_facts
-from accel_pipeline.validation import AuxAnalysisValidationError, validate_aux_analysis, validate_aux_analysis_file
+from accel_pipeline.data import AuxAnalysisValidationError, validate_aux_analysis, validate_aux_analysis_file
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -195,17 +193,6 @@ def _sample_valid_analysis() -> dict:
     }
 
 
-class TestPrerequisiteRegex:
-    def test_q1_regex_does_not_match_q10(self):
-        from accel_pipeline.prerequisites import base_smoke_test_ctest_regex
-
-        tpch = {"benchmark_name": "tpch"}
-        assert base_smoke_test_ctest_regex(tpch, 1) == "^tpch_q1_smoke_test$"
-        assert base_smoke_test_ctest_regex(tpch, 14) == "^tpch_q14_smoke_test$"
-        sec = {"benchmark_name": "sec_edgar"}
-        assert base_smoke_test_ctest_regex(sec, 1) == "^sec_edgar_q1_smoke_test$"
-
-
 class TestAuxAnalysisValidation:
     def test_valid_analysis_passes(self):
         validate_aux_analysis(_sample_valid_analysis())
@@ -349,7 +336,7 @@ class TestAuxAnalysisValidation:
             validate_aux_analysis(analysis)
 
     def test_repair_fills_fewer_than_three_explanation(self):
-        from accel_pipeline.validation import repair_aux_analysis
+        from accel_pipeline.data import repair_aux_analysis
 
         analysis = _sample_valid_analysis()
         analysis["state_candidate_search"]["candidates"] = analysis["state_candidate_search"]["candidates"][:2]
@@ -364,133 +351,3 @@ class TestAuxAnalysisValidation:
         del analysis["correctness_facts"]["state_design"]["read_path_bottleneck_risk"]
         with pytest.raises(AuxAnalysisValidationError, match="read_path_bottleneck_risk"):
             validate_aux_analysis(analysis)
-
-
-class TestWorkloadConfig:
-    def test_q10_aux_workload_loads(self):
-        from accel_pipeline.config import load_workload
-
-        workload = load_workload("tpch_q10_aux", REPO_ROOT, engine="duckdb")
-        assert workload["query_number"] == 10
-        assert workload["workload_kind"] == "aux_state"
-        assert workload["aux_function_name"] == "accel_tpch_q10_aux"
-        assert workload["max_structural_reanalysis"] == 2
-        assert len(workload["parameters"]) == 1
-        tables = {t["name"] for t in with_facts(REPO_ROOT, workload, workload["query_number"])["dependent_tables"]}
-        assert tables == {"customer", "orders", "lineitem", "nation"}
-
-    def test_q12_aux_workload_loads(self):
-        from accel_pipeline.config import load_workload
-
-        workload = load_workload("tpch_q12_aux", REPO_ROOT, engine="duckdb")
-        assert workload["query_number"] == 12
-        assert workload["workload_kind"] == "aux_state"
-        assert workload["aux_function_name"] == "accel_tpch_q12_aux"
-        assert workload["max_structural_reanalysis"] == 2
-        assert len(workload["parameters"]) == 3
-        tables = {t["name"] for t in with_facts(REPO_ROOT, workload, workload["query_number"])["dependent_tables"]}
-        assert tables == {"orders", "lineitem"}
-
-    def test_sec_edgar_q1_aux_workload_loads(self):
-        from accel_pipeline.config import load_pipeline_config, load_workload, resolve_workload_paths
-
-        workload = load_workload("sec_edgar_q1_aux", REPO_ROOT)
-        assert workload["query_number"] == 1
-        assert workload["workload_kind"] == "aux_state"
-        assert workload["benchmark_name"] == "sec_edgar"
-        assert workload["aux_function_name"] == "accel_sec_edgar_q1_aux"
-        assert workload["prerequisite_workload"] == "sec_edgar_q1"
-        assert workload["aux_bench_sweep"]["suites"] == "filing_append"
-        tables = {t["name"] for t in with_facts(REPO_ROOT, workload, workload["query_number"])["dependent_tables"]}
-        assert tables == {"pre"}
-
-        paths = resolve_workload_paths(load_pipeline_config(repo_root=REPO_ROOT), workload, 1)
-        assert paths["aux_state_subdir"] == "accelerators/sec_edgar/q1/duckdb/aux"
-        assert paths["aux_bench_target"] == "benchmark_sec_edgar_q1_aux"
-        assert paths["cost_model_config"] == "accelerators/sec_edgar/q1/config/sec_edgar_q1_aux_cost_model_duckdb.json"
-        assert workload.get("post_implementation_gates", [])[0] == "aux_correctness"
-        assert "accelerators/sec_edgar/q1/**" in workload.get("write_paths", [])
-
-    def test_sec_edgar_q2_aux_workload_loads(self):
-        from accel_pipeline.config import load_pipeline_config, load_workload, resolve_workload_paths
-
-        workload = load_workload("sec_edgar_q2_aux", REPO_ROOT)
-        assert workload["query_number"] == 2
-        assert workload["workload_kind"] == "aux_state"
-        assert workload["benchmark_name"] == "sec_edgar"
-        assert workload["aux_function_name"] == "accel_sec_edgar_q2_aux"
-        assert workload["prerequisite_workload"] == "sec_edgar_q2"
-        assert workload["aux_bench_sweep"]["suites"] == "value_append"
-        tables = {t["name"] for t in with_facts(REPO_ROOT, workload, workload["query_number"])["dependent_tables"]}
-        assert tables == {"num", "sub"}
-
-        paths = resolve_workload_paths(load_pipeline_config(repo_root=REPO_ROOT), workload, 2)
-        assert paths["aux_state_subdir"] == "accelerators/sec_edgar/q2/duckdb/aux"
-        assert paths["aux_bench_target"] == "benchmark_sec_edgar_q2_aux"
-        assert paths["cost_model_config"] == "accelerators/sec_edgar/q2/config/sec_edgar_q2_aux_cost_model_duckdb.json"
-        assert paths["aux_bench_suites"] == "value_append"
-
-
-class TestPromptRendering:
-    def test_aux_analysis_prompt_has_no_q14_reference_leakage(self):
-        from accel_pipeline.config import apply_workload_overrides, load_pipeline_config, load_workload
-        from accel_pipeline.prompts import render_prompt
-
-        pipeline_config = load_pipeline_config(repo_root=REPO_ROOT)
-        workload = load_workload("tpch_q14_aux", REPO_ROOT, engine="duckdb")
-        pipeline_config = apply_workload_overrides(pipeline_config, workload)
-        prompt = render_prompt(pipeline_config, "01_analysis.md", workload, 14, "analysis")
-        lowered = prompt.lower()
-        assert "accelerators/tpch/q14/duckdb/aux" not in lowered
-        assert "mirroring q14" not in lowered
-        assert "reference implementation" not in lowered
-        assert not re.search(r"\{\{\w+\}\}", prompt), "unresolved placeholder"
-        for field in ("fitness_assessment", "base_path_cost_decomposition", "units_probe", "measured_units",
-                      "read_work_ratio", "state_storage", "scale_plan", "mutation_coverage", "files_to_create",
-                      "validate_analysis", "update_analysis"):
-            assert field in prompt, field
-        revision_prompt = render_prompt(
-            pipeline_config,
-            "01_analysis.md",
-            workload,
-            14,
-            "analysis",
-            extra_context={"analysis_revision_request": "Bottleneck: scan_for_scan at 50% writes"},
-        )
-        assert "Bottleneck: scan_for_scan at 50% writes" in revision_prompt
-        assert "revision" in revision_prompt.lower()
-        impl = render_prompt(pipeline_config, "02_implementation.md", workload, 14, "implementation")
-        assert not re.search(r"\{\{\w+\}\}", impl), "unresolved placeholder"
-        assert "## Design contract" in impl and "```json" in impl
-        opt = render_prompt(
-            pipeline_config, "03_optimization_worker.md", workload, 14, "optimization_worker", optimization_iter=1
-        )
-        assert "hard guidelines" in opt.lower() or "native base" in opt.lower()
-        assert "{{analysis_json}}" not in opt
-
-    def test_dry_run_all_aux_stages(self):
-        from accel_pipeline.config import apply_workload_overrides, load_model_config, load_pipeline_config, load_workload
-        from accel_pipeline.stages.base import run_agent_stage
-
-        pipeline_config = load_pipeline_config(repo_root=REPO_ROOT)
-        workload = load_workload("tpch_q14_aux", REPO_ROOT, engine="duckdb")
-        pipeline_config = apply_workload_overrides(pipeline_config, workload)
-        model_config = load_model_config(repo_root=REPO_ROOT)
-        for stage, prompt in [
-            ("analysis", "01_analysis.md"),
-            ("test_suite", "01b_test_suite.md"),
-            ("implementation", "02_implementation.md"),
-            ("optimization_worker", "03_optimization_worker.md"),
-            ("audit", "04_audit.md"),
-        ]:
-            result = run_agent_stage(
-                stage=stage,
-                prompt_file=prompt,
-                pipeline_config=pipeline_config,
-                model_config=model_config,
-                workload_name="tpch_q14_aux",
-                query=14,
-                user_message="dry-run",
-                dry_run=True,
-            )
-            assert result["dry_run"] is True

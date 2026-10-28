@@ -196,34 +196,4 @@ inline void EmitParallelScaleProfile(const ParallelScaleProfile &p) {
 	std::cerr << out.str() << '\n';
 }
 
-//! TPC-H scale-factor constants for analytical projection (rows at SF1).
-struct TpchSf1Cardinality {
-	static constexpr int64_t kLineitem = 6'001'215;
-	static constexpr int64_t kOrders = 1'500'000;
-	static constexpr int64_t kCustomer = 150'000;
-	static constexpr int64_t kPart = 200'000;
-	static constexpr int64_t kSupplier = 10'000;
-	static constexpr int64_t kPartsupp = 800'000;
-};
-
-//! Project a SF1 metric to SF10 assuming linear row growth.
-inline int64_t ProjectLinearSf10(int64_t sf1_value) {
-	return sf1_value * 10;
-}
-
-//! Project dense order-key domain at SF10.
-inline int64_t ProjectOrderDomainSf10() {
-	return TpchSf1Cardinality::kOrders * 4 * 10 + 1;
-}
-
-//! Project customer domain at SF10.
-inline int64_t ProjectCustomerDomainSf10() {
-	return TpchSf1Cardinality::kCustomer * 10 + 1;
-}
-
-//! Project part domain at SF10.
-inline int64_t ProjectPartDomainSf10() {
-	return TpchSf1Cardinality::kPart * 10 + 1;
-}
-
 } // namespace accelerator_codegen

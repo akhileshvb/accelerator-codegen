@@ -1,14 +1,20 @@
+"""The repair loop (triage, retries, quarantine, rollback, replan) and the advisor it consults, and how a failed gate
+is told infra from code."""
+
 import json
+import subprocess
+import threading
 from pathlib import Path
 
 import pytest
 
 from accel_pipeline import repair as repair_mod
-from accel_pipeline.backends.codex_exec import CodexExecBackend
-from accel_pipeline.config import ModelConfig, PipelineConfig, RepairConfig, SessionConfig
-from accel_pipeline.failure import Failure, StageFailure
+from accel_pipeline.agent import CodexExecBackend, StageRunResult
+from accel_pipeline.config import AdvisorConfig, ModelConfig, PipelineConfig, RepairConfig, SessionConfig
 from accel_pipeline.gates import GateResult
-from accel_pipeline.repair import RepairCtx, StageStopped, run_with_repair
+from accel_pipeline.repair import Failure, RepairCtx, run_with_repair, StageFailure, StageStopped
+from accel_pipeline.agent import MAIN, SessionStore
+
 
 FAKE_CODEX = Path(__file__).parent / "fixtures" / "fake_codex.sh"
 PASS = ([GateResult("aux_correctness", "pass", {})], None)
@@ -25,7 +31,7 @@ class World:
     def __init__(self, tmp_path, monkeypatch, **repair):
         self.config = PipelineConfig(
             repo_root=tmp_path, pipeline_root=tmp_path / "pipeline", build_dir=tmp_path / "build",
-            tpch_db_sf1=tmp_path, codex_home=tmp_path / "home", sandbox="none",
+            codex_home=tmp_path / "home", sandbox="none",
             write_policy="off", repair=RepairConfig(**repair),
         )
         monkeypatch.setattr(repair_mod, "load_run_workload", lambda cfg, name: {"benchmark_name": "toybench"})
@@ -33,9 +39,9 @@ class World:
         monkeypatch.setattr(repair_mod, "_run_gates", self._run_gates)
         monkeypatch.setattr(repair_mod, "_rollback", lambda ctx: self.events.append("rollback"))
         monkeypatch.setattr(repair_mod, "_replan", lambda ctx, failure: self.events.append("replan") or False)
-        monkeypatch.setattr("accel_pipeline.stages.base.run_agent_stage", self._agent)
+        monkeypatch.setattr("accel_pipeline.stages.run_agent_stage", self._agent)
         monkeypatch.setattr(repair_mod.time, "sleep", lambda s: None)
-        monkeypatch.setattr("accel_pipeline.infra_fail_fast.handle_infra_failure", lambda *a, **k: None)
+        monkeypatch.setattr("accel_pipeline.repair.handle_infra_failure", lambda *a, **k: None)
         self.tmp = tmp_path
 
     def ctx(self, **kw):
@@ -220,7 +226,7 @@ def test_a_flake_in_the_repair_turn_reruns_the_turn_not_the_code_round(world, mo
             raise StageFailure(FLAKE)
         world.agent_messages.append(kwargs["user_message"])
 
-    monkeypatch.setattr("accel_pipeline.stages.base.run_agent_stage", agent)
+    monkeypatch.setattr("accel_pipeline.stages.run_agent_stage", agent)
     world.gate_script = [gate_fail()]
     run_with_repair(world.ctx(), lambda: None, gates=["aux_correctness"])
     assert len(turns) == 2 and len(world.agent_messages) == 1 and len(world.gate_calls) == 2
@@ -238,7 +244,7 @@ def test_a_failing_repair_turn_does_not_escape(world, monkeypatch):
     def broken(**kwargs):
         raise RuntimeError("codex crashed")
 
-    monkeypatch.setattr("accel_pipeline.stages.base.run_agent_stage", broken)
+    monkeypatch.setattr("accel_pipeline.stages.run_agent_stage", broken)
     world.gate_script = [gate_fail()]
     run_with_repair(world.ctx(), lambda: None, gates=["aux_correctness"])
 
@@ -254,8 +260,7 @@ def test_a_crashing_gate_runner_is_an_orchestrator_failure(world, monkeypatch):
 
 def _stage_world(tmp_path, monkeypatch, mode="ok"):
     """Real run_agent_stage and CodexExecBackend on a fake codex; only prompts, logs and gates are stubbed."""
-    import accel_pipeline.models as models
-    import accel_pipeline.stages.base as base
+    import accel_pipeline.stages as base
 
     world = World(tmp_path, monkeypatch)
     monkeypatch.undo()  # World's stubs are for the unit tests; re-stub what this one needs
@@ -263,7 +268,7 @@ def _stage_world(tmp_path, monkeypatch, mode="ok"):
     monkeypatch.setattr(repair_mod, "_run_gates", world._run_gates)
     monkeypatch.setattr(repair_mod, "_rollback", lambda ctx: None)
     monkeypatch.setattr(repair_mod, "_replan", lambda ctx, failure: False)
-    monkeypatch.setattr("accel_pipeline.infra_fail_fast.handle_infra_failure", lambda *a, **k: None)
+    monkeypatch.setattr("accel_pipeline.repair.handle_infra_failure", lambda *a, **k: None)
     monkeypatch.setenv("FAKE_CODEX_MODE", mode)
     monkeypatch.setenv("FAKE_CODEX_DIR", str(tmp_path))
     (tmp_path / "accelerators/toybench/q3").mkdir(parents=True)
@@ -279,22 +284,21 @@ def _stage_world(tmp_path, monkeypatch, mode="ok"):
         "with_codex_tooling": lambda cfg, prompt, **_: prompt,
         "make_model_id": lambda *a, **k: "m",
         "create_agent_backend": lambda **k: backend,
-        "begin_agent_run": lambda *a, **k: None,
         "log_stage_start": lambda *a, **k: None,
         "log_stage_complete": lambda *a, **k: None,
-        "snapshot_frozen": lambda root: {},
-        "restore_frozen": lambda root, snap: [],
+        "frozen_snapshot": lambda root: {},
+        "frozen_restore": lambda root, snap: [],
     }.items():
         monkeypatch.setattr(base, name, value)
-    monkeypatch.setattr(models, "resolve_stage_provider", lambda stage, cfg: "codex_exec")
-    monkeypatch.setattr("accel_pipeline.prims_library.refresh_for_stage", lambda root: None)
+    monkeypatch.setattr(base, "resolve_stage_provider", lambda stage, cfg: "codex_exec")
+    monkeypatch.setattr("accel_pipeline.stages.refresh_for_stage", lambda root: None)
     world.models, world.backend = models_cfg, backend
     return world
 
 
 def _implement(world):
-    from accel_pipeline.session import MAIN
-    from accel_pipeline.stages.base import run_agent_stage
+    from accel_pipeline.agent import MAIN
+    from accel_pipeline.stages import run_agent_stage
 
     return lambda: run_agent_stage(
         stage="implementation", prompt_file="02_implementation.md", pipeline_config=world.config,
@@ -346,17 +350,17 @@ def test_a_killed_agent_is_resumed_not_restarted(tmp_path, monkeypatch):
 
 
 def test_quick_first_fails_the_batch_before_the_heavy_gates(tmp_path, monkeypatch):
-    from accel_pipeline.quick import QuickResult
+    from accel_pipeline.gates import QuickResult
 
     world = World(tmp_path, monkeypatch)
     monkeypatch.undo()  # the real _run_gates, not World's scripted one
     monkeypatch.setattr(repair_mod, "load_run_workload", lambda cfg, name: {"benchmark_name": "toybench"})
     heavy = []
-    monkeypatch.setattr(repair_mod, "run_gates_parallel", lambda cfg, names, *a, **k: heavy.append(names) or [])
-    monkeypatch.setattr(repair_mod, "run_post_stage_gates_collect", lambda cfg, w, q, names, **k: heavy.append(names) or ([], None))
+    monkeypatch.setattr("accel_pipeline.gates.run_gates_parallel", lambda cfg, names, *a, **k: heavy.append(names) or [])
+    monkeypatch.setattr("accel_pipeline.stages.run_post_stage_gates_collect", lambda cfg, w, q, names, **k: heavy.append(names) or ([], None))
     verdicts = [QuickResult(status="fail", summary="quick_check: projected full-gate write time ~900 s (budget 450 s)"),
                 QuickResult(status="pass")]
-    monkeypatch.setattr("accel_pipeline.quick.run_quick_check", lambda *a, **k: verdicts.pop(0))
+    monkeypatch.setattr("accel_pipeline.gates.run_quick_check", lambda *a, **k: verdicts.pop(0))
     ctx = world.ctx(quick_first=True)
     results, failed = repair_mod._run_gates(ctx, ["aux_correctness"])
     assert failed.name == "quick_check" and "projected" in failed.data["reason"] and heavy == []
@@ -365,7 +369,7 @@ def test_quick_first_fails_the_batch_before_the_heavy_gates(tmp_path, monkeypatc
 
 
 def _blocked():
-    from accel_pipeline.failure import AGENT_BLOCKER, Failure, StageFailure
+    from accel_pipeline.repair import AGENT_BLOCKER, Failure, StageFailure
 
     raise StageFailure(Failure(kind="infra", stage="implementation", source="agent", summary="the gate looks stuck",
                                infra_reason=AGENT_BLOCKER))
@@ -376,14 +380,638 @@ def test_a_blocker_from_the_stage_turn_runs_the_gates_once_and_passes_on_them(wo
     assert world.gate_calls == [["aux_correctness"]] and world.agent_messages == []
 
 
-def test_a_blocker_the_gates_confirm_stops_the_stage(world):
+def test_a_blocker_the_gates_confirm_gets_a_round_to_adapt(world):
     world.gate_script = [gate_fail()]
+    run_with_repair(world.ctx(), _blocked, gates=["aux_correctness"])
+    assert len(world.agent_messages) == 1 and len(world.gate_calls) == 2
+    assert "the gate looks stuck" in world.agent_messages[0] and repair_mod.ADAPT in world.agent_messages[0]
+
+
+def test_a_blocker_without_gates_gets_a_round_to_adapt(world):
+    attempts = [_blocked, lambda: "done"]
+    assert run_with_repair(world.ctx(), lambda: attempts.pop(0)()) == "done"
+    assert len(world.agent_messages) == 1 and repair_mod.ADAPT in world.agent_messages[0]
+
+
+def test_a_blocker_stops_the_stage_only_once_the_repair_budget_is_spent(tmp_path, monkeypatch):
+    world = World(tmp_path, monkeypatch, max_code_rounds=2)
+    world.gate_script = [gate_fail()] * 4  # the first check, one per round, one after the rollback
     with pytest.raises(StageStopped) as stopped:
         run_with_repair(world.ctx(), _blocked, gates=["aux_correctness"])
-    assert "agent-reported blocker persists" in Path(stopped.value.report).read_text()
+    assert len(world.agent_messages) == 2 and world.events == ["rollback", "replan"]
+    report = Path(stopped.value.report).read_text()
+    assert "the gate looks stuck" in report and "survived 2 repair rounds" in report
 
 
-def test_a_blocker_without_gates_stops_at_once(world):
-    with pytest.raises(StageStopped):
-        run_with_repair(world.ctx(), _blocked)
-    assert world.gate_calls == []
+def test_a_blocker_on_the_frozen_suite_goes_to_the_tester_then_the_gates_rerun(world, monkeypatch):
+    revisions = [True, False]
+    monkeypatch.setattr(repair_mod, "revise_upstream", lambda ctx: revisions.pop(0))
+    run_with_repair(world.ctx(), _blocked, gates=["aux_correctness"])
+    assert world.gate_calls == [["aux_correctness"]] and revisions == [False] and world.agent_messages == []
+
+
+def test_a_recorded_harness_defect_goes_to_host_bootstrap_before_the_next_check(world, monkeypatch):
+    from accel_pipeline import engine_backend
+
+    bootstraps = []
+    monkeypatch.setattr(engine_backend, "pending_harness_requests", lambda root, engine: "- **ties**")
+    monkeypatch.setattr(engine_backend, "run_host_bootstrap", lambda *a, **kw: bootstraps.append(kw["engine_name"]))
+    ctx = world.ctx()
+    ctx.workload = {**ctx.workload, "engine_name": "toyengine"}
+    assert repair_mod.revise_upstream(ctx) and bootstraps == ["toyengine"]
+
+
+def test_a_harness_defect_a_gate_finds_goes_to_host_bootstrap_without_an_agent_round(world, monkeypatch):
+    reported, revisions = [], [True]
+    monkeypatch.setattr(repair_mod, "report_defect", lambda ctx, failure: reported.append(failure.source))
+    monkeypatch.setattr(repair_mod, "revise_upstream", lambda ctx: revisions.pop(0) if revisions else False)
+    failed = GateResult("test_suite_validate", "fail", {"reason": "wrote no suite report", "owner": "harness"})
+    world.gate_script = [([failed], failed)]
+    run_with_repair(world.ctx(), lambda: None, gates=["test_suite_validate"])
+    assert reported == ["gate:test_suite_validate"] and revisions == [] and world.agent_messages == []
+
+
+def test_a_harness_failure_in_host_bootstrap_is_repaired_by_its_own_agent(world, monkeypatch):
+    monkeypatch.setattr(repair_mod, "report_defect", lambda ctx, failure: pytest.fail("the stage's own files"))
+    monkeypatch.setattr(repair_mod, "revise_upstream", lambda ctx: False)  # nothing upstream of the harnesses
+    failed = GateResult("harness_conformance", "fail", {"reason": "clause bench-rows: 1 row", "owner": "harness"})
+    world.gate_script = [([failed], failed)]
+    ctx = RepairCtx(world.config, None, "w", 3, stage="host_bootstrap", change_kind="host_bootstrap")
+    run_with_repair(ctx, lambda: None, gates=["harness_conformance"])
+    assert len(world.agent_messages) == 1 and "bench-rows" in world.agent_messages[0]
+
+
+def test_a_backend_defect_a_gate_finds_goes_to_the_backends_owner_before_the_recheck(world, monkeypatch):
+    revisions = [True]
+    monkeypatch.setattr(repair_mod, "report_defect", lambda ctx, failure: None)
+    monkeypatch.setattr(repair_mod, "revise_upstream", lambda ctx: revisions.pop(0) if revisions else False)
+    failed = GateResult("aux_correctness", "fail", {"reason": "capture missed an update", "owner": "backend"})
+    world.gate_script = [([failed], failed)]
+    run_with_repair(world.ctx(), lambda: None, gates=["aux_correctness"])
+    assert revisions == [] and world.agent_messages == []  # fixed upstream: no adapt round for the agent
+
+
+def test_a_recorded_harness_defect_is_reproduced_through_request_gate(world):
+    from accel_pipeline.engine_backend import pending_harness_requests
+
+    ctx = world.ctx()
+    ctx.workload = {**ctx.workload, "engine_name": "toyengine"}
+    failure = repair_mod.Failure(kind="infra", stage="test_suite", source="gate:test_suite_validate", owner="harness",
+                                 summary="wrote no suite report", reproduce="bash pipeline/gates/run_test_suite_validate.sh 3")
+    repair_mod.report_defect(ctx, failure)
+    text = pending_harness_requests(ctx.pipeline_config.repo_root, "toyengine")
+    assert 'request_gate("test_suite_validate")' in text and "bash pipeline/gates" not in text
+
+
+def test_test_data_that_does_not_load_stops_the_stage_without_a_repair_round(world):
+    world.gate_script = [owned_fail("data")]
+    with pytest.raises(StageStopped) as stopped:
+        run_with_repair(world.ctx(), lambda: None, gates=["aux_correctness"])
+    assert stopped.value.reason.startswith("owner data:") and world.agent_messages == []
+
+
+def owned_fail(owner, name="aux_correctness", **data):
+    result = GateResult(name, "fail", {"log_tail": "it failed", "owner": owner, **data})
+    return [result], result
+
+
+def test_a_backend_defect_is_recorded_once_for_its_owner_and_the_agent_adapts(world):
+    from accel_pipeline.engine_backend import pending
+
+    ctx = world.ctx()
+    ctx.workload = {**ctx.workload, "engine_name": "toyengine"}
+    world.gate_script = [owned_fail("backend"), owned_fail("backend")]
+    run_with_repair(ctx, lambda: None, gates=["aux_correctness"])
+    assert len(world.agent_messages) == 2 and "Owner: backend" in world.agent_messages[0]
+    assert "Adapt within your own files" in world.agent_messages[0]
+    assert len(pending(world.tmp, "toyengine", "backend")) == 1
+
+
+@pytest.mark.parametrize("owner", ["data", "pipeline", "engine"])
+def test_a_data_or_pipeline_failure_stops_with_a_report_naming_the_owner(world, owner):
+    world.gate_script = [owned_fail(owner)]
+    with pytest.raises(StageStopped) as stopped:
+        run_with_repair(world.ctx(), lambda: None, gates=["aux_correctness"])
+    assert stopped.value.reason.startswith(f"owner {owner}:") and world.agent_messages == []
+    assert f"Owner: {owner}" in Path(stopped.value.report).read_text()
+
+
+def test_a_blocker_the_agent_gives_to_the_pipeline_stops_the_stage(world):
+    def blocked():
+        raise StageFailure(Failure(kind="infra", stage="implementation", source="agent", summary="the gate is broken",
+                                   infra_reason=repair_mod.AGENT_BLOCKER, owner="pipeline"))
+
+    with pytest.raises(StageStopped) as stopped:
+        run_with_repair(world.ctx(), blocked, gates=["aux_correctness"])
+    assert stopped.value.reason.startswith("owner pipeline:") and world.agent_messages == []
+
+
+def test_the_stages_own_files_are_repaired_in_its_own_rounds(world, monkeypatch):
+    monkeypatch.setattr(repair_mod, "revise_upstream", lambda ctx: False)
+    world.gate_script = [owned_fail("harness")]
+    ctx = world.ctx()
+    ctx.stage = "host_bootstrap"
+    run_with_repair(ctx, lambda: None, gates=["host_bootstrap"])
+    assert len(world.agent_messages) == 1
+
+
+def test_the_other_phases_of_an_exit_are_recorded_for_their_owners(world, monkeypatch):
+    reported = []
+    monkeypatch.setattr(repair_mod, "report_defect", lambda ctx, failure: reported.append((failure.source, failure.owner)))
+    world.gate_script = [owned_fail("query", name="aux_exit", elsewhere={"aux_multi_connection": "harness",
+                                                                        "aux_bench_sweep": "backend",
+                                                                        "aux_tsan": "infra"})]
+    run_with_repair(world.ctx(), lambda: None, gates=["aux_exit"])
+    assert reported == [("gate:aux_multi_connection", "harness"), ("gate:aux_bench_sweep", "backend")]
+    assert len(world.agent_messages) == 1
+
+
+def test_a_gates_owner_decides_before_the_text_is_read(repo):
+    load = "[host.sh load s.sql] rc=1\nConstraint Error"
+    assert repair_mod.classify("aux_correctness", {"log_tail": load, "owner": "query"}, WORKLOAD, repo) == ("code", "query", None)
+    assert repair_mod.classify("aux_correctness", {"log_tail": "x", "owner": "data"}, WORKLOAD, repo)[:2] == ("infra", "data")
+    assert repair_mod.classify("aux_correctness", {"log_tail": "x", "owner": "harness"}, WORKLOAD, repo)[:2] == ("code", "harness")
+    assert repair_mod.classify("aux_correctness", {"log_tail": "x", "owner": "backend"}, WORKLOAD, repo)[:2] == ("code", "backend")
+    assert repair_mod.classify("aux_correctness", {"log_tail": "x", "owner": "infra"}, WORKLOAD, repo)[:2] == ("infra", "infra")
+
+
+def test_a_failure_without_an_owner_is_owned_by_its_kind():
+    assert repair_mod.Failure(kind="code", stage="s", source="x", summary="y").owner == "query"
+    assert repair_mod.Failure(kind="infra", stage="s", source="x", summary="y").owner == "infra"
+    assert repair_mod.Failure(kind="orchestrator", stage="s", source="x", summary="y").owner == "pipeline"
+    assert "Owner: harness" in repair_mod.render_failure(
+        repair_mod.Failure(kind="infra", stage="s", source="x", summary="y", owner="harness"))
+
+
+def _out_of_credits():
+    from accel_pipeline.repair import Failure, StageFailure
+    from accel_pipeline.stages import stage_failure
+
+    result = type("R", (), {"error": "unexpected status 402 Payment Required: This request requires more credits",
+                            "status": "error", "metadata": {}, "final_text": ""})()
+    raise StageFailure(stage_failure("implementation", "codex_exec", result))
+
+
+def test_an_out_of_credits_provider_stops_at_once_without_retries(world):
+    with pytest.raises(StageStopped) as stopped:
+        run_with_repair(world.ctx(), _out_of_credits, gates=["aux_correctness"])
+    assert "out of credits" in stopped.value.reason and world.agent_messages == [] and world.gate_calls == []
+
+
+SID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+
+
+def git(root, *args):
+    subprocess.run(["git", "-C", str(root), "-c", "user.email=a@b", "-c", "user.name=t", *args], check=True,
+                   capture_output=True)
+
+
+class FakeFork:
+    """Stands in for the advisor's backend: records the request and edits files like a misbehaving repair_mod."""
+
+    def __init__(self, root, advice="Root cause: X.\nNext: Y.", status="finished"):
+        self.root, self.advice, self.status, self.requests = root, advice, status, []
+
+    def fork_stage(self, request):
+        self.requests.append(request)
+        (self.root / "accelerators/q3.cpp").write_text("advisor edit")  # tracked, modified
+        (self.root / "accelerators/new.cpp").write_text("advisor file")  # untracked
+        (self.root / "accelerators/dirty.cpp").write_text("advisor rewrote the agent's work")
+        return StageRunResult(backend="codex_exec", stage=request.stage, status=self.status, final_text=self.advice)
+
+
+class AdvisorWorld:
+    def __init__(self, tmp_path, monkeypatch, **advisor_cfg):
+        self.root = tmp_path
+        (tmp_path / "accelerators").mkdir()
+        (tmp_path / "accelerators/q3.cpp").write_text("committed")
+        (tmp_path / "accelerators/dirty.cpp").write_text("committed")
+        git(tmp_path, "init")
+        git(tmp_path, "add", "-A")
+        git(tmp_path, "commit", "-m", "init")
+        (tmp_path / "accelerators/dirty.cpp").write_text("the agent's work in progress")
+        self.config = PipelineConfig(
+            repo_root=tmp_path, pipeline_root=tmp_path / "pipeline", build_dir=tmp_path / "build",
+            codex_home=tmp_path / "home", sandbox="none",
+            write_policy="off", repair=RepairConfig(), advisor=AdvisorConfig(**advisor_cfg),
+        )
+        self.models = ModelConfig(api_key_env="K", presets={}, stages={}, codex_bin=str(FAKE_CODEX))
+        self.art = tmp_path / "pipeline/artifacts/toybench/q3"
+        self.art.mkdir(parents=True)
+        self.fork = FakeFork(tmp_path)
+        workload = {"benchmark_name": "toybench"}
+        monkeypatch.setattr(repair_mod, "load_run_workload", lambda cfg, name: workload)
+        monkeypatch.setattr(repair_mod, "make_model_id", lambda *a, **k: "advisor/model")
+        monkeypatch.setattr(repair_mod, "render_prompt", lambda *a, **k: "ADVISOR INSTRUCTIONS")
+        monkeypatch.setattr("accel_pipeline.agent.create_agent_backend", lambda **k: self.backend(**k))
+        self.created = []
+
+    def backend(self, **kwargs):
+        self.created.append(kwargs)
+        return self.fork
+
+    def consult(self, stage="implementation", question="why?", trigger="agent", **kw):
+        return repair_mod.consult(self.config, self.models, "w", 3, stage, question=question, trigger=trigger, **kw)
+
+    def main_session(self, sid=SID):
+        SessionStore(self.art).record(3, MAIN, sid, "implementation", resumed=False)
+
+    def events(self):
+        path = next((self.root / "pipeline/artifacts").rglob("pipeline_events.jsonl"))
+        return [json.loads(line) for line in path.read_text().splitlines()]
+
+
+@pytest.fixture
+def advisor_world(tmp_path, monkeypatch):
+    return AdvisorWorld(tmp_path, monkeypatch)
+
+
+# ---- the fork command ----
+
+def fork_backend(tmp_path, monkeypatch, art=True):
+    monkeypatch.setenv("FAKE_CODEX_MODE", "ok")
+    monkeypatch.setenv("FAKE_CODEX_DIR", str(tmp_path))
+    config = PipelineConfig(repo_root=tmp_path, pipeline_root=tmp_path / "pipeline", build_dir=tmp_path / "build",
+                            codex_home=tmp_path / "home",
+                            sandbox="none", write_policy="enforce")
+    models = ModelConfig(api_key_env="K", presets={}, stages={}, codex_bin=str(FAKE_CODEX))
+    return CodexExecBackend(pipeline_config=config, model_config=models, query=3, stage="implementation",
+                            art_dir=tmp_path / "art" if art else None)
+
+
+def test_the_fork_command_forks_the_session_on_the_advisor_model(tmp_path, monkeypatch):
+    from accel_pipeline.agent import StageRunRequest
+
+    request = StageRunRequest(stage="advisor", instructions="INSTR", user_message="why?", agent_name="a",
+                              model_id="adv/model", agent_model="adv/model", metadata={"fork_session_id": SID})
+    result = fork_backend(tmp_path, monkeypatch).fork_stage(request)
+    assert result.status == "finished"
+    args = (tmp_path / "args.log").read_text().splitlines()
+    assert len(args) == 1
+    assert args[0].startswith("exec fork --skip-git-repo-check -m adv/model ")
+    assert "resume" not in args[0] and " -C " not in args[0]
+    assert args[0].endswith(f"{SID} -")  # the prompt comes on stdin
+    assert 'enabled_tools=["quick_check"' in args[0] and "request_gate" not in args[0]
+    assert "ask_advisor" not in args[0]
+    assert not (tmp_path / "art").exists()  # no run file, progress clock or heartbeat: the agent's are untouched
+
+
+def test_a_fork_never_serves_advisor_requests_or_marks_the_agent_run(tmp_path, monkeypatch):
+    backend = fork_backend(tmp_path, monkeypatch)
+    from accel_pipeline.agent import StageRunRequest
+
+    (tmp_path / "art").mkdir()
+    (tmp_path / "art" / "agent_run.json").write_text("{}")
+    backend.fork_stage(StageRunRequest(stage="advisor", instructions="I", user_message="q", agent_name="a",
+                                       model_id="m", metadata={"fork_session_id": SID}))
+    assert (tmp_path / "art" / "agent_run.json").exists()
+
+
+# ---- consult ----
+
+def test_consult_forks_the_main_session_and_undoes_the_advisors_edits(advisor_world):
+    advisor_world.main_session()
+    advice = advisor_world.consult()
+    assert advice.startswith("Root cause: X.")
+    (request,) = advisor_world.fork.requests
+    assert request.metadata == {"fork_session_id": SID} and request.stage == "advisor"
+    assert request.user_message == "why?" and request.instructions == "ADVISOR INSTRUCTIONS"
+    assert advisor_world.created[0]["stage"] == "implementation"  # the agent's MCP setup
+    root = advisor_world.root / "accelerators"
+    assert (root / "q3.cpp").read_text() == "committed"
+    assert not (root / "new.cpp").exists()
+    assert (root / "dirty.cpp").read_text() == "the agent's work in progress"
+
+
+def test_a_live_session_id_serves_a_first_turn_without_a_stored_one(advisor_world):
+    advisor_world.consult(session_id="live-id")
+    assert advisor_world.fork.requests[0].metadata["fork_session_id"] == "live-id"
+
+
+def test_no_session_no_consult_and_no_count(advisor_world):
+    with pytest.raises(repair_mod.Unavailable, match="no session"):
+        advisor_world.consult()
+    assert repair_mod.consults_used(advisor_world.art, "implementation") == 0 and not advisor_world.fork.requests
+
+
+def test_consults_are_capped_per_stage_family(tmp_path, monkeypatch):
+    advisor_world = AdvisorWorld(tmp_path, monkeypatch, max_consults_per_stage=2)
+    advisor_world.main_session()
+    advisor_world.consult()
+    advisor_world.consult(stage="impl_host")  # same family
+    with pytest.raises(repair_mod.Unavailable, match="limit reached"):
+        advisor_world.consult()
+    advisor_world.consult(stage="optimization_unified")  # its own cap
+    assert len(advisor_world.fork.requests) == 3
+
+
+def test_a_disabled_advisor_is_unavailable(tmp_path, monkeypatch):
+    advisor_world = AdvisorWorld(tmp_path, monkeypatch, max_consults_per_stage=0)
+    advisor_world.main_session()
+    with pytest.raises(repair_mod.Unavailable, match="disabled"):
+        advisor_world.consult()
+
+
+def test_a_consult_is_logged_as_an_event_and_in_the_experiment_log(advisor_world):
+    advisor_world.main_session()
+    advisor_world.consult(trigger="stall")
+    (event,) = [e for e in advisor_world.events() if e["event"] == "advisor_consult"]
+    assert event["trigger"] == "stall" and event["stage"] == "implementation" and event["consult"] == 1
+    assert event["session_id"] == SID and event["model"] == "advisor/model" and event["edits_undone"] == 3
+    log = (advisor_world.art / "experiment_log.md").read_text()
+    assert "advisor[implementation] consult 1/4 (stall" in log
+
+
+def test_an_advisor_that_fails_gives_no_advice(advisor_world):
+    advisor_world.main_session()
+    advisor_world.fork.status, advisor_world.fork.advice = "error", ""
+    with pytest.raises(repair_mod.Unavailable, match="no answer"):
+        advisor_world.consult()
+    assert (advisor_world.root / "accelerators/dirty.cpp").read_text() == "the agent's work in progress"
+
+
+# ---- the agent's tool ----
+
+def serve(advisor_world, stage="implementation"):
+    return repair_mod.Servicer(advisor_world.config, advisor_world.models, "w", 3, stage, 0, advisor_world.art)
+
+
+def test_ask_gets_the_servicers_answer(advisor_world):
+    advisor_world.main_session()
+    servicer = serve(advisor_world)
+    answers = []
+    asker = threading.Thread(target=lambda: answers.append(repair_mod.ask(advisor_world.art, "stuck on X", 20, poll_sec=0.05)))
+    asker.start()
+    while asker.is_alive():
+        servicer.poll()
+        asker.join(0.05)
+    servicer.join()
+    assert answers[0].startswith("Root cause: X.")
+    assert advisor_world.fork.requests[0].user_message == "stuck on X"
+    assert not (advisor_world.art / repair_mod.REQUEST_FILE).exists()
+
+
+def test_ask_reports_a_refusal(advisor_world):
+    servicer = serve(advisor_world)  # no session yet
+    asker = threading.Thread(target=lambda: advisor_world.__dict__.update(answer=repair_mod.ask(advisor_world.art, "q", 20, poll_sec=0.05)))
+    asker.start()
+    while asker.is_alive():
+        servicer.poll()
+        asker.join(0.05)
+    assert advisor_world.answer.startswith("No advice: this stage has no session")
+
+
+def test_ask_gives_up_when_nobody_serves(advisor_world):
+    assert "did not answer in time" in repair_mod.ask(advisor_world.art, "q", 0.2, poll_sec=0.05)
+    assert not (advisor_world.art / repair_mod.REQUEST_FILE).exists()
+
+
+def mcp_tools(advisor_world, stage="implementation"):
+    from accel_pipeline.mcp import build_mcp_tool_callables
+
+    return build_mcp_tool_callables(advisor_world.config, {"benchmark_name": "toybench"}, "w", 3, stage, 0, advisor_world.art)
+
+
+def test_the_mcp_tool_counts_down_and_stops_at_the_cap(tmp_path, monkeypatch):
+    advisor_world = AdvisorWorld(tmp_path, monkeypatch, max_consults_per_stage=1)
+    monkeypatch.setattr(repair_mod, "ask", lambda art, question, timeout: "advice")
+    ask = mcp_tools(advisor_world)["ask_advisor"]
+    assert ask("q").endswith("[advisor consults left in this stage: 0]")
+    advisor_world.main_session()
+    advisor_world.consult()  # the servicer's side spends the one consult
+    assert "limit reached" in ask("q")
+
+
+def test_the_mcp_tool_is_for_implementation_optimization_and_their_repair_turns(advisor_world, monkeypatch):
+    monkeypatch.setattr(repair_mod, "ask", lambda art, question, timeout: "advice")
+    assert "not available" in mcp_tools(advisor_world, stage="analysis")["ask_advisor"]("q")
+    assert mcp_tools(advisor_world, stage="crash_debug")["ask_advisor"]("q").startswith("advice")
+
+
+# ---- the repair loop ----
+
+class Loop:
+    def __init__(self, advisor_world, monkeypatch, texts):
+        self.advisor_world, self.messages, self.consults = advisor_world, [], []
+        self.texts = list(texts)
+        monkeypatch.setattr(repair_mod, "load_run_workload", lambda cfg, name: {"benchmark_name": "toybench"})
+        monkeypatch.setattr(repair_mod, "_run_gates", self._gates)
+        monkeypatch.setattr(repair_mod, "_rollback", lambda ctx: None)
+        monkeypatch.setattr(repair_mod, "_replan", lambda ctx, failure: False)
+        monkeypatch.setattr(repair_mod, "consult", self._consult)
+
+    def _gates(self, ctx, names):
+        from accel_pipeline.gates import GateResult
+
+        if not self.texts:
+            return [GateResult("g", "pass", {})], None
+        result = GateResult("g", "fail", {"log_tail": self.texts.pop(0), "returncode": 1})
+        return [result], result
+
+    def _consult(self, *args, **kw):
+        self.consults.append(kw)
+        return "use the delta path"
+
+    def run(self, **kw):
+        ctx = RepairCtx(self.advisor_world.config, None, "w", 3, stage="implementation", change_kind="implementation",
+                        repair_turn=lambda failure: self.messages.append(repair_mod.render_failure(failure)), **kw)
+        run_with_repair(ctx, lambda: None, gates=["g"])
+
+
+def test_the_same_failure_twice_brings_the_advisor_into_the_next_message(advisor_world, monkeypatch):
+    loop = Loop(advisor_world, monkeypatch, ["quick_check failed: rebuild on write", "quick_check failed: rebuild on write"])
+    loop.run()
+    assert len(loop.consults) == 1 and loop.consults[0]["trigger"] == "stall"
+    assert "A reviewer with your full context diagnosed:\nuse the delta path" not in loop.messages[0]
+    assert "A reviewer with your full context diagnosed:\nuse the delta path" in loop.messages[1]
+
+
+def test_a_changing_failure_is_not_a_stall(advisor_world, monkeypatch):
+    loop = Loop(advisor_world, monkeypatch, ["error one", "error two", "error three"])
+    loop.run()
+    assert loop.consults == []
+
+
+def test_digits_do_not_make_a_failure_new(advisor_world, monkeypatch):
+    loop = Loop(advisor_world, monkeypatch, ["failed at 12.5s, 3 of 9", "failed at 13.1s, 4 of 9"])
+    loop.run()
+    assert len(loop.consults) == 1
+
+
+def test_one_consult_per_stall(advisor_world, monkeypatch):
+    loop = Loop(advisor_world, monkeypatch, ["same"] * 3)
+    loop.run()
+    assert len(loop.consults) == 1
+
+
+def test_a_no_progress_redirect_consults_at_once(advisor_world, monkeypatch):
+    advisor_world.config.repair = RepairConfig()
+    loop = Loop(advisor_world, monkeypatch, [])
+    failure = Failure(kind="timeout", stage="implementation", source="no_progress", summary="no progress for 1200s")
+    attempts = iter([failure])
+
+    def attempt():
+        from accel_pipeline.repair import StageFailure
+
+        for f in attempts:
+            raise StageFailure(f)
+
+    ctx = RepairCtx(advisor_world.config, None, "w", 3, stage="implementation", change_kind="implementation",
+                    repair_turn=lambda f: loop.messages.append(repair_mod.render_failure(f)))
+    run_with_repair(ctx, attempt, gates=["g"])
+    assert len(loop.consults) == 1 and "A reviewer with your full context" in loop.messages[0]
+
+
+def test_an_unavailable_advisor_does_not_stop_the_repair(advisor_world, monkeypatch):
+    loop = Loop(advisor_world, monkeypatch, ["same", "same"])
+
+    def refuse(*a, **kw):
+        raise repair_mod.Unavailable("advisor limit reached (4 consults in implementation)")
+
+    monkeypatch.setattr(repair_mod, "consult", refuse)
+    loop.run()
+    assert len(loop.messages) == 2 and all("A reviewer" not in m for m in loop.messages)
+
+
+# ---- configuration ----
+
+
+WORKLOAD = {"benchmark_name": "toybench", "query_number": 3}
+
+TSAN = """WARNING: ThreadSanitizer: data race (pid=1)
+  Write of size 8 at 0x1 by thread T1:
+    #0 do_work /engine/src/pool.cc:88 (libengine.so+0x1)
+    #1 run /engine/src/pool.cc:90 (libengine.so+0x2)
+SUMMARY: ThreadSanitizer: data race /engine/src/pool.cc:88 in do_work
+"""
+TSAN_OURS = TSAN.replace("/engine/src/pool.cc:88 (libengine", "/repo/accelerators/toybench/q3/aux.cpp:88 (libengine", 1)
+
+
+@pytest.fixture
+def repo(tmp_path):
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "-c", "user.email=a@b", "-c", "user.name=n", "commit", "-q", "--allow-empty", "-m", "i"],
+                   cwd=tmp_path, check=True)
+    return tmp_path
+
+
+def classify(text, repo, **kw):
+    return repair_mod.classify("aux_correctness", {"log_tail": text, **kw}, WORKLOAD, repo)
+
+
+def test_engine_internal_sanitizer_is_infra(repo):
+    assert classify(TSAN, repo) == ("code", "backend", "engine_internal_sanitizer")
+
+
+def test_sanitizer_frame_in_the_query_dir_is_code(repo):
+    assert classify(TSAN_OURS, repo) == ("code", "query", None)
+
+
+def test_sanitizer_frame_in_a_file_changed_this_stage_is_code(repo):
+    (repo / "shared.cc").write_text("x")
+    text = TSAN.replace("/engine/src/pool.cc:88 (libengine", "/repo/shared.cc:88 (libengine", 1)
+    assert classify(text, repo) == ("code", "query", None)
+
+
+def test_missing_producer_artifact(repo):
+    assert classify("error: analysis.json not found for query 3", repo) == ("infra", "pipeline", "missing_producer")
+    assert classify("target missing from the gate context", repo) == ("infra", "pipeline", "missing_producer")
+
+
+@pytest.mark.parametrize("text", [
+    "run.sh: line 4: ACCEL_X: unbound variable",
+    "Traceback (most recent call last):\n  File \"/r/pipeline/gates/read_gate_context.py\", line 3, in <module>\nKeyError: 'a'",
+    "backends/e/host.sh up exited with status 2",
+])
+def test_harness_errors(text, repo):
+    assert classify(text, repo) == ("infra", "infra", "harness_error")
+
+
+def test_python_traceback_outside_the_harness_is_code(repo):
+    text = "Traceback (most recent call last):\n  File \"/r/accelerators/toybench/q3/check.py\", line 3\nValueError"
+    assert classify(text, repo) == ("code", "query", None)
+
+
+def test_timeout_is_infra_only_under_load(repo, monkeypatch):
+    text = "gate did not finish within 7200s"
+    monkeypatch.setattr("os.getloadavg", lambda: (0.1, 0.1, 0.1))
+    assert classify(text, repo) == ("code", "query", None)
+    monkeypatch.setattr("os.getloadavg", lambda: (1e6, 1e6, 1e6))
+    assert classify(text, repo) == ("infra", "infra", "timeout_under_load")
+    assert classify("", repo, returncode=137) == ("infra", "infra", "timeout_under_load")
+
+
+def test_shared_tree_failures_are_infra(repo):
+    assert classify("unsupported shared query binding", repo) == ("infra", "infra", "unsupported_shared_query")
+
+
+def test_plain_test_failure_is_code(repo):
+    assert classify("Segmentation fault in accelerators/toybench/q3/aux.cpp\n1 test failed", repo) == ("code", "query", None)
+
+
+def test_transient_provider_failure():
+    assert repair_mod.is_transient_provider_failure("stream disconnected before completion")
+    assert not repair_mod.is_transient_provider_failure("assertion failed in kernel")
+    assert not repair_mod.is_transient_provider_failure(None)
+
+
+ENGINE_WORKLOAD = {"workload_kind": "engine_backend", "engine_name": "toydb"}
+ASAN_BACKEND = """==1==ERROR: AddressSanitizer: stack-use-after-return on address 0x1
+READ of size 3 at 0x1 thread T0
+    #0 0x1 in toydb::TextAccessor::TextView /repo/backends/toydb/api/scan.hpp:99
+    #1 0x2 in main /repo/pipeline/canary/canary_mirror.hpp:7
+"""
+ASAN_ENGINE = """==1==ERROR: AddressSanitizer: heap-use-after-free on address 0x1
+    #0 0x1 in engine::Pool::Run /engine/src/pool.cc:88
+    #1 0x2 in engine::Pool::Loop /engine/src/pool.cc:90
+"""
+
+
+def test_an_engine_backend_report_in_the_backends_tree_is_code(repo):
+    assert repair_mod.classify("engine_canary_asan", {"log_tail": ASAN_BACKEND}, ENGINE_WORKLOAD, repo) == ("code", "query", None)
+
+
+def test_an_engine_backend_report_without_a_backend_frame_is_the_backends(repo):
+    assert repair_mod.classify("engine_canary_asan", {"log_tail": ASAN_ENGINE}, ENGINE_WORKLOAD, repo) == (
+        "code", "backend", "engine_internal_sanitizer")
+
+
+def test_a_harness_that_fails_a_later_repeat_is_a_race_and_code():
+    data = {"log_tail": "test_x failed on run 4 after passing 3 times: a race (the harness or the backend depends on timing)"}
+    assert repair_mod.racy_repeats(data) == (3, 4)
+    assert repair_mod.racy_repeats({"log_tail": "failed on run 1"}) is None
+    assert repair_mod.classify("engine_scan", data, ENGINE_WORKLOAD, None) == ("code", "query", None)
+
+
+def test_the_failure_report_of_a_racy_gate_says_it_is_a_race():
+    from accel_pipeline.repair import failure_from_gate
+    from accel_pipeline.gates import GateResult
+
+    result = GateResult("engine_scan", "fail", {"reason": "t failed on run 4 after passing 3 times: a race"})
+    failure = failure_from_gate(result, stage="impl_scan", workload=ENGINE_WORKLOAD)
+    assert failure.kind == "code" and "passed 3 of 4 repeats" in failure.diagnosis[0]
+
+
+def test_the_failure_report_carries_the_reason_the_stacks_one_log_tail_and_the_gate_to_rerun():
+    from accel_pipeline.gates import GateResult
+
+    data = {"reason": "cross_accel: test_toydb_cross_accel did not finish within 900s", "exit_code": 124,
+            "stacks": "== process 7 (harness) ==\n  3 threads:\n    Pool::Wait  pool.cpp:88",
+            "log_tail": "workload=toybench query=3 argument_seed=1\nworkload=toybench query=3 argument_seed=2"}
+    f = repair_mod.failure_from_gate(GateResult("aux_exit", "fail", data), stage="implementation", workload=WORKLOAD)
+    assert f.summary == "gate aux_exit fail: cross_accel: test_toydb_cross_accel did not finish within 900s | exit 124"
+    assert f.reproduce == 'request_gate("aux_exit")' and f.diagnosis == []  # no crash lines: nothing restated
+    report = repair_mod.render_failure(f)
+    assert report.index("Thread stacks at the deadline:") < report.index("Log tail:")
+    assert report.count("argument_seed=2") == 1 and "Pool::Wait" in report
+
+
+def test_a_required_gate_that_fails_keeps_the_owner_it_named(world):
+    from accel_pipeline.gates import GateFailure
+
+    def attempt():
+        raise GateFailure(GateResult("aux_exit", "fail", {"log_tail": "x", "owner": "data", "reason": "cut"}))
+
+    with pytest.raises(StageStopped) as stopped:
+        run_with_repair(world.ctx(), attempt)
+    assert stopped.value.reason.startswith("owner data:")

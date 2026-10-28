@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Real-model canary: one query end to end, in a fresh clean tree, with the models of a models config.
 
-    canary.sh --workload tpch_q14_aux --models models.yaml [--engine duckdb] [--rev HEAD] [--work DIR] [--probe-models]
+    accel canary tpch_q14_aux --models models.yaml [--engine duckdb] [--until STAGE] [--rev HEAD] [--work DIR] [--probe-models]
 
 The same clean tree, sandbox, databases and launch as the smoke test (pipeline_smoke.py), with the model in place
 of the scripted agent: the run to read before a big one (20-30 min, about $1 for a small aux query). It writes
@@ -27,6 +27,8 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
 import pipeline_smoke as smoke  # noqa: E402
+
+from accel_pipeline import layout  # noqa: E402
 
 CANARY_HOME = Path(os.environ.get("ACCEL_CANARY_HOME", f"/flash1/{os.environ.get('USER', 'canary')}/canary"))
 
@@ -58,6 +60,30 @@ def run_to_end(proc: subprocess.Popen, log: Path, timeout: float) -> int:
     return proc.returncode
 
 
+# What the run's agents write (the query trees, and host_bootstrap's workload harnesses of every engine); everything
+# else in the tree is the pipeline's, replaced by --rev's on a resume.
+AGENT_OWNED = (":(exclude)accelerators", *(f":(exclude,glob){g}" for g in layout.harness_globs("*")))
+
+
+def replace_tracked(tree: Path, source: Path) -> None:
+    """The tree's pipeline-owned tracked files become those of `source` (a base tree, one commit): files the source
+    dropped are removed; the agents' files, files the run itself changed and untracked artifacts stay."""
+    def git_files(cwd: Path, *cmd: str) -> set[str]:
+        return set(subprocess.run(["git", "-C", str(cwd), *cmd, "--", ".", *AGENT_OWNED], capture_output=True, text=True,
+                                  check=True).stdout.split())
+
+    changed = git_files(tree, "diff", "--name-only", "HEAD")
+    kept = {name: (tree / name).read_bytes() for name in changed if (tree / name).is_file()}
+    for name in git_files(tree, "ls-files") - git_files(source, "ls-files") - changed:
+        (tree / name).unlink()
+    archive = subprocess.Popen(["git", "-C", str(source), "archive", "HEAD", "--", ".", *AGENT_OWNED], stdout=subprocess.PIPE)
+    subprocess.run(["tar", "-x", "-C", str(tree)], stdin=archive.stdout, check=True)
+    if archive.wait():
+        raise smoke.SmokeError(f"git archive of {source} failed")
+    for name, data in kept.items():
+        (tree / name).write_bytes(data)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--workload", required=True)
@@ -65,8 +91,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--engine", default="duckdb")
     parser.add_argument("--rev", default="HEAD")
     parser.add_argument("--work", type=Path, default=None)
-    parser.add_argument("--timeout", type=float, default=float(os.environ.get("ACCEL_CANARY_TIMEOUT_SEC", 4 * 3600)))
+    parser.add_argument("--timeout", type=float, default=float(os.environ.get("ACCEL_CANARY_TIMEOUT_SEC", 12 * 3600)))
     parser.add_argument("--probe-models", action="store_true")
+    parser.add_argument("--stage", default="all", help="run this stage only (e.g. optimization again, on --resume)")
+    parser.add_argument("--until", default=None, help="pause after this stage; --resume continues")
+    parser.add_argument("--resume", action="store_true",
+                        help="continue the run in --work: everything but the agents' files is updated to --rev's clean tree first")
     args = parser.parse_args(argv)
     try:
         for tool in ("bwrap", "codex", "git", "cmake", "rsync"):
@@ -76,25 +106,34 @@ def main(argv: list[str] | None = None) -> int:
         env = smoke.run_inputs(args.engine, fixture)
         key = api_key()
         work = args.work or CANARY_HOME / "runs" / time.strftime("%Y%m%d-%H%M%S")
-        work.mkdir(parents=True)
-        base = smoke.base_tree(args.rev, args.engine, fixture, env)
-        tree = smoke.new_tree(base, work, fixture, env)
+        if args.resume:
+            tree = work / "tree"
+            replace_tracked(tree, smoke.base_tree(args.rev, args.engine, fixture, env))
+            smoke.use_tree_databases(tree, fixture, env)
+            smoke.run([*smoke.GIT, "add", "-A", "--", ".", *AGENT_OWNED], cwd=tree)
+            smoke.run([*smoke.GIT, "commit", "-q", "--allow-empty", "-m", f"pipeline from {args.rev}"], cwd=tree)
+            (work / "pipeline.log").replace(work / f"pipeline.{time.strftime('%H%M%S')}.log")
+        else:
+            work.mkdir(parents=True)
+            base = smoke.base_tree(args.rev, args.engine, fixture, env)
+            tree = smoke.new_tree(base, work, fixture, env)
     except (smoke.EnvironmentUnavailable, smoke.SmokeError, OSError) as exc:
         print(f"canary cannot run: {exc}", file=sys.stderr)
         return 2
     (tree / ".env").write_text(f"OPENROUTER_API_KEY={key}\n")
     (tree / ".env").chmod(0o600)
     inputs = work / "inputs"
-    inputs.mkdir()
+    inputs.mkdir(exist_ok=True)
     models = inputs / "models.yaml"
     shutil.copyfile(args.models, models)
     config = tree / "pipeline/config/default.yaml"
     query = int(fixture["query"])
-    pipeline = smoke.pipeline_args(args.workload, query, args.engine, models, config)
+    pipeline = smoke.pipeline_args(args.workload, query, args.engine, models, config, args.stage) + (["--until", args.until] if args.until else []) \
+        + (["--resume"] if args.resume else [])
     print(f"[canary] {work}: tail -f {work / 'pipeline.log'}", flush=True)
 
-    if args.probe_models:
-        probe = smoke.launch(tree, work, env, ["accel_pipeline.preflight", "--workload", args.workload, "--query", str(query),
+    if args.probe_models and not args.resume:
+        probe = smoke.launch(tree, work, env, ["accel_pipeline.cli", "--workload", args.workload, "--query", str(query),
                                                "--engine", args.engine, "--models-config", str(models), "--config", str(config),
                                                "--models", "--only", "live_models"], data=(inputs,), log_name="models_probe.log")
         if run_to_end(probe, work / "models_probe.log", 1800):
@@ -103,7 +142,7 @@ def main(argv: list[str] | None = None) -> int:
     proc = smoke.launch(tree, work, env, pipeline, data=(inputs,))
     rc = run_to_end(proc, work / "pipeline.log", args.timeout)
     python = tree / "pipeline/orchestrator/.venv/bin/python"
-    subprocess.run([str(python), "-m", "accel_pipeline.timeline", str(work)], env={**os.environ, "PYTHONPATH": str(tree / "pipeline/orchestrator")})
+    subprocess.run([str(python), "-m", "accel_pipeline", "timeline", str(work)], env={**os.environ, "PYTHONPATH": str(tree / "pipeline/orchestrator")})
     print(f"[canary] exit {rc}; read {work / 'TIMELINE.md'} before a big run")
     return rc
 

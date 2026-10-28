@@ -1,5 +1,5 @@
 // GENERATED BACKEND — layer harness for {{layer_id}} ({{layer_title}}).
-// Spec: pipeline/prompts/engine_backend/docs/layers.md
+// Spec: pipeline/prompts/engine_backend/layers.md
 // Build: test_{{engine_name}}_{{layer_id}}   CTest: engine_{{engine_name}}_{{layer_id}}
 //
 // Toy module on a real RuntimeHost with this backend's slots (reference: SumModule in

@@ -1,30 +1,40 @@
-"""Deterministic operations of the Verus pipeline (stages and MCP tools share them).
+"""Deterministic operations of the Verus pipeline: the stages' gates and the MCP tools run the same functions.
 
 Every function returns a JSON-able dict with ``ok`` and enough detail for an
-agent to act on (errors are trimmed).  Nothing here calls an agent.
+agent to act on (errors are trimmed).  Nothing here calls an agent.  The last
+sections are the agents' side of them: the bubblewrap clean room an agent step
+runs in, and the MCP tools (served by ``accel_pipeline.mcp`` through its mode
+interface: ``register`` and ``enabled_tools``), which read the run context the
+orchestrator wrote (``ACCEL_VERUS_CONTEXT``).  Each agent step sees only its
+stage's tools (``STAGE_TOOLS``; Codex ``enabled_tools``).
 """
 
 from __future__ import annotations
 
 import contextlib
-from concurrent.futures import ThreadPoolExecutor
+import datetime as dt
 import fcntl
 import hashlib
+import inspect
 import json
 import os
 import re
 import shutil
 import subprocess
 import time
+from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator
 
-from accel_pipeline.core_budget import build_jobs
+from accel_pipeline import agent
+from accel_pipeline.agent import HOME, READONLY_LAYERS
+from accel_pipeline.gates import build_jobs, tail_marked
 from accel_pipeline.layout import PROOFLIB
-from accel_pipeline.textutil import tail_marked
-from accel_pipeline.verus import params as qparams
-from accel_pipeline.verus.context import VerusContext
+from accel_pipeline.prims import file_lock
+from accel_pipeline.verus.context import Draw, VerusContext, draw_env, draw_summary, new_draw
 
 GEN_FILES = ("gen_spec.rs", "gen_obligations.rs", "gen_world.rs", "gen_ffi.rs")
 LIB_RS_REQUIRED = ("gen_spec", "gen_obligations", "kernel", "gen_world", "gen_ffi")
@@ -43,17 +53,6 @@ def _run(cmd: list[str], *, cwd: Path | None = None, env: dict[str, str] | None 
     except subprocess.TimeoutExpired as exc:
         out = exc.stdout if isinstance(exc.stdout, str) else ""
         return subprocess.CompletedProcess(cmd, 124, out, f"timed out after {timeout}s")
-
-
-@contextmanager
-def file_lock(path: Path, *, shared: bool = False) -> Iterator[None]:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "a+") as fh:
-        fcntl.flock(fh, fcntl.LOCK_SH if shared else fcntl.LOCK_EX)
-        try:
-            yield
-        finally:
-            fcntl.flock(fh, fcntl.LOCK_UN)
 
 
 def sha256_file(path: Path) -> str:
@@ -543,11 +542,11 @@ def runner_exe(ctx: VerusContext, runner: Path | None = None) -> tuple[str, dict
 
 
 def _runner(ctx: VerusContext, args: list[str], *, store: str = "verus_global", fault: str = "",
-            timeout: float = 1800, runner: Path | None = None, draw: qparams.Draw | None = None,
+            timeout: float = 1800, runner: Path | None = None, draw: Draw | None = None,
             draw_mode: str = "replace") -> dict[str, Any]:
     """`draw`: random parameter tuples from the domain (params.py); `replace` makes them the run's parameter
     sets (bench, profile), `extra` adds them to the frozen tests' (differential, snapshots)."""
-    env = runner_env(ctx, ACCEL_AUX_STORE=store, ACCEL_VERUS_KIT_FAULT=fault, **qparams.runner_env(draw, draw_mode))
+    env = runner_env(ctx, ACCEL_AUX_STORE=store, ACCEL_VERUS_KIT_FAULT=fault, **draw_env(draw, draw_mode))
     exe, extra = runner_exe(ctx, runner)  # a frozen copy: its own kernel library first
     env.update(extra)
     # the shared binary only before this pipeline's first build (shared lock: never under a relink)
@@ -561,7 +560,7 @@ def _runner(ctx: VerusContext, args: list[str], *, store: str = "verus_global", 
     if not data:
         data = {"error": tail_marked(proc.stderr or proc.stdout or f"exit {proc.returncode}", 4000)}
     data["exit"] = proc.returncode
-    data.update(qparams.summary(draw))
+    data.update(draw_summary(draw))
     return data
 
 
@@ -589,7 +588,7 @@ def add_random_params(ctx: VerusContext) -> dict[str, Any]:
     text = path.read_text(encoding="utf-8") if path.is_file() else ""
     if RANDOM_PARAMS_MARK in text:
         return {"added": 0}
-    draw = qparams.new_draw(ctx, "frozen_tests", sets=int(ctx.setting("gates.frozen_param_sets", 8)))
+    draw = new_draw(ctx, "frozen_tests", sets=int(ctx.setting("gates.frozen_param_sets", 8)))
     if draw is None:
         return {"added": 0}
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -602,7 +601,7 @@ def differential(ctx: VerusContext, *, store: str = "verus_global", fault: str =
     """The frozen tests, plus a fresh random draw of parameter tuples from the domain on every run."""
     db = db_copy(ctx, "test", f"diff_{store}_{fault.replace(':', '_') or 'none'}")
     every = str(ctx.setting("gates.differential_every", 10))
-    draw = qparams.new_draw(ctx, "differential", sets=int(ctx.setting("gates.random_param_sets", 6)))
+    draw = new_draw(ctx, "differential", sets=int(ctx.setting("gates.random_param_sets", 6)))
     r = _runner(ctx, ["differential", str(db), ctx.accel_id, str(tests_dir(ctx)), every], store=store, fault=fault,
                 draw=draw, draw_mode="extra")
     r["ok"] = r.get("exit") == 0 and "error" not in r
@@ -611,7 +610,7 @@ def differential(ctx: VerusContext, *, store: str = "verus_global", fault: str =
 
 def snapshots(ctx: VerusContext, *, store: str = "verus_global", fault: str = "") -> dict[str, Any]:
     db = db_copy(ctx, "test", f"snap_{store}_{fault or 'none'}")
-    draw = qparams.new_draw(ctx, "snapshots", sets=int(ctx.setting("gates.random_param_sets", 6)))
+    draw = new_draw(ctx, "snapshots", sets=int(ctx.setting("gates.random_param_sets", 6)))
     r = _runner(ctx, ["snapshots", str(db), ctx.accel_id, str(tests_dir(ctx)),
                       str(ctx.setting("gates.snapshot_writes", 200)), str(ctx.setting("gates.snapshot_readers", 4)),
                       "1"], store=store, fault=fault, draw=draw, draw_mode="extra")
@@ -645,8 +644,6 @@ def correctness(ctx: VerusContext, *, store: str = "verus_global", snapshots_too
 
 
 def _decls(ctx: VerusContext) -> list[dict[str, Any]]:
-    from accel_pipeline.verus.contract import parse_inputs
-
     return parse_inputs((ctx.ws / "frozen" / "q.inputs").read_text(encoding="utf-8"))
 
 
@@ -700,9 +697,7 @@ def sql(ctx: VerusContext, query: str, max_rows: int = 50) -> dict[str, Any]:
 
 
 def glue_contract(ctx: VerusContext) -> dict[str, Any]:
-    """Record what the glue delivers and compare it with the declared inputs (contract.py)."""
-    from accel_pipeline.verus import contract
-
+    """Record what the glue delivers and compare it with the declared inputs."""
     db = db_copy(ctx, "test", "contract")
 
     def runner_call(args: list[str], env: dict[str, str]) -> dict[str, Any]:
@@ -714,7 +709,7 @@ def glue_contract(ctx: VerusContext) -> dict[str, Any]:
             data["error"] = tail_marked(proc.stderr or proc.stdout, 3000)
         return data
 
-    return contract.check(ctx, runner_call, lambda q: sql(ctx, q, 100000), tests_dir(ctx), db)
+    return compare_glue(ctx, runner_call, lambda q: sql(ctx, q, 100000), tests_dir(ctx), db)
 
 
 # ───────────────────────────── bench / profile ─────────────────────────────
@@ -817,11 +812,11 @@ def cost_check(ctx: VerusContext) -> dict[str, Any]:
 
 def bench(ctx: VerusContext, mixes: list[float], *, store: str = "verus_global", tag: str = "bench",
           reps: int | None = None, ops: int | None = None, runner: Path | None = None,
-          timeout: float | None = None, draw: qparams.Draw | None = None) -> dict[str, Any]:
+          timeout: float | None = None, draw: Draw | None = None) -> dict[str, Any]:
     """`draw`: the random parameter tuples to time.  None: a fresh draw (a paired comparison passes
     one draw to both sides, so the pair sees the same parameters)."""
     if draw is None:
-        draw = qparams.new_draw(ctx, tag)
+        draw = new_draw(ctx, tag)
     if reps is None and ops is None:
         reps, ops = bench_size(ctx, mixes)
     cfg = ctx.setting("optimization.bench", {}) or {}
@@ -860,8 +855,8 @@ def profile(ctx: VerusContext, mixes: list[float] | None = None) -> dict[str, An
     accelerator). The build is a one-time cost and is not sampled: perf starts
     paused and the runner enables it after the build."""
     out: dict[str, Any] = {"ok": True, "note": "steady state only (build excluded); shares are per axis"}
-    draw = qparams.new_draw(ctx, "profile")  # one fresh random draw for both axes
-    out.update(qparams.summary(draw))
+    draw = new_draw(ctx, "profile")  # one fresh random draw for both axes
+    out.update(draw_summary(draw))
     phases = {"reads": ("reads", "3", "0", int(ctx.setting("optimization.profile_read_reps", 300))),
               "maintenance": ("writes", "1", "1.0", int(ctx.setting("optimization.profile_write_ops", 300)))}
     for axis, (phase, reps, mix, n) in phases.items():
@@ -878,7 +873,7 @@ def profile(ctx: VerusContext, mixes: list[float] | None = None) -> dict[str, An
     return out
 
 
-def _write_overhead(ctx: VerusContext, ops: int = 50, draw: qparams.Draw | None = None) -> dict[str, Any]:
+def _write_overhead(ctx: VerusContext, ops: int = 50, draw: Draw | None = None) -> dict[str, Any]:
     """What the accelerator adds per write: the same writes plain vs applied
     through it (the engine executing the write itself is in both)."""
     db = db_copy(ctx, "bench", "profile_overhead")
@@ -887,7 +882,7 @@ def _write_overhead(ctx: VerusContext, ops: int = 50, draw: qparams.Draw | None 
             exe, extra = runner_exe(ctx)
             p = _run([exe, "bench", str(db), ctx.accel_id, str(tests_dir(ctx)), "1", "1.0", str(ops)],
                      env=runner_env(ctx, ACCEL_AUX_STORE="verus_global", VERUS_KIT_BENCH_PHASE="writes",
-                                    **qparams.runner_env(draw, "replace"), **extra),
+                                    **draw_env(draw, "replace"), **extra),
                      timeout=3600)
     finally:
         drop_db(db)
@@ -903,7 +898,7 @@ def _write_overhead(ctx: VerusContext, ops: int = 50, draw: qparams.Draw | None 
 
 
 def _profile_phase(ctx: VerusContext, axis: str, phase: str, reps: str, mix: str, ops: str,
-                   draw: qparams.Draw | None = None) -> dict[str, Any]:
+                   draw: Draw | None = None) -> dict[str, Any]:
     db = db_copy(ctx, "bench", f"profile_{axis}")
     run_dir = Path(ctx.run_dir)
     data = run_dir / f"perf_{axis}.data"
@@ -914,7 +909,7 @@ def _profile_phase(ctx: VerusContext, axis: str, phase: str, reps: str, mix: str
     exe, extra = runner_exe(ctx)
     args = [exe, "bench", str(db), ctx.accel_id, str(tests_dir(ctx)), reps, mix, ops]
     env = runner_env(ctx, ACCEL_AUX_STORE="verus_global", VERUS_KIT_ACCEL_ONLY="1", VERUS_KIT_BENCH_PHASE=phase,
-                     VERUS_KIT_PERF_CTL=str(ctl), VERUS_KIT_PERF_ACK=str(ack), **qparams.runner_env(draw, "replace"), **extra)
+                     VERUS_KIT_PERF_CTL=str(ctl), VERUS_KIT_PERF_ACK=str(ack), **draw_env(draw, "replace"), **extra)
     try:
         with file_lock(bench_lock(ctx)):
             rec = _run(["perf", "record", "-F", "1999", "-g", "-D", "-1", "--control", f"fifo:{ctl},{ack}",
@@ -1130,12 +1125,510 @@ def playbook_append(ctx: VerusContext, section: str, title: str, body: str, evid
 
 def backend_addition_record(ctx: VerusContext, engine: str, helper: str, reason: str) -> dict[str, Any]:
     """Log a request for the engine_backend run; query runs never write backends/ themselves."""
-    path = Path(ctx.pipeline_root) / "artifacts" / "backend_additions" / f"{engine}.jsonl"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with file_lock(path.with_suffix(".lock")):
-        with path.open("a", encoding="utf-8") as fh:
-            fh.write(json.dumps({"ts": time.time(), "benchmark": ctx.benchmark, "query": ctx.query,
-                                 "scope": "backend", "helper": helper, "reason": reason, "status": "requested"}) + "\n")
+    from accel_pipeline.engine_backend import record, requests_path
+
+    repo_root = Path(ctx.pipeline_root).parent
+    with file_lock(requests_path(repo_root, engine).with_suffix(".lock")):
+        record(repo_root, engine, {"ts": time.time(), "benchmark": ctx.benchmark, "query": ctx.query,
+                                   "scope": "backend", "helper": helper, "reason": reason})
+    path = requests_path(repo_root, engine)
     return {"ok": True, "logged": str(path),
             "note": f"request logged for the {engine} engine_backend run; backends/{engine}/** is "
                     "not writable from a query run, so do not wait for or rely on the helper here"}
+
+
+# ───────────────────────────── glue contract ─────────────────────────────
+#
+# Does the (LLM-written, trusted) host glue deliver what the declared kernel inputs say?  The generated C ABI has
+# a record mode: it logs every row the glue passes (build scans, each transaction's deltas, rescan keys and rows)
+# and returns without a kernel.  The runner's ``record`` mode dumps the declared SQL ("probes") before the build
+# and before / after each transaction.  Compared: each scan's rows == its declared SQL's rows (bags); each
+# transaction's delta rows, netted by sign == the declared projection's rows after minus before (so updates as
+# -old/+new are fine); each rescan's rows == its declared SQL's post-transaction rows whose KEYS column is one of
+# the keys.  Values are compared by SQL type (exact decimals, dates, timestamps, booleans, text as bytes).  This
+# checks the glue on the test data only; the glue audit agent reads it for the rest.
+
+
+RESERVED = {"as", "break", "const", "continue", "crate", "else", "enum", "extern", "false", "fn", "for", "if", "impl",
+            "in", "let", "loop", "match", "mod", "move", "mut", "pub", "ref", "return", "self", "static", "struct",
+            "super", "trait", "true", "type", "unsafe", "use", "where", "while", "async", "await", "dyn", "int", "nat",
+            "seq", "set", "map", "spec", "proof", "ghost", "tracked"}
+
+
+def sanitize(s: str) -> str:
+    o = re.sub(r"[^a-z0-9]+", "_", s.lower()).strip("_")
+    if not o or o[0].isdigit():
+        o = f"c_{o}"
+    if o in RESERVED or o.startswith(("g_", "i_")):
+        o += "_"
+    return o
+
+
+def parse_inputs(text: str) -> list[dict[str, Any]]:
+    body = "\n".join(l for l in text.splitlines() if not l.lstrip().startswith("--"))
+    out = []
+    for stmt in body.split(";"):
+        stmt = stmt.strip()
+        if not stmt or ":" not in stmt:
+            continue
+        head, sql = stmt.split(":", 1)
+        toks = head.split()
+        d: dict[str, Any] = {"kind": toks[0].lower(), "name": toks[1], "sql": " ".join(sql.split())}
+        for i in range(2, len(toks) - 1, 2):
+            d[toks[i].lower()] = toks[i + 1]
+        out.append(d)
+    return out
+
+
+def _key_output(sql: str, key: str) -> str:
+    m = re.search(rf"\b{re.escape(key)}\s+AS\s+([A-Za-z_][A-Za-z0-9_]*)", sql, re.I)
+    return m.group(1) if m else key
+
+
+def _ns_of(text: str) -> int:
+    base, _, frac = text.partition(".")
+    t = dt.datetime.strptime(base, "%Y-%m-%d %H:%M:%S") if " " in base else dt.datetime.strptime(base, "%Y-%m-%d")
+    days = (t.date() - dt.date(1970, 1, 1)).days
+    return ((days * 24 + t.hour) * 60 + t.minute) * 60 * 10**9 + t.second * 10**9 + int((frac + "000000000")[:9] or 0)
+
+
+def norm_recorded(v: Any, tag: str) -> Any:
+    if tag == "text":
+        return bytes.fromhex(v)
+    if tag == "date":
+        return (dt.date(1970, 1, 1) + dt.timedelta(days=int(v))).isoformat()
+    if tag == "bool":
+        return "true" if int(v) else "false"
+    if tag == "ts":
+        return int(v)
+    if tag.startswith("dec"):
+        return Decimal(int(v)).scaleb(-int(tag[3:])).normalize()
+    return int(v)
+
+
+def norm_sql(v: str, tag: str) -> Any:
+    if v == "NULL":
+        return None
+    try:
+        if tag == "text":
+            return v.encode("utf-8")
+        if tag == "date":
+            return v[:10]
+        if tag == "bool":
+            return "true" if v.lower() in ("true", "1", "t") else "false"
+        if tag == "ts":
+            return _ns_of(v)
+        if tag.startswith("dec"):
+            return Decimal(v).normalize()
+        return int(Decimal(v))
+    except (ValueError, InvalidOperation):
+        return ("unparsed", v)
+
+
+def _plan(fields: list[str], columns: list[str]) -> list[tuple[int, str]] | str:
+    """For each probe column, the recorded field (index, tag) it corresponds to."""
+    named = [(i, f.rsplit(":", 1)[0].removeprefix("row."), f.rsplit(":", 1)[1]) for i, f in enumerate(fields)]
+    named = [x for x in named if x[1] != "sign"]
+    if len(named) == 1 and len(columns) == 1:
+        return [(named[0][0], named[0][2])]
+    plan = []
+    for c in columns:
+        hit = [x for x in named if x[1] == sanitize(c)]
+        if not hit:
+            return f"no recorded field for column {c} (fields {fields})"
+        plan.append((hit[0][0], hit[0][2]))
+    return plan
+
+
+def _rows_rec(rec: dict[str, Any], plan: list[tuple[int, str]]) -> Counter:
+    sign_i = next((i for i, f in enumerate(rec["fields"]) if f.rsplit(":", 1)[0].endswith("sign")), None)
+    c: Counter = Counter()
+    for row in rec["rows"]:
+        key = tuple(norm_recorded(row[i], tag) for i, tag in plan)
+        c[key] += int(row[sign_i]) if sign_i is not None else 1
+    return c
+
+
+def _rows_probe(probe: dict[str, Any], plan: list[tuple[int, str]], keep=None) -> Counter:
+    c: Counter = Counter()
+    for row in probe["rows"]:
+        if keep and not keep(row):
+            continue
+        c[tuple(norm_sql(row[j], tag) for j, (_, tag) in enumerate(plan))] += 1
+    return c
+
+
+def _diff(got: Counter, want: Counter) -> dict[str, Any] | None:
+    g = {k: v for k, v in got.items() if v}
+    w = {k: v for k, v in want.items() if v}
+    if g == w:
+        return None
+    extra = [(repr(k)[:160], v - w.get(k, 0)) for k, v in g.items() if v != w.get(k, 0)][:5]
+    missing = [(repr(k)[:160], v - g.get(k, 0)) for k, v in w.items() if v != g.get(k, 0)][:5]
+    return {"delivered_not_declared": extra, "declared_not_delivered": missing,
+            "delivered_rows": sum(abs(v) for v in g.values()), "declared_rows": sum(abs(v) for v in w.values())}
+
+
+def compare_glue(ctx: VerusContext, runner_call, sql_call, tests_dir: Path, db: Path) -> dict[str, Any]:
+    """runner_call(args, env) -> dict; sql_call(query) -> dict (read-only, test DB)."""
+    decls = parse_inputs((ctx.ws / "frozen" / "q.inputs").read_text(encoding="utf-8"))
+    out = Path(ctx.run_dir) / "contract"
+    if out.exists():
+        shutil.rmtree(out)
+    out.mkdir(parents=True)
+    probes: list[tuple[str, str]] = []
+    keys: list[int] = []
+    rescans: dict[str, dict[str, Any]] = {}
+    for d in decls:
+        n = sanitize(d["name"])
+        if d["kind"] == "scan":
+            probes.append((f"scan_{n}", d["sql"]))
+        elif d["kind"] == "delta":
+            probes.append((f"delta_{n}", d["sql"]))
+        elif d["kind"] == "rescan":
+            probes.append((f"rescan_{n}", d["sql"]))
+            kout = _key_output(d["sql"], d["keys"])
+            rescans[n] = {"key_out": kout}
+            r = sql_call(f'SELECT DISTINCT "{kout}" FROM ({d["sql"]}) AS r ORDER BY hash("{kout}") LIMIT 64')
+            keys += [int(Decimal(x[0])) for x in r.get("rows") or [] if x and x[0] != "NULL"]
+    (out / "probes.tsv").write_text("".join(f"{n}\t{s}\n" for n, s in probes), encoding="utf-8")
+    (out / "keys.txt").write_text(",".join(str(k) for k in keys), encoding="utf-8")
+    run = runner_call(["record", str(db), ctx.accel_id, str(tests_dir), str(out / "probes.tsv"), str(out)],
+                      {"ACCEL_VERUS_RECORD_DIR": str(out), "ACCEL_VERUS_RECORD_KEYS": str(out / "keys.txt"),
+                       "ACCEL_AUX_STORE": "cpp"})
+    if "error" in run:
+        return {"ok": False, "error": run["error"]}
+    problems: list[dict[str, Any]] = []
+    checked = Counter()
+    declined: list[dict[str, Any]] = []  # transactions / scans the glue rightly refused (NULLs the ABI cannot carry)
+
+    def probe(label: str, name: str) -> dict[str, Any]:
+        p = out / f"probe_{label}_{name}.json"
+        return json.loads(p.read_text(encoding="utf-8")) if p.is_file() else {"columns": [], "rows": []}
+
+    # segment the log: build, then each transaction
+    segments: list[tuple[str, list[dict[str, Any]]]] = []
+    for line in (out / "records.jsonl").read_text(encoding="utf-8").splitlines():
+        rec = json.loads(line)
+        if "marker" in rec:
+            segments.append((rec["marker"] if rec["marker"] != "txn" else f"txn{rec['i']}", []))
+        elif segments:
+            segments[-1][1].append(rec)
+    for label, recs in segments:
+        if label == "build":
+            for d in decls:
+                if d["kind"] != "scan":
+                    continue
+                n = sanitize(d["name"])
+                rec = next((r for r in recs if r["fn"] == "build" and r["param"] == n), None)
+                pr = probe("build", f"scan_{n}")
+                if rec is None:
+                    if any("NULL" in row for row in pr.get("rows") or []):
+                        checked["declined"] += 1  # the build declined: a NULL the ABI cannot carry
+                        declined.append({"at": "build", "why": f"scan {n} returns NULL (outside the ABI)"})
+                        continue
+                    problems.append({"at": "build", "input": f"scan {n}", "error": "the glue did not deliver it"})
+                    continue
+                plan = _plan(rec["fields"], pr["columns"])
+                if isinstance(plan, str):
+                    problems.append({"at": "build", "input": f"scan {n}", "error": plan})
+                    continue
+                checked["scan"] += 1
+                if (d_ := _diff(_rows_rec(rec, plan), _rows_probe(pr, plan))):
+                    problems.append({"at": "build", "input": f"scan {n}", **d_})
+        elif label.startswith("txn"):
+            i = label[3:]
+            applies = [r for r in recs if r["fn"] == "apply"]
+            if not applies:
+                # The glue declined the transaction (nothing reached the kernel).  That is the
+                # required behavior when a changed row holds a value the C ABI cannot carry:
+                # a NULL where the declared (NOT NULL) schema promises none.  The host then
+                # rebuilds / answers by SQL, so it is correct, not a contract failure.
+                nulls = []
+                for d in decls:
+                    if d["kind"] != "delta":
+                        continue
+                    n = sanitize(d["name"])
+                    before, after = probe(f"before_{i}", f"delta_{n}"), probe(f"after_{i}", f"delta_{n}")
+                    want = Counter([tuple(r) for r in after["rows"]])
+                    want.subtract(Counter([tuple(r) for r in before["rows"]]))
+                    nulls += [f"{n}: {row}" for row, c in want.items() if c and "NULL" in row]
+                if nulls:
+                    checked["declined"] += 1
+                    declined.append({"at": f"txn {i}", "why": "a changed row holds NULL (outside the ABI)",
+                                     "rows": nulls[:3]})
+                    continue
+            for d in decls:
+                if d["kind"] == "delta":
+                    n = sanitize(d["name"])
+                    before, after = probe(f"before_{i}", f"delta_{n}"), probe(f"after_{i}", f"delta_{n}")
+                    rec = next((r for r in applies if r["param"] == f"{n}_delta"), None)
+                    fields = rec["fields"] if rec else None
+                    if fields is None:
+                        want = Counter([tuple(r) for r in after["rows"]])
+                        want.subtract(Counter([tuple(r) for r in before["rows"]]))
+                        if any(want.values()):
+                            problems.append({"at": f"txn {i}", "input": f"delta {n}",
+                                             "error": "the table changed but the glue delivered no changes"})
+                        continue
+                    plan = _plan(fields, after["columns"])
+                    if isinstance(plan, str):
+                        problems.append({"at": f"txn {i}", "input": f"delta {n}", "error": plan})
+                        continue
+                    want = _rows_probe(after, plan)
+                    want.subtract(_rows_probe(before, plan))
+                    checked["delta"] += 1
+                    if (d_ := _diff(_rows_rec(rec, plan), want)):
+                        problems.append({"at": f"txn {i}", "input": f"delta {n}", **d_})
+                elif d["kind"] == "rescan":
+                    n = sanitize(d["name"])
+                    rec = next((r for r in applies if r["param"] == f"{n}_rows"), None)
+                    krec = next((r for r in applies if r["param"] == f"{n}_keys"), None)
+                    if rec is None or krec is None:
+                        continue  # no transaction reached apply
+                    after = probe(f"after_{i}", f"rescan_{n}")
+                    plan = _plan(rec["fields"], after["columns"])
+                    if isinstance(plan, str):
+                        problems.append({"at": f"txn {i}", "input": f"rescan {n}", "error": plan})
+                        continue
+                    ks = {int(r[0]) for r in krec["rows"]}
+                    kcol = after["columns"].index(rescans[n]["key_out"]) if rescans[n]["key_out"] in after["columns"] else 0
+                    checked["rescan"] += 1
+                    want = _rows_probe(after, plan, keep=lambda row: row[kcol] != "NULL" and int(Decimal(row[kcol])) in ks)
+                    if (d_ := _diff(_rows_rec(rec, plan), want)):
+                        problems.append({"at": f"txn {i}", "input": f"rescan {n}", **d_})
+    return {"ok": not problems and bool(checked), "checked": dict(checked), "problems": problems[:12],
+            "declined": declined[:6], "write_errors": run.get("write_errors")}
+
+
+# ───────────────────────────── the agents' clean room ─────────────────────────────
+#
+# Each codex exec step (and the MCP server, codex's child) runs in a bubblewrap mount namespace that holds only:
+# the run's tree, read-write, except substrate/ and workloads/ (read-only; accelerators/prooflib/ stays writable:
+# prooflib_publish runs in the MCP server, inside this sandbox); the sibling DuckDB checkout, the Verus binary, the
+# rust toolchain, the databases, codex itself (all read-only; the crate cache and cargo target dir read-write);
+# the system; the network.  Everything else under /home is an empty tmpfs.  Run the pipeline from a history-free
+# export of the clean tree: git history inside the root is visible to the agents like any other file.  The
+# mechanism (``agent.prefix``) is the core's; these are the Verus mounts.
+
+
+def _duckdb_root(ctx: VerusContext) -> Path | None:
+    for cand in (os.environ.get("ACCEL_DUCKDB_ROOT"), str(ctx.root.parent / "accelerator-codegen-duckdb")):
+        if cand and Path(cand).is_dir():
+            return Path(cand).resolve()
+    return None
+
+
+def sandbox_mounts(ctx: VerusContext) -> list[agent.Bind]:
+    """(mode, source, destination) for every bind beyond the system ones."""
+    root = ctx.root.resolve()
+    binds: list[agent.Bind] = [("rw", root, root)]
+    binds += agent.readonly_layer_binds(root, ctx.setting("sandbox_readonly_layers", list(READONLY_LAYERS)))
+    if (duck := _duckdb_root(ctx)) is not None:
+        binds.append(("ro", duck, duck))
+    # the Verus binary directory (VERUS_BIN's, else the tree's tools/verus), at its own path so VERUS_BIN means the same inside
+    verus_dir = Path(os.path.realpath(ctx.setting("verus_bin"))).parent
+    if verus_dir.is_dir() and not verus_dir.is_relative_to(root):
+        binds.append(("ro", verus_dir, verus_dir))
+    if (HOME / ".rustup").is_dir():
+        binds.append(("ro", HOME / ".rustup", HOME / ".rustup"))
+    if (HOME / ".cargo").is_dir():  # crate cache (sql2verus builds); cargo writes its locks here
+        binds.append(("rw", HOME / ".cargo", HOME / ".cargo"))
+    target = cargo_target_dir(ctx)  # sql2verus's shared build dir
+    target.mkdir(parents=True, exist_ok=True)
+    if not target.is_relative_to(root):
+        binds.append(("rw", target, target))
+    binds += agent.codex_binds()
+    for f in (ctx.test_db, ctx.bench_db):  # databases outside the tree
+        if f and Path(f).exists():
+            d = Path(f).resolve().parent
+            if not any(d.is_relative_to(src) for _, src, _ in binds):
+                binds.append(("ro", d, d))
+    binds += agent.python_prefix_binds(root)
+    binds += agent.extra_binds("ro", ctx.setting("sandbox_extra_ro", []))
+    return binds
+
+
+def sandbox_prefix(ctx: VerusContext) -> list[str]:
+    """The bwrap command line that runs an agent step in the workspace (append the command)."""
+    return agent.prefix(sandbox_mounts(ctx), ctx.ws, setting="verus.sandbox")
+
+
+def sandbox_selfcheck(ctx: VerusContext) -> dict[str, Any]:
+    """Probe the sandbox: the tree and tools are there; of $HOME and the root's parent, only the mounted paths
+    are (their parents appear as empty skeleton directories holding just the way to the mount)."""
+    allowed = [Path(os.path.abspath(dst)) for _, _, dst in sandbox_mounts(ctx)]
+    cands = sorted({p.resolve() for p in list(HOME.iterdir()) + list(ctx.root.resolve().parent.iterdir())})
+    lines = []
+    for p in cands:
+        if any(p == a or p.is_relative_to(a) for a in allowed):
+            continue
+        under = sorted({a.relative_to(p).parts[0] for a in allowed if a.is_relative_to(p)})
+        if not under:
+            lines.append(f'[ -e "{p}" ] && echo "VISIBLE {p}"')
+        else:
+            keep = "|".join(under)
+            lines.append(f'for e in $(ls -A "{p}" 2>/dev/null); do case "$e" in {keep}) ;; *) echo "VISIBLE {p}/$e";; esac; done')
+    verus = ctx.setting("verus_bin")
+    lines += [f'[ -e "{ctx.root}/pipeline" ] || echo "MISSING {ctx.root}"',
+              'command -v codex >/dev/null || echo "MISSING codex"',
+              f'[ -x "{verus}" ] || echo "MISSING verus ({verus})"',
+              "true"]
+    proc = subprocess.run(sandbox_prefix(ctx) + ["bash", "-c", "\n".join(lines)], capture_output=True,
+                          text=True, timeout=60)
+    out = [l for l in proc.stdout.splitlines() if l.strip()]
+    visible = [l[len("VISIBLE "):] for l in out if l.startswith("VISIBLE ")]
+    missing = [l[len("MISSING "):] for l in out if l.startswith("MISSING ")]
+    return {"ok": proc.returncode == 0 and not visible and not missing, "probed": len(cands),
+            "visible": visible, "missing": missing, "stderr": proc.stderr[-2000:]}
+
+
+# ───────────────────────────── MCP tools ─────────────────────────────
+
+COMMON = ["verus_sql", "playbook_append"]
+PROVER = ["verus_verify", "verus_test", "prooflib_verify", "prooflib_publish", "backend_addition_record", *COMMON]
+STAGE_TOOLS: dict[str, list[str]] = {
+    "verus_spec_audit": ["verus_sql"],
+    "verus_analysis": ["verus_check_inputs", *COMMON],
+    "verus_critic": ["verus_check_inputs", "verus_sql"],
+    "verus_obligations_audit": ["verus_sql", "verus_check_inputs"],
+    "verus_tests": ["verus_validate_tests", "verus_sql"],
+    "verus_glue": ["verus_glue_check", "verus_sql"],
+    "verus_glue_audit": ["verus_sql"],
+    "verus_kernel": PROVER,
+    "verus_kernel_proofs": PROVER,
+    "verus_kernel_advisor": ["verus_verify", "verus_test", *COMMON],  # diagnoses; changes are undone
+    "verus_kernel_fix": ["verus_verify", "verus_test", "prooflib_publish", *COMMON],
+    "verus_opt_worker": ["verus_verify", "verus_test", "verus_bench", "verus_profile", "verus_check_inputs",
+                         "prooflib_publish", "backend_addition_record", *COMMON],
+    "verus_audit": ["verus_sql"],
+}
+
+ESCALATED = "_escalated"  # a stage continued on the heavier model: same tools
+
+
+def enabled_tools(stage: str) -> list[str] | None:
+    """The tools a Verus step may call."""
+    return STAGE_TOOLS.get(stage.removesuffix(ESCALATED))
+
+
+def _ctx() -> VerusContext:
+    path = os.environ.get("ACCEL_VERUS_CONTEXT")
+    if not path:
+        raise RuntimeError("ACCEL_VERUS_CONTEXT is not set (the Verus pipeline writes it before each agent step)")
+    return VerusContext.load(Path(path))
+
+
+def _tool(name: str = "", *, read_only: bool = False) -> Callable[[Callable[..., Any]], Callable[..., str]]:
+    """A tool's body takes the run context and returns a dict; the agent calls the tool without the context and
+    gets JSON (a failure as {"error", "tool"})."""
+    def wrap(fn: Callable[..., Any]) -> Callable[..., str]:
+        tool_name = name or fn.__name__
+
+        def call(*args: Any, **kwargs: Any) -> str:
+            try:
+                return json.dumps(fn(_ctx(), *args, **kwargs), indent=2)[:60000]
+            except Exception as exc:  # noqa: BLE001 - surfaced to the agent
+                return json.dumps({"error": str(exc), "tool": tool_name})
+
+        params = list(inspect.signature(fn).parameters.values())[1:]
+        call.__name__, call.__doc__ = tool_name, fn.__doc__
+        call.__signature__ = inspect.Signature(params, return_annotation=str)
+        call.read_only = read_only
+        return call
+    return wrap
+
+
+@_tool()
+def verus_check_inputs(ctx: VerusContext) -> Any:
+    """Check inputs/q.inputs with sql2verus: accepted (and its obligations) or the refusal."""
+    return check_inputs(ctx)
+
+
+@_tool(read_only=True)
+def verus_sql(ctx: VerusContext, query: str, max_rows: int = 50) -> Any:
+    """Read-only SQL on the test dataset database, to explore the data."""
+    return sql(ctx, query, max_rows)
+
+
+@_tool()
+def verus_validate_tests(ctx: VerusContext) -> Any:
+    """Check tests/ under the schema's NOT NULL constraints: setup.sql runs, every params.sql tuple runs the query,
+    and the txns apply in sequence (committed, as the tests run them)."""
+    return validate_tests(ctx)
+
+
+@_tool()
+def verus_glue_check(ctx: VerusContext) -> Any:
+    """Build with glue/ and check what the glue delivers against the declared inputs (record mode)."""
+    return b if not (b := build_runner(ctx))["ok"] else glue_contract(ctx)
+
+
+@_tool()
+def verus_verify(ctx: VerusContext) -> Any:
+    """Verify the kernel crate with Verus (errors on failure) plus the trusted-base check."""
+    return {**verify(ctx), "trusted_base": trusted_base(ctx)}
+
+
+@_tool()
+def verus_test(ctx: VerusContext, snapshots: bool = False, proofs: bool = True) -> Any:
+    """Build the accelerator; run the frozen tests on the Verus store (differential; snapshots if asked).
+    proofs=false: compile the kernel without checking its proofs (code first: test the executable kernel before
+    proving it). The kernel's gates always check the proofs."""
+    return b if not (b := build_runner(ctx, proofs=proofs))["ok"] else correctness(ctx, snapshots_too=snapshots)
+
+
+@_tool()
+def verus_bench(ctx: VerusContext, write_mixes: str = "0.01,0.05") -> Any:
+    """Build and benchmark on SF1 (Verus store): read speedup per parameter tuple, write mixes, score."""
+    if not (b := build_runner(ctx))["ok"]:
+        return b
+    r = bench(ctx, [float(x) for x in write_mixes.split(",") if x.strip()], tag="agent_bench")
+    return {**r, "score": score(r, ctx)}
+
+
+@_tool()
+def verus_profile(ctx: VerusContext) -> Any:
+    """Steady-state perf profiles on SF1 (build excluded), one per axis: `reads` and `maintenance` (writes);
+    hotspots by symbol and area (kernel, glue, store, engine)."""
+    return b if not (b := build_runner(ctx))["ok"] else profile(ctx)
+
+
+@_tool("prooflib_verify", read_only=True)
+def _prooflib_verify(ctx: VerusContext) -> Any:
+    """Verify this workspace's copy of the proof library (prooflib/src/lib.rs) on its own, without publishing."""
+    return prooflib_verify(ctx)
+
+
+@_tool("prooflib_publish")
+def _prooflib_publish(ctx: VerusContext, note: str) -> Any:
+    """Publish prooflib/src/lib.rs (additions only; dependents re-verified first)."""
+    return prooflib_publish(ctx, note)
+
+
+@_tool("playbook_append")
+def _playbook_append(ctx: VerusContext, section: str, title: str, body: str, evidence: str) -> Any:
+    """Add an evidence-backed lesson to the playbook (section: performance | proofs)."""
+    return playbook_append(ctx, section, title, body, evidence)
+
+
+@_tool("backend_addition_record")
+def _backend_addition_record(ctx: VerusContext, engine: str, helper: str, reason: str) -> Any:
+    """Request a generic engine-level helper from the engine_backend run (logs the request only; query runs never
+    write backends/, so it is not available in this run)."""
+    return backend_addition_record(ctx, engine, helper, reason)
+
+
+TOOLS: dict[str, Callable[..., str]] = {
+    f.__name__: f
+    for f in (verus_check_inputs, verus_sql, verus_validate_tests, verus_glue_check, verus_verify, verus_test,
+              verus_bench, verus_profile, _prooflib_verify, _prooflib_publish, _playbook_append,
+              _backend_addition_record)
+}
+
+
+def register(tool, call) -> None:
+    """Register the tools with the MCP server. They run on the Verus run context, so the core's dispatcher
+    `call` is not used."""
+    for fn in TOOLS.values():
+        tool(read_only=fn.read_only)(fn)

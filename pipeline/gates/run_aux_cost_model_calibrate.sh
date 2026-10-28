@@ -42,10 +42,10 @@ fi
 
 TARGET="${AUX_CALIBRATE_TARGET}"
 if [[ -z "${TARGET}" ]]; then
-  emit_result "${OUT}/aux_cost_model_calibrate.json" aux_cost_model_calibrate fail "no calibrate target in the gate context" ""
+  emit_result "${OUT}/aux_cost_model_calibrate.json" aux_cost_model_calibrate fail "no calibrate target in the gate context" "" "owner=pipeline"
 fi
 if ! engine_ready "${TARGET}"; then
-  emit_result "${OUT}/aux_cost_model_calibrate.json" aux_cost_model_calibrate fail "${ENGINE_FAIL}" "${ENGINE_LOG}"
+  engine_not_ready "${OUT}/aux_cost_model_calibrate.json" aux_cost_model_calibrate
 fi
 
 export ACCEL_MULTI_CONN_TEST_QUERIES="${ACCEL_MULTI_CONN_TEST_QUERIES:-${QUERY}}"
@@ -53,7 +53,10 @@ export ACCEL_INTERFERENCE_CALIB_SEC="${ACCEL_INTERFERENCE_CALIB_SEC:-4}"
 export ACCEL_INTERFERENCE_ISOLATED_SAMPLES="${ACCEL_INTERFERENCE_ISOLATED_SAMPLES:-20}"
 export ACCEL_AUX_BENCHMARK="${BENCHMARK_NAME}"
 
-engine_measure "${TARGET}" --query "${QUERY}" "${CONFIG}"
+# written beside the config and moved into place when done: a bench running at the same time (aux_exit) never reads a half-written file
+mkdir -p "$(dirname "${CONFIG}")"  # the gate names the path; the query's config dir may not exist yet
+engine_measure "${TARGET}" --query "${QUERY}" "${CONFIG}.new"
+[[ ${RC} -ne 0 || ! -f "${CONFIG}.new" ]] || mv -f "${CONFIG}.new" "${CONFIG}"
 RC_RUN=${RC}
 BUILD_LOG="${ENGINE_LOG}"
 
@@ -67,7 +70,8 @@ reason = ""
 interference = {}
 if int("${RC_RUN}") != 0:
     status = "fail"
-    reason = "calibrate binary failed"
+    last = next((l for l in reversed(os.environ["GATE_LOG"].splitlines()) if l.strip()), "")
+    reason = f"calibrate binary failed (exit ${RC_RUN})" + (f": {last.strip()}" if last else "")
 elif not config_path.is_file():
     status = "fail"
     reason = "cost model json missing"

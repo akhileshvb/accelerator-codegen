@@ -1,8 +1,0 @@
-workload_kind: aux_state
-benchmark_name: tpch
-query_number: 1
-engines: [duckdb, postgres, mysql]
-reference_sql_path: workloads/tpch/instances/seed_1/01.sql
-parameters:
-  - name: day_offset
-    type: INTEGER

@@ -64,7 +64,6 @@ SharedProbe BuildTpchQ14Probe(::duckdb::MaterializedQueryResult &result,
 }
 
 const SharedQueryRegistrar kEntry{SharedQueryCatalogEntry{14,
-     SharedWorkloadKind::Tpch,
      "tpch",
      core::TpchQ14Layout::kAccelerator,
      "SELECT 100.00 * SUM(CASE WHEN p_type LIKE 'PROMO%' THEN l_extendedprice * "

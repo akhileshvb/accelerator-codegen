@@ -3,7 +3,7 @@
 
 usage: check_api_manifest.py [repo_root] [engine ...]   (default: every backends/*/backend.cmake)
 
-The format is fixed by pipeline/prompts/engine_backend/docs/host_contract.md and the roles by
+The format is fixed by pipeline/prompts/engine_backend/host_contract.md and the roles by
 api_contract.md: a table under `## Contract roles` with one row per role (role | headers |
 symbols); empty headers and symbols declare a role n/a. Every listed header exists, every
 .hpp under api/ is listed, and every symbol occurs in one of its row's headers (role

@@ -67,7 +67,7 @@ cmake --build build
 
 Every backend, whatever the engine, is built, started and loaded through its own
 `backends/<engine>/host.sh` (`build`, `up`, `load`, ...; see
-`pipeline/prompts/engine_backend/docs/host_contract.md`), which the engine_backend pipeline generates.
+`pipeline/prompts/engine_backend/host_contract.md`), which the engine_backend pipeline generates.
 
 Verus kits (needs the Verus toolchain under `tools/verus`, or `VERUS_BIN`):
 
@@ -81,8 +81,8 @@ whose library exists.
 
 ## Concurrent pipelines
 
-Pipelines that run at once on one host (a pack, or separate trees) share it through the `concurrency:` block of
-`pipeline/config/default.yaml`. Each run claims one of `workers` disjoint CPU sets (a host-wide flock slot) and
+Pipelines that run at once on one host (a pack, or separate trees) share it through `ConcurrencyConfig` (the `concurrency:` block of
+`pipeline/config/default.yaml` overrides its defaults). Each run claims one of `workers` disjoint CPU sets (a host-wide flock slot) and
 pins itself to it, so its agent, builds (`ACCEL_BUILD_JOBS`, `ACCEL_CTEST_JOBS`, `CMAKE_BUILD_PARALLEL_LEVEL`),
 gates and engine instances stay inside it. Benchmarks (the bench, baseline, profile, sf10 and calibration gates,
 `run_quick_benchmark` at the acceptance tier) queue first come first served for the host-wide measurement lease
@@ -100,7 +100,7 @@ cd pipeline/orchestrator && pytest tests/test_substrate_never_writable.py
 ```
 
 The write policy (`write_ownership.py`) is enforced on agent steps: codex runs under a bubblewrap
-sandbox (`sandbox:` in `pipeline/config/default.yaml`) that mounts `substrate/` and `workloads/`
+sandbox (`sandbox:`, default `bwrap`) that mounts `substrate/` and `workloads/`
 read-only, and after every stage the paths it changed are checked against each layer's owner
 (`write_policy: enforce | warn | off`).
 
@@ -111,7 +111,7 @@ Run test and benchmark binaries from the repository root: cost-model paths
 
 The per-query test suite (`accelerators/<bench>/q<N>/tests/workload/`: fixed tuples, a parameter
 domain, write transactions, a write mix; written by the pipeline's `test_suite` stage and frozen after it)
-is one format for the C++ and the Verus pipelines (`pipeline/prompts/shared/docs/test_suite.md`). The C++ gates
+is one format for the C++ and the Verus pipelines (`pipeline/prompts/shared/test_suite.md`). The C++ gates
 (`aux_correctness`, `quick_check`) run it with a fresh seed each time, printed and kept in the gate result;
 `ACCEL_SUITE_SEED=<seed>` repeats a run.
 
@@ -125,55 +125,47 @@ python3 scripts/gen_verus_kit_params.py [--check]   # params.sql of every kit + 
 
 ## Running the pipeline
 
-Needs Python 3.11+, the [Codex CLI](https://github.com/openai/codex) on `PATH`, and
-`OPENROUTER_API_KEY` (in the environment or in `.env`, copied from `.env.example`).
-Stages, models and presets are in `pipeline/config/models.yaml`.
+Needs Python 3.11+, the [Codex CLI](https://github.com/openai/codex) on `PATH`, and `OPENROUTER_API_KEY` (in the
+environment or in `.env`, copied from `.env.example`). Stages, models and presets are in `pipeline/config/models.yaml`.
 
 ```bash
-cd pipeline/orchestrator && pip install -e ".[dev]"
-python -m accel_pipeline.run_pipeline --query 3 --workload tpch_q3 --engine <engine>            # one query on one engine
-python -m accel_pipeline.run_pipeline --query 21 --workload tpch_q21_aux --engine <engine> --mode verus
-python -m accel_pipeline.run_pipeline --query 0 --workload engine_<engine>                       # engine backend onboarding
-python -m accel_pipeline.run_pack --pack tpch_aux_parallel                                       # many runs, one worker each
+cd pipeline/orchestrator && pip install -e ".[dev]"      # installs `accel` (also: python -m accel_pipeline)
+
+accel check tpch_q14_aux                                 # preflight, ~30 s, no model call; --models also probes each model
+accel smoke                                              # happy path with a scripted agent, minutes, no model call
+accel smoke --adversarial                                # every guardrail case (--case NAME for one), ~10 min
+accel canary tpch_q14_aux --models models.yaml           # real models, fresh sandboxed clean tree, ~20-30 min, ~$1
+accel run tpch_q3_aux --engine <engine>                    # one query end to end in this tree
+accel status <run dir>                                   # stage, last events, cost so far
+accel timeline <run dir>                                 # where the time and the money went
+accel run tpch_q21_aux --mode verus                      # Verus pipeline for one query
+accel run engine_<engine>                                # engine backend onboarding
+python -m accel_pipeline.pack --pack tpch_aux_parallel  # many runs, one worker each
 ```
 
-`--stage <name>` runs one stage, `--resume` continues a run, `--dry-run` orchestrates
-without LLM calls. Run state goes to `pipeline/artifacts/<bench>/q<N>/<engine>/`.
-The primitives catalogue is `accelerators/prims/README.md`; the runtime contracts
-backends implement are in `substrate/aux/runtime/README.md`.
+- `accel run WORKLOAD` runs analysis, test_suite, implementation, optimization and audit. `--stage S` runs one
+  stage, `--until S` pauses after stage S (`--resume` continues with the next), `--resume` continues a stopped or
+  paused run, `--dry-run` renders prompts without a model, `--models FILE` and `--model STAGE=PRESET` choose
+  models, `--mode verus` runs the Verus pipeline. `--query` defaults to the workload's query; an engine backend is
+  onboarded with `accel run engine_<engine> --query 0`. Run state, events and results go to
+  `pipeline/artifacts/<bench>/q<N>/<engine>/`; `accel_pipeline.run_pack` runs many queries, one worker each.
+- `accel canary` builds the tree under `$ACCEL_CANARY_HOME/runs/<time>` (or `--work DIR`), runs the pipeline in the
+  real sandbox with the models file and writes `TIMELINE.md` in that directory: read it before a big run. `--until S`
+  stops after a stage, `--resume --work DIR` continues that run with the pipeline of `--rev`. `accel status` and
+  `accel timeline` take that directory (or any tree).
+- Before a real run, `accel check`, `accel smoke --adversarial` and a canary must be green on the pipeline commit
+  the run records. The checks, in the sandboxes the run uses: `perf stat` returns counters; the codex command line
+  carries the configured window and compaction settings; the MCP server serves every stage's tools and answers
+  parallel data-tool calls; gate scripts do not paste log text into Python source; the test database exists or can
+  be built; the thread-sanitizer build dir is writable; every stage prompt renders with only existing paths.
+  `accel run` repeats the preflight before any model call. Each adversarial case has a scripted agent misbehave in
+  one way (rebuild-on-write, a serial build, a data race, no quick_check, a dismissed check, a false blocker, no
+  edits, ...) and must be stopped by its guardrail; `xfail` marks in `pipeline/orchestrator/tests/smoke/fixtures/cases.json`
+  are guardrails not built yet. The happy path fails on any stage, gate or repair round that did not go clean.
+- `accel smoke` and `accel canary` run from a source checkout (their fixtures are not in clean trees). Add a
+  workload or engine as fixture data next to them; the known-good accelerator is taken from the revision under test.
+  `ACCEL_HOST_LOCK_DIR` should name the lock directory of the real runs
+  so benchmarks queue behind theirs.
 
-### Before launching real runs
-
-Two gates, in this order, both without a model call. A real run starts only when both are green on the pipeline
-commit it records.
-
-1. **Preflight** (`python -m accel_pipeline.preflight --workload W --query N --engine E`; `run_pipeline` also runs
-   it before any model call and refuses to start on a failure, one message per failed item, about 30 s). In the
-   sandboxes the run uses: `perf stat` returns counters; the codex command line carries the configured context
-   window, compaction limit and compact prompt; the MCP server serves every stage's tools and answers parallel
-   data-tool calls; no gate script pastes log text into Python source; the test subset database exists or can be
-   built; the thread-sanitizer build dir is writable; every stage prompt renders with no unresolved placeholder and
-   only existing pipeline paths. `--models` adds one tiny tool-calling `codex exec` turn per configured model (cents):
-   run it when a model is new.
-2. **Adversarial smoke** (the smoke driver with `--adversarial`, about 10 minutes, three cases at a time). Scripted agents misbehave in one way each (rebuild-on-write, a serial parallel section, a data
-   race, heavy gates without quick_check, a dismissed failed check, a false blocker on a slow gate, no edits, an
-   analysis without simulated reads or with one mega-primitive); each must be stopped by the guardrail meant for it,
-   with its message in the log or the tools' answers. `--case NAME` runs one; a case that documents a guardrail
-   not built yet is marked `xfail` in `fixtures/cases.json` and fails the suite once it is caught, so the mark is
-   removed. The always-behaving run stays the happy path (no case): it makes a fresh
-   clean tree, runs `--stage all` inside the real sandbox with a scripted agent (`OPENROUTER_API_KEY` must be
-   unset), and fails on any stage that did not complete, any gate that did not pass, or any repair round.
-
-```bash
-cd scripts && ./pipeline_smoke.sh --workload <workload> --engine <engine> [--case NAME | --adversarial]
-ACCEL_RUN_PIPELINE_SMOKE=1 pytest -m pipeline_smoke pipeline/orchestrator/tests   # the happy path, as a test (opt in)
-```
-
-3. **Canary** (`canary.sh --workload W --models models.yaml` next to the smoke driver, 20-30 minutes, about $1): one real-model
-   query end to end in a fresh clean tree; read its `TIMELINE.md` (wall time and cost per stage) before a big run.
-
-A workload or engine is added as fixture data next to the smoke driver (analysis output, a test suite, the machine
-inputs of the run); the known-good accelerator is taken from `--reference-rev` (default: the revision under test).
-`ACCEL_HOST_LOCK_DIR` should name the lock directory of the real runs, so the smoke run's benchmarks queue behind
-theirs; `ACCEL_MEASURE_SLOTS` below the number of measurement cores gives the benchmarks several threads, which
-exercises the one-thread point of the bench. The smoke test is not part of clean trees.
+The primitives catalogue is `accelerators/prims/README.md`; the runtime contracts backends implement are in
+`substrate/aux/runtime/README.md`.

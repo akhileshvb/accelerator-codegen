@@ -39,6 +39,7 @@ keep:
   - eval/tests/test_versioned_aux_store_caps.cpp
   - eval/tests/make_sec_edgar_test_db.cpp
   - eval/tests/make_tpch_test_db.cpp
+  - eval/tests/make_test_db.cpp
   - eval/tests/tpch_fuzz_writes.hpp
   - eval/tests/test_support/db_paths.hpp
   - eval/tests/test_support/result_compare.hpp
@@ -86,6 +87,7 @@ generated:
   - eval/tests/test_aux_snapshot_reads.cpp
   - eval/tests/test_cross_accel_*.cpp
   - eval/tests/test_fallback_state_agree.cpp
+  - eval/tests/test_host_lifetime.cpp
   - eval/tests/test_partitioned_build.cpp
   - eval/tests/test_registration.cpp
   - eval/tests/test_shared_incremental_differential.cpp
@@ -144,8 +146,6 @@ generated:
   # own clean trees from the source repository, so it never ships inside one
   - pipeline/orchestrator/tests/smoke/**
   - pipeline/orchestrator/tests/test_pipeline_smoke.py
-  - scripts/pipeline_smoke.sh
-  - scripts/canary.sh
 
 drop:
   # the clean-tree machinery itself: it names every generated file (that is how it prunes them),
@@ -166,11 +166,3 @@ drop:
   - pipeline/artifacts/**
   - pipeline/.codex/**
   - build-release
-  # perf tooling (experiments over the generated accelerators, not a pipeline input)
-  - scripts/run_q20_phased_sf20_baselines.sh
-  - scripts/run_q20_phased_bench.sh
-  - scripts/run_sf1_scale_audit.sh
-  - scripts/run_sf10_tpch_bench.sh
-  - scripts/run_scale_proxy_suite.sh
-  - scripts/run_parallel_scaling_matrix.sh
-  - scripts/run_parallel_22q_matrix.sh

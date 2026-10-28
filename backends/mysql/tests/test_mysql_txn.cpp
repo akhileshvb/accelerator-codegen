@@ -1,5 +1,5 @@
 // GENERATED BACKEND — layer harness for txn (Txn bridge).
-// Spec: pipeline/prompts/engine_backend/docs/layers.md
+// Spec: pipeline/prompts/engine_backend/layers.md
 // Build: test_mysql_txn   CTest: engine_mysql_txn
 //
 // Rule: txn_lifecycle

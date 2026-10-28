@@ -44,13 +44,13 @@ epoch when the engine has no single clock.
 
 - `substrate/aux/runtime/README.md`, `engine_slots.hpp`, `runtime_host.hpp`,
   `accelerator_runtime.hpp`, `columnar_batch.hpp`
-- `pipeline/prompts/shared/docs/engine_interfaces.md` ("Backend contract")
+- `pipeline/prompts/shared/engine_interfaces.md` ("Backend contract")
 - `substrate/aux/core/aux_types.hpp`
-- `pipeline/prompts/engine_backend/docs/layers.md`
-- `pipeline/prompts/engine_backend/docs/acceptance_checklist.md`
-- `pipeline/prompts/engine_backend/docs/native_scan_contract.md`
+- `pipeline/prompts/engine_backend/layers.md`
+- `pipeline/prompts/engine_backend/acceptance_checklist.md`
+- `pipeline/prompts/engine_backend/native_scan_contract.md`
 - `substrate/aux/runtime/thread_budget.hpp`, `substrate/aux/core/parallel_slices.hpp`, `partitioned_build.hpp` (what modules will do on top of the slots)
-- `pipeline/prompts/engine_backend/docs/layer_contracts.md` (incl. "Requirements every backend meets")
+- `pipeline/prompts/engine_backend/layer_contracts.md` (incl. "Requirements every backend meets")
 - `pipeline/schemas/backend_analysis.schema.json`
 
 `harness_plan` **must** include the value asserts in `layer_contracts.md` for

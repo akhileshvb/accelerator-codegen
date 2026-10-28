@@ -15,10 +15,10 @@ another layer's object). Do **not** implement a later layer's contract. Do **not
 - **CMake target:** `{{layer_cmake_target}}`
 - **host_runtime.kind:** `{{host_runtime_kind}}`
 
-Spec: `pipeline/prompts/engine_backend/docs/layers.md` (this row only).
+Spec: `pipeline/prompts/engine_backend/layers.md` (this row only).
 Checklist rules owned by this layer: `acceptance_checklist.md`.
 Substrate contracts (this layer’s section is binding):
-`pipeline/prompts/engine_backend/docs/layer_contracts.md`.
+`pipeline/prompts/engine_backend/layer_contracts.md`.
 Analysis sketch: `{{artifacts_path}}/backend_analysis.json` → `layers[id={{layer_id}}]`.
 If the sketch contradicts `layer_contracts.md` or the checklist, **follow the
 contracts**.
@@ -47,12 +47,12 @@ A profile field given as `{na: reason}` declares that mechanic absent on this en
 The first message carries a digest of what the backend already has (files, api symbols, open findings):
 do not survey the tree, open a file only to change it or match its signatures. The contract of this layer
 and the cross-layer requirements that name it are in "Layer contracts" below (the full file,
-`pipeline/prompts/engine_backend/docs/layer_contracts.md`, is there for the other layers' sections). Read:
+`pipeline/prompts/engine_backend/layer_contracts.md`, is there for the other layers' sections). Read:
 
-- the rules this layer owns in `pipeline/prompts/engine_backend/docs/acceptance_checklist.md`: `{{layer_rules}}` (not the whole file)
+- the rules this layer owns in `pipeline/prompts/engine_backend/acceptance_checklist.md`: `{{layer_rules}}` (not the whole file)
 - `substrate/aux/runtime/README.md` and `engine_slots.hpp`; `runtime_host.hpp`, `accelerator_runtime.hpp`,
   `columnar_batch.hpp` (and `wire.hpp`, `thread_budget.hpp`) only where the layer touches them;
-  `pipeline/prompts/shared/docs/engine_interfaces.md` ("Backend contract") for the slots you implement
+  `pipeline/prompts/shared/engine_interfaces.md` ("Backend contract") for the slots you implement
 - Layer `scan`: `native_scan_contract.md` (the `ScanPartitioned` surface modules call, text-view lifetime);
   layer `runtime`: `substrate/aux/runtime/thread_budget.hpp` (phase caps) and `AuxCostModelLookup` in
   `substrate/aux/core/aux_cost_model_path.hpp`; layer `api`: `api_contract.md`, `host_contract.md` and
@@ -90,8 +90,6 @@ Do **not** implement the whole layer and then hope. After each small increment
 `accel_pipeline`. These are **tools**, not resources — do **not**
 `list_mcp_resources`. Preferred calls (zero-arg):
 
-- `quick_layer()` → seconds: incremental build of `{{layer_cmake_target}}`, ONE run of the harness, and (once
-  the canary binding exists) the canary checks this layer owns. Call it after every edit; it is not a gate of record
 - `run_engine_build()` → official `engine_build`
 - `run_layer_gate()` → official `{{layer_gate}}` for this `impl_*` stage (repeats the harness to catch races)
 

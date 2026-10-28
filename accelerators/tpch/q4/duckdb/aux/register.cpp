@@ -59,7 +59,6 @@ SharedProbe BuildTpchQ4Probe(::duckdb::MaterializedQueryResult &result,
 }
 
 const SharedQueryRegistrar kEntry{SharedQueryCatalogEntry{4,
-     SharedWorkloadKind::Tpch,
      "tpch",
      query::TpchQ4Layout::kAccelerator,
      "SELECT o_orderpriority, COUNT(o_orderkey) AS order_count "

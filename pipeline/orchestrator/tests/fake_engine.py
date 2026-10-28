@@ -9,7 +9,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from accel_pipeline.config import DataToolsConfig
-from accel_pipeline.tools.data_tools import DataToolContext
+from accel_pipeline.data import DataToolContext
 
 HOST = """#!/usr/bin/env bash
 case "$1" in
@@ -18,16 +18,21 @@ case "$1" in
   sql) exec "{python}" -I "$(dirname "$0")/responder.py" "$FAKE_ENGINE_DB" ;;
 esac
 """
-RESPONDER = """import csv, sqlite3, sys
+RESPONDER = """import sqlite3, sys
 con = sqlite3.connect("file:" + sys.argv[1] + "?mode=ro", uri=True)
 try:
     cur = con.execute(sys.stdin.read())
 except sqlite3.Error as exc:
     print(exc, file=sys.stderr)
     sys.exit(1)
-out = csv.writer(sys.stdout, lineterminator="\\n")
-out.writerow([d[0] for d in cur.description])
-out.writerows(cur)
+def cell(v):  # host_contract.md: NULL bare, the empty string as ""
+    if v is None:
+        return ""
+    v = str(v)
+    return '"' + v.replace('"', '""') + '"' if v == "" or any(c in v for c in ',"\\n') else v
+print(",".join(d[0] for d in cur.description))
+for row in cur:
+    print(",".join(cell(v) for v in row))
 """
 PROFILE = """engine_profile:
   data_sql:

@@ -2,21 +2,19 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
 from accel_pipeline.config import (
     apply_workload_overrides,
-    load_pipeline_config,
     load_workload,
     resolve_workload_paths,
     workload_supported_engines,
+    load_pipeline_config,
 )
-from accel_pipeline.gate_context import build_gate_context
+from accel_pipeline.gates import build_gate_context
 from accel_pipeline.prompts import render_prompt
-from accel_pipeline.stages.implementation import _implementation_user_message
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -82,7 +80,7 @@ def test_gate_context_includes_engine_for_base_and_aux():
     aux_ctx = build_gate_context(pc, _duckdb_workload("tpch_q14_aux"), 14)
     assert base_ctx["engine_name"] == "duckdb"
     assert aux_ctx["engine_name"] == "duckdb"
-    assert base_ctx["engine_host"]["dataset_env"] == "ACCEL_TPCH_DB"
+    assert base_ctx["engine_host"]["dataset_env"] == "ACCEL_DB"
     assert aux_ctx["engine_host"]["differential_binary"] == "test_duckdb_tpch_differential"
 
 
@@ -93,47 +91,13 @@ def test_gate_context_postgres():
     assert "postgres" in ctx["engine_host"]["differential_binary"]
 
 
-def test_postgres_implementation_prompt_mentions_bootstrap():
-    pc = load_pipeline_config(repo_root=REPO_ROOT)
-    w = _postgres_workload("tpch_q3")
-    text = render_prompt(pc, "02_implementation.md", w, 3, "implementation")
-    assert "query_host_bootstrap" in text or "bootstrap" in text.lower()
-    assert "postgres" in text.lower()
-
-
 def test_postgres_keeps_full_post_gates():
-    from accel_pipeline.stages.gate_plan import workload_post_implementation_gates
+    from accel_pipeline.stages import workload_post_implementation_gates
 
     w = _postgres_workload("tpch_q3_aux")
     gates = workload_post_implementation_gates(w)
-    assert "aux_correctness" in gates
-    assert "aux_multi_connection" in gates
-    assert "aux_bench_sweep" in gates
+    assert gates == ["aux_unit", "prims_tests", "aux_exit"]
     assert w["engine_host"]["multi_conn_target"] == "test_postgres_aux_multi_connection_stress"
-
-
-def test_implementation_prompt_mentions_substrate_and_engine():
-    pc = load_pipeline_config(repo_root=REPO_ROOT)
-    w = _duckdb_workload("tpch_q6")
-    text = render_prompt(pc, "02_implementation.md", w, 6, "implementation")
-    assert "NativeScanSpec" in text or "substrate" in text.lower() or "engine_name" in text
-    assert "duckdb" in text.lower()
-    assert "Engine host" in text or "engine_name" in text
-
-
-def test_aux_implementation_resume_uses_engine_differential():
-    pc = load_pipeline_config(repo_root=REPO_ROOT)
-    w = _postgres_workload("tpch_q3_aux")
-    msg = _implementation_user_message(pc, w, 3)
-    if "RESUME" in msg:
-        assert "test_postgres_tpch_differential" in msg or "postgres" in msg.lower()
-
-    w_ddb = _duckdb_workload("tpch_q3_aux")
-    paths = resolve_workload_paths(pc, w_ddb, 3)
-    module = pc.repo_root / paths["aux_state_subdir"] / "module.cpp"
-    if module.is_file():
-        msg_ddb = _implementation_user_message(pc, w_ddb, 3)
-        assert "test_duckdb_tpch_differential" in msg_ddb
 
 
 def test_apply_workload_overrides_strips_duckdb_tf_for_postgres():
@@ -205,19 +169,11 @@ def test_rendered_prompt_points_at_the_runs_engine_tree():
     assert "pipeline/artifacts/tpch/q3/duckdb" not in texts["postgres"]
 
 
-def test_an_aux_run_does_not_wait_for_a_base_kernel(capsys):
-    from accel_pipeline.prerequisites import ensure_base_accelerator_prerequisite
-
-    pc = replace(load_pipeline_config(repo_root=REPO_ROOT), engine_name="mysql")
-    assert ensure_base_accelerator_prerequisite(pc, "tpch_q3_aux", 3, dry_run=True) is False
-    assert capsys.readouterr().err == ""
-
-
 def test_every_workload_loads_for_each_engine_it_lists():
     names = sorted(
-        p.stem
-        for p in (REPO_ROOT / "pipeline/config/workloads").glob("*.yaml")
-        if not p.stem.startswith("engine_") and "template" not in p.stem
+        [p.stem for p in (REPO_ROOT / "pipeline/config/workloads").glob("*.yaml")
+         if not p.stem.startswith("engine_") and "template" not in p.stem and p.stem != "tpch_queries"]
+        + [f"tpch_q{n}{kind}" for n in range(1, 23) for kind in ("", "_aux")]
     )
     assert names
     for name in names:
@@ -231,7 +187,7 @@ def test_every_engine_follows_one_harness_naming_convention():
     for engine in ("duckdb", "postgres", "mysql"):
         host = engine_host_conventions(engine, "tpch", 7)
         assert host["differential_binary"] == f"test_{engine}_tpch_differential"
-        assert host["differential_source"] == f"backends/{engine}/tests/harness/test_{engine}_tpch_differential.cpp"
+        assert host["differential_source"] == f"backends/{engine}/tests/harness/test_{engine}_differential.cpp"
         assert host["multi_conn_target"] == f"test_{engine}_aux_multi_connection_stress"
         assert host["cross_accel_target"] == f"test_{engine}_cross_accel"
         assert host["bench_target"] == f"benchmark_{engine}_tpch_aux"

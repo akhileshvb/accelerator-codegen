@@ -1,5 +1,6 @@
 #include <cstdlib>
 #include <iostream>
+#include <optional>
 #include <stdexcept>
 #include <string>
 
@@ -18,13 +19,13 @@ void Require(bool condition, const std::string &message) {
 
 } // namespace
 
-// SF1 parity: DuckDB reference SQL vs aux Execute for one catalog query.
-// Runs read-only, single-probe incremental, then adversarial multi-point + RF, then the
-// frozen test suite when ACCEL_SUITE_DIR is set.
-// Every phase runs on a private copy of <tpch_db_path> in a per-process
-// scratch dir (the incremental phase writes and restores, the adversarial one
-// writes), so the source DB is never opened for writing and concurrent runs
-// do not contend for its lock.
+// SF1 parity: DuckDB reference SQL vs aux Execute for one catalog query, on one private copy of <tpch_db_path> with
+// one module build for every phase (eval/harness/differential.hpp): read-only, a single-probe incremental write,
+// the adversarial probes (each undone through the runtime), the frozen test suite when ACCEL_SUITE_DIR is set, the
+// refresh chunks when the suite requires bulk writes, and last the one from-scratch rebuild, which must answer as
+// the maintained state did. ACCEL_DIFF_PHASES (comma-separated: read_only, incremental, adversarial, suite,
+// refresh, drift) runs only those; build and the seconds of each phase are printed and in the suite report.
+// The source DB is never opened for writing and concurrent runs do not contend for its lock.
 // usage: test_duckdb_tpch_differential <query_id>   (database: ACCEL_TPCH_DB)
 int main(int argc, char **argv) {
   try {
@@ -45,28 +46,46 @@ int main(int argc, char **argv) {
         accelerator_codegen::aux_state::harness::SuiteEnv("ACCEL_SUITE_MODE") == "validate") {
       return accelerator_codegen::aux_state::harness::RunSuiteValidation(work) ? 0 : 1;
     }
-    std::cerr << "differential (read-only): tpch Q" << query_id << '\n';
-    accelerator_codegen::aux_state::harness::RunDifferentialCheck(work, entry);
-    std::cerr << "PASS tpch Q" << query_id << " read-only differential\n";
-    std::cerr << "differential (incremental): tpch Q" << query_id << '\n';
-    accelerator_codegen::aux_state::harness::RunIncrementalDifferentialCheck(
-        work, entry);
-    std::cerr << "PASS tpch Q" << query_id << " incremental differential\n";
-
-    // Fresh copy: the adversarial phase starts from the source DB's state.
-    ts::PrivateDbCopy(tpch_db, scratch);
-    std::cerr << "differential (adversarial writes): tpch Q" << query_id
-              << " work=" << work << '\n';
-    const bool default_bulk = false;
-    accelerator_codegen::aux_state::harness::RunAdversarialWriteDifferentialCheck(
-        work, entry, /*max_probes=*/5, /*min_chunks=*/1, default_bulk);
-    std::cerr << "PASS tpch Q" << query_id << " adversarial write differential\n";
-    if (accelerator_codegen::aux_state::harness::SuiteRequested()) {
-      // The frozen test suite (ACCEL_SUITE_*): its tuples and transactions, from the source DB's state.
-      ts::PrivateDbCopy(tpch_db, scratch);
-      accelerator_codegen::aux_state::harness::RunSuiteDifferential(work, entry);
-      std::cerr << "PASS tpch Q" << query_id << " test suite\n";
+    namespace harness = accelerator_codegen::aux_state::harness;
+    namespace suite = accelerator_codegen::suite;
+    const auto wants = [phases = harness::SuiteEnv("ACCEL_DIFF_PHASES")](const std::string &phase) {
+      return phases.empty() || ("," + phases + ",").find("," + phase + ",") != std::string::npos;
+    };
+    const auto plan = harness::AdversarialPlanFromEnv(/*max_probes=*/5, /*min_chunks=*/1, /*require_bulk=*/false);
+    const bool with_suite = harness::SuiteRequested() && wants("suite");
+    if (with_suite)
+      harness::SuiteCheck::PrepareDatabase(work);
+    harness::DifferentialSession session(work, entry);
+    std::optional<harness::SuiteCheck> suite_check;
+    if (with_suite)
+      suite_check.emplace(session);
+    std::cerr << "differential: tpch Q" << query_id << " work=" << work << '\n';
+    {
+      suite::Phase phase("build");
+      session.runtime.Build();
     }
+    const double build_seconds = suite::PhaseSeconds().back().second;
+    const auto run = [&](const std::string &name, const auto &check) {
+      if (!wants(name))
+        return;
+      suite::Phase phase(name);
+      check();
+      std::cerr << "PASS tpch Q" << query_id << ' ' << name << '\n';
+    };
+    run("read_only", [&] { harness::CheckReadOnly(session); });
+    run("incremental", [&] { harness::CheckIncrementalWrite(session); });
+    run("adversarial", [&] { harness::CheckAdversarialWrites(session, plan); });
+    if (suite_check)
+      run("suite", [&] { suite_check->Run(build_seconds); });
+    run("refresh", [&] { harness::CheckRefreshWrites(session, plan); });
+    run("drift", [&] {
+      if (suite_check)
+        harness::CheckNoDrift(session, [&] { return suite_check->Answers(); });
+      else
+        harness::CheckNoDrift(session);
+    });
+    if (suite_check)
+      suite_check->WriteReport();
     return 0;
   } catch (const std::exception &error) {
     std::cerr << "test_duckdb_tpch_differential failed: " << error.what()

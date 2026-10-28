@@ -30,9 +30,9 @@ load_aux_gate_context "${ROOT}" "${QUERY}"
 
 JSON="${GATE_OUT}/${ACCEL_GATE_NAME:-quick_check}.json"
 WITH_DIFF=0
-[[ "${BENCHMARK_NAME}" == "tpch" && "${ACCEL_QUICK_DIFFERENTIAL:-1}" != 0 ]] && WITH_DIFF=1
+[[ "${ACCEL_QUICK_DIFFERENTIAL:-1}" == 0 ]] || WITH_DIFF=1
 if [[ -z "${AUX_TEST_TARGET}" ]] || { [[ ${WITH_DIFF} -eq 1 && -z "${DIFF_BINARY}" ]]; }; then
-  emit_result "${JSON}" quick_check fail "aux test / differential target missing from the gate context. ${HOST_HINT}" ""
+  emit_result "${JSON}" quick_check fail "aux test / differential target missing from the gate context. ${HOST_HINT}" "" "owner=pipeline"
 fi
 thread_lint
 SANITIZER="${ACCEL_QUICK_SANITIZER:-}"
@@ -72,15 +72,16 @@ sanitizer_report() { # sets SAN_EXTRAS and SAN_YOURS (reports in the query's own
 	SAN_YOURS="$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['yours_count'])" "${findings}")"
 	SAN_EXTRAS=("sanitizer=${SANITIZER}" "threads:=${THREADS}" "sanitizer_findings:=${findings}")
 }
-fail_step() { # step reproduce-command
+fail_step() { # step reproduce-command [reason [owner]]: a failing step is the query's unless the host step says otherwise
+  # (the engine's own sanitizer reports never fail a step: a step that failed in a sanitizer run failed for itself)
   sanitizer_report
-  emit_result "${JSON}" quick_check fail "$1 failed" "${ENGINE_LOG:-}${LOG:-}" "step=$1" \
+  emit_result "${JSON}" quick_check fail "${3:-$1 failed}" "${ENGINE_LOG:-}${LOG:-}" "step=$1" "owner=${4:-query}" \
     "reproduce=ACCEL_ENGINE_INSTANCE=${ACCEL_ENGINE_INSTANCE} ACCEL_ENGINE_STATE_DIR=${ACCEL_ENGINE_STATE_DIR} ACCEL_BUILD_DIR=${ACCEL_BUILD_DIR} ${SANITIZER:+ACCEL_QUICK_SANITIZER=${SANITIZER} ACCEL_QUICK_THREADS=${THREADS} }$2" "${SAN_EXTRAS[@]}" "${SUITE_EXTRAS[@]}"
 }
 
 if [[ "${ACCEL_QUICK_PREBUILD:-0}" == 1 ]]; then
   [[ -n "${SANITIZER}" && -n "${DIFF_BINARY}" ]] || emit_result "${JSON}" quick_check skip "nothing to prebuild" ""
-  engine_ready "${DIFF_BINARY}" || fail_step build "${ENGINE_HOST} build ${DIFF_BINARY}"
+  engine_ready "${DIFF_BINARY}" || fail_step "${ENGINE_STEP}" "${ENGINE_HOST} build ${DIFF_BINARY}" "${ENGINE_FAIL}" "${ENGINE_OWNER}"
   emit_result "${JSON}" quick_check pass "" "${ENGINE_LOG}"
 fi
 
@@ -97,9 +98,14 @@ TARGETS=()
 read -r -a EXTRA_TARGETS <<<"${ACCEL_QUICK_TARGETS:-}"
 read -r -a CTEST_TARGET_LIST <<<"${CTEST_TARGETS}"
 engine_ready "${TARGETS[@]}" "${CTEST_TARGET_LIST[@]}" "${EXTRA_TARGETS[@]}" ||
-  fail_step build "${ENGINE_HOST} build ${TARGETS[*]} ${CTEST_TARGETS} ${ACCEL_QUICK_TARGETS:-}"
+  fail_step "${ENGINE_STEP}" "${ENGINE_HOST} build ${TARGETS[*]} ${CTEST_TARGETS} ${ACCEL_QUICK_TARGETS:-}" "${ENGINE_FAIL}" "${ENGINE_OWNER}"
 
 if [[ -z "${SANITIZER}" ]]; then
+  # the smoke reads the benchmark's test database, which a ctest fixture makes: make it when this build dir has none
+  if ! compgen -G "${ACCEL_BUILD_DIR}/test_dbs/${BENCHMARK_NAME}_test.*" >/dev/null; then
+    engine_run ctest --test-dir "${ACCEL_BUILD_DIR}" --no-tests=ignore -R "^${BENCHMARK_NAME}_test_db_fixture$" --output-on-failure
+    [[ ${RC} -eq 0 ]] || fail_step test_db "${HOST_RUN} ctest --test-dir ${ACCEL_BUILD_DIR} -R ^${BENCHMARK_NAME}_test_db_fixture$ --output-on-failure" "" data
+  fi
   engine_run "${AUX_TEST_TARGET}"
   [[ ${RC} -eq 0 ]] || fail_step smoke "${HOST_RUN} ${AUX_TEST_TARGET}"
 fi

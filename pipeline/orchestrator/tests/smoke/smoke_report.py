@@ -15,8 +15,9 @@ STAGE_MARK = re.compile(r"^=== stage: (\w+) ===", re.M)
 # a line that says something was broken or repaired (a clean run prints none of them)
 TROUBLE = re.compile(r"gate FAILED|^\[repair\]|stage \w+ raised|retrying stage|write_policy_violation|stopped:", re.M)
 SINGLE_RUN_STAGES = ("analysis", "test_suite", "implementation", "audit")
-REPAIR_STAGES = ("crash_debug",)
-SKIPPABLE = {"skip"}  # a gate may skip itself when it does not apply (gate_plan.GATES_ALLOW_SKIP)
+REPAIR_STAGES = ("crash_debug", "optimization_fix")
+SCALING_MIN_THREADS, MIN_BUILD_SPEEDUP = 4, 1.5  # a build that does not speed up at 4+ threads is serial
+SKIPPABLE = {"skip"}  # a gate may skip itself when it does not apply (stages.base.GATES_ALLOW_SKIP)
 
 
 def planned_gates(log: str) -> list[tuple[str, str]]:
@@ -48,6 +49,7 @@ def problems_of(log: str, tree: Path, calls: list[dict], rc: int | None) -> list
         status = next((st for (g, s), st in done.items() if g == gate), "reused" if gate in reused else "")
         if status not in ("pass", "reused", *SKIPPABLE):
             found.append(f"gate {gate} (planned in {stage}) {'did not run' if not status else 'ended ' + status}")
+    found += serial_builds(tree)
     found += [f"stop report: {p.relative_to(tree)}" for p in tree.rglob("stop_report.md")]
     found += [f"agent call failed: {c}" for c in calls if "error" in c]
     called = [c["stage"] for c in calls if "error" not in c]
@@ -55,6 +57,17 @@ def problems_of(log: str, tree: Path, calls: list[dict], rc: int | None) -> list
     found += [f"agent stage {s} ran {called.count(s)} times" for s in SINGLE_RUN_STAGES if called.count(s) > 1]
     found += [f"agent asked for {s}, which the pipeline only asks on a failure" for s in set(called) if s in REPAIR_STAGES]
     return found
+
+
+def serial_builds(tree: Path) -> list[str]:
+    """The module's build must scale with the threads the bench sweep gave it (a missing link of the parallel scan made it serial)."""
+    problems = []
+    for path in sorted(tree.rglob("gates/aux_bench_sweep.json")):
+        scaling = json.loads(path.read_text()).get("thread_scaling") or {}
+        speedup = scaling.get("build_speedup_at_N_vs_1")
+        if scaling.get("threads", 0) >= SCALING_MIN_THREADS and speedup is not None and speedup < MIN_BUILD_SPEEDUP:
+            problems.append(f"the build does not scale: {speedup}x at {scaling['threads']} threads ({path.relative_to(tree)})")
+    return problems
 
 
 def timing_table(marks: list[tuple[float, str]], timings: list[tuple[str, float]]) -> str:

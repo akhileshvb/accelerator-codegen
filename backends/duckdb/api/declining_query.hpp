@@ -21,13 +21,14 @@ namespace accelerator_codegen::aux_state::engine::duckdb {
 
 struct DecliningQuery {
   int query_id = 0;
-  std::string workload_name; // "tpch", "sec_edgar"
+  std::string workload_name; // the benchmark, as its workload names it
   std::string accelerator_id;
   std::string table_function;
   std::vector<std::string> argument_types; // SQL type names of the table function's arguments
   std::string base_sql;                    // the query with its default arguments
   std::string fallback_sql;                // the query for any arguments: $n is the n-th argument
   std::vector<std::string> tables;         // the tables the query reads
+  std::vector<std::string> binding;        // the default arguments, as text: registered like any module's
 };
 
 namespace declining_detail {
@@ -39,6 +40,22 @@ inline ::duckdb::LogicalType ArgumentType(const std::string &name) {
   if (name == "DOUBLE" || name == "DECIMAL") return ::duckdb::LogicalType::DOUBLE;
   if (name == "VARCHAR") return ::duckdb::LogicalType::VARCHAR;
   throw std::runtime_error("declining query: unsupported argument type " + name);
+}
+
+// A default argument: its text cast to the argument's type.
+inline core::AuxValue ArgumentValue(const std::string &type, const std::string &text) {
+  const auto value = ::duckdb::Value(text).DefaultCastAs(ArgumentType(type));
+  if (type == "DATE") return catalog_values::Date(catalog_values::DateDays(value));
+  if (type == "INTEGER" || type == "BIGINT") return catalog_values::Int(value);
+  if (type == "DOUBLE" || type == "DECIMAL") return catalog_values::Number(value);
+  return catalog_values::Text(value);
+}
+
+// SELECT * FROM <table function>($1, ..., $n): the entry point a harness binds the arguments to.
+inline std::string ParameterizedCall(const std::string &table_function, std::size_t arity) {
+  std::string call = "SELECT * FROM " + table_function + "(";
+  for (std::size_t i = 1; i <= arity; ++i) call += (i > 1 ? ", $" : "$") + std::to_string(i);
+  return call + ")";
 }
 
 class NoTxnBuffer final : public core::AuxTxnBuffer {
@@ -105,11 +122,20 @@ inline const char *Keep(std::string text) {
 inline void RegisterDecliningQuery(const DecliningQuery &query) {
   SharedQueryCatalogEntry entry;
   entry.query_id = query.query_id;
-  entry.workload = query.workload_name == "sec_edgar" ? SharedWorkloadKind::SecEdgar : SharedWorkloadKind::Tpch;
   entry.workload_name = declining_detail::Keep(query.workload_name);
   entry.accelerator_id = declining_detail::Keep(query.accelerator_id);
   entry.base_sql = declining_detail::Keep(query.base_sql);
-  entry.duckdb_aux_sql = declining_detail::Keep("SELECT * FROM " + query.table_function + "()");
+  // With its default arguments the query registers as any module does (the parameterized call, the arguments in
+  // the entry), so the harnesses are checked on the shape real modules have; without them, as a call of no arguments.
+  const bool bound = !query.binding.empty() && query.binding.size() == query.argument_types.size();
+  entry.duckdb_aux_sql = declining_detail::Keep(
+      bound ? declining_detail::ParameterizedCall(query.table_function, query.argument_types.size())
+            : "SELECT * FROM " + query.table_function + "()");
+  if (bound) {
+    for (std::size_t i = 0; i < query.binding.size(); ++i) {
+      entry.benchmark_arguments.values.push_back(declining_detail::ArgumentValue(query.argument_types[i], query.binding[i]));
+    }
+  }
   entry.fallback_sql = declining_detail::Keep(query.fallback_sql);
   RegisterSharedQuery(entry);
 
@@ -119,7 +145,7 @@ inline void RegisterDecliningQuery(const DecliningQuery &query) {
   for (const auto &type : query.argument_types) {
     aux.argument_types.push_back(declining_detail::ArgumentType(type));
   }
-  aux.overload_argument_types.push_back({});
+  if (!bound) aux.overload_argument_types.push_back({});
   aux.make_binding = [query](::duckdb::Connection &) {
     CaptureTableList tables;
     for (std::size_t table = 0; table < query.tables.size(); ++table) {

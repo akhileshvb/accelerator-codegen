@@ -1,4 +1,5 @@
 #include "backends/duckdb/api/duckdb_scan_adapter.hpp"
+#include "tpch/common/dense_order_capacity.hpp"
 #include "backends/duckdb/api/parallel/parallel_kernel.hpp"
 #include "tpch/q9/duckdb/base/query.hpp"
 #include "tpch/q9/duckdb/base/q9_fast.hpp"

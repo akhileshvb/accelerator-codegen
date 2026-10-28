@@ -1,9 +1,0 @@
-workload_kind: aux_state
-benchmark_name: tpch
-query_number: 9
-engines: [duckdb, postgres, mysql]
-reference_sql_path: workloads/tpch/instances/seed_1/09.sql
-parameters:
-  - name: color
-    type: VARCHAR
-

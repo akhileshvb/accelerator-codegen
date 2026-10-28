@@ -76,7 +76,6 @@ add_executable(verus_kit_runner eval/tests/verus_kit/verus_kit_runner.cpp)
 target_link_libraries(verus_kit_runner PRIVATE accelerator_codegen duckdb_sibling)
 
 accel_add_backend_exe(duckdb test_duckdb_tpch_differential backends/duckdb/tests/harness/test_duckdb_tpch_differential.cpp)
-accel_add_backend_exe(duckdb test_duckdb_hit_contract backends/duckdb/tests/harness/test_duckdb_hit_contract.cpp)
 accel_add_backend_exe(duckdb test_shared_tpch_rf_differential eval/tests/test_shared_tpch_rf_differential.cpp)
 accel_add_backend_exe(duckdb test_fallback_state_agree eval/tests/test_fallback_state_agree.cpp)
 accel_add_backend_exe(duckdb time_fallback_read eval/tools/time_fallback_read.cpp)
@@ -235,6 +234,11 @@ target_include_directories(test_aux_snapshot_reads PRIVATE ${CMAKE_CURRENT_SOURC
 add_executable(test_aux_read_own_writes eval/tests/test_aux_read_own_writes.cpp)
 target_link_libraries(test_aux_read_own_writes PRIVATE accelerator_codegen duckdb_sibling)
 target_include_directories(test_aux_read_own_writes PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/accelerators)
+
+# The host lives as long as the database (eval/tests/test_host_lifetime.cpp).
+add_executable(test_host_lifetime eval/tests/test_host_lifetime.cpp)
+target_link_libraries(test_host_lifetime PRIVATE accelerator_codegen duckdb_sibling)
+target_include_directories(test_host_lifetime PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/accelerators)
 
 accel_add_backend_exe(duckdb benchmark_tpch_stage_c eval/bench/tpch/single-threaded/benchmark_stage_c.cpp)
 accel_add_backend_exe(duckdb benchmark_tpch_breakdown eval/bench/tpch/single-threaded/benchmark_tpch_breakdown.cpp)
@@ -396,6 +400,8 @@ if(BUILD_TESTING)
         set_tests_properties(test_aux_read_own_writes_q${_q}
             PROPERTIES FIXTURES_REQUIRED tpch_test_db TIMEOUT 300)
     endforeach()
+    add_test(NAME test_host_lifetime_q6 COMMAND test_host_lifetime "${_accel_tpch_test_db}" 6)
+    set_tests_properties(test_host_lifetime_q6 PROPERTIES FIXTURES_REQUIRED tpch_test_db TIMEOUT 300)
     add_test(
         NAME test_shared_incremental_differential_sec_edgar_test
         COMMAND test_shared_incremental_differential - "${_accel_sec_edgar_test_db}")
@@ -415,3 +421,14 @@ if(BUILD_TESTING)
 		add_test(NAME sec_edgar_aux_parallel_test COMMAND test_sec_edgar_aux_parallel)
 	endif()
 endif()
+
+# The workload bench and calibrate harnesses (host_bootstrap's, as every target of this file).
+# Shared TPC-H aux bench and cost-model calibrator: one binary each, `--query N`.
+accel_add_backend_exe(duckdb benchmark_duckdb_tpch_aux
+    backends/duckdb/bench/benchmark_duckdb_tpch_aux.cpp
+    backends/duckdb/bench/aux_benchmark_sweep_session.cpp
+    eval/bench/tpch/single-threaded/tpch_arg_variants.cpp)
+accel_add_backend_exe(duckdb calibrate_duckdb_tpch_aux_cost_model
+    backends/duckdb/bench/calibrate_duckdb_tpch_aux_cost_model.cpp
+    eval/tests/test_support/cross_accel_helpers.cpp
+    eval/tests/test_support/multi_connection_stress.cpp)

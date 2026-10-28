@@ -23,7 +23,7 @@ Build the design in the analysis below as a correct, fast, parallel, thread-safe
 
 The frozen test suite (`tests/workload/`) is the acceptance. Never edit it; a test you can show is wrong goes to `{{artifacts_path}}/test_suite_change_request.md` (the test, the evidence, what is right).
 
-**You own** the query's module, finalize, layout, tests, benchmark, calibrator, cost-model config and registrations. **Not yours:** `pipeline/`, `substrate/`, `backends/`, `cmake/`, other queries, and `accelerators/prims/` except through `primitive_publish` (`agent_boundary.md`). Edits there are reverted; if blocked on one, `report_blocker`.
+**You own** the query's module, finalize, layout, tests, benchmark, calibrator, cost-model config and registrations. **Not yours:** `pipeline/`, `substrate/`, `backends/`, `cmake/`, other queries, and `accelerators/prims/` except through `primitive_publish` (`agent_boundary.md`). Edits there are reverted. If one blocks you, adapt in your own files and record the deviation; `report_blocker` only when you cannot, and the orchestrator re-checks and hands the result back for you to adapt.
 
 {{hard_guidelines}}
 

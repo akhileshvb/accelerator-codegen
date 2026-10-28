@@ -306,7 +306,7 @@ catalog::BatchWritePool SelectBatchPool(const std::string &db_path,
   auto pragma = connection.Query("PRAGMA threads=" + std::to_string(BenchThreads()));
   Require(pragma != nullptr && !pragma->HasError(), "failed to set threads");
   const char *filler =
-      entry.workload == catalog::SharedWorkloadKind::SecEdgar
+      std::string(entry.workload_name) == "sec_edgar"
           ? catalog::sec_edgar_probes::BatchFillerSelectSql(entry.query_id)
           : nullptr;
   auto pool = catalog::CollectBatchWritePool(

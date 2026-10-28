@@ -29,7 +29,7 @@ every answer is compared with the base SQL.
   reference SQL, reader modes, a write source, accelerator counters, truncate,
   savepoints, restart).
 - **One verb per engine**: `backends/<engine>/host.sh slot <scenario> <seconds>`
-  (see `prompts/engine_backend/docs/host_contract.md`) exits 0 (pass), 1 (fail) or
+  (see `prompts/engine_backend/host_contract.md`) exits 0 (pass), 1 (fail) or
   77 (not applicable). `ACCEL_SLOT_GATE_SECONDS` sets the load duration.
 
 A backend gets full coverage by implementing the `Engine` driver for its
@@ -63,7 +63,7 @@ are run; other engines skip.
 Planned from the design note, covered today only inside layer harnesses or
 by observation: rebuild under continuous writes without a quiet window
 (`runtime` layer; `builds` counter in the epoch/hits reports), reads during a
-long apply (latency bound), shifted-key and value-inflated SF1 (run by hand today: the verification set of `pipeline/prompts/shared/docs/scale_factor_contract.md`), peak threads under `taskset`
+long apply (latency bound), shifted-key and value-inflated SF1 (run by hand today: the verification set of `pipeline/prompts/shared/scale_factor_contract.md`), peak threads under `taskset`
 (`ThreadBudget::PeakThreads`), apply time and bytes copied per changed row at
 SF1 vs SF20.
 

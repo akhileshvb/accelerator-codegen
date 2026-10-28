@@ -736,7 +736,13 @@ void AcceleratorRuntime::RequestBuild() {
     }
     std::lock_guard<std::mutex> lock(impl->state_mutex);
     impl->build_scheduled = false;
+    impl->state_cv.notify_all();
   });
+}
+
+void AcceleratorRuntime::AwaitScheduledBuild() {
+  std::unique_lock<std::mutex> lock(impl->state_mutex);
+  impl->state_cv.wait(lock, [&] { return !impl->build_scheduled; });
 }
 
 bool AcceleratorRuntime::BuildNow() {

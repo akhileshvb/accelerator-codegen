@@ -10,7 +10,7 @@
 # From-scratch: do not assume any other engine backend exists. Substrate + templates + this profile.
 #
 # Outcome: the engine's slot implementations (S1-S8), built in the sequential layers of
-# prompts/engine_backend/docs/layers.md, each with backends/<engine>/tests/test_<engine>_<layer>.cpp.
+# prompts/engine_backend/layers.md, each with backends/<engine>/tests/test_<engine>_<layer>.cpp.
 # Validation adds unseen adversarial tests and the backend-generic slot gates
 # (gates/run_slot_gates.sh; the engine's host.sh implements the `slot` verb).
 
@@ -18,7 +18,6 @@ workload_kind: engine_backend
 engine_name: replace_me
 allow_update_existing: false
 
-hide_foreign_engines: true
 agent_hidden_trees:
   - backends/<other engine>
   - accelerators/tpch

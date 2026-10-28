@@ -101,7 +101,7 @@ Result FuzzQuery(const std::string &src_db, const std::string &workdir, int q, i
     duckdb::DuckDB db(db_path);
     duckdb::Connection writer_conn(db);
     accelerator_codegen::RegisterAcceleratorFunctions(writer_conn);
-    const auto &entry = engine::LookupSharedQuery(engine::SharedWorkloadKind::Tpch, q);
+    const auto &entry = engine::LookupSharedQuery("tpch", q);
     accelerator_codegen::aux_state::core::ResetAuxExecuteCounts();
     DuckdbRuntime runtime(writer_conn, entry, 10.0);
     runtime.Build();

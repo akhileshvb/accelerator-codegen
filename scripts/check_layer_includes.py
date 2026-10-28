@@ -13,7 +13,7 @@ A backend's `tests/harness/` and `bench/` hold the engine's workload harnesses
 
 Backend boundary: a file outside backends/<engine>/ (the substrate, accelerators,
 eval/, pipeline templates, scripts, another backend) may include only
-backends/<engine>/api/ of that backend (pipeline/prompts/engine_backend/docs/api_contract.md);
+backends/<engine>/api/ of that backend (pipeline/prompts/engine_backend/api_contract.md);
 engine/, state/, tests/ and the other directories are the backend's own.
 
 Includes are resolved the way the build does: relative to the including file,

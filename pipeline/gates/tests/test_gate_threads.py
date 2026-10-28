@@ -5,6 +5,9 @@ from __future__ import annotations
 
 import json
 import sys
+from pathlib import Path
+
+import pytest
 
 from test_gate_plumbing import GATES, repo, result, run_gate  # noqa: F401  (repo is a fixture)
 
@@ -22,7 +25,7 @@ def thread_values(log):
 def test_full_tier_differential_runs_at_n_then_one_thread(repo):
     proc, _, log, gj, _ = run_gate(repo, "run_aux_correctness.sh", "5", env_extra={"ACCEL_AUX_THREADS": "4"})
     assert proc.returncode == 0, proc.stdout + proc.stderr
-    assert thread_values(log) == ["4", "1"]
+    assert sorted(thread_values(log)) == ["1", "4"]  # side by side: the order is not fixed
     assert result(gj, "aux_correctness")["threads_checked"] == [4, 1]
 
 
@@ -47,6 +50,14 @@ def test_a_quick_check_that_fails_only_at_one_thread_names_it(repo):
     assert result(gj, "quick_check")["step"] == "differential_threads1"
 
 
+def test_a_differential_that_fails_at_n_threads_is_reported_with_the_one_thread_run_done(repo):
+    proc, _, log, gj, _ = run_gate(repo, "run_aux_correctness.sh", "5",
+                                   env_extra={"ACCEL_AUX_THREADS": "4", "FAKE_FAIL_AT_N_THREADS": "1"})
+    assert proc.returncode == 1
+    assert sorted(thread_values(log)) == ["1", "4"]
+    assert "threads=4" in result(gj, "aux_correctness")["reason"]
+
+
 def test_a_differential_that_fails_only_at_one_thread_fails_the_gate(repo):
     proc, _, _, gj, _ = run_gate(repo, "run_aux_correctness.sh", "5",
                                  env_extra={"ACCEL_AUX_THREADS": "4", "FAKE_FAIL_AT_ONE_THREAD": "1"})
@@ -68,8 +79,8 @@ def sweep(repo, tmp_path, **env):
 
 
 def test_bench_sweep_reports_the_read_speedup_of_n_threads_over_one(repo, tmp_path):
-    # ACCEL_AUX_THREADS is the ambient cap here; the extra point overrides it to 1 for that one run.
-    proc, _, log, gj, _ = sweep(repo, tmp_path, ACCEL_AUX_THREADS="")
+    # N is the configured cap (4), measured on 4 CPUs of the worker's core set although the lease slot is smaller.
+    proc, _, log, gj, _ = sweep(repo, tmp_path, ACCEL_CORE_SET="0-7")
     assert proc.returncode == 0, proc.stdout + proc.stderr
     gate = result(gj, "aux_bench_sweep")
     scaling = gate["thread_scaling"]
@@ -77,9 +88,29 @@ def test_bench_sweep_reports_the_read_speedup_of_n_threads_over_one(repo, tmp_pa
     assert scaling["read_us_at_1"] == 400 and scaling["read_us_at_N"] == 100
     assert scaling["read_speedup_at_N_vs_1"] == 4.0
     assert scaling["build_speedup_at_N_vs_1"] == 4.0
+    assert "cpus 0,1,2,3)" in gate["log_tail"]
     summary = json.loads((repo / "art" / "aux_bench_summary.json").read_text())
     assert summary["thread_scaling"] == scaling
     assert gate["status"] == "pass"
+
+
+def bench_calls(log):
+    return [l for l in log.read_text().splitlines() if l.startswith("run bench_aux")]
+
+
+def test_a_multi_point_bench_measures_every_frequency_in_one_call(repo, tmp_path):
+    proc, _, log, gj, _ = sweep(repo, tmp_path, FAKE_MULTI_POINT="1", ACCEL_AUX_THREAD_POINT="0")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert len(bench_calls(log)) == 1
+    csv = Path(result(gj, "aux_bench_sweep")["results_csv"]).read_text().splitlines()
+    assert [row.split(",")[1] for row in csv[1:]] == ["0", "10"]
+
+
+def test_a_single_point_bench_is_called_once_per_frequency(repo, tmp_path):
+    proc, _, log, gj, _ = sweep(repo, tmp_path, ACCEL_AUX_THREAD_POINT="0")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert len(bench_calls(log)) == 2
+    assert len(Path(result(gj, "aux_bench_sweep")["results_csv"]).read_text().splitlines()) == 3
 
 
 def test_the_thread_point_is_report_only(repo, tmp_path):
@@ -127,6 +158,12 @@ def test_sanitizer_check_builds_its_own_instrumented_dir_with_every_phase_at_n_t
 def test_a_sanitizer_quick_check_runs_the_differential_at_its_one_thread_count_only(repo):
     _, _, log, _, _ = run_gate(repo, "run_aux_quick_check.sh", "5", env_extra=SAN_ENV)
     assert thread_values(log) == ["3"]
+
+
+def test_a_sanitizer_quick_check_without_the_differential_runs_nothing_and_passes(repo):
+    proc, _, _, gj, _ = run_gate(repo, "run_aux_quick_check.sh", "5", env_extra={**SAN_ENV, "ACCEL_QUICK_DIFFERENTIAL": "0"})
+    assert proc.returncode == 0, proc.stdout + proc.stderr  # no run set LOG: the gate must not trip on it
+    assert result(gj, "quick_check")["status"] == "pass"
 
 
 def test_a_report_with_a_frame_in_the_query_fails_and_engine_reports_do_not(repo):
@@ -192,3 +229,51 @@ def test_a_race_on_a_global_of_the_query_is_the_querys_even_when_the_access_fram
         "SUMMARY: ThreadSanitizer: data race in std::thread::_State_impl::_M_run()\n")
     found = sanitizer_findings.classify(tmp_path, Q + "/")
     assert found["yours_count"] == 1 and found["infra"]["count"] == 0
+
+
+def test_a_report_only_inside_the_engine_names_no_owner(tmp_path):
+    import sanitizer_findings
+
+    assert sanitizer_findings.classify(tmp_path, qdir("b", 1) + "/")["owner"] == ""
+    (tmp_path / "tsan.1").write_text(
+        "WARNING: ThreadSanitizer: data race (pid=1)\n"
+        "  Write of size 8 at 0x1 by thread T1:\n"
+        "    #0 Foo /engine/src/x.cpp:9 (bin+0x1)\n\n"
+        "SUMMARY: ThreadSanitizer: data race /engine/src/x.cpp:9 in Foo\n")
+    assert sanitizer_findings.classify(tmp_path, qdir("b", 1) + "/")["owner"] == ""  # it fails nothing
+
+
+def test_a_step_that_fails_in_a_sanitizer_run_beside_engine_reports_is_the_querys(repo):
+    proc, _, _, gj, _ = run_gate(repo, "run_aux_quick_check.sh", "5", env_extra={
+        **SAN_ENV, "FAKE_TSAN_REPORT": "/engine/src", "FAKE_RC_run": "1"})
+    assert proc.returncode == 1
+    data = result(gj, "quick_check")
+    assert data["step"] != "sanitizer" and data["owner"] == "query"
+
+
+@pytest.mark.parametrize("allocator, yours", [("Pipeline::Schedule() <null> (libengine.so+0x2)", 0),
+                                              ("Build /r/{Q}/state.cpp:7 (lib+0x6)", 1)])
+def test_a_heap_block_is_the_querys_only_when_the_query_allocated_it(tmp_path, allocator, yours):
+    import sanitizer_findings
+
+    Q = qdir("b", 1)
+    (tmp_path / "tsan.1").write_text(
+        "WARNING: ThreadSanitizer: data race (pid=1)\n"
+        "  Atomic write of size 4 at 0x1 by thread T1:\n"
+        "    #0 Task::Run() <null> (libengine.so+0x4)\n\n"
+        "  Previous write of size 8 at 0x1 by main thread:\n"
+        "    #0 operator new(unsigned long) <null> (libtsan.so.2+0x1)\n"
+        "    #1 Pipeline::Schedule() <null> (libengine.so+0x2)\n\n"
+        "  Location is heap block of size 24 at 0x1 allocated by main thread:\n"
+        "    #0 operator new(unsigned long) <null> (libtsan.so.2+0x1)\n"
+        f"    #1 {allocator.format(Q=Q)}\n"
+        f"    #2 Execute /r/{Q}/module.cpp:480 (lib+0x3)\n\n"
+        "SUMMARY: ThreadSanitizer: data race (libengine.so+0x4) in Task::Run()\n")
+    assert sanitizer_findings.classify(tmp_path, Q + "/")["yours_count"] == yours
+
+
+def test_a_bench_that_prints_one_row_for_several_write_frequencies_is_the_harnesss(repo, tmp_path):
+    proc, _, _, gj, _ = sweep(repo, tmp_path, FAKE_MULTI_POINT="1", FAKE_BENCH_ONE_ROW="0")
+    assert proc.returncode == 1
+    gate = result(gj, "aux_bench_sweep")
+    assert gate["owner"] == "harness" and "expected 2 sweep rows, got 1" in gate["reason"]

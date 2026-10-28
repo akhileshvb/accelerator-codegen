@@ -3,10 +3,6 @@
 api_key_env: OPENROUTER_API_KEY
 
 codex_bin: codex
-codex_config_path: pipeline/.codex/config.toml
-codex_timeout_sec: 7200
-# Required for MCP tools under `codex exec` (otherwise: "user cancelled MCP tool call").
-codex_bypass_approvals_and_sandbox: true
 # The presets' real window (~1M on OpenRouter); compact at 600k instead of Codex's ~300k default.
 codex_model_context_window: 1000000
 codex_auto_compact_tokens: 600000
@@ -20,9 +16,13 @@ stage_providers:
   implementation: codex_exec
   validation: codex_exec
   optimization: codex_exec
+  optimization_unified: codex_exec
+  optimization_unified_hypothesis: codex_exec
+  optimization_unified_patch: codex_exec
   optimization_worker: codex_exec
+  optimization_fix: codex_exec
   crash_debug: codex_exec
-  advisor: codex_exec   # forks the agent's session (accel_pipeline.advisor)
+  advisor: codex_exec   # forks the agent's session (accel_pipeline.repair)
   audit: codex_exec
   architecture_audit: codex_exec
   # Cheap per-layer critic (cheap_code via Codex exec + OpenRouter).
@@ -88,9 +88,13 @@ stages:
   host_bootstrap: code
   implementation: code
   validation: code
-  # optimization_worker falls back to optimization (accel_pipeline.models._PARENT_STAGE)
+  # Parent stage name used by run_pipeline / make_model_id("optimization", ...)
   optimization: code
+  optimization_unified: code
+  optimization_unified_hypothesis: reasoning
+  optimization_unified_patch: code
   optimization_worker: code
+  optimization_fix: code
   crash_debug: debug
   advisor: critic   # a stronger model reads the stuck agent's conversation
   audit: code

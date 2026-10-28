@@ -57,7 +57,6 @@ SharedProbe BuildTpchQ10Probe(::duckdb::MaterializedQueryResult &result,
 }
 
 const SharedQueryRegistrar kEntry{SharedQueryCatalogEntry{10,
-     SharedWorkloadKind::Tpch,
      "tpch",
      core::TpchQ10Layout::kAccelerator,
      "SELECT c_custkey, c_name, SUM(l_extendedprice * (1 - l_discount)) AS "

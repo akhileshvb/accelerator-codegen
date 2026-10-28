@@ -46,3 +46,19 @@ if(BUILD_TESTING)
     add_test(NAME test_postgres_aux_multi_connection_stress COMMAND test_postgres_aux_multi_connection_stress)
     add_test(NAME test_postgres_cross_accel COMMAND test_postgres_cross_accel)
 endif()
+
+# The workload bench and calibrate harnesses (host_bootstrap's, as every target of this file).
+# Shared SQL-vs-accel TPC-H aux bench (`--query N`), with per-query aliases expected
+# by run_baseline.sh (benchmark_postgres_tpch_q<N>), and the cost-model calibrator
+# (wall-clock via psql \timing).
+accel_add_backend_exe(postgres benchmark_postgres_tpch_aux backends/postgres/bench/benchmark_postgres_tpch_aux.cpp)
+foreach(q RANGE 1 22)
+    add_custom_target(benchmark_postgres_tpch_q${q}
+        DEPENDS benchmark_postgres_tpch_aux
+        COMMAND ${CMAKE_COMMAND} -E create_symlink
+            $<TARGET_FILE:benchmark_postgres_tpch_aux>
+            ${CMAKE_BINARY_DIR}/benchmark_postgres_tpch_q${q}
+    )
+endforeach()
+accel_add_backend_exe(postgres calibrate_postgres_tpch_aux_cost_model
+    backends/postgres/bench/calibrate_postgres_tpch_aux_cost_model.cpp)

@@ -1,5 +1,6 @@
 #include "backends/duckdb/bench/aux_benchmark_sweep_session.hpp"
 #include "eval/bench/driver/bench_cli.hpp"
+#include "eval/bench/driver/measured_cpus.hpp"
 #include "eval/bench/driver/profile_window.hpp"
 
 #include "eval/harness/tpch_rf.hpp"
@@ -26,8 +27,8 @@
 namespace accelerator_codegen::benchmarks::aux_sweep {
 namespace {
 
-// Threads for the engine reference and for the accelerator alike.
-constexpr int kThreadBudget = 1;
+// Threads of the measured run when no measurement lease pins it.
+constexpr int kUnleasedThreads = 1;
 
 namespace catalog_ns = accelerator_codegen::aux_state::engine;
 namespace bench_diag = accelerator_codegen::benchmarks;
@@ -262,7 +263,7 @@ struct WorkloadTimings {
 };
 
 // What the runtime's counters say about the reads of the measured run: how many the state served,
-// how many fell back to SQL, and how often the state was built (never assumed).
+// how many fell back to SQL, and how often the state was built during the run (never assumed).
 template <typename Stats>
 void RecordReadOutcome(WorkloadTimings &result, const Stats &before, const Stats &after) {
   const auto hits = after.reads_hit - before.reads_hit;
@@ -271,7 +272,7 @@ void RecordReadOutcome(WorkloadTimings &result, const Stats &before, const Stats
   result.accel_hit_rate = reads > 0 ? static_cast<double>(hits) / reads : 0.0;
   result.fallback_rate = reads > 0 ? static_cast<double>(fallbacks) / reads : 0.0;
   result.accel_fallback_reads = static_cast<int64_t>(fallbacks);
-  result.state_builds = static_cast<int64_t>(after.builds);
+  result.state_builds = static_cast<int64_t>(after.builds - before.builds);
 }
 
 const TpchArgVariant &PickArgVariant(const std::vector<TpchArgVariant> &arg_pool,
@@ -453,6 +454,8 @@ struct BenchSession {
   double base_write_median_us = 0.0;
   double engine_ref_query_median_us = 0.0;
   double setup_full_build_ms = 0.0;
+  int measured_threads = kUnleasedThreads;
+  int64_t setup_builds = 0;
   uint64_t aux_state_bytes = 0;
   double reader_qps = 1.0;
   std::unique_ptr<DuckdbRuntime> runtime;
@@ -463,13 +466,15 @@ struct BenchSession {
         base_connection(database), accel_connection(database),
         write_mode(ParseWriteMode()), rf_chunk_orders(RfChunkOrderCount()) {}
 
+  void SetThreads(int threads) {
+    for (auto *connection : {&base_connection, &accel_connection}) {
+      Require(connection->Query("PRAGMA threads=" + std::to_string(threads)) != nullptr, "pragma failed");
+    }
+  }
+
   void Initialize(int warmup_queries, int ref_samples, int base_write_samples) {
     Require(suiteSupported(), "unsupported bench suite for multi-frequency sweep");
-    // The engine reference and the accelerator get the same thread budget.
-    for (auto *connection : {&base_connection, &accel_connection}) {
-      Require(connection->Query("PRAGMA threads=" + std::to_string(kThreadBudget)) != nullptr,
-              "pragma failed");
-    }
+    SetThreads(driver::RunCoreBudget());  // the state build uses the run's whole core budget
     // DuckDB defaults to ~80% of RAM. On a busy box that reservation OOMs
     // Q18's GROUP BY during Build (SIGKILL, ~60 GiB peak). Cap the pool.
     {
@@ -498,13 +503,6 @@ struct BenchSession {
 
     if (write_mode == WriteMode::Point) {
       write_probes = PrecomputeWriteProbes(base_connection, entry, query_num);
-      if (base_write_samples > 0) {
-        for (int i = 0; i < base_write_samples; i++) {
-          const auto &probe = PickWriteProbe(write_probes, 100000 + i);
-          base_write_median_us += TimeBaseWriteCommitUs(base_connection, probe);
-        }
-        base_write_median_us /= static_cast<double>(base_write_samples);
-      }
     }
 
     runtime = std::make_unique<DuckdbRuntime>(accel_connection, entry,
@@ -516,7 +514,19 @@ struct BenchSession {
             std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() -
                                                                   build_start)
                 .count());
+    setup_builds = static_cast<int64_t>(runtime->Stats().builds);
     aux_state_bytes = bench_diag::CollectAuxStateFootprintBytes(*runtime);
+
+    // Warmup and the measured loop run pinned, the engine reference and the accelerator on the same cores.
+    measured_threads = driver::PinToMeasuredCpus(kUnleasedThreads);
+    SetThreads(measured_threads);
+    if (write_mode == WriteMode::Point && base_write_samples > 0) {
+      for (int i = 0; i < base_write_samples; i++) {
+        const auto &probe = PickWriteProbe(write_probes, 100000 + i);
+        base_write_median_us += TimeBaseWriteCommitUs(base_connection, probe);
+      }
+      base_write_median_us /= static_cast<double>(base_write_samples);
+    }
 
     for (int i = 0; i < warmup_queries; i++) {
       const auto &variant =
@@ -534,7 +544,7 @@ struct BenchSession {
     std::cerr << "tpch_q" << query_num
               << "_aux_bench: engine_ref and accel_hit are paired wall-clock medians of the "
                  "same bindings at threads="
-              << kThreadBudget << "\n"
+              << measured_threads << "\n"
               << std::flush;
     reader_qps = MeasureReaderQps(accel_connection, arg_pool,
                                   std::max(1, std::min(warmup_queries, 3)));
@@ -549,11 +559,13 @@ struct BenchSession {
                        session.runtime->SetExpectedQueriesBeforeNextWrite(
                            ExpectedQueriesBeforeWrite(write_frequency_pct));
                        session.runtime->ResetStoreDiagnosticsProfiling();
-                       return RunMeasuredWorkload(
+                       auto workload = RunMeasuredWorkload(
                            *session.runtime, session.accel_connection,
                            measured_queries, write_frequency_pct,
                            session.write_probes, session.write_mode,
                            session.rf_chunk_orders, session.arg_pool);
+                       session.UndoPointWrites(workload.writes_executed);
+                       return workload;
                      });
   }
 
@@ -582,6 +594,17 @@ struct BenchSession {
   }
 
 private:
+  // Every point of a sweep starts from the data the first one did: its writes are undone through the runtime,
+  // outside the measured run (refresh chunks cannot be undone).
+  void UndoPointWrites(int64_t writes) {
+    if (write_mode != WriteMode::Point) {
+      return;
+    }
+    for (int64_t seq = writes; seq-- > 0;) {
+      runtime->ApplyWrite(PickWriteProbe(write_probes, static_cast<int>(seq)).restore_sql);
+    }
+  }
+
   template <typename RunFn>
   void RunMeasuredPoint(const std::string &suite, const std::string &locality,
                         int write_frequency_pct, double write_interval_sec,
@@ -656,7 +679,7 @@ private:
               << query_only_speedup << ','
               << blended_query_speedup << ','
               << cold_start_accel_workload_us << ',' << setup_full_build_ms << ','
-              << workload.accel_fallback_reads << ',' << workload.state_builds << ',';
+              << workload.accel_fallback_reads << ',' << setup_builds + workload.state_builds << ',';
     bench_diag::AppendStoreDiagnosticsCsv(std::cout, aux_state_bytes, store_diag);
     std::cout << '\n' << std::flush;
     std::cerr << "tpch_q" << query_num << "_aux_bench: wrote row"
