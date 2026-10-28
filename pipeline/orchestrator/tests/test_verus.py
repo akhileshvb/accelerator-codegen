@@ -395,3 +395,19 @@ def test_sanitize_reserves_what_sql2verus_reserves():
     block = re.search(r"const RESERVED: &\[&str\] = &\[(.*?)\];", rust, re.S).group(1)
     assert actions.RESERVED == set(re.findall(r'"([^"]+)"', block))
     assert actions.sanitize("abstract") == "abstract_"
+
+
+def test_a_proved_spec_counterexample_stops_the_kernel(tmp_path):
+    from types import SimpleNamespace
+
+    from accel_pipeline.verus.stages import _spec_counterexample
+
+    src = tmp_path / "crate" / "src"
+    src.mkdir(parents=True)
+    (src / "spec_diagnostics.rs").write_text("proof fn lemma_no_answer() {}", encoding="utf-8")
+    run = SimpleNamespace(ctx=SimpleNamespace(ws=tmp_path))
+    assert _spec_counterexample(run, {"error_list": []}) == ""
+    (tmp_path / "analysis").mkdir()
+    (tmp_path / "analysis" / "spec_counterexample.md").write_text("lemma_no_answer in spec_diagnostics.rs", "utf-8")
+    assert _spec_counterexample(run, {"error_list": ["- kernel.rs:3:1: error: postcondition not satisfied"]})
+    assert not _spec_counterexample(run, {"error_list": ["- spec_diagnostics.rs:1:1: error: assertion failed"]})
