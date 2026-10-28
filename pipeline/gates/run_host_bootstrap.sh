@@ -84,7 +84,7 @@ done
 # every read forced to the fallback SQL (the substrate's ACCEL_AUX_FORCE_FALLBACK). The hit rate it prints
 # (`accel_hit_rate`, bench_sweep_contract.md) must tell the two apart; a bench that reports the same rate
 # both times assumes it (a constant) instead of counting.
-BENCH_HIT_RATE="" BENCH_MISSING=""
+BENCH_HIT_RATE="" BENCH_MISSING="" BENCH_BUILDS=""
 bench_read_only() { # [VAR=value ...]: a short read-only bench run; BENCH_HIT_RATE = the accel_hit_rate it printed,
   # BENCH_MISSING = the required columns (bench_sweep_contract.md) its row lacks. Its write points run in aux_exit's
   # sweep, on the full dataset: a subset may hold no write that changes the answer, which fails a bench by contract.
@@ -106,8 +106,8 @@ rows = list(csv.DictReader(io.StringIO(chr(10).join(lines[start:start + 2])))) i
 required = ('suite write_frequency_pct workload_speedup query_only_speedup accel_hit_rate num_queries '
             'accel_fallback_reads state_builds engine_ref_query_median_us accel_hit_median_us').split()
 row = rows[0] if rows else {}
-print(row.get('accel_hit_rate', '') + '|' + ' '.join(c for c in required if c not in row))" <"${dir}/log")"
-  BENCH_MISSING="${BENCH_HIT_RATE#*|}" BENCH_HIT_RATE="${BENCH_HIT_RATE%%|*}"
+print('%s|%s|%s' % (row.get('accel_hit_rate', ''), row.get('state_builds', ''), ' '.join(c for c in required if c not in row)))" <"${dir}/log")"
+  BENCH_MISSING="${BENCH_HIT_RATE##*|}" BENCH_BUILDS="$(cut -d'|' -f2 <<<"${BENCH_HIT_RATE}")" BENCH_HIT_RATE="${BENCH_HIT_RATE%%|*}"
   rm -rf "${dir}"
   [[ "${rc}" -eq 0 ]]
 }
@@ -129,6 +129,9 @@ measured read loop in driver::ProfileWindow (ACCEL_PROFILE_CONTROL, bench_sweep_
   HIT_RATE="${BENCH_HIT_RATE}"
   [[ -z "${BENCH_MISSING}" ]] ||
     finish fail "the bench row lacks the required columns ${BENCH_MISSING} (bench_sweep_contract.md)" "${ENGINE_LOG}${SMOKE_LOG}"
+  python3 -c "import sys; sys.exit(0 if float(sys.argv[1] or 0) >= 1 else 1)" "${BENCH_BUILDS}" 2>/dev/null ||
+    finish fail "the bench reports state_builds=${BENCH_BUILDS} on a run whose reads hit a state: count the whole run, \
+warmup included (bench_sweep_contract.md)" "${ENGINE_LOG}${SMOKE_LOG}"
   bench_read_only ACCEL_AUX_FORCE_FALLBACK=1 || finish fail "the bench failed with every read forced to the fallback (ACCEL_AUX_FORCE_FALLBACK=1)" "${ENGINE_LOG}${SMOKE_LOG}"
   FORCED_RATE="${BENCH_HIT_RATE}"
   verdict="$(python3 -c "

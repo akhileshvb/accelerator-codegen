@@ -42,7 +42,7 @@ case "${verb}" in
       [[ -z "${ACCEL_PROFILE_CONTROL:-}" || -n "${FAKE_BENCH_NO_PROFILE:-}" ]] || echo enable >"${ACCEL_PROFILE_CONTROL}"
       echo "suite,write_frequency_pct,workload_speedup,query_only_speedup,num_queries,accel_fallback_reads,state_builds,engine_ref_query_median_us,${FAKE_BENCH_NO_HIT_MEDIAN:-accel_hit_median_us,}accel_hit_rate"
       for pct in ${FAKE_BENCH_ONE_ROW:-${ACCEL_AUX_WRITE_FREQUENCIES//,/ }}; do
-        echo "mix,${pct},2.0,2.0,5,0,1,800,${FAKE_BENCH_NO_HIT_MEDIAN:-400,}${rate}"
+        echo "mix,${pct},2.0,2.0,5,0,${FAKE_BENCH_BUILDS:-1},800,${FAKE_BENCH_NO_HIT_MEDIAN:-400,}${rate}"
       done
     else
       echo "${FAKE_RUN_OUT:-ran $*}"
@@ -375,6 +375,17 @@ def test_host_bootstrap_fails_a_bench_that_never_opens_the_profile_window(repo):
                                  env_extra={"FAKE_BENCH_NO_PROFILE": "1"})
     assert proc.returncode == 1
     assert "never opened run_profile's window" in result(gj, "host_bootstrap")["reason"]
+
+
+def test_host_bootstrap_fails_a_bench_that_counts_no_state_build_on_a_hitting_run(repo):
+    host_bootstrap_repo(repo)
+    register = repo / "accelerators" / "tpch" / "q6" / "fake" / "aux"
+    register.mkdir(parents=True)
+    (register / "register.cpp").write_text("// q6\n")
+    proc, _, _, gj, _ = run_gate(repo, "run_host_bootstrap.sh", "0", ctx_extra={"engine_host": HARNESS_HOST},
+                                 env_extra={"FAKE_BENCH_BUILDS": "0"})
+    assert proc.returncode == 1
+    assert "reports state_builds=0" in result(gj, "host_bootstrap")["reason"]
 
 
 def test_host_bootstrap_fails_without_the_harness_sources(repo):

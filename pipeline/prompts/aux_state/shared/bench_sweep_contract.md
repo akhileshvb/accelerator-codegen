@@ -58,7 +58,7 @@ The four measurement columns are **required**: `accel_hit_rate`, `num_queries`, 
 - `accel_hit_rate` = reads served from the state / all measured reads (a real ratio in [0, 1], not a constant);
 - `num_queries` = measured reads;
 - `accel_fallback_reads` = measured reads that ran the fallback SQL instead of the state;
-- `state_builds` = states built during the run (the first read builds one).
+- `state_builds` = states built during the whole run, warmup included (the first read builds one, so a run that read from a state reports at least 1).
 
 The orchestrator skips the check for a column that is absent, so omitting one silently disables it: always print all four. `engine_ref_query_median_us` and `accel_hit_median_us` are the two terms of `query_only_speedup` (quick_check reports them); recommended: `fallback_median_us` (median read latency on the fallback).
 
