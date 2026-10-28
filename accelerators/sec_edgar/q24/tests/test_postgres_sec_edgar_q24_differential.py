@@ -31,8 +31,8 @@ deterministic tie-break appended to ORDER BY (cnt DESC leaves ties unordered;
 the aux result breaks them by tag, version in byte order, NULLs first).
 
 Env: PGHOST PGPORT PGUSER PGPASSWORD (libpq), Q24_PG_DB (default q24_diff),
-     Q24_SEED, Q24_STEPS. The accelerator_codegen_postgres extension must be
-     installed in the server (build_pg_ext.sh).
+     Q24_SEED, Q24_STEPS. The accelerator_codegen_pg module must be installed in the server
+     (backends/postgres/host.sh build).
 Usage: test_postgres_sec_edgar_q24_differential.py [--existing-db DB] [--steps N]
        [--seed S] [--create-only]
 """
@@ -301,10 +301,9 @@ def load_schema_and_data(admin, db, gen):
 
 
 def install_module(s):
-    s.run("DROP EXTENSION IF EXISTS accelerator_codegen_postgres CASCADE")
-    s.run("CREATE EXTENSION accelerator_codegen_postgres")
-    # Fixed SEC-EDGAR capture ids (same as the instance template): num=2 pre=3.
-    s.run("\\i %s" % os.path.join(ROOT, "backends", "postgres", "host", "capture_triggers.sql"))
+    host = os.path.join(ROOT, "backends", "postgres", "host")
+    s.run("\\i %s" % os.path.join(host, "register.sql"))
+    s.run("\\i %s" % os.path.join(host, "capture_triggers.sql"))
     s.run("SELECT create_accel_mutation_triggers('num','accel_codegen_sec_edgar')")
     s.run("SELECT create_accel_mutation_triggers('pre','accel_codegen_sec_edgar')")
 
