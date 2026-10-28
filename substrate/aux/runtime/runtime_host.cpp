@@ -226,11 +226,21 @@ void RuntimeHost::Commit(uint64_t txn, Epoch epoch) {
   const auto staged = impl->TakeTxn(txn).staged;
   // Each accelerator maintains independently; fork-join over the maintenance cap
   // (1: in id order on this thread).
-  impl->threads.ParallelFor(
-      staged.size(), [&](std::size_t i) { staged[i]->PublishCommit(epoch, false); }, impl->threads.MaintenanceLimit());
-  for (auto *runtime : staged) {
-    runtime->EndCommit(epoch);
+  // The commit ends even if a publish throws: a store's open commit group would
+  // otherwise block every later commit.
+  const auto end = [&] {
+    for (auto *runtime : staged) {
+      runtime->EndCommit(epoch);
+    }
+  };
+  try {
+    impl->threads.ParallelFor(
+        staged.size(), [&](std::size_t i) { staged[i]->PublishCommit(epoch, false); }, impl->threads.MaintenanceLimit());
+  } catch (...) {
+    end();
+    throw;
   }
+  end();
 }
 
 void RuntimeHost::Abort(uint64_t txn) {
