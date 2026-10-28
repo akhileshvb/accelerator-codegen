@@ -232,7 +232,13 @@ const SharedQueryCatalogEntry &LookupSharedQueryParallel(SharedWorkloadKind work
           "parallel aux catalog is only implemented for sec_edgar");
   const auto &base = LookupSharedQuery(workload, query_id);
   const std::string id = std::string(base.accelerator_id) + "_aux_parallel";
-  return Derived(id, base, "SELECT * FROM accel_" + id + "()", true);
+  // The base aux call with the same arguments, on the parallel table function.
+  const std::string serial_fn = "accel_" + std::string(base.accelerator_id) + "_aux(";
+  std::string aux_sql = base.duckdb_aux_sql;
+  const auto at = aux_sql.find(serial_fn);
+  Require(at != std::string::npos, "aux SQL does not call " + serial_fn);
+  aux_sql.replace(at, serial_fn.size(), "accel_" + id + "(");
+  return Derived(id, base, aux_sql, true);
 }
 
 const SharedQueryCatalogEntry &LookupSharedQueryParallel(const std::string &workload_name,
