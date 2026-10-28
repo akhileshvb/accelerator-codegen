@@ -617,28 +617,23 @@ int RunSweep(const std::string &path, int random_ranges, bool parallel) {
   const int64_t edges[] = {INT32_MIN, -1, 0, 3999, 4000, 4999, 5000, INT32_MAX};
   for (const int64_t lo : edges) {
     for (const int64_t hi : edges) {
-      q4gen::Params p;
-      p.lo = lo;
-      p.hi = hi;
-      check(p, false);
+      check(q4gen::DenseCell(lo, hi), false);
     }
   }
   {
-    q4gen::Params p;
+    auto p = q4gen::DenseCell(0, 9999);
     p.lo.reset();
     check(p, false);
-    p = q4gen::Params{};
+    p = q4gen::DenseCell(0, 9999);
     p.stmt.reset();
     check(p, false);
-    p = q4gen::Params{};
+    p = q4gen::DenseCell(0, 9999);
     p.uom.reset();
     check(p, false);
   }
   // Wide ranges on the biggest groups, also against the real q4.sql.
   for (const char *st : {"BS", "CF", "IS"}) {
-    q4gen::Params p;
-    p.lo = INT32_MIN;
-    p.hi = INT32_MAX;
+    auto p = q4gen::DenseCell(INT32_MIN, INT32_MAX);
     p.stmt = std::string(st);
     check(p, true);
   }
