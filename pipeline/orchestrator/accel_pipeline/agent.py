@@ -1141,6 +1141,8 @@ def prefix(binds: list[Bind], cwd: Path, *, setting: str = "sandbox") -> list[st
     if not bwrap:
         raise RuntimeError(f"{setting} is bwrap but bubblewrap is not installed (or set {setting}: none)")
     args = [bwrap, "--unshare-all", "--share-net", "--die-with-parent",
+            # its /sys is read-only: no cgroup of its own; the cap the session runs under (run_outcome cap) bounds it
+            "--unsetenv", "ACCEL_CGROUP",
             "--ro-bind", "/usr", "/usr", "--ro-bind", "/etc", "/etc"]
     for link in ("bin", "lib", "lib64", "sbin"):
         p = Path("/") / link

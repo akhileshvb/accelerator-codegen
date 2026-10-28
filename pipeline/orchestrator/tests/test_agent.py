@@ -1008,3 +1008,11 @@ def test_dataset_inside_a_writable_bind_is_rebound_read_only(tmp_path: Path, iso
     binds = agent.cpp_mounts(_cfg(root, datasets={"toybench_sf1": dataset}))
     order = [(m, d) for m, _, d in binds]
     assert ("ro", dataset) in order and order.index(("rw", root)) < order.index(("ro", dataset))
+
+
+def test_the_agent_sandbox_gets_no_cgroup_to_write(tmp_path, monkeypatch):
+    from accel_pipeline import agent
+
+    monkeypatch.setattr(agent.shutil, "which", lambda name: "/usr/bin/bwrap")
+    args = agent.prefix([], tmp_path)
+    assert args[args.index("--unsetenv") + 1] == "ACCEL_CGROUP"  # its /sys is read-only; the session's cap bounds it
