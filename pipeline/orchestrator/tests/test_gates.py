@@ -639,8 +639,8 @@ echo "$@" >>"$FAKE_HOST_LOG"
 if [[ "$1" == run && "$2" == perf ]]; then exec "$@"; fi
 [[ "$1" == run ]] || exit 2
 [[ -z "$FAKE_BENCH_FAIL" ]] || { echo "no such table" >&2; exit 1; }
-echo "suite,write_frequency_pct,engine_ref_query_median_us,accel_hit_median_us,accel_write_median_us,accel_hit_rate,setup_full_build_ms,workload_speedup"
-echo "lineitem_only,$ACCEL_AUX_WRITE_FREQUENCIES,2000.0,250.0,900.0,1.00,40.0,8.0"
+echo "suite,write_frequency_pct,engine_ref_query_median_us,accel_hit_median_us,accel_hit_rate,setup_full_build_ms,workload_speedup,accel_workload_us,num_queries"
+echo "lineitem_only,$ACCEL_AUX_WRITE_FREQUENCIES,2000.0,250.0,1.00,40.0,8.0,$((ACCEL_AUX_WRITE_FREQUENCIES > 0 ? 5750 : 2500)),10"
 """
 
 
@@ -704,7 +704,7 @@ def test_the_profile_samples_read_write_and_build(bench, monkeypatch):
     monkeypatch.setattr(perf_bench, "profile_build", lambda cmd, env, **kw: calls.append(("build",)) or {"status": "ok"})
     assert set(b.profile(5.0)) == {"read", "write", "build"}
     assert calls[0][:3] == ("hit", "0", "0") and calls[0][3] == 250.0
-    assert calls[1][:3] == ("hit", "50", "50") and calls[1][3] == pytest.approx(575.0)  # half reads (250 us), half writes (900 us)
+    assert calls[1][:3] == ("hit", "50", "50") and calls[1][3] == pytest.approx(575.0)  # the mix's measured time per operation
     assert calls[2] == ("build",)
 
 

@@ -1634,7 +1634,7 @@ class Bench:
         out = {}
         for path, pct in (("read", 0), ("write", WRITE_MIX_PCT)):
             row = self.row(pct)
-            op_us = (float(row["accel_hit_median_us"]) * (100 - pct) + float(row.get("accel_write_median_us") or 0) * pct) / 100.0
+            op_us = _op_us(row)
             with tempfile.TemporaryDirectory(prefix="accel-bench-") as work:
                 out[path] = perf_bench.profile_hit_path(
                     self.command(pct), self.env(work, 1, pct), cwd=self.cfg.repo_root, runner=self.host.perf_runner(), hit_us=op_us,
@@ -1649,6 +1649,15 @@ class Bench:
         from accel_pipeline.optimization import bench as perf_bench
 
         return perf_bench.engine_profile_gap(host_info(self.cfg.repo_root, self.host.engine, self.cfg.build_dir))
+
+
+def _op_us(row: dict[str, Any]) -> float:
+    """What one operation of the row's mix took: its measured workload over its operations (required columns), so
+    a window sized from it lasts about as long at any write share; the read median when the row lacks them."""
+    try:
+        return float(row["accel_workload_us"]) / float(row["num_queries"])
+    except (KeyError, TypeError, ValueError, ZeroDivisionError):
+        return float(row["accel_hit_median_us"])
 
 
 MIN_TIMED_BUILD_S = 1.0  # a subset build shorter than this is mostly fixed cost (per-partition scans, thread start):
