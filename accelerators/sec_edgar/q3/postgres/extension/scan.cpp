@@ -108,19 +108,16 @@ Q3Runtime() {
 namespace {
 
 void ExecutePostgresSecEdgarQ3(FunctionCallInfo fcinfo) {
-  // accel_sec_edgar_q3_aux() uses the defaults; the two-argument overload is
-  // not STRICT: a NULL argument reaches the module as NULL.
+  // Not STRICT: a NULL argument reaches the module as NULL.
   core::QueryArguments arguments;
-  if (PG_NARGS() >= 2) {
-    arguments.values.push_back(
-        PG_ARGISNULL(0) ? core::AuxValue::Null(core::AuxType::Int64)
-                        : core::AuxValue::Of(core::AuxType::Int64,
-                                             static_cast<int64_t>(PG_GETARG_INT64(0))));
-    arguments.values.push_back(
-        PG_ARGISNULL(1) ? core::AuxValue::Null(core::AuxType::String)
-                        : core::AuxValue::Of(core::AuxType::String,
-                                             detail::TextDatum(PG_GETARG_DATUM(1))));
-  }
+  arguments.values.push_back(
+      PG_ARGISNULL(0) ? core::AuxValue::Null(core::AuxType::Int64)
+                      : core::AuxValue::Of(core::AuxType::Int64,
+                                           static_cast<int64_t>(PG_GETARG_INT64(0))));
+  arguments.values.push_back(
+      PG_ARGISNULL(1) ? core::AuxValue::Null(core::AuxType::String)
+                      : core::AuxValue::Of(core::AuxType::String,
+                                           detail::TextDatum(PG_GETARG_DATUM(1))));
   detail::Q3Runtime().Execute(arguments, fcinfo);
 }
 

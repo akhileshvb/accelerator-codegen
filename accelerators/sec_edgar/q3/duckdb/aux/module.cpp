@@ -1972,18 +1972,15 @@ namespace {
 
 struct QueryParams {
   bool is_null = false;
-  int64_t fy = kSecEdgarQ3DefaultFy;
-  std::string uom = kSecEdgarQ3DefaultUom;
+  int64_t fy = 0;
+  std::string uom;
 };
 
 QueryParams ParseArguments(const core::QueryArguments &args) {
   QueryParams p;
-  if (args.values.empty()) {
-    return p;
-  }
   if (args.values.size() != 2) {
     throw std::invalid_argument(
-        "sec_edgar q3 aux expects () or (fy BIGINT, uom VARCHAR)");
+        "sec_edgar q3 aux expects (fy BIGINT, uom VARCHAR)");
   }
   const auto &fy = args.values[0];
   const auto &uom = args.values[1];
@@ -2121,8 +2118,7 @@ SecEdgarQ3Module::BuildState(core::AuxEngineServices &services) const {
   });
   const auto state = work.Finish();
   // Cohorts of the common parameters are served without a first-read build:
-  // the defaults, then every (fy, uom) of the fiscal years holding >= 2% of
-  // the filings and the units of measure with the most filings (data-driven,
+  // every (fy, uom) of the fiscal years holding >= 2% of the filings and the units of measure with the most filings (data-driven,
   // bounded by kSecEdgarQ3PrebuiltCohorts; any other pair is still built on
   // first use). Each costs one pass over its unit's adsh index (~ms).
   std::vector<std::pair<uint64_t, int32_t>> fys;
@@ -2143,7 +2139,6 @@ SecEdgarQ3Module::BuildState(core::AuxEngineServices &services) const {
     }
   }
   std::sort(uoms.rbegin(), uoms.rend());
-  SecEdgarQ3CohortFor(services, *state, kSecEdgarQ3DefaultFy, kSecEdgarQ3DefaultUom);
   if (!fys.empty()) {
     const std::size_t uom_take =
         std::min(uoms.size(), std::max<std::size_t>(1, kSecEdgarQ3PrebuiltCohorts / fys.size()));

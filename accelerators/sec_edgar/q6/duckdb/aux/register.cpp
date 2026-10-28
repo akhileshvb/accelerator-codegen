@@ -62,14 +62,14 @@ const SharedQueryRegistrar kEntry{SharedQueryCatalogEntry{6,
      "FROM num n "
      "JOIN sub s ON n.adsh = s.adsh "
      "JOIN pre p ON n.adsh = p.adsh AND n.tag = p.tag AND n.version = p.version "
-     "WHERE n.uom = 'USD' AND p.stmt = 'IS' AND s.fy = 2023 "
+     "WHERE n.uom = $3 AND p.stmt = $2 AND s.fy = $1 "
      "AND n.value IS NOT NULL "
      "GROUP BY s.name, p.stmt, n.tag, p.plabel "
      "ORDER BY total_value DESC, s.name, n.tag, p.plabel "
      "LIMIT 200",
-     "SELECT * FROM accel_sec_edgar_q6_aux()",
+     "SELECT * FROM accel_sec_edgar_q6_aux($1, $2, $3)",
      "SELECT * FROM accel_sec_edgar_q6()",
-     "SELECT * FROM accel_sec_edgar_q6_aux()",
+     "SELECT * FROM accel_sec_edgar_q6_aux($1, $2, $3)",
      "SELECT n.rowid, n.adsh, n.tag, n.version, n.ddate, n.qtrs, n.uom, n.coreg, "
      "n.value FROM num n "
      "JOIN sub s ON n.adsh = s.adsh "
@@ -79,17 +79,18 @@ const SharedQueryRegistrar kEntry{SharedQueryCatalogEntry{6,
      "    JOIN sub s2 ON n2.adsh = s2.adsh "
      "    JOIN pre p2 ON n2.adsh = p2.adsh AND n2.tag = p2.tag AND "
      "    n2.version = p2.version "
-     "    WHERE n2.uom = 'USD' AND p2.stmt = 'IS' AND s2.fy = 2023 "
+     "    WHERE n2.uom = $3 AND p2.stmt = $2 AND s2.fy = $1 "
      "    AND n2.value IS NOT NULL "
      "    GROUP BY s2.name, p2.stmt, n2.tag, p2.plabel "
      "    ORDER BY SUM(n2.value) DESC, s2.name, n2.tag, p2.plabel "
      "    LIMIT 200"
      ") top ON s.name = top.name AND p.stmt = top.stmt AND n.tag = top.tag "
      "AND p.plabel IS NOT DISTINCT FROM top.plabel "
-     "WHERE n.uom = 'USD' AND p.stmt = 'IS' AND s.fy = 2023 "
+     "WHERE n.uom = $3 AND p.stmt = $2 AND s.fy = $1 "
      "AND n.value IS NOT NULL "
      "ORDER BY n.adsh, n.tag, n.version LIMIT 1",
-     {},
+     {{core::AuxValue::Null(core::AuxType::Int64), core::AuxValue::Null(core::AuxType::String),
+       core::AuxValue::Null(core::AuxType::String)}},
      1,
      false,
      BuildSecEdgarQ6Probe,
@@ -121,33 +122,29 @@ CaptureTableList CaptureTables(const SecEdgarQ6Config &c) {
   return {{"num", c.num_table}, {"sub", c.sub_table}, {"pre", c.pre_table}};
 }
 
-// accel_sec_edgar_q6_aux() uses the defaults (2023, 'IS', 'USD');
-// accel_sec_edgar_q6_aux(fy BIGINT, stmt VARCHAR, uom VARCHAR) answers any values
-// from the same state.
-const std::vector<std::vector<::duckdb::LogicalType>> kOverloads{
-    {::duckdb::LogicalType::BIGINT, ::duckdb::LogicalType::VARCHAR,
-     ::duckdb::LogicalType::VARCHAR}};
+// accel_sec_edgar_q6_aux(fy BIGINT, stmt VARCHAR, uom VARCHAR) answers any
+// values from the same state.
+const std::vector<::duckdb::LogicalType> kArgumentTypes{
+    ::duckdb::LogicalType::BIGINT, ::duckdb::LogicalType::VARCHAR, ::duckdb::LogicalType::VARCHAR};
 
 const AuxQueryRegistrar kQuery{AuxQuery{
     core::SecEdgarQ6Layout::kAccelerator,
     "accel_sec_edgar_q6_aux",
-    {},
+    kArgumentTypes,
     [](::duckdb::Connection &connection) {
       const SecEdgarQ6Config c{1, 2, 3};
       return MakeBinding<SecEdgarQ6Scan, SecEdgarQ6Module>(connection, CaptureTables(c), c);
-    },
-    kOverloads}};
+    }}};
 
 #ifdef ACCEL_ENABLE_PARALLEL_AUX
 const AuxQueryRegistrar kParallelQuery{AuxQuery{
     std::string(core::SecEdgarQ6Layout::kAccelerator) + "_aux_parallel",
     std::string("accel_") + core::SecEdgarQ6Layout::kAccelerator + "_aux_parallel",
-    {},
+    kArgumentTypes,
     [](::duckdb::Connection &connection) {
       const SecEdgarQ6Config c{1, 2, 3};
       return MakeBinding<SecEdgarQ6Scan, SecEdgarQ6ParallelModule>(connection, CaptureTables(c), c);
-    },
-    kOverloads}};
+    }}};
 #endif
 
 } // namespace

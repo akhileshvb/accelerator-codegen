@@ -7,8 +7,8 @@
 //   GROUP BY s.name, s.cik HAVING SUM(n.value) > (AVG of per-cik sums)
 //   ORDER BY 3 DESC LIMIT 100
 //
-// Parameters: accel_sec_edgar_q3_aux() = (fy 2022, uom 'USD');
-// accel_sec_edgar_q3_aux(fy BIGINT, uom VARCHAR) answers any (fy, uom) exactly.
+// Parameters: accel_sec_edgar_q3_aux(fy BIGINT, uom VARCHAR) answers any
+// (fy, uom) exactly.
 //
 // State (all pieces are copy-on-write so a delta touches O(rows) memory):
 //   * Sub index: adsh -> (group id of (name, cik), fy) for every sub row with a
@@ -20,7 +20,7 @@
 //   * GroupDir: dictionary of (name, cik) groups and distinct ciks (append only).
 //   * Cohorts: per-(fy, uom) per-group and per-cik (sum, row count) in SoA
 //     chunks plus a lazily computed, cached top-100 result.  A cohort is built
-//     from the two indexes on first use (and for the defaults at build time),
+//     from the two indexes on first use (and, for the common ones, at build time),
 //     kept in a bounded per-version cache, and repaired incrementally by every
 //     delta (a num row touches the one cohort (fy of its filing, its uom); a
 //     sub change touches the cohorts of its fy).  Evicted / unseen cohorts are
@@ -260,8 +260,6 @@ struct SecEdgarQ3UomDict {
 inline constexpr std::size_t kSecEdgarQ3MaxCohorts = 64;
 // Cohorts materialized at build (see SecEdgarQ3Module::BuildState).
 inline constexpr std::size_t kSecEdgarQ3PrebuiltCohorts = 24;
-inline constexpr int32_t kSecEdgarQ3DefaultFy = 2022;
-inline constexpr const char *kSecEdgarQ3DefaultUom = "USD";
 
 inline uint64_t SecEdgarQ3CohortKey(int32_t fy, uint32_t uom_id) {
   return (static_cast<uint64_t>(static_cast<uint32_t>(fy)) << 32) | uom_id;
@@ -310,8 +308,7 @@ SecEdgarQ3CohortFor(const core::AuxEngineServices &, const SecEdgarQ3State &, in
 // Computes the final answer (top 100) for (fy, uom) from a state.
 std::vector<SecEdgarQ3OutputRow>
 BuildSecEdgarQ3Output(const core::AuxEngineServices &, const SecEdgarQ3State &,
-                      int64_t fy = kSecEdgarQ3DefaultFy,
-                      const std::string &uom = kSecEdgarQ3DefaultUom);
+                      int64_t fy, const std::string &uom);
 
 // Scalar / SIMD kernels (exposed for tests and microbenchmarks).
 struct SecEdgarQ3Kernels {
