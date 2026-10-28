@@ -109,7 +109,7 @@ def test_tables_no_join_reaches_are_cut_on_their_own():
 
 
 def test_the_stride_is_a_prime_so_it_cannot_line_up_with_blocks_of_keys():
-    strides = {rows: data_mod._sample("t", rows, 100, ["k"], ["k"]).rsplit("% ", 1)[1].split(" ")[0] for rows in (1000, 6400, 99_999)}
+    strides = {rows: data_mod._sample("t", rows, 100, ["k"], ["k"], []).rsplit("% ", 1)[1].split(" ")[0] for rows in (1000, 6400, 99_999)}
     assert strides == {1000: "11", 6400: "67", 99_999: "1009"}
 
 
@@ -185,6 +185,38 @@ def test_the_cuts_are_join_closed_and_the_tiny_one_is_smaller(cut_env):
     assert len(rows_of(cuts.tiny, "events")) < len(events)
     assert len(rows_of(cuts.subset, "events")) == cuts.manifest["subset_rows"]["events"]
     assert cuts.manifest["source_rows"] == {"events": 400, "orders": 100} and cuts.scale(["events"]) > 1
+
+
+def test_the_cut_keeps_the_rows_the_query_answers_from_at_its_binding(cut_env):
+    cfg, workload, _ = cut_env
+    reference = Path(workload["reference_sql_path"])
+    reference.write_text("SELECT e.amount FROM events e JOIN orders o ON e.order_id = o.id WHERE o.id IN (98, 99) ORDER BY e.amount DESC")
+    even = ensure_cut_datasets(cfg, {**workload, "reference_sql_path": ""}, 1)  # no bound query: the even sample alone
+    assert not {"98", "99"} & {e[0] for e in rows_of(even.subset, "events")}
+    cuts = ensure_cut_datasets(cfg, workload, 1)
+    assert {"98", "99"} <= {e[0] for e in rows_of(cuts.subset, "events")}
+    assert {"98", "99"} <= {o[0] for o in rows_of(cuts.subset, "orders")}  # the parents follow
+    assert sum(e[0] == "98" for e in rows_of(cuts.subset, "events")) == 4  # all children of a kept key
+    assert len(rows_of(cuts.subset, "events")) < 400
+
+
+def test_a_top_k_binding_keeps_its_top_rows_first_within_the_bound(cut_env):
+    cfg, workload, _ = cut_env
+    runner = data_mod.HostSql(data_mod.DataToolContext(cfg, workload, 1, cfg.repo_root))
+    keys = data_mod.AnswerKeys(runner, "SELECT order_id FROM events GROUP BY order_id ORDER BY order_id DESC LIMIT 50",
+                               {"events": {"order_id": "INTEGER"}}, {"events": 400})
+    assert keys("events", "order_id", ["order_id"], 40) == ["100", "99"]  # 40 rows / 4 = 10 rows = 2 of the 4-row keys
+
+
+def test_an_order_by_an_aggregate_alias_is_dropped_and_one_by_a_column_alias_is_kept(cut_env):
+    cfg, workload, _ = cut_env
+    runner = data_mod.HostSql(data_mod.DataToolContext(cfg, workload, 1, cfg.repo_root))
+    schema, rows = {"events": {"order_id": "INTEGER", "happened": "INTEGER"}}, {"events": 400}
+    by_total = data_mod.AnswerKeys(runner, "SELECT order_id, SUM(happened) AS total FROM events GROUP BY order_id ORDER BY total DESC", schema, rows)
+    by_time = data_mod.AnswerKeys(runner, "SELECT order_id, happened AS at FROM events ORDER BY at DESC, order_id", schema, rows)
+    assert len(by_total("events", "order_id", ["order_id"], 40)) == 2  # still runs: unordered
+    assert "ORDER BY" not in by_total._key_select(by_total.scopes[0].expression, "events", "order_id", 5)
+    assert "ORDER BY events.happened DESC" in by_time._key_select(by_time.scopes[0].expression, "events", "order_id", 5).replace('"', "")
 
 
 def test_the_children_of_a_kept_key_are_all_kept(cut_env):
