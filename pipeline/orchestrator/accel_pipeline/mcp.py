@@ -890,8 +890,14 @@ def _compact_gate_payload(gate_name: str, data: dict) -> dict:
     return compact
 
 
+LOADING_NOTE = ("the gate's engine instance is loading its dataset: the first load of an instance (the full dataset for "
+                "a full-tier gate) takes minutes and is kept for its later runs; waiting here is not a defect")
+
+
 def _compact_background_state(state: dict) -> dict:
     compact = {k: state[k] for k in ("gate", "status", "reason", "note", "elapsed_sec", "seconds", "phase", "progress", "stale") if k in state}
+    if compact.get("status") == "running" and str(compact.get("phase", "")).startswith("host load"):
+        compact.setdefault("note", LOADING_NOTE)
     if state.get("data"):
         compact.update({k: v for k, v in _compact_gate_payload(state["gate"], state["data"]).items() if k != "gate"})
     return compact

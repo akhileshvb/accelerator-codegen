@@ -397,3 +397,12 @@ def test_the_reanalysis_tool_names_every_bottleneck_type_it_accepts():
     text = (Path(__file__).parents[1] / "accel_pipeline" / "mcp.py").read_text()
     named = re.search(r"bottleneck_type: exactly one of ([^(]+)\(", text).group(1)
     assert {t.strip() for t in named.replace("\n", " ").split(",")} == set(BOTTLENECK_TYPES)
+
+
+
+def test_a_gate_loading_its_dataset_says_the_wait_is_expected():
+    from accel_pipeline.mcp import LOADING_NOTE, _compact_background_state
+
+    state = {"gate": "aux_correctness", "status": "running", "phase": "host load workloads/b/schema.sql", "elapsed_sec": 228}
+    assert _compact_background_state(state)["note"] == LOADING_NOTE
+    assert "note" not in _compact_background_state({**state, "phase": "run diff_bin"})
