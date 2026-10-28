@@ -673,9 +673,9 @@ def run_test_suite(
                           workload=workload)
     print(f"[pipeline] {STAGE} froze {directory} ({record['hash'][:12]})", file=sys.stderr, flush=True)
     if not change_request:  # the query's module is still the declining one: the harnesses must pass on it
-        from accel_pipeline.engine_backend import accept_harness
+        from accel_pipeline.engine_backend import check_conformance
 
-        accept_harness(pipeline_config, model_config, workload_name, workload, query, model_overrides)
+        check_conformance(pipeline_config, model_config, workload_name, workload, query, model_overrides)
     return result
 
 
@@ -1097,10 +1097,8 @@ def _cpp_string_list(items: list[str]) -> str:
 def materialize_registration(pipeline_config: PipelineConfig, workload: dict[str, Any], query: int) -> dict[str, Any]:
     """The query's registration before any test is written: the engine's scaffold (`backends/<engine>/api/scaffold/
     register.cpp.tpl`) filled with the query's SQL and facts, so the query is registered with a module that declines
-    every call and the fallback SQL answers. Written only when missing: the implementation replaces it in place."""
-    import json
-
-
+    every call and the fallback SQL answers. Written only when missing: the implementation replaces it in place.
+    It needs nothing the analysis decides, so the engine's harness bootstrap registers its representative query too."""
     repo = pipeline_config.repo_root
     if workload.get("workload_kind") != "aux_state":  # the declining module is an aux module; a stateless query has none
         return {"created": [], "skipped": "not an aux-state workload"}
@@ -1113,9 +1111,8 @@ def materialize_registration(pipeline_config: PipelineConfig, workload: dict[str
     if (repo / destination).is_file():
         return {"created": [], "skipped_existing": 1}
     benchmark = benchmark_of(workload)
-    analysis = json.loads(analysis_artifact_path(repo, query, workload=workload).read_text(encoding="utf-8"))
     facts = with_facts(repo, workload, query)
-    accelerator_id = str(analysis["accelerator_id"])
+    accelerator_id = str(workload["accelerator_id"])
     values = {
         "benchmark_name": benchmark,
         "engine_name": engine,

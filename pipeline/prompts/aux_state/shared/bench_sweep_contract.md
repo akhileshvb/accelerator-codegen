@@ -33,13 +33,14 @@ The `aux_bench_sweep` gate calls the bench for each suite (the workload's `aux_b
 | `ACCEL_BENCH_REF_SAMPLES` | Legacy; ignored when benchmarks use warmup + measured loop |
 | `ACCEL_BENCH_BASE_WRITE_SAMPLES` | Base-path write calibration samples |
 | `ACCEL_Q{N}_MAINTENANCE_MODE` | Set `hybrid` during measured workload |
-| `ACCEL_PROFILE_CONTROL` | Comma-separated `perf --control` fifos set by `run_profile`; the bench opens the window around the measured read loop with `driver::ProfileWindow` (`eval/bench/driver/profile_window.hpp`) |
+| `ACCEL_PROFILE_CONTROL` | Comma-separated `perf --control` fifos set by `run_profile` (clause `bench-profile-window`) |
 
 Query-specific bench params (the template's own parameters) follow the Q{N} manifest / test helpers.
 
 ## Required stdout (CSV)
 
-Print **one header row** and **one data row** to stdout, header first column `suite`. The columns, by name:
+Print **one header row** (first column `suite`) and **one data row per entry of `ACCEL_AUX_WRITE_FREQUENCIES`** (see
+the sweep protocol for how the points reach the bench). The columns, by name:
 
 `suite`, `write_frequency_pct`, `workload_speedup`, `cold_start_workload_speedup`, `query_only_speedup`,
 `blended_query_speedup`, `cold_start_accel_workload_us`, `setup_full_build_ms`,
@@ -49,20 +50,36 @@ Print **one header row** and **one data row** to stdout, header first column `su
 `query_only_speedup` is the read axis: the engine's own SQL for the same binding over the accelerator hit
 (`engine_ref_query_median_us / accel_hit_median_us`). Both are wall-clock medians of fully consumed results, taken on
 connections with the same settings and the same thread budget, in interleaved pairs so load affects both alike. There is
-no stateless kernel to compare against: never time or register one.
+no stateless kernel to compare against: never time or register one. Recommended: `fallback_median_us` (median read
+latency on the fallback). Optional `speedup_gate ...` and `#` lines may follow; the sweep parser ignores lines that are
+not the CSV.
 
-The four measurement columns are **required**: `accel_hit_rate`, `num_queries`, `accel_fallback_reads` and
-`state_builds` are how the orchestrator tells a bench that timed your accelerator from one that timed the fallback
-("Trusting a benchmark number" in the optimization prompt). Take them from the runtime's own statistics of the measured loop, never from an assumption:
+The measurement columns come from the runtime's own statistics of the whole run, never from an assumption; they are how
+the orchestrator tells a bench that timed your accelerator from one that timed the fallback ("Trusting a benchmark
+number" in the optimization prompt):
 
 - `accel_hit_rate` = reads served from the state / all measured reads (a real ratio in [0, 1], not a constant);
 - `num_queries` = measured reads;
 - `accel_fallback_reads` = measured reads that ran the fallback SQL instead of the state;
-- `state_builds` = states built during the whole run, warmup included (the first read builds one, so a run that read from a state reports at least 1).
+- `state_builds` = states built during the whole run, warmup included (the first read builds one).
 
-The orchestrator skips the check for a column that is absent, so omitting one silently disables it: always print all four. `engine_ref_query_median_us` and `accel_hit_median_us` are the two terms of `query_only_speedup` (quick_check reports them); recommended: `fallback_median_us` (median read latency on the fallback).
+## Conformance clauses
 
-Optional `speedup_gate ...` and `#` lines may follow; the sweep parser ignores lines that are not the CSV.
+The harness conformance check (`harness_conformance`, the gate host_bootstrap passes before it finishes) runs the bench
+on a registered query with `ACCEL_AUX_WRITE_FREQUENCIES=0,0` (read-only points, so no write is needed), once with every
+read forced to the fallback SQL (`ACCEL_AUX_FORCE_FALLBACK=1`, which the substrate honours) and once with reads hitting.
+A failure names its clause:
+
+- **`bench-run`**: the bench exits 0 on a read-only run, beside the other harnesses on the same instance.
+- **`bench-rows`**: one header and exactly one row per entry of `ACCEL_AUX_WRITE_FREQUENCIES`.
+- **`bench-columns`**: every one of `suite`, `write_frequency_pct`, `workload_speedup`, `query_only_speedup`,
+  `accel_hit_rate`, `num_queries`, `accel_fallback_reads`, `state_builds`, `engine_ref_query_median_us`,
+  `accel_hit_median_us` is in the row.
+- **`bench-state-builds`**: a run whose reads hit a state reports `state_builds >= 1`.
+- **`bench-hit-rate`**: that run's `accel_hit_rate` exceeds the forced run's by at least 0.4; a bench that reports the
+  same rate both ways assumes it. (With only the declining module registered nothing hits and the two are not compared.)
+- **`bench-profile-window`**: the bench wraps its measured read loop in `driver::ProfileWindow`
+  (`eval/bench/driver/profile_window.hpp`; `run_profile` sets `ACCEL_PROFILE_CONTROL` and samples only inside it).
 
 ## Measured workload
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Verify the engine's workload harnesses (made by host_bootstrap under backends/<engine>/tests/harness
-# and bench): build every target through the engine host, then smoke each of them. The differential
-# runs one registered query when the engine has an accelerator, else every harness answers --help.
+# and bench): build every target through the engine host, then smoke each of them with --help. What they do on a
+# query is the conformance check's (run_harness_conformance.sh).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -71,79 +71,7 @@ smoke() { # target args...
   fi
 }
 
-if [[ -n "${REGISTERED_QUERY}" ]]; then
-  smoke "${DIFF_BINARY}" "${REGISTERED_QUERY}"
-else
-  smoke "${DIFF_BINARY}" --help
-fi
-for target in "${TARGETS[@]:1}"; do
+for target in "${TARGETS[@]}"; do
   smoke "${target}" --help
 done
-
-# The bench must measure the accelerator: run read-only once as is (reads hit the state) and once with
-# every read forced to the fallback SQL (the substrate's ACCEL_AUX_FORCE_FALLBACK). The hit rate it prints
-# (`accel_hit_rate`, bench_sweep_contract.md) must tell the two apart; a bench that reports the same rate
-# both times assumes it (a constant) instead of counting.
-BENCH_HIT_RATE="" BENCH_MISSING="" BENCH_BUILDS=""
-bench_read_only() { # [VAR=value ...]: a short read-only bench run; BENCH_HIT_RATE = the accel_hit_rate it printed,
-  # BENCH_MISSING = the required columns (bench_sweep_contract.md) its row lacks. Its write points run in aux_exit's
-  # sweep, on the full dataset: a subset may hold no write that changes the answer, which fails a bench by contract.
-  local dir rc
-  dir="$(mktemp -d)"
-  (
-    export ACCEL_AUX_WRITE_FREQUENCIES=0 ACCEL_BENCH_WARMUP=2 ACCEL_BENCH_QUERIES=5 ACCEL_BENCH_REF_SAMPLES=1 "$@"
-    engine_run "${HARNESS_BENCH_TARGET}" --query "${REGISTERED_QUERY}"
-    echo "${RC}" >"${dir}/rc"
-    printf '%s' "${LOG}" >"${dir}/log"
-  )
-  rc="$(cat "${dir}/rc" 2>/dev/null || echo 1)"
-  SMOKE_LOG+="[bench $*] rc=${rc}"$'\n'"$(cat "${dir}/log" 2>/dev/null)"$'\n'
-  BENCH_HIT_RATE="$(python3 -c "
-import csv, io, sys
-lines = sys.stdin.read().splitlines()
-start = next((i for i, l in enumerate(lines) if l.startswith('suite,')), None)
-rows = list(csv.DictReader(io.StringIO(chr(10).join(lines[start:start + 2])))) if start is not None else []
-required = ('suite write_frequency_pct workload_speedup query_only_speedup accel_hit_rate num_queries '
-            'accel_fallback_reads state_builds engine_ref_query_median_us accel_hit_median_us').split()
-row = rows[0] if rows else {}
-print('%s|%s|%s' % (row.get('accel_hit_rate', ''), row.get('state_builds', ''), ' '.join(c for c in required if c not in row)))" <"${dir}/log")"
-  BENCH_MISSING="${BENCH_HIT_RATE##*|}" BENCH_BUILDS="$(cut -d'|' -f2 <<<"${BENCH_HIT_RATE}")" BENCH_HIT_RATE="${BENCH_HIT_RATE%%|*}"
-  rm -rf "${dir}"
-  [[ "${rc}" -eq 0 ]]
-}
-if [[ -n "${REGISTERED_QUERY}" ]]; then
-  # run_profile's window (ACCEL_PROFILE_CONTROL, bench_sweep_contract.md): a reader on a fifo records what the bench sends
-  PROFILE_FIFO="${GATE_OUT}/host_bootstrap.profile.ctl"
-  rm -f "${PROFILE_FIFO}" "${PROFILE_FIFO}.seen"
-  mkfifo "${PROFILE_FIFO}"
-  cat "${PROFILE_FIFO}" >"${PROFILE_FIFO}.seen" &
-  PROFILE_READER=$!
-  bench_read_only "ACCEL_PROFILE_CONTROL=${PROFILE_FIFO}" ||
-    finish fail "the bench failed on a read-only run: ${HARNESS_BENCH_TARGET} --query ${REGISTERED_QUERY}" "${ENGINE_LOG}${SMOKE_LOG}"
-  exec 3<>"${PROFILE_FIFO}"  # a writer that never blocks: the reader ends whether or not the bench opened the fifo
-  exec 3>&-
-  wait "${PROFILE_READER}" || true
-  grep -q enable "${PROFILE_FIFO}.seen" || finish fail "the bench never opened run_profile's window: it must wrap its \
-measured read loop in driver::ProfileWindow (ACCEL_PROFILE_CONTROL, bench_sweep_contract.md)" "${ENGINE_LOG}${SMOKE_LOG}"
-  rm -f "${PROFILE_FIFO}" "${PROFILE_FIFO}.seen"
-  HIT_RATE="${BENCH_HIT_RATE}"
-  [[ -z "${BENCH_MISSING}" ]] ||
-    finish fail "the bench row lacks the required columns ${BENCH_MISSING} (bench_sweep_contract.md)" "${ENGINE_LOG}${SMOKE_LOG}"
-  python3 -c "import sys; sys.exit(0 if float(sys.argv[1] or 0) >= 1 else 1)" "${BENCH_BUILDS}" 2>/dev/null ||
-    finish fail "the bench reports state_builds=${BENCH_BUILDS} on a run whose reads hit a state: count the whole run, \
-warmup included (bench_sweep_contract.md)" "${ENGINE_LOG}${SMOKE_LOG}"
-  bench_read_only ACCEL_AUX_FORCE_FALLBACK=1 || finish fail "the bench failed with every read forced to the fallback (ACCEL_AUX_FORCE_FALLBACK=1)" "${ENGINE_LOG}${SMOKE_LOG}"
-  FORCED_RATE="${BENCH_HIT_RATE}"
-  verdict="$(python3 -c "
-import sys
-hit, forced = sys.argv[1:3]
-try:
-    hit, forced = float(hit), float(forced)
-except ValueError:
-    print('the bench printed no accel_hit_rate (bench_sweep_contract.md): hit=%r forced=%r' % (hit, forced)); sys.exit(0)
-if hit - forced < 0.4:
-    print('the bench reports hit rate %.2f with reads hitting and %.2f with every read forced to the fallback: it does not count hits' % (hit, forced))
-" "${HIT_RATE}" "${FORCED_RATE}")"
-  [[ -z "${verdict}" ]] || finish fail "${verdict}" "${ENGINE_LOG}${SMOKE_LOG}"
-fi
 finish pass "built and smoked ${TARGETS[*]}" "${ENGINE_LOG}${SMOKE_LOG}"
