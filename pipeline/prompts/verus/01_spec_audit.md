@@ -17,6 +17,14 @@ below. Check:
   (byte order);
 * parameters ($n) and their types.
 
+A floating-point aggregate (SUM/AVG over a DOUBLE) has no single SQL result:
+the engine's value depends on the order it adds the rows in (threads, plan).
+The spec therefore accepts any value within the IEEE-754 rounding bound of the
+exact value (`float_within`), and ORDER BY and LIMIT over such a column follow
+the values chosen. That is the intended meaning, not an issue. Check that the
+bound's arguments are right: the exact sum, the sum of absolute values, and the
+number of roundings.
+
 You may run read-only SQL on the test database (`verus_sql`) to settle a
 question with data.
 
