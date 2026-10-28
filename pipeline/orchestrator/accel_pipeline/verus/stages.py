@@ -132,6 +132,7 @@ class Run:
     model_config: Any
     model_overrides: dict[str, str]
     dry_run: bool
+    tests_settled: threading.Event = field(default_factory=threading.Event)  # the tests stage finished or failed
 
     def agent(self, stage: str, prompt: str, task: str, extra: dict[str, str] | None = None,
               timeout_sec: int | None = None, resume: str = "", tolerate_timeout: bool = False):
@@ -578,8 +579,11 @@ def freeze(r: Run) -> None:
         run.mark_done("obligations_audit")
 
     def tests_job(run: Run) -> None:
-        _tests(run)
-        run.mark_done("tests")
+        try:
+            _tests(run)
+            run.mark_done("tests")
+        finally:
+            run.tests_settled.set()
 
     def glue_job(run: Run) -> None:
         _glue(run)
@@ -659,6 +663,8 @@ def _write_glue(r: Run, task: str) -> tuple[bool, str]:
         if not b["ok"]:
             feedback = "The glue does not build:\n" + _brief(b, 6000)
             continue
+        if "tests" not in r.state.done:  # the contract check replays the frozen tests' transactions
+            r.tests_settled.wait()
         c = r.gate("glue_contract", actions.glue_contract(ctx))
         if not c["ok"]:
             feedback = "The glue contract check failed (what the glue delivered vs the declared SQL):\n" + _brief(c, 6000)
