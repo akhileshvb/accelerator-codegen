@@ -348,3 +348,28 @@ def test_a_quick_bench_that_measured_the_fallback_is_flagged_and_voids_the_trial
     assert any("fallback" in line for line in payload["measurement_invalid"])
     trial = json.loads((art / "ab_active_trial.json").read_text())
     assert "last_metrics" not in trial and "last_score" not in trial
+
+
+def test_stage_ledger_continues_budget_iteration_and_attempts_across_a_resume(tmp_path, monkeypatch):
+    clock = iter([100.0, 130.0, 150.0, 9000.0])
+    monkeypatch.setattr(loop.time, "monotonic", lambda: next(clock))
+    ledger = loop.StageLedger(tmp_path, 1000.0)
+    assert not ledger.resumed and ledger.iteration == 1 and ledger.attempts == 0
+    ledger.save(iteration=2)  # 30 s active
+    ledger.save(attempts=3)  # 20 s more
+    resumed = loop.StageLedger(tmp_path, 1000.0)
+    assert resumed.resumed
+    assert (resumed.iteration, resumed.attempts, resumed.spent_sec) == (2, 3, 50.0)
+    assert resumed.deadline == pytest.approx(loop.time.time() + 950.0, abs=5)
+
+
+def test_stopped_time_is_not_counted_and_completion_removes_the_ledger(tmp_path, monkeypatch):
+    clock = iter([0.0, 10.0, 5000.0, 5004.0, 6000.0])  # the 4990 s between the runs is not active time
+    monkeypatch.setattr(loop.time, "monotonic", lambda: next(clock))
+    loop.StageLedger(tmp_path, 1000.0).save(iteration=1, attempts=1)
+    second = loop.StageLedger(tmp_path, 1000.0)
+    second.save()
+    assert second.spent_sec == 14.0
+    second.clear()
+    assert not (tmp_path / "optimization_stage.json").exists()
+    assert not loop.StageLedger(tmp_path, 1000.0).resumed

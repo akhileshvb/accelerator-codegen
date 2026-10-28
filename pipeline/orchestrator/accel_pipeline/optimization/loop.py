@@ -1042,17 +1042,44 @@ def _short(text: str | None, limit: int = 240) -> str:
     return cleaned if len(cleaned) <= limit else cleaned[: limit - 3] + "..."
 
 
+class StageLedger:
+    """The stage's bounds across resumes: active seconds spent, the iteration in progress, its attempts used.
+    Removed when the stage completes; a crash leaves it so a resumed run continues instead of starting over."""
+
+    def __init__(self, art: Path, budget_sec: float):
+        self.path = art / "optimization_stage.json"
+        saved = _read_json_or_empty(self.path)
+        self.resumed = bool(saved)
+        self.budget_sec, self.spent_sec = budget_sec, float(saved.get("spent_sec", 0))
+        self.iteration, self.attempts = int(saved.get("iteration", 1)), int(saved.get("attempts", 0))
+        self._mark = time.monotonic()
+        self.deadline = time.time() + budget_sec - self.spent_sec if budget_sec > 0 else None
+
+    def save(self, *, iteration: int | None = None, attempts: int | None = None) -> None:
+        if iteration is not None:
+            self.iteration, self.attempts = iteration, 0 if attempts is None else attempts
+        elif attempts is not None:
+            self.attempts = attempts
+        now = time.monotonic()
+        self.spent_sec, self._mark = self.spent_sec + now - self._mark, now
+        self.path.write_text(json.dumps({"spent_sec": round(self.spent_sec, 1), "iteration": self.iteration,
+                                         "attempts": self.attempts}), encoding="utf-8")
+
+    def clear(self) -> None:
+        self.path.unlink(missing_ok=True)
+
+
 class _Iteration:
     """One optimization iteration: a measured baseline, then attempts until one stops it."""
 
-    def __init__(self, pipeline_config, model_config, workload_name, query, optimization_iter, model_overrides, worker, deadline):
+    def __init__(self, pipeline_config, model_config, workload_name, query, optimization_iter, model_overrides, worker, ledger):
         self.workload_name, self.query, self.iteration = workload_name, query, optimization_iter
-        self.model_config, self.model_overrides, self.worker, self.deadline = model_config, model_overrides, worker, deadline
+        self.model_config, self.model_overrides, self.worker, self.ledger = model_config, model_overrides, worker, ledger
         self.workload = load_run_workload(pipeline_config, workload_name)
         self.cfg = apply_workload_overrides(pipeline_config, self.workload)
         self.art = _art(self.cfg, self.workload, query)
         self.eval_config = eval_config_from_pipeline(self.cfg)
-        self.max_attempts = int(getattr(self.cfg, "optimization_max_attempts_per_iteration", 4) or 4)
+        self.max_attempts = self.cfg.optimization_max_attempts_per_iteration
         stop = int(getattr(self.cfg, "optimization_consecutive_fail_stop", 0) or 0)
         self.fail_stop = stop if stop > 0 else self.max_attempts + 1
         self.fails = self.depth = 0
@@ -1345,8 +1372,9 @@ class _Iteration:
                                         score=self.baseline.median_score, metrics=self.baseline.median_metrics)
         if self.worker is None:
             self.build_evidence()
-        for attempt in range(1, self.max_attempts + 1):
-            if self.fails >= self.fail_stop or (self.deadline is not None and time.time() >= self.deadline):
+        # attempts already used in this iteration (before a resume) count against the limit; its baseline is re-measured above
+        for attempt in range(self.ledger.attempts + 1, self.max_attempts + 1):
+            if self.fails >= self.fail_stop or (self.ledger.deadline is not None and time.time() >= self.ledger.deadline):
                 break
             # a request the worker made against what it does not own (the harness, the suite) goes to its owner
             # first, as before every repair turn; the baseline is remeasured on what the owner revised
@@ -1363,6 +1391,7 @@ class _Iteration:
             memory.refresh_optimization_runtime(cfg, workload, query, optimization_iter=self.iteration, episode=attempt)
             cand = self.last_result = self.candidate(attempt, json.dumps(experimental.get("diagnostic_summary") or {}, indent=2) if experimental else "")
             (self.art / "attempt_state.json").write_text(json.dumps({"attempt": attempt, "status": cand.status}, indent=2), encoding="utf-8")
+            self.ledger.save(attempts=attempt)
             if cand.status == "saturated":
                 honored, detail = self.judge_saturation(attempt, cand.saturation)
                 if honored:
@@ -1391,10 +1420,10 @@ class _Iteration:
 def run_iteration(
     *, pipeline_config: PipelineConfig, model_config: ModelConfig, workload_name: str, query: int, optimization_iter: int,
     model_overrides: dict[str, str] | None = None, dry_run: bool = False, worker: OptimizationWorker | None = None,
-    deadline: float | None = None,
+    ledger: StageLedger,
 ) -> Any:
-    """One optimization iteration; no new attempt starts after `deadline` (time.time())."""
-    it = _Iteration(pipeline_config, model_config, workload_name, query, optimization_iter, model_overrides, worker, deadline)
+    """One optimization iteration; no new attempt starts after the ledger's deadline."""
+    it = _Iteration(pipeline_config, model_config, workload_name, query, optimization_iter, model_overrides, worker, ledger)
     if dry_run:
         return {"dry_run": True, "stage": "optimization", "max_attempts": it.max_attempts}
     model_id = make_model_id("optimization", it.cfg, model_config, model_overrides)
@@ -1441,8 +1470,12 @@ def run(
     workload = load_run_workload(pipeline_config, workload_name)
     opt_gates = workload_post_optimization_gates(workload)
     budget = float(getattr(pipeline_config, "optimization_stage_budget_sec", 0) or 0)
-    deadline = time.time() + budget if budget > 0 else None
     art = _art(pipeline_config, workload, query)
+    ledger = StageLedger(art, budget)
+    if ledger.resumed and not dry_run:
+        max_attempts = pipeline_config.optimization_max_attempts_per_iteration
+        _log(f"optimization resumed: iteration {ledger.iteration}, attempt {ledger.attempts + 1} of {max_attempts}, "
+             f"{ledger.spent_sec:.0f} s of {budget:.0f} s spent")
     note = lambda text: append_experiment_log(pipeline_config.repo_root, query, text, workload=workload)  # noqa: E731
     worker = None
     if not dry_run and bool(getattr(pipeline_config, "optimization_persistent_worker", True)):
@@ -1450,16 +1483,17 @@ def run(
                                            query=query, model_overrides=model_overrides)
     last_result, no_improve = None, 0
     try:
-        for iteration in range(1, pipeline_config.optimization_max_iterations + 1):
-            if deadline is not None and time.time() >= deadline and not dry_run:
+        for iteration in range(ledger.iteration, pipeline_config.optimization_max_iterations + 1):
+            if ledger.deadline is not None and time.time() >= ledger.deadline and not dry_run:
                 note(f"- iter {iteration}: optimization stage budget ({budget:.0f}s) spent; going to audit")
                 break
             if not dry_run:
+                ledger.save(iteration=iteration, attempts=ledger.attempts if iteration == ledger.iteration else 0)
                 _restore_best_kernel_at_start(pipeline_config, workload, query, art, iteration)
 
             def iterate():
                 return run_iteration(pipeline_config=pipeline_config, model_config=model_config, workload_name=workload_name, query=query,
-                                     optimization_iter=iteration, model_overrides=model_overrides, dry_run=dry_run, worker=worker, deadline=deadline)
+                                     optimization_iter=iteration, model_overrides=model_overrides, dry_run=dry_run, worker=worker, ledger=ledger)
 
             if dry_run:
                 last_result = iterate()
@@ -1492,9 +1526,14 @@ def run(
             if no_improve >= pipeline_config.optimization_no_improvement_stop:
                 note(f"- iter {iteration}: stopping after {no_improve} iterations without improvement")
                 break
+    except BaseException:
+        if not dry_run:
+            ledger.save()
+        raise
     finally:
         if worker is not None:
             worker.close()
+    ledger.clear()
     return last_result
 
 

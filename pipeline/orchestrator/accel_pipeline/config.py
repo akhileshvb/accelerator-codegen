@@ -221,10 +221,10 @@ class PipelineConfig:
     # Benchmarks whose bench/calibrate harness is one query-parameterised target per engine.
     shared_bench_harness: tuple[str, ...] = ()
     # The optimization stage: `optimization:` of default.yaml, refined by a workload's block.
-    optimization_max_iterations: int = 3
+    optimization_max_iterations: int = 1
     optimization_no_improvement_stop: int = 2
     optimization_stage_budget_sec: float = 7200.0  # no new iteration or attempt starts after it; 0: none
-    optimization_max_attempts_per_iteration: int = 4
+    optimization_max_attempts_per_iteration: int = 5
     optimization_improvement_threshold_pct: float = 3.0
     optimization_reject_threshold_pct: float = 2.0
     optimization_consecutive_fail_stop: int = 0
