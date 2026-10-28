@@ -71,7 +71,7 @@ const SharedQueryRegistrar kEntry{SharedQueryCatalogEntry{1,
      "AVG(line) AS avg_line_num "
      "FROM pre WHERE stmt = $1 GROUP BY stmt, rfile ORDER BY cnt DESC",
      "SELECT * FROM accel_sec_edgar_q1_aux($1)",
-     nullptr,
+     "SELECT * FROM accel_sec_edgar_q1()",
      "SELECT * FROM accel_sec_edgar_q1_aux($1)",
      "SELECT adsh, line, stmt, rfile, rowid FROM pre WHERE stmt = $1 "
      "AND line IS NOT NULL LIMIT 1",

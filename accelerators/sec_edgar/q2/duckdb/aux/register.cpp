@@ -57,7 +57,7 @@ const SharedQueryRegistrar kEntry{SharedQueryCatalogEntry{2,
      "ORDER BY n.value DESC, s.name, n.tag "
      "LIMIT 100",
      "SELECT * FROM accel_sec_edgar_q2_aux($1, $2)",
-     nullptr,
+     "SELECT * FROM accel_sec_edgar_q2()",
      "SELECT * FROM accel_sec_edgar_q2_aux($1, $2)",
      "SELECT n.rowid, n.adsh, n.tag, n.version, n.ddate, n.qtrs, n.uom, n.coreg, "
      "n.value FROM num n "
