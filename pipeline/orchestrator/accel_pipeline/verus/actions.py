@@ -60,7 +60,7 @@ def _run(cmd: list[str], *, cwd: Path | None = None, env: dict[str, str] | None 
         return subprocess.run(cmd, cwd=str(cwd) if cwd else None, env=full_env, capture_output=True, text=True,
                               timeout=timeout, check=False)
     except subprocess.TimeoutExpired as exc:
-        out = exc.stdout if isinstance(exc.stdout, str) else ""
+        out = exc.stdout.decode(errors="replace") if isinstance(exc.stdout, bytes) else exc.stdout or ""
         return subprocess.CompletedProcess(cmd, 124, out, f"timed out after {timeout}s")
 
 
@@ -596,6 +596,8 @@ def _runner(ctx: VerusContext, args: list[str], *, store: str = "verus_global", 
         data = {}
     if not data:
         data = {"error": tail_marked(proc.stderr or proc.stdout or f"exit {proc.returncode}", 4000)}
+        if progress := [l for l in proc.stdout.splitlines() if l.startswith("bench: ")]:
+            data["progress"] = progress[-1].removeprefix("bench: ")
     data["exit"] = proc.returncode
     data.update(draw_summary(draw))
     return data
@@ -850,9 +852,10 @@ def cost_check(ctx: VerusContext) -> dict[str, Any]:
         return {"ok": True, "skipped": True}
     mix = float(cfg.get("write_mix", 0.05))
     min_read, min_mix = float(cfg.get("min_read_speedup", 2.0)), float(cfg.get("min_mix_speedup", 1.0))
-    def measure() -> dict[str, Any]:
-        return bench(ctx, [mix], tag="cost_check", reps=1, ops=int(cfg.get("ops", 20)),
-                     timeout=float(cfg.get("timeout_sec", 420)))
+    build_s, ops_s = float(cfg.get("build_timeout_sec", 1200)), float(cfg.get("timeout_sec", 420))
+
+    def measure() -> dict[str, Any]:  # the state build and the timed operations each get their own budget
+        return bench(ctx, [mix], tag="cost_check", reps=1, ops=int(cfg.get("ops", 20)), timeout=build_s + ops_s)
 
     def score(b: dict[str, Any]) -> tuple[float, float]:
         return float(b.get("read_speedup") or 0.0), float((b.get("mixes") or [{}])[0].get("speedup") or 0.0)
@@ -866,10 +869,16 @@ def cost_check(ctx: VerusContext) -> dict[str, Any]:
             if r2["ok"] and min(score(r2)[0] / min_read, score(r2)[1] / min_mix) > min(rd / min_read, mx / min_mix):
                 r = r2
     if not r["ok"]:
+        if r.get("exit") == 124 and not r.get("progress"):  # timed out before the state was built
+            return {"ok": False, "error": (
+                f"the cost check did not finish ({tail_marked(str(r.get('error', '')), 600)}): building the state on the "
+                f"iteration dataset took longer than {build_s:.0f} s, so the build does more than "
+                "a pass over its inputs (a per-row search or copy of what is built so far)")}
+        got = f"; {r['progress']}" if r.get("progress") else ""
         return {"ok": False, "error": (
-            f"the cost check did not finish ({tail_marked(str(r.get('error', '')), 600)}): {cfg.get('ops', 20)} reads/"
-            f"writes on the iteration dataset took longer than {cfg.get('timeout_sec', 420)} s, so some read or write does work in "
-            "proportion to the whole state or a whole table")}
+            f"the cost check did not finish ({tail_marked(str(r.get('error', '')), 600)}{got}): {cfg.get('ops', 20)} "
+            f"reads/writes on the iteration dataset took longer than {ops_s:.0f} s, so some read or "
+            "write does work in proportion to the whole state or a whole table")}
     read = float(r.get("read_speedup") or 0.0)
     mixed = float((r.get("mixes") or [{}])[0].get("speedup") or 0.0)
     # the cost a write adds over the plain write (a mix can hide a few very expensive writes)

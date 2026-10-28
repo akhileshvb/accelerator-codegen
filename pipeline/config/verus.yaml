@@ -87,6 +87,7 @@ cost_check:
   write_mix: 0.05
   min_read_speedup: 2.0         # reads vs the plain query
   min_mix_speedup: 1.0          # the write mix vs the plain query: never slower than without the accelerator
-  timeout_sec: 240              # not finishing in time fails the check (work grows with the whole state)
+  build_timeout_sec: 1200       # the state build on the iteration dataset (measured, not part of the operations' budget)
+  timeout_sec: 240              # the timed operations not finishing in time fails the check (work grows with the whole state)
   max_write_overhead_ratio: 10  # the maintenance a write adds, at most this times the plain write ...
   write_overhead_floor_us: 5000 # ... or this much, whichever is larger

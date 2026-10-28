@@ -388,10 +388,15 @@ int Bench(const std::string &path, const std::string &id, const Spec &spec, int 
   const auto build_start = Clock::now();
   rt.Build();
   const double build_ms = std::chrono::duration<double, std::milli>(Clock::now() - build_start).count();
+  // a timed-out run says how far it got (the plain query can take seconds at scale)
+  std::cout << "bench: built build_ms=" << build_ms << std::endl;
   // the parameter tuples the plain query can evaluate on this database (the tests' extreme tuples can
-  // overflow it at scale): those are what is timed
+  // overflow it at scale): those are what is timed, as many as the reads time
+  constexpr std::size_t kTimedTuples = 12;
   std::vector<std::string> usable;
   for (const auto &t : spec.params) {
+    if (usable.size() == kTimedTuples)
+      break;
     try {
       RunQuery(qc, s.glue->query_sql, t);
       usable.push_back(t);
@@ -421,7 +426,7 @@ int Bench(const std::string &path, const std::string &id, const Spec &spec, int 
   std::string per = "[";
   double log_sum = 0;
   int n = 0;
-  std::size_t tuples = phase == "writes" ? 0 : std::min<std::size_t>(usable.size(), 12);
+  std::size_t tuples = phase == "writes" ? 0 : usable.size();
   for (std::size_t i = 0; i < tuples; ++i) {
     const auto &t = usable[i];
     std::vector<double> q, a;
