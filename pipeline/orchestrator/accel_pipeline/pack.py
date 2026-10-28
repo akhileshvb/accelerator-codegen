@@ -36,7 +36,7 @@ import yaml
 
 from accel_pipeline.agent import ensure_codex_config
 from accel_pipeline.config import (
-    ConcurrencyConfig, PipelineConfig, find_repo_root, load_model_config, load_pipeline_config, load_repo_dotenv,
+    ConcurrencyConfig, PipelineConfig, find_repo_root, load_model_config, load_pipeline_config, load_repo_dotenv, load_workload,
     pipeline_root, workload_engines,
 )
 from accel_pipeline.data import instance_tag
@@ -653,7 +653,8 @@ def _seed_generated_sources(primary: Path, dest: Path) -> None:
             shutil.copy(src, dest / rel)
 
 
-def ensure_worker_worktree(primary: Path, worker_id: str, *, reset: bool = True, pack_queries: list[int] | None = None) -> Path:
+def ensure_worker_worktree(primary: Path, worker_id: str, workload: dict[str, Any], *, reset: bool = True,
+                           pack_queries: list[int] | None = None) -> Path:
     """Create (or reset) an isolated git worktree for `worker_id`: from the primary HEAD, the primary's working
     tree overlaid, each pack peer's best_valid snapshot restored over its possibly mid-edit sources."""
     from accel_pipeline.repair import restore_aux_from_snapshot
@@ -669,7 +670,7 @@ def ensure_worker_worktree(primary: Path, worker_id: str, *, reset: bool = True,
         print(f"[pipeline] worker worktree ready: {dest.relative_to(primary)}", file=sys.stderr, flush=True)
     _seed_generated_sources(primary, dest)
     for q in pack_queries if pack_queries is not None else pack_queries_from_env():
-        restore_aux_from_snapshot(dest, int(q))
+        restore_aux_from_snapshot(dest, int(q), workload)
     refresh_prims(primary, dest)  # mirror the shared primitives library exactly (also reverts any direct edit)
     # Workload YAMLs and pack configs are often untracked, so the config/prompt/gate dirs and the artifacts (digests,
     # checkpoints) are the primary's own.
@@ -1120,7 +1121,8 @@ def run_pack_query(
     # Build + Codex home always on primary (shared caches / sidecars).
     build_dir = default_build_dir_for_worker(primary, worker_id)
     codex_home = prepare_codex_home(repo_root=primary, worker_id=worker_id)
-    worker_repo = ensure_worker_worktree(primary, worker_id, reset=True, pack_queries=pack_queries) if isolation_mode in WORKTREE_MODES else primary
+    worker_repo = ensure_worker_worktree(primary, worker_id, load_workload(entry.workload, primary, engine=entry.engine), reset=True,
+                                           pack_queries=pack_queries) if isolation_mode in WORKTREE_MODES else primary
     log_path = pipeline_root(primary) / "artifacts" / "packs" / "logs" / f"{worker_id}.log"
     log_path.parent.mkdir(parents=True, exist_ok=True)
 

@@ -62,7 +62,7 @@ def test_a_structural_attempt_without_its_design_record_fails_before_the_gates(t
     monkeypatch.setattr(loop, "run_smoke_correctness", lambda *a, **kw: loop.SmokeResult(True))
     monkeypatch.setattr(loop, "resolve_workload_paths", lambda *a: {"aux_bench_target": "b", "test_target": "t"})
     cfg = SimpleNamespace(optimization_structural={}, optimization_smoke_runs=1, repo_root=tmp_path, build_dir=tmp_path)
-    it = _iteration(tmp_path, cfg=cfg, workload={"workload_kind": "aux_state"}, worker=object())
+    it = _iteration(tmp_path, cfg=cfg, workload={"workload_kind": "aux_state", "benchmark_name": "tpch"}, worker=object())
     gated = it.gate(1, {"strategy": "structural"})
     assert gated.label == "structural_gates_failed" and "design_revision" in gated.detail and gated.candidate is None
 
@@ -195,12 +195,13 @@ def test_kernel_snapshot_roundtrip(tmp_path: Path):
 
 def test_record_optimization_state(tmp_path: Path):
     repo = tmp_path
-    art = repo / "pipeline" / "artifacts" / "q1"
+    art = repo / "pipeline" / "artifacts" / "tpch" / "q1"
     art.mkdir(parents=True)
     summary = summarize_sweep_rows(parse_sweep_csv_from_text(SAMPLE_CSV))
     state = record_sweep_in_optimization_state(
         repo,
         1,
+        workload={"benchmark_name": "tpch"},
         iteration=1,
         summary=summary,
         change_kind="baseline",
@@ -224,7 +225,7 @@ def test_record_aux_bench_sweep_outcome_writes_experiment_log(tmp_path: Path):
         encoding="utf-8",
     )
     summary = summarize_sweep_rows(parse_sweep_csv_from_text(SAMPLE_CSV))
-    workload = {"artifact_namespace": "tpch", "workload_kind": "aux_state", "engine_name": "duckdb"}
+    workload = {"artifact_namespace": "tpch", "benchmark_name": "tpch", "workload_kind": "aux_state", "engine_name": "duckdb"}
     state = record_aux_bench_sweep_outcome(
         repo,
         18,
@@ -274,7 +275,7 @@ def test_baseline_with_zero_hit_rate_raises(monkeypatch, tmp_path):
     monkeypatch.setattr(loop, "run_multi_sample_benchmark", lambda *a, **k: measured)
     monkeypatch.setattr(loop, "resolve_workload_paths", lambda *a, **k: {"aux_bench_target": "b", "bench_target": "b"})
     config = SimpleNamespace(measurement=MeasurementConfig(), build_dir=tmp_path, repo_root=tmp_path)
-    it = _iteration(tmp_path, cfg=config, workload={"workload_kind": "aux_state"}, eval_config=SimpleNamespace(quick_benchmark_samples=1))
+    it = _iteration(tmp_path, cfg=config, workload={"workload_kind": "aux_state", "benchmark_name": "tpch"}, eval_config=SimpleNamespace(quick_benchmark_samples=1))
     with pytest.raises(StageFailure) as raised:
         it.measure_baseline()
     assert raised.value.failure.kind == "measurement"
@@ -298,7 +299,7 @@ def test_sweep_records_measurement_ok(tmp_path, monkeypatch):
 
     from accel_pipeline.config import find_repo_root
 
-    workload = {"name": "q6", "workload_kind": "aux_state"}
+    workload = {"name": "q6", "workload_kind": "aux_state", "benchmark_name": "tpch"}
     (tmp_path / "pipeline" / "config").mkdir(parents=True)
     shutil.copy(find_repo_root() / "pipeline" / "config" / "default.yaml", tmp_path / "pipeline" / "config")
     for iteration, (hit_rate, ok) in enumerate(((1.0, True), (0.0, False))):

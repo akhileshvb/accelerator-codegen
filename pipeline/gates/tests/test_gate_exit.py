@@ -81,3 +81,13 @@ def test_the_run_limit_follows_the_measured_build_time(tmp_path):
     assert limit("300") == 8 * 300 + 600  # 8 builds and a margin
     assert limit("1.2") == 1800 and limit("0.01") == 1800
     assert limit("105.5", ACCEL_GATE_RUN_TIMEOUT="77") == 77
+
+
+def test_the_exit_speaks_for_the_owner_the_routing_deals_with_first(repo, tmp_path):
+    # a stop owner outranks the query's phase; the query's phase is still listed as failed
+    proc, *_, gj, _ = exit_run(repo, tmp_path, FAKE_RC_run="1", FAKE_BENCH_ONE_ROW="0")
+    exit_result = result(gj, "aux_exit")
+    assert proc.returncode == 1 and len(exit_result["failed_phases"]) > 1
+    from accel_pipeline.layout import OWNER_PRECEDENCE
+    owners = {exit_result["owner"], *exit_result["elsewhere"].values()}
+    assert exit_result["owner"] == min(owners, key=OWNER_PRECEDENCE.index)

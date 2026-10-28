@@ -3,15 +3,18 @@
 from __future__ import annotations
 
 import subprocess
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from accel_pipeline import gates
 from accel_pipeline.config import QuickTierConfig
+from accel_pipeline.data import CutDatasets
 from accel_pipeline.gates import GateResult
 
 WORKLOAD = {"workload_kind": "aux_state", "benchmark_name": "tpch", "engine_name": "eng"}
+CUTS = CutDatasets(Path("/subset"), Path("/tiny"), {"source_rows": {"orders": 1000}, "subset_rows": {"orders": 1000}})
 GIT = ["git", "-c", "user.name=t", "-c", "user.email=t@t"]
 
 
@@ -33,7 +36,7 @@ class Gate:
         self.status = status
         self.data = data or {}
         monkeypatch.setattr(gates, "run_gate", self.run_gate)
-        monkeypatch.setattr(gates, "ensure_cut_datasets", lambda *a: None)
+        monkeypatch.setattr(gates, "ensure_cut_datasets", lambda *a: CUTS)
 
     def run_gate(self, config, name, query, workload, *, env=None, timeout_s=None, **kwargs):
         self.calls.append({"name": name, "query": query, "env": env, "timeout_s": timeout_s})

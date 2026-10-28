@@ -45,7 +45,7 @@ if [[ -z "${TARGET}" ]]; then
   emit_result "${OUT}/aux_cost_model_calibrate.json" aux_cost_model_calibrate fail "no calibrate target in the gate context" "" "owner=pipeline"
 fi
 if ! engine_ready "${TARGET}"; then
-  emit_result "${OUT}/aux_cost_model_calibrate.json" aux_cost_model_calibrate fail "${ENGINE_FAIL}" "${ENGINE_LOG}" "owner=${ENGINE_OWNER}"
+  engine_not_ready "${OUT}/aux_cost_model_calibrate.json" aux_cost_model_calibrate
 fi
 
 export ACCEL_MULTI_CONN_TEST_QUERIES="${ACCEL_MULTI_CONN_TEST_QUERIES:-${QUERY}}"

@@ -30,8 +30,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
+import sqlglot
+
 from accel_pipeline.config import (
     apply_workload_overrides,
+    benchmark_of,
     find_repo_root,
     load_model_config,
     load_pipeline_config,
@@ -44,6 +47,7 @@ from accel_pipeline.config import (
     make_model_id,
     workload_supported_engines,
 )
+from accel_pipeline.layout import workload_query_sql, workload_schema_sql
 from accel_pipeline.repair import (
     EXIT_STOPPED,
     Failure,
@@ -717,10 +721,51 @@ def test_database(probe: Probe) -> list[str]:
     try:
         cuts = ensure_cut_datasets(probe.cfg, probe.workload, probe.query)
     except Exception as exc:  # noqa: BLE001 - any failure to build them is the finding
-        return [f"the test databases cannot be built: {type(exc).__name__}: {exc}"]
-    if cuts is None:
-        return []  # no cuts for this workload: the quick tier runs on the full dataset
+        return [f"{exc}" if isinstance(exc, CutError) else f"the test databases cannot be built: {type(exc).__name__}: {exc}"]
     return [f"test database {d} holds no tables" for d in (cuts.subset, cuts.tiny) if not any(Path(d).glob("*.tbl"))]
+
+
+PLACEHOLDER = re.compile(r"\$(\d+)")
+
+
+def workload(probe: Probe) -> list[str]:
+    """The workload's bundle is complete and consistent: the files and fields the run reads, each named when absent
+    (a gap found by the run instead fails late, in a gate, charged to the query)."""
+    wl, root, bench = probe.workload, probe.cfg.repo_root, benchmark_of(probe.workload)
+    problems = []
+
+    def has(rel: str | Path, what: str) -> str | None:
+        path = root / rel
+        if not path.is_file():
+            problems.append(f"{what} is missing: {rel}")
+        return path.read_text(encoding="utf-8") if path.is_file() else None
+
+    has(workload_schema_sql(str(wl.get("dataset_benchmark") or bench)), "the schema")
+    has(Path("workloads") / bench / "test_db_subset.sql", "the test-database subset (the ctest fixture builds from it)")
+    template = has(workload_query_sql(bench, probe.query), "the query template")
+    reference = wl.get("reference_sql_path")
+    if not reference:
+        problems.append("the workload sets no reference_sql_path (the query at its default binding)")
+    elif (text := has(reference, "the reference SQL (reference_sql_path)")) and PLACEHOLDER.search(text):
+        problems.append(f"reference_sql_path {reference} holds unbound $n placeholders: it must be the query at its default binding")
+    if template is not None:
+        numbers = {int(n) for n in PLACEHOLDER.findall(template)}
+        if numbers != set(range(1, len(numbers) + 1)):
+            problems.append(f"{workload_query_sql(bench, probe.query)} does not number its placeholders $1, $2, ...")
+        if len(wl.get("parameters") or []) != len(numbers):
+            problems.append(f"the workload declares {len(wl.get('parameters') or [])} parameters, the query template takes {len(numbers)}")
+    for p in wl.get("parameters") or []:
+        try:
+            sqlglot.exp.DataType.build(str(p["type"]))
+        except Exception:  # noqa: BLE001 - a missing key or a type sqlglot cannot parse
+            problems.append(f"parameter {p!r} needs a name and a SQL type")
+    if wl.get("workload_kind") == "aux_state" and not ((wl.get("aux_bench_sweep") or {}).get("suites") or wl.get("aux_bench_suites")):
+        problems.append("the workload names no write suite: set aux_bench_sweep.suites in its workload config")
+    if wl.get("dataset_key") and not wl.get("dataset_db"):
+        problems.append(f"dataset {wl['dataset_key']!r} has no `datasets:` entry in the pipeline config, or its environment variable is unset")
+    elif wl.get("dataset_db") and not Path(wl["dataset_db"]).exists():
+        problems.append(f"the source database {wl['dataset_db']} does not exist")
+    return problems
 
 
 def tsan_build(probe: Probe) -> list[str]:
@@ -770,6 +815,7 @@ CHECKS: dict[str, Check] = {
     "codex_line": codex_line,
     "mcp_server": mcp_server,
     "gate_writers": gate_writers,
+    "workload": workload,
     "test_database": test_database,
     "tsan_build": tsan_build,
     "prompts": prompts,
@@ -828,6 +874,7 @@ from accel_pipeline.data import (
     instance_env,
     instance_tag,
     ensure_dataset_loaded,
+    CutError,
     ensure_cut_datasets,
     host_info,
 )

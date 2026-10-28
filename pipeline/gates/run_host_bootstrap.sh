@@ -55,7 +55,7 @@ done
 [[ -z "${REGISTERED_QUERY}" ]] || TARGETS+=("test_${BENCHMARK_NAME}_q${REGISTERED_QUERY}_aux")
 
 if ! engine_ready "${TARGETS[@]}"; then
-  finish fail "${ENGINE_FAIL}: fix the harness sources / harness.cmake" "${ENGINE_LOG}"
+  finish fail "${ENGINE_FAIL}: fix the harness sources / harness.cmake" "${ENGINE_LOG}" "owner=${ENGINE_OWNER}"
 fi
 
 

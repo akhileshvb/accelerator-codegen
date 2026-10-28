@@ -56,3 +56,8 @@ def test_a_broken_clause_fails_naming_itself_and_the_harness_as_owner(repo, env,
 def test_a_failed_harness_names_its_exit_code_and_the_query(repo):
     _, _, data = conformance(repo, FAKE_RC_run="1")
     assert "exited 1 on query 5 with every read answered by the reference SQL" in data["reason"] and data["exit_code"] == 1
+
+
+def test_a_failed_engine_step_is_charged_to_its_owner(repo):
+    _, _, data = conformance(repo, FAKE_RC_load="1")
+    assert data["status"] == "fail" and data["owner"] == "data"

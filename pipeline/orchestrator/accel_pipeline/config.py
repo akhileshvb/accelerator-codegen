@@ -765,10 +765,24 @@ def load_engine_backend_defaults(repo_root: Path | None = None) -> dict[str, Any
     return config_yaml(repo_root or find_repo_root(), "engine_backend")
 
 
+class WorkloadError(ValueError):
+    """A workload's configuration is incomplete or inconsistent: the pipeline's to fix, never the query's."""
+
+
+def read_workload_file(path: str | Path, what: str) -> str:
+    """The text of a file the workload's bundle must provide; its absence is the workload's configuration error."""
+    if not str(path):
+        raise WorkloadError(f"the workload sets no {what}")
+    try:
+        return Path(path).read_text(encoding="utf-8")
+    except OSError as exc:
+        raise WorkloadError(f"the workload's {what} cannot be read: {path} ({exc.strerror})") from exc
+
+
 def load_benchmark_pack(name: str, repo_root: Path | None = None) -> dict[str, Any]:
     path = pipeline_root(repo_root or find_repo_root()) / "config" / "benchmark_packs" / f"{name}.yaml"
     if not path.is_file():
-        raise FileNotFoundError(f"benchmark pack not found: {path}")
+        raise WorkloadError(f"benchmark pack not found: {path}")
     return load_yaml(path)
 
 
@@ -817,12 +831,8 @@ def load_workload(name: str, repo_root: Path | None = None, *, engine: str = "")
         return _normalize_engine_backend_workload(data, root)
 
     engine = select_engine(data, engine, name)
-    try:
-        pack = load_benchmark_pack(data.get("benchmark_name", "tpch"), root)
-        data = _merge_benchmark_pack(data, pack, root, load_pipeline_config(repo_root=root).datasets)
-    except FileNotFoundError:
-        data.setdefault("benchmark_name", "tpch")
-        data.setdefault("artifact_namespace", "tpch")
+    pack = load_benchmark_pack(benchmark_of(data), root)
+    data = _merge_benchmark_pack(data, pack, root, load_pipeline_config(repo_root=root).datasets)
 
     if data.get("workload_kind") == "aux_state":
         _merge_aux_defaults(data, root)
@@ -859,7 +869,7 @@ _AUX_OVERRIDES = (
 
 def _merge_aux_defaults(workload: dict[str, Any], repo_root: Path) -> None:
     aux = load_aux_state_defaults(repo_root)
-    bench = config_yaml(repo_root, f"{workload.get('benchmark_name', 'tpch')}_aux_state")
+    bench = config_yaml(repo_root, f"{benchmark_of(workload)}_aux_state")
 
     workload.update({key: copy.deepcopy(aux[key]) for key in _AUX_OVERRIDES if key in aux})
     if "fairness" in aux:
@@ -905,7 +915,7 @@ def _derive_query_names(data: dict[str, Any], engine: str, root: Path) -> None:
 def _pin_engine(data: dict[str, Any], engine: str, repo_root: Path) -> dict[str, Any]:
     """Pin the run's engine, attach its host conventions and let the run own the query's directory."""
     data["engine_name"] = engine
-    bench = str(data.get("benchmark_name") or data.get("benchmark") or "tpch")
+    bench = benchmark_of(data)
     qnum = data.get("query_number")
     data["engine_host"] = engine_host_conventions(engine, bench, qnum if qnum is not None else "<N>", repo_root)
     # backends/<engine>/** belongs to the engine_backend run and substrate/** to nobody (layout enforces both).
@@ -1082,13 +1092,15 @@ def resolve_optimization_edit_paths(
 
 
 def benchmark_of(workload: dict[str, Any]) -> str:
-    return str(workload.get("benchmark_name", "tpch"))
+    if not workload.get("benchmark_name"):
+        raise WorkloadError(f"the workload names no benchmark_name (keys: {sorted(workload)})")
+    return str(workload["benchmark_name"])
 
 
 def workload_benchmark_name(workload: dict[str, Any] | None) -> str:
     if not workload:
-        return "tpch"
-    return str(workload.get("artifact_namespace") or workload.get("benchmark_name") or "tpch")
+        raise WorkloadError("a query's artifacts need its workload or a benchmark name")
+    return str(workload.get("artifact_namespace") or benchmark_of(workload))
 
 
 def query_artifacts_dir(
@@ -1234,8 +1246,8 @@ def derive_query_facts(sql: str, schema_sql: str) -> dict[str, Any]:
 def workload_facts(repo: Path, workload: dict[str, Any], query: int) -> dict[str, Any]:
     """The run's derived facts, written to the run's artifacts (workload_facts.json)."""
     benchmark = benchmark_of(workload)
-    sql = Path(workload["reference_sql_path"]).read_text(encoding="utf-8")
-    schema_sql = (repo / workload_schema_sql(benchmark)).read_text(encoding="utf-8")
+    sql = read_workload_file(workload.get("reference_sql_path") or "", "reference SQL (reference_sql_path)")
+    schema_sql = read_workload_file(repo / workload_schema_sql(benchmark), "schema")
     facts = derive_query_facts(sql, schema_sql)
     path = query_artifacts_dir(repo, query, workload=workload) / FACTS_FILE
     text = json.dumps(facts, indent=2) + "\n"
@@ -1276,5 +1288,5 @@ def apply_workload_overrides(pipeline_config: PipelineConfig, workload: dict[str
         allowed_commands=[*pipeline_config.allowed_commands, *allowed],
         workload_kind=kind,
         engine_name=engine,
-        benchmark_name=str(workload.get("benchmark_name") or ("" if kind == "engine_backend" else "tpch")),
+        benchmark_name="" if kind == "engine_backend" else benchmark_of(workload),
     )

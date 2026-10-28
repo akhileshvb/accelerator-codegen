@@ -20,6 +20,7 @@ from accel_pipeline.data import (
     cut_selects,
     CutDatasets,
     Dataset,
+    CutError,
     ensure_cut_datasets,
     foreign_key_links,
     key_links,
@@ -245,19 +246,27 @@ def test_the_cuts_are_made_once_per_dataset(cut_env, monkeypatch):
     assert ensure_cut_datasets(cfg, workload, 1).subset != first.subset
 
 
-def test_an_engine_that_cannot_answer_leaves_no_half_made_cut(cut_env, monkeypatch, capsys):
+def test_an_engine_that_cannot_answer_records_the_failure_once(cut_env, monkeypatch):
     cfg, workload, _ = cut_env
     with monkeypatch.context() as m:
         m.setenv("FAKE_ENGINE_DB", "/nonexistent.sqlite")
-        assert ensure_cut_datasets(cfg, workload, 1) is None
-    assert "test databases not made" in capsys.readouterr().err
+        with pytest.raises(CutError, match="cannot be made"):
+            ensure_cut_datasets(cfg, workload, 1)
     assert not list(cfg.build_dir.parent.glob("build.subset/*/.done"))
-    assert ensure_cut_datasets(cfg, workload, 1) is not None  # a later run makes them
+    failed = list(cfg.build_dir.parent.glob("build.subset/*.failed"))
+    assert len(failed) == 1
+    with monkeypatch.context() as m:  # the same data: the recorded reason, no second attempt
+        m.setattr(data_mod, "_cut", lambda *a: pytest.fail("cut again"))
+        with pytest.raises(CutError, match="delete it to try again"):
+            ensure_cut_datasets(cfg, workload, 1)
+    failed[0].unlink()
+    assert ensure_cut_datasets(cfg, workload, 1) is not None  # once the cause is fixed and the record cleared
 
 
-def test_no_dataset_directory_means_no_cuts(cut_env, tmp_path):
+def test_no_dataset_directory_means_no_cuts_and_says_so(cut_env, tmp_path):
     cfg, workload, _ = cut_env
-    assert ensure_cut_datasets(cfg, {**workload, "dataset_dir": str(tmp_path / "missing")}, 1) is None
+    with pytest.raises(CutError, match="missing or holds no .tbl files"):
+        ensure_cut_datasets(cfg, {**workload, "dataset_dir": str(tmp_path / "missing")}, 1)
 
 
 def test_ready_made_databases_from_the_environment_win(cut_env, monkeypatch):

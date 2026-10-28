@@ -19,7 +19,7 @@ mkdir -p "${OUT}"
 PATTERN="${BENCHMARK_NAME}_q${QUERY}_(write_policies|hybrid_policy|staged_publication|multi_partition_delta|action_failure)"
 
 if ! engine_ready_for_ctest "${PATTERN}"; then
-  emit_result "${OUT}/aux_mutation_scenarios.json" aux_mutation_scenarios fail "${ENGINE_FAIL}" "${ENGINE_LOG}" "owner=${ENGINE_OWNER}" "query:=${QUERY}"
+  engine_not_ready "${OUT}/aux_mutation_scenarios.json" aux_mutation_scenarios "query:=${QUERY}"
 fi
 engine_run ctest --test-dir "${ACCEL_BUILD_DIR}" --no-tests=error -j "${ACCEL_CTEST_JOBS:-$(nproc)}" --stop-on-failure -R "${PATTERN}" --output-on-failure
 

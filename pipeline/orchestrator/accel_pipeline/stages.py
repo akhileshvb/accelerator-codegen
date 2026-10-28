@@ -48,6 +48,7 @@ from accel_pipeline.config import (
     PipelineConfig,
     query_artifacts_dir,
     read_json,
+    read_workload_file,
     resolve_workload_paths,
     with_facts,
 )
@@ -62,9 +63,9 @@ from accel_pipeline.data import (
     suite_path,
     validate_aux_analysis_file,
 )
-from accel_pipeline.gates import GateResult, reusable_gate_result, run_gate
+from accel_pipeline.gates import GATES_ALLOW_SKIP, GateResult, reusable_gate_result, run_gate
 from accel_pipeline.prims import refresh_for_stage
-from accel_pipeline.layout import frozen_restore, frozen_snapshot, query_dir
+from accel_pipeline.layout import frozen_restore, frozen_snapshot, query_dir, workload_query_sql
 from accel_pipeline.prompts import (
     audit_context,
     AUDIT_FINDINGS_FILE,
@@ -321,28 +322,6 @@ def stage_failure(stage: str, backend_name: str, result: Any) -> Failure:
         return Failure(kind="infra", stage=stage, source="agent", summary=summary, evidence=detail,
                        infra_reason=PROVIDER_FLAKE)
     return Failure(kind="orchestrator", stage=stage, source="agent", summary=summary, evidence=detail)
-
-
-GATES_ALLOW_SKIP = frozenset(
-    {
-        "baseline",
-        "sf10",
-        "profile",
-        "module_tsan",  # skips when the engine-free TSAN driver has no case for the query (aux_tsan covers it)
-        "aux_cost_model_calibrate",
-        "aux_speedup_verification",
-        "engine_scan_conformance",
-        "engine_aux_smoke",
-        "engine_host",
-        "engine_hit_contract",
-        "engine_canary",
-        "engine_canary_asan",
-        "engine_canary_tsan",
-        "slot_restart",
-        "slot_own_writes",
-        "slot_ddl_events",
-    }
-)
 
 
 def workload_post_implementation_gates(workload: dict) -> list[str]:
@@ -875,7 +854,7 @@ def _fix_blocking_findings(ctx: RepairCtx, audit_turn) -> None:
     if not findings:
         return
     repo_root = ctx.pipeline_config.repo_root
-    qdir = query_dir(str(ctx.workload.get("benchmark_name") or "tpch"), ctx.query)
+    qdir = query_dir(benchmark_of(ctx.workload), ctx.query)
     base_file = ctx.art / IMPLEMENTATION_BASE_FILE
     base = base_file.read_text(encoding="utf-8").strip() if base_file.is_file() else "HEAD"
     before = snapshot(repo_root, changed_files(repo_root, base, qdir))
@@ -1121,8 +1100,8 @@ def materialize_registration(pipeline_config: PipelineConfig, workload: dict[str
         "accelerator_id": accelerator_id,
         "table_function": "accel_" + accelerator_id,
         "argument_types": _cpp_string_list([str(p["type"]).upper() for p in workload.get("parameters", [])]),
-        "base_sql": Path(workload["reference_sql_path"]).read_text(encoding="utf-8").strip().rstrip(";"),
-        "fallback_sql": (repo / "workloads" / benchmark / f"q{query}.sql").read_text(encoding="utf-8").strip().rstrip(";"),
+        "base_sql": read_workload_file(workload.get("reference_sql_path") or "", "reference SQL (reference_sql_path)").strip().rstrip(";"),
+        "fallback_sql": read_workload_file(repo / workload_query_sql(benchmark, query), "query template").strip().rstrip(";"),
         "tables": _cpp_string_list([t["name"] for t in facts["dependent_tables"]]),
     }
     content = _substitute(template.read_text(encoding="utf-8"), values)

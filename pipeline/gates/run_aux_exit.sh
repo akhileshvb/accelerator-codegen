@@ -38,7 +38,7 @@ declare -A SCRIPT=([correctness]=run_aux_correctness.sh [multi_connection]=run_a
 mapfile -t TARGETS < <(printf '%s\n' "${AUX_TEST_TARGET}" "${DIFF_BINARY}" "${MULTI_CONN_TARGET}" "${CROSS_ACCEL_TARGET}" \
   "${AUX_BENCH_TARGET}" "${AUX_CALIBRATE_TARGET}" | grep .)
 if ! engine_ready "${TARGETS[@]}"; then
-  emit_result "${JSON}" aux_exit fail "${ENGINE_FAIL}" "${ENGINE_LOG}" "owner=${ENGINE_OWNER}"
+  engine_not_ready "${JSON}" aux_exit
 fi
 
 # start <phase>: the phase's gate script in the background, as that gate (its result file is the gate's own); status,
@@ -77,8 +77,9 @@ done
 
 PHASE_GATES=()
 for name in "${PHASES[@]}"; do PHASE_GATES+=("${name}=${GATE[${name}]}"); done
-python3 - "${JSON}" "${RUNS}" "${GATE_OUT}" "${PHASE_GATES[@]}" <<'PY'
+PYTHONPATH="${ACCEL_PIPELINE_PYTHONPATH:-${GATE_ROOT}/pipeline/orchestrator}" python3 - "${JSON}" "${RUNS}" "${GATE_OUT}" "${PHASE_GATES[@]}" <<'PY'
 import json, pathlib, sys
+from accel_pipeline.layout import OWNER_PRECEDENCE
 
 out, runs, gates, *phases = sys.argv[1:]
 runs, gates = pathlib.Path(runs), pathlib.Path(gates)
@@ -104,10 +105,9 @@ payload = {
     "reproduce": "; ".join(f'request_gate("{gate}")' for _, gate, _, _ in failed),
 }
 if failed:
-    # One owner when the failed phases agree; else the query's failures go to the query and the others are recorded
-    # for their owners (repair.record_elsewhere).
+    # The failed phases' owners agree or the first in the precedence speaks; the others go to repair.record_elsewhere.
     owners = {name: data.get("owner") or "query" for name, _, data, _ in failed}
-    payload["owner"] = "query" if "query" in owners.values() else sorted(set(owners.values()))[0]
+    payload["owner"] = min(owners.values(), key=OWNER_PRECEDENCE.index)
     payload["elsewhere"] = {name: owner for name, owner in owners.items() if owner != payload["owner"]}
 pathlib.Path(out).write_text(json.dumps(payload, indent=2))
 print(json.dumps(payload, indent=2))

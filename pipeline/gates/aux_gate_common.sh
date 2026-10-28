@@ -100,7 +100,7 @@ step_owner() {
 	load) echo data ;;
 	up) echo backend ;;
 	*)
-		[[ -n "${BENCHMARK_NAME:-}" ]] || { echo query; return; }
+		[[ -n "${BENCHMARK_NAME:-}" ]] || { echo backend; return; }  # an engine gate has no query: a build failure is the backend's
 		# shellcheck disable=SC2086
 		PYTHONPATH="${ACCEL_PIPELINE_PYTHONPATH:-${GATE_ROOT}/pipeline/orchestrator}" python3 -m accel_pipeline.layout build-owner \
 			"accelerators/${BENCHMARK_NAME}/q${GATE_QUERY}" ${HARNESS_TARGETS:-} <<<"$2"
@@ -133,6 +133,13 @@ engine_steps() {
 			return 1
 		fi
 	done
+}
+
+# Leave the gate with the failure engine_steps/engine_ready left in ENGINE_*, charged to its owner; extras as emit_result.
+engine_not_ready() {
+	local json="$1" gate="$2"
+	shift 2
+	emit_result "${json}" "${gate}" fail "${ENGINE_FAIL}" "${ENGINE_LOG}" "owner=${ENGINE_OWNER}" "$@"
 }
 
 # Stamp of the code a build of these targets depends on (layout.code_stamp): the query's files and

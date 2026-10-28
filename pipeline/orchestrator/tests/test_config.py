@@ -372,3 +372,12 @@ def test_layer_rules_are_checklist_ids():
     ids = set(re.findall(r"^### `(\w+)`", checklist, re.M))
     for layer in implementation_layers(load_workload("engine_postgres", REPO_ROOT)):
         assert set(layer.get("rules") or []) <= ids, layer["id"]
+
+
+def test_a_workload_without_a_benchmark_or_a_pack_is_a_pipeline_error(tmp_path):
+    from accel_pipeline.config import benchmark_of, load_benchmark_pack, WorkloadError
+
+    with pytest.raises(WorkloadError, match="names no benchmark_name"):
+        benchmark_of({"workload_kind": "aux_state"})
+    with pytest.raises(WorkloadError, match="benchmark pack not found"):
+        load_benchmark_pack("nope", tmp_path)

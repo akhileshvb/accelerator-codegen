@@ -430,3 +430,15 @@ def test_every_benchmark_runs_the_differential_not_only_tpch(repo, script):
     proc, calls, _, _, _ = run_gate(repo, script, "5", ctx_extra={"benchmark_name": "toybench"})
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert any(c.startswith("run diff_bin 5") for c in calls), calls
+
+
+def test_every_gate_charges_a_failed_engine_step_to_its_owner(api_repo):
+    host_bootstrap_repo(api_repo)
+    cases = [("run_host_bootstrap.sh", "host_bootstrap", {"engine_host": HARNESS_HOST}, "backend", {"FAKE_RC_up": "1"}),
+             ("run_host_bootstrap.sh", "host_bootstrap", {"engine_host": HARNESS_HOST}, "data", {"FAKE_RC_load": "1"}),
+             ("run_engine_api_conformance.sh", "engine_api_conformance", {}, "backend", {"FAKE_RC_build": "1"})]
+    for script, gate, ctx, owner, env in cases:
+        kind = "engine_backend" if script != "run_host_bootstrap.sh" else "aux_state"
+        _, _, _, gj, out = run_gate(api_repo, script, "0", ctx_extra=ctx, env_extra=env, kind=kind)
+        data = json.loads(out.read_text()) if script != "run_host_bootstrap.sh" else result(gj, gate)
+        assert data["status"] == "fail" and data["owner"] == owner, (script, env, data.get("reason"))

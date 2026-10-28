@@ -22,8 +22,7 @@ log="$(python3 "${ROOT}/pipeline/gates/check_api_manifest.py" "${ROOT}" "${ENGIN
   || fail "api/README.md does not match api/" "${log}"
 log="$(python3 "${ROOT}/scripts/check_layer_includes.py" --root "${ROOT}" 2>&1)" \
   || fail "include boundary: only backends/<engine>/api/ may be included from outside the backend" "${log}"
-engine_steps "up" "build api_conformance_${ENGINE_NAME}" "build" \
-  || fail "an api/ header does not compile on its own: ${ENGINE_FAIL}" "${ENGINE_LOG}"
+engine_steps "up" "build api_conformance_${ENGINE_NAME}" "build" || engine_not_ready "${JSON}" engine_api_conformance "engine=${ENGINE_NAME}"
 # Hooks of api_contract.md section 3: the required ones always, the optional invalidation hook
 # when the manifest's introspection row lists it (a hook the manifest leaves out is n/a).
 hooks=("accel_get_execute_counts()" "accel_get_last_maintenance_action()"
