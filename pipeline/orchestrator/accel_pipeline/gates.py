@@ -89,7 +89,7 @@ from accel_pipeline.data import (
     host_info,
     host_script,
     inject_host_runtime_into_gate_env,
-    engine_memory_budget,
+    run_memory_budget,
     instance_env,
     instance_tag,
     parse_aux_benchmark_output,
@@ -1470,6 +1470,9 @@ COUNTER_LOOP_SECONDS = 0.5  # the read loop the counters cover
 WRITE_MIX_PCT = 50  # share of operations that are writes in the write-path profile
 
 
+RUN_OUTCOME = Path(__file__).resolve().parents[2] / "gates" / "run_outcome.py"  # this tree's: caps a run's memory
+
+
 @dataclass(frozen=True)
 class HostRun:
     """The one way to run anything on the engine: `host.sh run` in an engine instance (host_contract.md), after `up`,
@@ -1493,13 +1496,14 @@ class HostRun:
 
     def env(self, extra: Mapping[str, str] = {}) -> dict[str, str]:
         """This process's environment, the instance's variables of the contract, then `extra`: the run's scratch on
-        disk with its instance, and its engine's memory budget, as the gates give them."""
+        disk with its instance, and its memory budget (the run's cap, half of it its engines'), as the gates give them."""
         scratch = Path(self.instance["engine_state_dir"]) / "tmp"
+        run_mb = int(os.environ.get("ACCEL_RUN_MEMORY_MB") or run_memory_budget())
         return {**os.environ, **instance_env(self.cfg.repo_root, self.engine, self.cfg.build_dir),
                 "ACCEL_ENGINE_INSTANCE": self.instance["engine_instance"],
                 "ACCEL_ENGINE_STATE_DIR": self.instance["engine_state_dir"],
                 "ACCEL_DATASET_DIR": self.instance["dataset"], "TMPDIR": str(scratch),
-                "ACCEL_ENGINE_MEMORY_MB": os.environ.get("ACCEL_ENGINE_MEMORY_MB") or str(engine_memory_budget()), **extra}
+                "ACCEL_RUN_MEMORY_MB": str(run_mb), "ACCEL_ENGINE_MEMORY_MB": str(run_mb // 2), **extra}
 
     def build(self, *targets: str) -> str | None:
         """`up`, then `build` of `targets` (one build of a build dir at a time); None, or why not."""
@@ -1533,7 +1537,8 @@ class HostRun:
         if Path(env["TMPDIR"]).parent.is_dir():  # the instance is up: its scratch lives in its state dir
             Path(env["TMPDIR"]).mkdir(exist_ok=True)
         with (measurement_window(holder_name(), measured) if measured else contextlib.nullcontext(Window())) as window:
-            argv = window.argv([str(host_script(self.cfg.repo_root, self.engine)), "run", *command])
+            argv = window.argv([sys.executable, str(RUN_OUTCOME), "cap",
+                                "--", str(host_script(self.cfg.repo_root, self.engine)), "run", *command])  # its memory cap
             with subprocess.Popen(argv, cwd=self.cfg.repo_root, env={**env, **window.env}, stdout=subprocess.PIPE,
                                   stderr=subprocess.PIPE, text=True, start_new_session=True) as proc:
                 try:

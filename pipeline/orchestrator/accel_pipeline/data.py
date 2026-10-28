@@ -2303,11 +2303,12 @@ def instance_env(repo_root: Path, engine: str, build_dir: Path) -> dict[str, str
     }
 
 
-def engine_memory_budget(runs: int = 1) -> int:
-    """MB each of `runs` engine runs started together may use (80% of what is free now), as aux_gate_common.sh."""
+def run_memory_budget(runs: int = 1) -> int:
+    """MB each of `runs` runs started together may use, a cap the run dies past (90% of what is free now over `runs`);
+    its engines get half (ACCEL_ENGINE_MEMORY_MB). As aux_gate_common.sh memory_budget."""
     for line in Path("/proc/meminfo").read_text().splitlines():
         if line.startswith("MemAvailable:"):
-            return int(int(line.split()[1]) / 1024 * 0.8 / max(1, runs))
+            return int(int(line.split()[1]) / 1024 * 0.9 / max(1, runs))
     return 0
 
 

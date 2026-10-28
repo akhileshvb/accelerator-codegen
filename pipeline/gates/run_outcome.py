@@ -6,6 +6,9 @@ run <seconds> <outcome json> <label> -- <command...>
     ({"exit_code", "reason", "stacks_log"}); a passing one removes it, so the file is always the gate's last run.
     Past the deadline this process becomes gdb, the one tracer kernel.yama.ptrace_scope=1 allows (an ancestor),
     dumps the user stacks of every process the command started, then kills them and exits 124.
+cap -- <command...>
+    Execs the command in a user scope capped at ACCEL_RUN_MEMORY_MB (swap off), where scopes work: a run over its
+    memory dies alone (exit 137) instead of starving the machine. `run` caps its command the same way.
 fold <gate json>
     Merges the last run's outcome into a failed result the gate script wrote, whatever wrote it: the exit code, the
     run's reason after the script's own, and the stacks condensed (threads with the same frames counted once). A run
@@ -102,10 +105,26 @@ def _exec_gdb(pids: list[int], stacks_log: str) -> None:
     os.execv(gdb, [gdb, "-batch", "-nx", "-q", *(a for c in cmds for a in ("-ex", c))])
 
 
+def capped(cmd: list[str]) -> list[str]:
+    """`cmd` in a user scope with MemoryMax ACCEL_RUN_MEMORY_MB (swap off), when the budget is set and the user's
+    systemd can make scopes; else `cmd` unchanged. The scope execs the command in place: it stays our descendant."""
+    mb = os.environ.get("ACCEL_RUN_MEMORY_MB", "")
+    if not mb.isdigit() or not _scopes():
+        return cmd
+    return ["systemd-run", "--user", "--scope", "-q", "--collect", "-p", f"MemoryMax={mb}M", "-p", "MemorySwapMax=0",
+            "--", *cmd]
+
+
+def _scopes() -> bool:
+    return bool(shutil.which("systemd-run")) and subprocess.run(
+        ["systemd-run", "--user", "--scope", "-q", "--collect", "true"], capture_output=True).returncode == 0
+
+
 def run(seconds: float, outcome_path: str, label: str, cmd: list[str]) -> int:
     stacks_log = f"{outcome_path}.stacks" if outcome_path else ""  # without an outcome nothing reads the stacks
     for stale in filter(None, (outcome_path, stacks_log)):
         Path(stale).unlink(missing_ok=True)
+    cmd = capped(cmd)
     child = subprocess.Popen(cmd)
 
     def forward(signum, _frame):
@@ -123,7 +142,10 @@ def run(seconds: float, outcome_path: str, label: str, cmd: list[str]) -> int:
         _exec_gdb(_descendants(child.pid), stacks_log)
     rc = 128 - rc if rc < 0 else rc
     if rc:
-        _write(outcome_path, {"exit_code": rc, "reason": f"{label} exited {rc}"})
+        over = rc == 137 and cmd[0] == "systemd-run"
+        _write(outcome_path, {"exit_code": rc, "reason": (
+            f"{label} was killed (exit 137): over its memory cap of {os.environ['ACCEL_RUN_MEMORY_MB']} MB "
+            "(ACCEL_RUN_MEMORY_MB), or by another signal" if over else f"{label} exited {rc}")})
     elif outcome_path:
         Path(outcome_path).unlink(missing_ok=True)
     return rc
@@ -202,6 +224,11 @@ def main(argv: list[str]) -> int:
         seconds, outcome, label, sep, *cmd = args
         assert sep == "--" and cmd, "usage: run <seconds> <outcome json> <label> -- <command...>"
         return run(float(seconds), outcome, label, cmd)
+    if verb == "cap":
+        sep, *cmd = args
+        assert sep == "--" and cmd, "usage: cap -- <command...>"
+        cmd = capped(cmd)
+        os.execvp(cmd[0], cmd)
     if verb == "fold":
         fold(Path(args[0]))
         return 0

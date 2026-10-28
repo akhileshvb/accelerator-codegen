@@ -3,6 +3,7 @@ aux_exit reports every failed phase; a benchmark's build.cmake cannot redefine a
 
 from __future__ import annotations
 
+import json
 import shutil
 import sys
 import time
@@ -110,3 +111,17 @@ Thread 1 (Thread 0x7d (LWP 42) "harness"):
         "  1 thread:", "    Build::Seal  build_state.hpp:149", "    main  harness.cpp:12",
     ]
 
+
+
+
+def test_a_run_without_a_budget_runs_as_it_is(monkeypatch):
+    monkeypatch.delenv("ACCEL_RUN_MEMORY_MB", raising=False)
+    assert run_outcome.capped(["true"]) == ["true"]
+
+
+@pytest.mark.skipif(not run_outcome._scopes(), reason="needs systemd user scopes")
+def test_a_run_over_its_memory_cap_dies_alone_and_says_so(tmp_path, monkeypatch):
+    monkeypatch.setenv("ACCEL_RUN_MEMORY_MB", "64")
+    outcome = tmp_path / "run.json"
+    rc = run_outcome.run(30, str(outcome), "hog", [sys.executable, "-c", "x = bytearray(400 * 1024 * 1024)"])
+    assert rc == 137 and "over its memory cap of 64 MB" in json.loads(outcome.read_text())["reason"]

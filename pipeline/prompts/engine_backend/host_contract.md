@@ -16,7 +16,8 @@ container, plugin or data layout.
 | `ACCEL_BUILD_DIR` | the CMake build directory |
 | `ACCEL_DATASET_DIR` | engine-neutral dataset: one `<table>.tbl` (`|`-separated, dbgen format: a trailing `|` per line) per table; a bare empty field is NULL, `""` is the empty string, a value holding `"` is quoted with `""` inside |
 | `ACCEL_CMAKE_ARGS` | the arguments the build dir is configured with (generator, build type, this backend's switch, the engine's query sources) |
-| `ACCEL_ENGINE_MEMORY_MB` | the memory a run's engines may use together; gates that start runs side by side split the machine's between them. A harness or bench sets its engines' memory limits to shares of it (two engines, e.g. an accelerated and a reference one: half each; an embedded engine: its configuration; a server: the session). The accelerator's own state is outside it: the analysis budgets that |
+| `ACCEL_RUN_MEMORY_MB` | the run's memory cap (its engines and the accelerator's state together): a run past it is killed (exit 137) and its failure says so |
+| `ACCEL_ENGINE_MEMORY_MB` | the memory a run's engines may use together (half the run's cap); gates that start runs side by side split the machine's between them. A harness or bench sets its engines' memory limits to shares of it (two engines, e.g. an accelerated and a reference one: half each; an embedded engine: its configuration; a server: the session). The accelerator's own state is outside it: the analysis budgets that |
 | `TMPDIR` | the run's scratch, on disk under the instance's state dir: copies of a database go here, never to a RAM-backed path |
 
 ## Test suite

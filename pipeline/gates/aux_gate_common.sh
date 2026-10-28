@@ -88,12 +88,15 @@ setup_engine_host() {
 	# keeps to a memory budget (host_contract.md), split by a gate that starts runs side by side.
 	export TMPDIR="${ACCEL_ENGINE_STATE_DIR}/tmp"
 	mkdir -p "${TMPDIR}"
-	export ACCEL_ENGINE_MEMORY_MB="${ACCEL_ENGINE_MEMORY_MB:-$(engine_memory_budget 1)}"
+	[[ -n "${ACCEL_RUN_MEMORY_MB:-}" ]] || memory_budget 1
 }
 
-# engine_memory_budget <runs>: MB each of <runs> engine runs started together may use (80% of what is free now).
-engine_memory_budget() {
-	awk -v runs="$1" '/^MemAvailable:/ { printf "%d\n", $2 / 1024 * 0.8 / (runs > 0 ? runs : 1) }' /proc/meminfo
+# memory_budget <runs>: what each of <runs> runs started together may use: ACCEL_RUN_MEMORY_MB, 90% of what is free
+# over <runs>, a cap the run dies past (run_outcome.py); ACCEL_ENGINE_MEMORY_MB, half of it, for its engines (the
+# rest is the accelerator's state).
+memory_budget() {
+	export ACCEL_RUN_MEMORY_MB="$(awk -v runs="$1" '/^MemAvailable:/ { printf "%d\n", $2 / 1024 * 0.9 / (runs > 0 ? runs : 1) }' /proc/meminfo)"
+	export ACCEL_ENGINE_MEMORY_MB="$((ACCEL_RUN_MEMORY_MB / 2))"
 }
 
 engine_host() { "${ENGINE_HOST}" "$@"; }
