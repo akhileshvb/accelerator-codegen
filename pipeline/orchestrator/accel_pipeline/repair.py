@@ -43,7 +43,7 @@ from accel_pipeline.config import (
 )
 from accel_pipeline.data import pending_change_request
 from accel_pipeline.layout import (
-    BACKEND, DATA, HARNESS, INFRA, PIPELINE, QUERY, query_dir, tree_snapshot)
+    BACKEND, DATA, ENGINE, HARNESS, INFRA, PIPELINE, QUERY, query_dir, tree_snapshot)
 from accel_pipeline.prompts import render_prompt
 from accel_pipeline.runlog import append_experiment_log, log_event
 from accel_pipeline.agent import MAIN, READ_ONLY_TOOLS, SessionStore, write_json
@@ -171,11 +171,14 @@ def run_with_repair(ctx: RepairCtx, attempt: Callable[[], T], *, gates: list[str
             raise stop_stage(ctx, failure, "the workload harness is wrong and host_bootstrap did not fix it")
         if failure.owner in _STOPS:
             raise stop_stage(ctx, failure, f"owner {failure.owner}: {_STOPS[failure.owner]}")
-        if failure.owner == BACKEND:  # recorded once for the backend's owner; the agent adapts meanwhile
+        if failure.owner == BACKEND:  # recorded for the backend's owner, who fixes it before the check reruns
             if (defect := f"{failure.source}:{failure.summary}") not in reported:
                 reported.add(defect)
                 report_defect(ctx, failure)
-            failure = replace(failure, diagnosis=[*failure.diagnosis, ADAPT_TO_BACKEND])
+                if upstream_left > 0 and revise_upstream(ctx):
+                    upstream_left -= 1
+                    continue
+            failure = replace(failure, diagnosis=[*failure.diagnosis, ADAPT_TO_BACKEND])  # it could not: adapt
         if failure.infra_reason == PROVIDER_FLAKE:
             flakes += 1
             if flakes > cfg.provider_retries:
@@ -228,6 +231,8 @@ _STOPS = {
     DATA: "the workload's data or test cut is wrong (a load the engine rejects, a cut that misses what the query needs): "
           "fix the dataset, the schema or the cut, then `--resume`",
     PIPELINE: "a gate or the orchestrator is wrong, not the stage's work: fix it, then `--resume`",
+    ENGINE: "the engine itself (its source, outside the repository) is wrong; no stage can change it: fix the engine "
+            "build, then `--resume`",
 }
 ADAPT_TO_BACKEND = ("The engine backend is at fault here; this is recorded for its owner and the pipeline cannot change it "
                     "for you. Adapt within your own files.")
@@ -480,8 +485,10 @@ def record_elsewhere(ctx: RepairCtx, failure: Failure) -> None:
 
 def revise_upstream(ctx: RepairCtx) -> bool:
     """Requests against what the stage does not own go to their owners before its own work is touched again: a
-    change request against the frozen test suite to the tester, a harness defect to host_bootstrap."""
-    from accel_pipeline.engine_backend import pending_harness_requests, run_host_bootstrap  # both import this module
+    change request against the frozen test suite to the tester, a harness defect to host_bootstrap, a backend defect
+    a failing check backs to the backend's validation (on the declining module, as host_bootstrap works)."""
+    from accel_pipeline.engine_backend import (  # both import this module
+        checked_backend_requests, declining_query, pending_harness_requests, reopen_engine_backend, run_host_bootstrap)
     from accel_pipeline.stages import revise_test_suite
 
     revised = False
@@ -496,6 +503,14 @@ def revise_upstream(ctx: RepairCtx) -> bool:
                            representative_workload=ctx.workload_name, model_overrides=ctx.model_overrides)
         ctx.log("host_bootstrap fixed the recorded harness defects; the next check runs on the revised harnesses")
         revised = True
+    if (ctx.workload.get("workload_kind") != "engine_backend" and engine
+            and checked_backend_requests(ctx.pipeline_config.repo_root, sanitize_engine_name(engine))):
+        with declining_query(ctx.pipeline_config, ctx.workload, ctx.query):
+            reopened = reopen_engine_backend(ctx.pipeline_config, ctx.model_config, sanitize_engine_name(engine),
+                                             model_overrides=ctx.model_overrides)
+        if reopened:
+            ctx.log("the backend's validation fixed the recorded backend defects; the next check runs on the revised backend")
+            revised = True
     return revised
 
 
@@ -996,6 +1011,7 @@ _NAMED = {
     BACKEND: ("code", "backend_defect"),
     DATA: ("infra", "data_defect"),
     PIPELINE: ("infra", "pipeline_defect"),
+    ENGINE: ("infra", "engine_defect"),
 }
 
 

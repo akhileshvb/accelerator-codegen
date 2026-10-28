@@ -504,9 +504,11 @@ def register_core(tool, call) -> None:
         missing input) instead of investigating it. Writes blocker.md and ends your turn.
 
         owner: who the obstacle belongs to. "harness": the engine's workload harnesses are wrong (host_bootstrap
-        fixes them before your next check). "backend": the engine backend (recorded for its owner; you adapt
-        meanwhile). "data": the workload's data or test cut (the run stops with a report). "pipeline": a gate or the
-        orchestrator (the run stops with a report). "infra": the machine or a provider. Else "query" (the default).
+        fixes them before your next check). "backend": the engine backend under backends/ (its validation fixes it
+        before your next check when the defect is backed by a failing check; else you adapt). "engine": the engine
+        itself, its source outside the repository (the run stops with a report). "data": the workload's data or
+        test cut (the run stops with a report). "pipeline": a gate or the orchestrator (the run stops with a
+        report). "infra": the machine or a provider. Else "query" (the default).
         For harness, backend and query the orchestrator re-runs the failing check, then comes back to you to adapt."""
         return call("report_blocker", summary, evidence, owner)
 

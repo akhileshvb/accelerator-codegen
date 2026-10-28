@@ -165,13 +165,22 @@ def as_required_fixes(requests: list[dict[str, Any]]) -> str:
     )
 
 
+def checked_backend_requests(repo_root: Path, engine: str) -> list[dict[str, Any]]:
+    """The pending backend requests a failing check backs: the ones that reopen the backend."""
+    return [r for r in pending(repo_root, engine, "backend") if r.get("check")]
+
+
 def reopen_engine_backend(pipeline_config: PipelineConfig, model_config: ModelConfig, engine: str, *,
                           model_overrides: dict[str, str] | None = None, dry_run: bool = False) -> bool:
     """Re-run the backend's validation with the pending backend requests a failing check backs (`check`: the gate,
     or a blocked agent) as required fixes; True when it ran. A request without one (a harness wishing for an API) is
     the engine backend pipeline's to weigh, not a reason to reopen the backend inside a query run."""
-    requests = [r for r in pending(pipeline_config.repo_root, engine, "backend") if r.get("check")]
+    requests = checked_backend_requests(pipeline_config.repo_root, engine)
     if not requests:
+        return False
+    try:
+        load_workload(f"engine_{engine}", pipeline_config.repo_root)
+    except FileNotFoundError:  # no backend pipeline for this engine: the requests wait for its owner
         return False
     print(f"[pipeline] {len(requests)} backend defect(s) recorded for {engine}: re-running its validation", flush=True)
     findings = engine_artifacts_dir(pipeline_config.repo_root, engine) / "architecture_audit.open_findings.md"

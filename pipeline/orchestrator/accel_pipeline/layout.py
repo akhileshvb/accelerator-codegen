@@ -73,10 +73,11 @@ def query_dir(bench: str, query: int | str) -> str:
 
 # ---- who owns a failure ------------------------------------------------------------------------
 
-QUERY, HARNESS, BACKEND, DATA, PIPELINE, INFRA = OWNERS = ("query", "harness", "backend", "data", "pipeline", "infra")
+QUERY, HARNESS, BACKEND, ENGINE, DATA, PIPELINE, INFRA = OWNERS = (
+    "query", "harness", "backend", "engine", "data", "pipeline", "infra")
 # Which of several failed phases speaks for a gate: the stops first (nothing else matters until they are fixed), then
 # the query's (the repair loop), then the upstream owners the loop requests from, then infrastructure.
-OWNER_PRECEDENCE = (DATA, PIPELINE, QUERY, HARNESS, BACKEND, INFRA)
+OWNER_PRECEDENCE = (DATA, PIPELINE, ENGINE, QUERY, HARNESS, BACKEND, INFRA)
 UNKNOWN_TARGET = re.compile(r"unknown target '([A-Za-z0-9_]+)'|No rule to make target '([A-Za-z0-9_]+)'")
 _NAMED_PATH = re.compile(r"(?:backends|accelerators)/[^\s:()'\"]+")
 

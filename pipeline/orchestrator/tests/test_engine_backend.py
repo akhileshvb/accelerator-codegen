@@ -1055,6 +1055,7 @@ def test_only_a_backend_request_a_failing_check_backs_reopens_the_backend(tmp_pa
 
     runs = []
     monkeypatch.setattr(eb, "run_engine_pipeline", lambda *a, **k: runs.append(k["stage"]))
+    monkeypatch.setattr(eb, "load_workload", lambda name, root: {"workload_kind": "engine_backend"})  # it has one
     cfg = SimpleNamespace(repo_root=tmp_path)
     (tmp_path / "pipeline" / "artifacts" / "engines" / "toydb").mkdir(parents=True)
     wish = {"benchmark": "toybench", "query": 1, "scope": "backend", "helper": "an introspection api", "reason": "nice to have"}

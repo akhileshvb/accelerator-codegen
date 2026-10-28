@@ -441,6 +441,16 @@ def test_a_harness_failure_in_host_bootstrap_is_repaired_by_its_own_agent(world,
     assert len(world.agent_messages) == 1 and "bench-rows" in world.agent_messages[0]
 
 
+def test_a_backend_defect_a_gate_finds_goes_to_the_backends_owner_before_the_recheck(world, monkeypatch):
+    revisions = [True]
+    monkeypatch.setattr(repair_mod, "report_defect", lambda ctx, failure: None)
+    monkeypatch.setattr(repair_mod, "revise_upstream", lambda ctx: revisions.pop(0) if revisions else False)
+    failed = GateResult("aux_correctness", "fail", {"reason": "capture missed an update", "owner": "backend"})
+    world.gate_script = [([failed], failed)]
+    run_with_repair(world.ctx(), lambda: None, gates=["aux_correctness"])
+    assert revisions == [] and world.agent_messages == []  # fixed upstream: no adapt round for the agent
+
+
 def test_a_recorded_harness_defect_is_reproduced_through_request_gate(world):
     from accel_pipeline.engine_backend import pending_harness_requests
 
@@ -477,7 +487,7 @@ def test_a_backend_defect_is_recorded_once_for_its_owner_and_the_agent_adapts(wo
     assert len(pending(world.tmp, "toyengine", "backend")) == 1
 
 
-@pytest.mark.parametrize("owner", ["data", "pipeline"])
+@pytest.mark.parametrize("owner", ["data", "pipeline", "engine"])
 def test_a_data_or_pipeline_failure_stops_with_a_report_naming_the_owner(world, owner):
     world.gate_script = [owned_fail(owner)]
     with pytest.raises(StageStopped) as stopped:
