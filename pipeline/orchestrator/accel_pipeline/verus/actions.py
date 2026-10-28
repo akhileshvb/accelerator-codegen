@@ -1369,7 +1369,7 @@ def compare_glue(ctx: VerusContext, runner_call, sql_call, tests_dir: Path, db: 
         shutil.rmtree(out)
     out.mkdir(parents=True)
     probes: list[tuple[str, str]] = []
-    keys: list[int] = []
+    keys: list[str] = []  # every rescan's sample keys, one per line: integer keys parse, text keys are the bytes
     rescans: dict[str, dict[str, Any]] = {}
     for d in decls:
         n = sanitize(d["name"])
@@ -1382,9 +1382,9 @@ def compare_glue(ctx: VerusContext, runner_call, sql_call, tests_dir: Path, db: 
             kout = _key_output(d["sql"], d["keys"])
             rescans[n] = {"key_out": kout}
             r = sql_call(f'SELECT DISTINCT "{kout}" FROM ({d["sql"]}) AS r ORDER BY hash("{kout}") LIMIT 64')
-            keys += [int(Decimal(x[0])) for x in r.get("rows") or [] if x and x[0] != "NULL"]
+            keys += [x[0] for x in r.get("rows") or [] if x and x[0] != "NULL" and "\n" not in x[0]]
     (out / "probes.tsv").write_text("".join(f"{n}\t{s}\n" for n, s in probes), encoding="utf-8")
-    (out / "keys.txt").write_text(",".join(str(k) for k in keys), encoding="utf-8")
+    (out / "keys.txt").write_text("".join(f"{k}\n" for k in keys), encoding="utf-8")
     run = runner_call(["record", str(db), ctx.accel_id, str(tests_dir), str(out / "probes.tsv"), str(out)],
                       {"ACCEL_VERUS_RECORD_DIR": str(out), "ACCEL_VERUS_RECORD_KEYS": str(out / "keys.txt"),
                        "ACCEL_AUX_STORE": "cpp"})
@@ -1483,10 +1483,11 @@ def compare_glue(ctx: VerusContext, runner_call, sql_call, tests_dir: Path, db: 
                     if isinstance(plan, str):
                         problems.append({"at": f"txn {i}", "input": f"rescan {n}", "error": plan})
                         continue
-                    ks = {int(r[0]) for r in krec["rows"]}
+                    ktag = krec["fields"][0].rsplit(":", 1)[-1] if krec["fields"] and ":" in krec["fields"][0] else "int"
+                    ks = {norm_recorded(r[0], ktag) for r in krec["rows"]}
                     kcol = after["columns"].index(rescans[n]["key_out"]) if rescans[n]["key_out"] in after["columns"] else 0
                     checked["rescan"] += 1
-                    want = _rows_probe(after, plan, keep=lambda row: row[kcol] != "NULL" and int(Decimal(row[kcol])) in ks)
+                    want = _rows_probe(after, plan, keep=lambda row: norm_sql(row[kcol], ktag) in ks)
                     if (d_ := _diff(_rows_rec(rec, plan), want)):
                         problems.append({"at": f"txn {i}", "input": f"rescan {n}", **d_})
     return {"ok": not problems and bool(checked), "checked": dict(checked), "problems": problems[:12],
@@ -1505,10 +1506,11 @@ def compare_glue(ctx: VerusContext, runner_call, sql_call, tests_dir: Path, db: 
 
 
 def _duckdb_root(ctx: VerusContext) -> Path | None:
-    for cand in (os.environ.get("ACCEL_DUCKDB_ROOT"), str(ctx.root.parent / "accelerator-codegen-duckdb")):
-        if cand and Path(cand).is_dir():
-            return Path(cand).resolve()
-    return None
+    """The engine checkout the build links, in the order cmake/FindSiblingDuckDB.cmake looks."""
+    primary = os.environ.get("ACCEL_PIPELINE_PRIMARY_REPO")
+    parents = [Path(primary).parent] if primary else []
+    cands = [os.environ.get("ACCEL_DUCKDB_ROOT")] + [p / "duckdb-dbcapture" for p in parents + [ctx.root.parent, ctx.root.parent.parent]]
+    return next((Path(c).resolve() for c in cands if c and Path(c).is_dir()), None)
 
 
 def sandbox_mounts(ctx: VerusContext) -> list[agent.Bind]:
