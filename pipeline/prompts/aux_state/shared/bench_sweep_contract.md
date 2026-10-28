@@ -75,6 +75,7 @@ A failure names its clause:
 - **`bench-columns`**: every one of `suite`, `write_frequency_pct`, `workload_speedup`, `query_only_speedup`,
   `accel_hit_rate`, `num_queries`, `accel_fallback_reads`, `state_builds`, `engine_ref_query_median_us`,
   `accel_hit_median_us` is in the row.
+- **`bench-speedup`**: on every row, `query_only_speedup` equals `engine_ref_query_median_us / accel_hit_median_us` (within rounding): the ratio of the two medians it reports, not a median of per-pair ratios.
 - **`bench-state-builds`**: a run whose reads hit a state reports `state_builds >= 1`.
 - **`bench-hit-rate`**: that run's `accel_hit_rate` exceeds the forced run's by at least 0.4; a bench that reports the
   same rate both ways assumes it. (With only the declining module registered nothing hits and the two are not compared.)

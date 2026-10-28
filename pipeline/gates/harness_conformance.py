@@ -19,6 +19,7 @@ from pathlib import Path
 
 REQUIRED_COLUMNS = ("suite write_frequency_pct workload_speedup query_only_speedup accel_hit_rate num_queries "
                     "accel_fallback_reads state_builds engine_ref_query_median_us accel_hit_median_us").split()
+SPEEDUP_TOLERANCE = 0.02  # rounding of the printed medians
 COST_MODEL_KEYS = ("interference_delta_per_query_us", "interference_rebuild_per_query_us")
 MIN_HIT_RATE_GAP = 0.4
 
@@ -41,6 +42,15 @@ def check_rows(log: str, points: int) -> str:
                 "ACCEL_AUX_WRITE_FREQUENCIES (one header starting `suite,` and one row per entry; bench_sweep_contract.md)")
     if missing := [c for c in REQUIRED_COLUMNS if c not in rows[0]]:
         return f"clause bench-columns: the bench row lacks the required columns {' '.join(missing)} (bench_sweep_contract.md)"
+    for row in rows:  # the read axis is the ratio of the two medians it reports (bench_sweep_contract.md)
+        try:
+            ref, hit, speedup = (float(row[c]) for c in ("engine_ref_query_median_us", "accel_hit_median_us",
+                                                         "query_only_speedup"))
+        except (KeyError, ValueError):
+            continue
+        if hit > 0 and abs(speedup - ref / hit) > SPEEDUP_TOLERANCE * (ref / hit):
+            return (f"clause bench-speedup: query_only_speedup {speedup:g} is not engine_ref_query_median_us / "
+                    f"accel_hit_median_us = {ref / hit:g} (bench_sweep_contract.md)")
     return ""
 
 

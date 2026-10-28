@@ -46,6 +46,7 @@ def test_a_declining_module_hits_nothing_so_there_is_no_hit_rate_to_compare(repo
     ({"FAKE_BENCH_BUILDS": "0"}, "bench-state-builds"),
     ({"FAKE_BENCH_CONSTANT": "1"}, "bench-hit-rate"),
     ({"FAKE_COST_DELTA": "null"}, "calibrate-cost-model"),
+    ({"FAKE_BENCH_SPEEDUP": "2.5"}, "bench-speedup"),
 ])
 def test_a_broken_clause_fails_naming_itself_and_the_harness_as_owner(repo, env, clause):
     proc, _, data = conformance(repo, **env)
