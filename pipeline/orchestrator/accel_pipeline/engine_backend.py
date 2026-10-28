@@ -1268,12 +1268,7 @@ def declining_query(pipeline_config: PipelineConfig, workload: dict[str, Any], q
     their old mtimes, and the build would keep the declining module's newer objects."""
     from accel_pipeline.stages import materialize_registration
 
-    repo = pipeline_config.repo_root
-    register = str((workload.get("engine_host") or {}).get("aux_register_path") or "")
-    engine_dir = (repo / register).parent.parent if register else None  # accelerators/<bench>/q<N>/<engine>
-    aside = query_artifacts_dir(repo, query, workload=workload) / "implementation_aside"
-    if engine_dir is not None and aside.is_dir():  # a bootstrap that died before putting it back
-        _put_back(aside, engine_dir)
+    engine_dir, aside = recover_query_module(pipeline_config, workload, query)
     if engine_dir is None or not engine_dir.is_dir():
         yield
         return
@@ -1284,6 +1279,18 @@ def declining_query(pipeline_config: PipelineConfig, workload: dict[str, Any], q
         yield
     finally:
         _put_back(aside, engine_dir)
+
+
+def recover_query_module(pipeline_config: PipelineConfig, workload: dict[str, Any],
+                         query: int) -> tuple[Path | None, Path]:
+    """The query's engine directory and where a bootstrap sets it aside; one a dead bootstrap left aside is put back."""
+    repo = pipeline_config.repo_root
+    register = str((workload.get("engine_host") or {}).get("aux_register_path") or "")
+    engine_dir = (repo / register).parent.parent if register else None  # accelerators/<bench>/q<N>/<engine>
+    aside = query_artifacts_dir(repo, query, workload=workload) / "implementation_aside"
+    if engine_dir is not None and aside.is_dir():
+        _put_back(aside, engine_dir)
+    return engine_dir, aside
 
 
 def _put_back(aside: Path, engine_dir: Path) -> None:
@@ -1429,6 +1436,7 @@ def ensure_host_bootstrap_for_workload(pipeline_config: PipelineConfig, model_co
     workload = load_run_workload(pipeline_config, workload_name)
     if not needs_host_bootstrap(workload):
         return None
+    recover_query_module(pipeline_config, workload, int(workload.get("query_number") or 0))
     return run_host_bootstrap(pipeline_config, model_config,
                               engine_name=sanitize_engine_name(str(workload.get("engine_name") or "")),
                               representative_workload=workload_name, model_overrides=model_overrides,
