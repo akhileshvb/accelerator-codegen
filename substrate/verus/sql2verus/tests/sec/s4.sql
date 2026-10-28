@@ -6,8 +6,8 @@ FROM num n
 JOIN sub s ON n.adsh = s.adsh
 JOIN tag t ON n.tag = t.tag AND n.version = t.version
 JOIN pre p ON n.adsh = p.adsh AND n.tag = p.tag AND n.version = p.version
-WHERE n.uom = 'USD' AND p.stmt = 'EQ'
-  AND s.sic BETWEEN 4000 AND 4999
+WHERE n.uom = $4 AND p.stmt = $3
+  AND s.sic BETWEEN $1 AND $2
   AND n.value IS NOT NULL AND t.abstract = 0
 GROUP BY s.sic, t.tlabel, p.stmt
 HAVING COUNT(DISTINCT s.cik) >= 2

@@ -1128,7 +1128,9 @@ impl<'a> Tr<'a> {
     fn hint_for(op: Operator, other: &Val) -> Option<Ty> {
         match op {
             Operator::Multiply if matches!(other.ty, Ty::Days | Ty::Months | Ty::Nanos) => Some(Ty::Int),
-            // a parameter multiplying a number is a DECIMAL with MULT_PARAM_SCALE places (exact for any value
+            // a parameter scaled by an integer literal is an integer (SEC-EDGAR Q24's `$1*10000+101` over a year)
+            Operator::Multiply if other.ty == Ty::Int && other.int_lit.is_some() => Some(Ty::Int),
+            // otherwise a parameter multiplying a number is a DECIMAL with MULT_PARAM_SCALE places (exact for any value
             // with at most that many decimals: TPC-H Q11's 0.0001/SF down to SF 100000)
             Operator::Multiply if matches!(other.ty, Ty::Int | Ty::Dec(_)) => Some(Ty::Dec(MULT_PARAM_SCALE)),
             Operator::Multiply | Operator::Divide => None,
