@@ -42,6 +42,18 @@ def test_a_failed_run_names_its_target_and_exit_code_when_the_gate_gives_no_reas
     assert "[host.sh build" in data["log_tail"] and "Building" not in data["log_tail"]  # a passing build adds one line
 
 
+@pytest.mark.parametrize("waited, owner", [("12.5", "infra"), ("0.2", "query")])
+def test_a_deadline_after_queueing_for_the_measurement_lease_is_infrastructures(tmp_path, waited, owner):
+    import json
+
+    result_path = tmp_path / "bench.json"
+    result_path.write_text(json.dumps({"status": "fail", "reason": "bench failed", "owner": "query"}))
+    (tmp_path / "bench.run.json").write_text(json.dumps({"exit_code": 124, "reason": "bench did not finish within 9s"}))
+    (tmp_path / "bench.phases").write_text(f"build=3.0\nmeasurement_lease_wait={waited}\n")
+    run_outcome.fold(result_path)
+    assert json.loads(result_path.read_text())["owner"] == owner
+
+
 def test_a_passing_run_leaves_no_outcome(repo):
     proc, _, _, gj, _ = gate(repo, "run_aux_cross_accel.sh", "aux_cross_accel")
     assert proc.returncode == 0, proc.stdout + proc.stderr

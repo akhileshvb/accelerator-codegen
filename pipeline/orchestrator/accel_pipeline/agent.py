@@ -54,6 +54,8 @@ from accel_pipeline.data import host_info
 from accel_pipeline.layout import (
     frozen_edited,
     layer_write_verdict,
+    OWNERS,
+    QUERY,
     StageWriteCheck,
     tree_snapshot,
     violation_message,
@@ -926,11 +928,17 @@ def record_check(art: Path, tool: str, args: tuple, result: str) -> None:
         path.write_text(json.dumps({**known, key: signature}), encoding="utf-8")
 
 
-def write_blocker(art: Path, summary: str, evidence: str) -> Path:
+def write_blocker(art: Path, summary: str, evidence: str, owner: str = QUERY) -> Path:
     path = art / BLOCKER_FILE
-    path.write_text(f"# Blocker reported by the agent\n\n{summary.strip()}\n\n## Evidence\n\n{evidence.strip()}\n",
-                    encoding="utf-8")
+    path.write_text(f"# Blocker reported by the agent\n\nOwner: {owner}\n\n{summary.strip()}\n\n"
+                    f"## Evidence\n\n{evidence.strip()}\n", encoding="utf-8")
     return path
+
+
+def blocker_owner(text: str) -> str:
+    """The owner a blocker names (write_blocker's `Owner:` line); the query's when it names none."""
+    found = re.search(r"^Owner: (\w+)$", text, re.MULTILINE)
+    return found.group(1) if found and found.group(1) in OWNERS else QUERY
 
 
 def footer(art: Path) -> str:

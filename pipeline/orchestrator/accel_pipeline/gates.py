@@ -1274,6 +1274,7 @@ def _failure(data: dict[str, Any], timings: dict[str, float]) -> Failure:
         evidence=_sanitizer_evidence(data) or str(data.get("log_tail") or ""),
         reproduce=str(data.get("reproduce") or ""),
         diagnosis=[f"{name}: {seconds:.1f}s" for name, seconds in timings.items()],
+        owner=str(data.get("owner") or ""),
     )
 
 

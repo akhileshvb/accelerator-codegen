@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from accel_pipeline.agent import (
+    blocker_owner,
     create_agent_backend,
     MAIN,
     READONLY,
@@ -296,7 +297,7 @@ def stage_failure(stage: str, backend_name: str, result: Any) -> Failure:
     stopped, evidence = result.metadata.get("stop_reason"), str(result.metadata.get("stop_detail") or "")
     if stopped == "blocker":
         return Failure(kind="infra", stage=stage, source="agent", infra_reason=AGENT_BLOCKER, evidence=evidence,
-                       summary="the agent reported a blocker outside its files (blocker.md)")
+                       owner=blocker_owner(evidence), summary="the agent reported a blocker outside its files (blocker.md)")
     if stopped == "no_progress":
         return Failure(kind="timeout", stage=stage, source="no_progress", summary=detail, evidence=evidence,
                        diagnosis=[REDIRECT])

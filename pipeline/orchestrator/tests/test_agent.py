@@ -543,6 +543,17 @@ def test_the_mcp_report_blocker_tool_writes_blocker_md(tmp_path):
     assert "the gate is broken" in (tmp_path / "blocker.md").read_text()
 
 
+def test_a_blocker_names_its_owner_and_an_unknown_owner_is_refused(tmp_path):
+    from accel_pipeline.agent import blocker_owner
+    from accel_pipeline.mcp import build_mcp_tool_callables
+
+    tools = build_mcp_tool_callables(_repo_config(tmp_path), {}, "w", 1, "implementation", 0, tmp_path)
+    assert "Unknown owner" in tools["report_blocker"]("s", "e", "nobody") and not (tmp_path / "blocker.md").exists()
+    assert "Stop now" in tools["report_blocker"]("the cut has no rows", "empty table", "data")
+    assert blocker_owner((tmp_path / "blocker.md").read_text()) == "data"
+    assert blocker_owner("no owner line") == "query"
+
+
 def test_a_harness_blocker_is_recorded_as_a_request_to_host_bootstrap(tmp_path):
     from accel_pipeline.engine_backend import pending_harness_requests
     from accel_pipeline.mcp import build_mcp_tool_callables

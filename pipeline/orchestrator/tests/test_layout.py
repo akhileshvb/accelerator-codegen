@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from accel_pipeline import layout
 
 
@@ -43,3 +45,19 @@ def test_a_committed_change_is_kept(tmp_path):
 
     assert layout.frozen_restore(tmp_path, before) == []
     assert gate.read_text() == "v2 fix\n"
+
+
+@pytest.mark.parametrize("log, owner", [
+    ("/r/accelerators/b/q3/aux.cpp:4:1: error: expected ;", "query"),
+    ("/r/accelerators/b/q9/aux.cpp:4:1: error: expected ;", "infra"),
+    ("/r/backends/e/tests/harness/diff.cpp:9:3: fatal error: x.hpp: No such file", "harness"),
+    ("/r/backends/e/bench/sweep.cpp:9:3: error: no member", "harness"),
+    ("/r/backends/e/tests/harness.cmake:9: error: bad", "harness"),
+    ("/r/backends/e/api/hooks.hpp:4:1: error: expected ;", "backend"),
+    ("/r/backends/e/api/hooks.hpp:4:1: warning: unused\n/r/accelerators/b/q3/a.cpp:1:1: error: x", "query"),
+    ("ninja: error: unknown target 'diff_bin'", "harness"),
+    ("ninja: error: unknown target 'other'", "query"),
+    ("ld: cannot find -lfoo", "query"),
+])
+def test_a_failed_build_is_owned_by_the_layer_of_the_file_its_error_names(log, owner):
+    assert layout.build_error_owner(log, "accelerators/b/q3", ["diff_bin"]) == owner

@@ -23,12 +23,12 @@ load_aux_gate_context "${ROOT}" "${QUERY}"
 
 JSON="${GATE_OUT}/${ACCEL_GATE_NAME:-aux_correctness}.json"
 if [[ -z "${AUX_TEST_TARGET}" || -z "${DIFF_BINARY}" ]]; then
-  emit_result "${JSON}" aux_correctness fail "aux test / differential target missing from the gate context. ${HOST_HINT}" ""
+  emit_result "${JSON}" aux_correctness fail "aux test / differential target missing from the gate context. ${HOST_HINT}" "" "owner=pipeline"
 fi
 
 TARGETS=("${AUX_TEST_TARGET}" "${DIFF_BINARY}")
 if ! engine_ready "${TARGETS[@]}"; then
-  emit_result "${JSON}" aux_correctness fail "${ENGINE_FAIL}" "${ENGINE_LOG}"
+  emit_result "${JSON}" aux_correctness fail "${ENGINE_FAIL}" "${ENGINE_LOG}" "owner=${ENGINE_OWNER}"
 fi
 
 engine_run "${AUX_TEST_TARGET}"

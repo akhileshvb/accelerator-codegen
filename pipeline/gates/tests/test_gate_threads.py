@@ -225,6 +225,18 @@ def test_a_race_on_a_global_of_the_query_is_the_querys_even_when_the_access_fram
     assert found["yours_count"] == 1 and found["infra"]["count"] == 0
 
 
+def test_a_report_only_inside_the_engine_is_the_backends(tmp_path):
+    import sanitizer_findings
+
+    assert sanitizer_findings.classify(tmp_path, qdir("b", 1) + "/")["owner"] == ""
+    (tmp_path / "tsan.1").write_text(
+        "WARNING: ThreadSanitizer: data race (pid=1)\n"
+        "  Write of size 8 at 0x1 by thread T1:\n"
+        "    #0 Foo /engine/src/x.cpp:9 (bin+0x1)\n\n"
+        "SUMMARY: ThreadSanitizer: data race /engine/src/x.cpp:9 in Foo\n")
+    assert sanitizer_findings.classify(tmp_path, qdir("b", 1) + "/")["owner"] == "backend"
+
+
 @pytest.mark.parametrize("allocator, yours", [("Pipeline::Schedule() <null> (libengine.so+0x2)", 0),
                                               ("Build /r/{Q}/state.cpp:7 (lib+0x6)", 1)])
 def test_a_heap_block_is_the_querys_only_when_the_query_allocated_it(tmp_path, allocator, yours):

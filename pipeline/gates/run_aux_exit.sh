@@ -38,7 +38,7 @@ declare -A SCRIPT=([correctness]=run_aux_correctness.sh [multi_connection]=run_a
 mapfile -t TARGETS < <(printf '%s\n' "${AUX_TEST_TARGET}" "${DIFF_BINARY}" "${MULTI_CONN_TARGET}" "${CROSS_ACCEL_TARGET}" \
   "${AUX_BENCH_TARGET}" "${AUX_CALIBRATE_TARGET}" | grep .)
 if ! engine_ready "${TARGETS[@]}"; then
-  emit_result "${JSON}" aux_exit fail "${ENGINE_FAIL}" "${ENGINE_LOG}"
+  emit_result "${JSON}" aux_exit fail "${ENGINE_FAIL}" "${ENGINE_LOG}" "owner=${ENGINE_OWNER}"
 fi
 
 # start <phase>: the phase's gate script in the background, as that gate (its result file is the gate's own); status,
@@ -103,8 +103,12 @@ payload = {
     "stacks": "\n".join(f"=== {name} ===\n{data['stacks']}" for name, _, data, _ in failed if data.get("stacks")),
     "reproduce": "; ".join(f'request_gate("{gate}")' for _, gate, _, _ in failed),
 }
-if failed and all(data.get("owner") == "harness" for _, _, data, _ in failed):  # only the harness is at fault
-    payload["owner"] = "harness"
+if failed:
+    # One owner when the failed phases agree; else the query's failures go to the query and the others are recorded
+    # for their owners (repair.record_elsewhere).
+    owners = {name: data.get("owner") or "query" for name, _, data, _ in failed}
+    payload["owner"] = "query" if "query" in owners.values() else sorted(set(owners.values()))[0]
+    payload["elsewhere"] = {name: owner for name, owner in owners.items() if owner != payload["owner"]}
 pathlib.Path(out).write_text(json.dumps(payload, indent=2))
 print(json.dumps(payload, indent=2))
 sys.exit(1 if failed else 0)

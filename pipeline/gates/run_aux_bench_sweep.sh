@@ -41,7 +41,7 @@ if [[ -z "${BENCH_TARGET}" ]]; then
   exit 0
 fi
 if ! engine_ready "${BENCH_TARGET}"; then
-  emit_result "${OUT}/aux_bench_sweep.json" aux_bench_sweep fail "${ENGINE_FAIL}" "${ENGINE_LOG}" "query:=${QUERY}"
+  emit_result "${OUT}/aux_bench_sweep.json" aux_bench_sweep fail "${ENGINE_FAIL}" "${ENGINE_LOG}" "owner=${ENGINE_OWNER}" "query:=${QUERY}"
 fi
 
 export ACCEL_AUX_BENCH_WORK_DIR="${BUILD}/${AUX_BENCH_WORK_DIR_SUFFIX:-q${QUERY}_aux_bench}"
@@ -210,7 +210,7 @@ summary = aggregate_sweep_repeats(summaries, draws) if len(summaries) > 1 else s
 
 status = "pass"
 notes = []
-owner = ""
+owner = "query"
 expected_rows = [int(n) for n in "${FREQ_COUNTS[*]}".split()]
 if int("${SWEEP_RC}") != 0:
     status = "fail"
@@ -232,7 +232,7 @@ if threads1_csv.stat().st_size and threadsn_csv.stat().st_size:
 
 gate = {
     "gate": "aux_bench_sweep",
-    **({"owner": owner} if owner and int("${SWEEP_RC}") == 0 else {}),  # the bench's output breaks its contract
+    **({"owner": owner if int("${SWEEP_RC}") == 0 else "query"} if status == "fail" else {}),  # harness: the bench's output breaks its contract
     "query": int("${QUERY}"),
     "benchmark": "${BENCHMARK_NAME}",
     "status": status,

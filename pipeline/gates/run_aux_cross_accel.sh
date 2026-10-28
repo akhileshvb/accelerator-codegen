@@ -16,14 +16,14 @@ load_aux_gate_context "${ROOT}" "${QUERY}"
 
 JSON="${GATE_OUT}/aux_cross_accel.json"
 if [[ -z "${CROSS_ACCEL_TARGET}" ]]; then
-  emit_result "${JSON}" aux_cross_accel fail "no cross-accel target in the gate context (engine_host.cross_accel_target). ${HOST_HINT}" ""
+  emit_result "${JSON}" aux_cross_accel fail "no cross-accel target in the gate context (engine_host.cross_accel_target). ${HOST_HINT}" "" "owner=pipeline"
 fi
 
 export ACCEL_AUX_BENCHMARK="${BENCHMARK_NAME}"
 export ACCEL_CROSS_ACCEL_TEST_QUERIES="${QUERY}"
 
 if ! engine_ready "${CROSS_ACCEL_TARGET}"; then
-  emit_result "${JSON}" aux_cross_accel fail "${ENGINE_FAIL}" "${ENGINE_LOG}"
+  emit_result "${JSON}" aux_cross_accel fail "${ENGINE_FAIL}" "${ENGINE_LOG}" "owner=${ENGINE_OWNER}"
 fi
 engine_run "${CROSS_ACCEL_TARGET}" "${QUERY}"
 STATUS=pass
