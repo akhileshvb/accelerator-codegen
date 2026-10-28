@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 from pathlib import Path
 
@@ -387,3 +388,10 @@ def test_runner_env_modes(tmp_path):
     assert "VERUS_KIT_PARAMS_FILE" in context.draw_env(d, "replace")
     assert "VERUS_KIT_EXTRA_PARAMS_FILE" in context.draw_env(d, "extra")
     assert context.draw_env(None, "replace") == {}
+
+
+def test_sanitize_reserves_what_sql2verus_reserves():
+    rust = (REPO / "substrate" / "verus" / "sql2verus" / "src" / "main.rs").read_text(encoding="utf-8")
+    block = re.search(r"const RESERVED: &\[&str\] = &\[(.*?)\];", rust, re.S).group(1)
+    assert actions.RESERVED == set(re.findall(r'"([^"]+)"', block))
+    assert actions.sanitize("abstract") == "abstract_"

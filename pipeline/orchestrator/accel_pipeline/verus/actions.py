@@ -1235,10 +1235,16 @@ def backend_addition_record(ctx: VerusContext, engine: str, helper: str, reason:
 # checks the glue on the test data only; the glue audit agent reads it for the rest.
 
 
-RESERVED = {"as", "break", "const", "continue", "crate", "else", "enum", "extern", "false", "fn", "for", "if", "impl",
-            "in", "let", "loop", "match", "mod", "move", "mut", "pub", "ref", "return", "self", "static", "struct",
-            "super", "trait", "true", "type", "unsafe", "use", "where", "while", "async", "await", "dyn", "int", "nat",
-            "seq", "set", "map", "spec", "proof", "ghost", "tracked"}
+# sql2verus's reserved identifiers (substrate/verus/sql2verus/src/main.rs RESERVED): sanitize must name what it names
+RESERVED = {"db", "params", "t", "f", "r", "out", "full", "i", "j", "k", "m", "x", "y", "a", "b", "s", "e", "u", "v",
+            "z", "self", "type", "fn", "let", "match", "use", "mod", "ref", "move", "in", "loop", "as", "where",
+            "impl", "trait", "struct", "enum", "const", "static", "pub", "crate", "super", "true", "false", "if",
+            "else", "while", "for", "return", "break", "continue", "dyn", "async", "await", "unsafe", "extern",
+            "box", "yield", "macro", "try", "abstract", "final", "override", "priv", "typeof", "unsized", "virtual",
+            "do", "become", "spec", "proof", "exec", "tracked", "ghost", "open", "closed", "requires", "ensures",
+            "decreases", "invariant", "forall", "exists", "choose", "assert", "assume", "seq", "sum", "flat", "ind",
+            "int", "nat", "bool", "char", "str", "verus", "is", "has", "old", "pow2", "abs", "dedup", "global",
+            "default", "union", "auto", "t0", "y0"}
 
 
 def sanitize(s: str) -> str:
