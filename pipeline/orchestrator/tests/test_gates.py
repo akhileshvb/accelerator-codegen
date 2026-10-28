@@ -3,10 +3,12 @@ against them, the build skipped when the code is unchanged, and the quick check 
 projection and config)."""
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import stat
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -397,20 +399,20 @@ def test_a_failed_or_missing_background_run_is_never_reused(stamp_config):
     assert reusable_background_result(stamp_config, STAMP_WORKLOAD, 5, "prims_tests") is None
 
 
-def test_a_background_run_whose_process_vanished_is_reported_died(stamp_config):
+def test_a_background_run_whose_runner_holds_no_lock_is_reported_died(stamp_config):
     path = gates._state_path(stamp_config, STAMP_WORKLOAD, 5, "aux_unit")
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps({"gate": "aux_unit", "status": "running", "pid": 2**22 + 12345, "started_at": time.time()}))
+    path.write_text(json.dumps({"gate": "aux_unit", "status": "running", "started_at": time.time()}))
     assert background_status(stamp_config, STAMP_WORKLOAD, 5, "aux_unit")["status"] == "died"
 
 
 def test_a_running_background_gate_says_what_it_is_doing_and_how_long(stamp_config):
-    import os
-
     path = gates._state_path(stamp_config, STAMP_WORKLOAD, 5, "aux_exit")
     out = path.parent / "aux_exit"
     out.mkdir(parents=True)
-    path.write_text(json.dumps({"gate": "aux_exit", "status": "running", "pid": os.getpid(), "started_at": time.time() - 42}))
+    path.write_text(json.dumps({"gate": "aux_exit", "status": "running", "started_at": time.time() - 42}))
+    lock = gates._lock_path(path).open("w")
+    fcntl.flock(lock, fcntl.LOCK_EX)
     (out / "aux_exit.phase").write_text("running: correctness bench\n")
     (out / "aux_correctness.json.run.k3j2.log").write_text("phase build: 61.4 s\nphase suite: 70.5 s\n")
     (out / "aux_bench_sweep.json.run.q9x1.log").write_text("")
@@ -423,22 +425,26 @@ def test_a_running_background_gate_says_what_it_is_doing_and_how_long(stamp_conf
     assert {"elapsed_sec", "phase", "progress"} <= set(_compact_background_state(status))
 
 
-def test_starting_a_background_gate_records_it_running_and_does_not_start_it_twice(stamp_config, monkeypatch):
-    spawned = []
-
-    class Proc:
-        pid = 4242
-
-    fake_subprocess = SimpleNamespace(Popen=lambda *a, **k: spawned.append(a) or Proc(), STDOUT=subprocess.STDOUT)
-    monkeypatch.setattr(gates, "subprocess", fake_subprocess)
-    monkeypatch.setattr(gates, "_alive", lambda pid: True)
+def test_an_agent_requests_a_background_gate_and_the_orchestrator_starts_it_once(stamp_config, monkeypatch):
     state = start_background_gate(stamp_config, STAMP_WORKLOAD, 5, "aux_unit", workload_name="tpch_q5_aux")
-    assert state["status"] == "running" and state["pid"] == 4242 and state["stamp_start"]
-    assert "--gate" in spawned[0][0] and "aux_unit" in spawned[0][0]
+    assert state["status"] == "requested" and state["stamp_start"] and "aux_unit" in state["argv"]
+    assert background_status(stamp_config, STAMP_WORKLOAD, 5, "aux_unit")["status"] == "requested"
+    path = gates._state_path(stamp_config, STAMP_WORKLOAD, 5, "aux_unit")
+    runner = [sys.executable, "-c", "import time; time.sleep(30)"]
+    path.write_text(json.dumps({**state, "argv": runner}))
+    spawned = []
+    real_popen = subprocess.Popen
+    monkeypatch.setattr(gates.subprocess, "Popen", lambda *a, **k: spawned.append(real_popen(*a, **k)) or spawned[-1])
+    gates.launch_requested_gates(path.parent)
+    gates.launch_requested_gates(path.parent)
+    assert len(spawned) == 1
+    # the runner holds the gate's lock, not the launcher: alive while it runs, died once it is gone
+    assert background_status(stamp_config, STAMP_WORKLOAD, 5, "aux_unit")["status"] == "running"
     again = start_background_gate(stamp_config, STAMP_WORKLOAD, 5, "aux_unit", workload_name="tpch_q5_aux")
-    assert again["pid"] == 4242 and len(spawned) == 1
-    status = background_status(stamp_config, STAMP_WORKLOAD, 5, "aux_unit")
-    assert status["status"] == "running" and "elapsed_sec" in status
+    assert again["status"] == "running"
+    spawned[0].kill()
+    spawned[0].wait()
+    assert background_status(stamp_config, STAMP_WORKLOAD, 5, "aux_unit")["status"] == "died"
 
 
 def test_a_timing_gate_is_reused_only_from_the_same_stages_acceptance_run(stamp_config):
@@ -1339,6 +1345,6 @@ def test_a_background_gate_that_died_says_why_and_shows_no_stale_phase(tmp_path,
     monkeypatch.setattr(gates, "_state_path", lambda *a: tmp_path / "bg" / "aux_correctness.json")
     (tmp_path / "bg").mkdir()
     (tmp_path / "bg" / "aux_correctness.json").write_text(json.dumps({"gate": "aux_correctness", "status": "running",
-                                                                     "pid": 2 ** 22 + 7, "started_at": 0}))
+                                                                     "started_at": 0}))
     status = gates.background_status(None, {}, 3, "aux_correctness")
     assert status == {"gate": "aux_correctness", "status": "died", "reason": gates.BACKGROUND_DIED}

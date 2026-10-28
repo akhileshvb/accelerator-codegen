@@ -64,6 +64,7 @@ from accel_pipeline.config import (
     engine_host_conventions,
     FACTS_FILE,
     gates_dir_for_query,
+    RUN_OUTCOME,
     HEARTBEAT_FILE,
     load_query_analysis,
     PipelineConfig,
@@ -901,6 +902,7 @@ def run_gates_parallel(
 
 
 BG_DIRNAME = "bg"
+REQUESTED = "requested"  # filed by the agent's request_gate, not yet started by the orchestrator
 PACKAGE_ROOT = str(Path(__file__).resolve().parents[1])
 
 
@@ -920,37 +922,80 @@ def _read_state(path: Path) -> dict[str, Any]:
         return {}
 
 
-def _alive(pid: int) -> bool:
+def _lock_path(path: Path) -> Path:
+    return path.with_suffix(".lock")
+
+
+def _held(path: Path) -> bool:
+    """Whether the runner of the background gate whose state is `path` is alive (it holds the gate's lock)."""
     try:
-        os.kill(pid, 0)
+        with _lock_path(path).open("a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        return True
     except OSError:
         return False
-    return True
+    return False
 
 
 def start_background_gate(pipeline_config: PipelineConfig, workload: dict[str, Any], query: int, gate: str,
                           *, workload_name: str) -> dict[str, Any]:
-    """Start `gate` in a detached process and return its state; a gate already running is left alone."""
+    """Request `gate` in the background and return its state; a gate already requested or running is left alone.
+    The orchestrator starts it (launch_requested_gates): a process started here, in the agent's sandbox, would end
+    with the agent's turn."""
     path = _state_path(pipeline_config, workload, query, gate)
     state = _read_state(path)
-    if state.get("status") == "running" and _alive(int(state.get("pid", 0))):
+    if state.get("status") == REQUESTED or state.get("status") == "running" and _held(path):
         return state
     path.parent.mkdir(parents=True, exist_ok=True)
-    state = {"gate": gate, "status": "running", "started_at": time.time(),
+    state = {"gate": gate, "status": REQUESTED, "started_at": time.time(),
              "stamp_start": current_stamp(pipeline_config, workload, query),
-             "check_version": check_version(pipeline_config.repo_root)}
-    path.write_text(json.dumps(state), encoding="utf-8")
-    log = (path.parent / f"{gate}.log").open("w")
-    proc = subprocess.Popen(
-        [sys.executable, "-m", "accel_pipeline.gates", "--repo-root", str(pipeline_config.repo_root),
-         "--workload", workload_name, "--engine", str(workload.get("engine_name") or ""),
-         "--query", str(query), "--gate", gate],
-        cwd=pipeline_config.repo_root, stdout=log, stderr=subprocess.STDOUT, start_new_session=True,
-        env={**os.environ, "PYTHONPATH": os.pathsep.join(filter(None, [PACKAGE_ROOT, os.environ.get("PYTHONPATH", "")]))},
-    )
-    state["pid"] = proc.pid
+             "check_version": check_version(pipeline_config.repo_root),
+             "cwd": str(pipeline_config.repo_root),
+             "argv": [sys.executable, "-m", "accel_pipeline.gates", "--repo-root", str(pipeline_config.repo_root),
+                      "--workload", workload_name, "--engine", str(workload.get("engine_name") or ""),
+                      "--query", str(query), "--gate", gate]}
     path.write_text(json.dumps(state), encoding="utf-8")
     return state
+
+
+def launch_requested_gates(bg_dir: Path) -> None:
+    """Start the background gates an agent requested, in sessions of their own outside its sandbox. Each runner
+    inherits the gate's lock, held until it exits: its liveness, which a pid from outside the sandbox cannot tell."""
+    for path in bg_dir.glob("*.json"):
+        state = _read_state(path)
+        if state.get("status") != REQUESTED:
+            continue
+        with _lock_path(path).open("w") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            state["status"] = "running"
+            path.write_text(json.dumps(state), encoding="utf-8")
+            with (path.parent / f"{state['gate']}.log").open("w") as log:
+                subprocess.Popen(
+                    state["argv"], cwd=state["cwd"], stdout=log, stderr=subprocess.STDOUT, start_new_session=True,
+                    pass_fds=(lock.fileno(),),
+                    env={**os.environ, "PYTHONPATH": os.pathsep.join(filter(None, [PACKAGE_ROOT, os.environ.get("PYTHONPATH", "")]))},
+                )
+
+
+@contextlib.contextmanager
+def background_launcher(bg_dir: Path, every_sec: float = 1.0) -> Iterator[None]:
+    """Launches the background gates requested while the block runs (an agent's turn)."""
+    done = threading.Event()
+
+    def poll() -> None:
+        while not done.is_set():
+            launch_requested_gates(bg_dir)
+            done.wait(every_sec)
+
+    thread = threading.Thread(target=poll, daemon=True)
+    thread.start()
+    try:
+        yield
+    finally:
+        done.set()
+        thread.join(timeout=every_sec + 1)
+        launch_requested_gates(bg_dir)  # a request filed in the turn's last second
 
 
 def _tail(path: Path, size: int = 4096) -> str:
@@ -974,9 +1019,8 @@ def _live(out_dir: Path, gate: str) -> dict[str, Any]:
     return {**live, "progress": progress} if progress else live
 
 
-BACKGROUND_DIED = ("the background run ended before it finished: a background gate runs inside your session and ends "
-                   "with it (a new turn, a restart), so its last phase says nothing about the code or the harness. "
-                   "Request it again, or in the foreground when it takes longer than you will wait")
+BACKGROUND_DIED = ("the background run ended before it finished, without a result (the run was killed, or the pipeline "
+                   "restarted), so its last phase says nothing about the code or the harness. Request it again")
 
 
 def background_status(pipeline_config: PipelineConfig, workload: dict[str, Any], query: int, gate: str) -> dict[str, Any]:
@@ -985,8 +1029,8 @@ def background_status(pipeline_config: PipelineConfig, workload: dict[str, Any],
     state = _read_state(_state_path(pipeline_config, workload, query, gate))
     if not state:
         return {"gate": gate, "status": "none", "reason": "no background run; request_gate(gate, background=True) starts one"}
-    if state.get("status") == "running":
-        if not _alive(int(state.get("pid", 0))):
+    if state.get("status") in (REQUESTED, "running"):
+        if state["status"] == "running" and not _held(_state_path(pipeline_config, workload, query, gate)):
             return {"gate": gate, "status": "died", "reason": BACKGROUND_DIED}
         return {**state, "elapsed_sec": round(time.time() - float(state["started_at"]), 1),
                 **_live(_state_path(pipeline_config, workload, query, gate).parent / gate, gate),
@@ -1475,7 +1519,6 @@ COUNTER_LOOP_SECONDS = 0.5  # the read loop the counters cover
 WRITE_MIX_PCT = 50  # share of operations that are writes in the write-path profile
 
 
-RUN_OUTCOME = Path(__file__).resolve().parents[2] / "gates" / "run_outcome.py"  # this tree's: caps a run's memory
 
 
 @dataclass(frozen=True)

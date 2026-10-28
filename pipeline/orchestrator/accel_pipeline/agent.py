@@ -42,6 +42,8 @@ from typing import Any, Callable, Iterator
 from accel_pipeline import layout
 from accel_pipeline.config import (
     read_json,
+    gates_dir_for_query,
+    RUN_OUTCOME,
     HEARTBEAT_FILE,
     load_run_workload,
     ModelConfig,
@@ -50,7 +52,7 @@ from accel_pipeline.config import (
     resolve_stage_provider,
     TOOL_CALL_LIMIT_S,
 )
-from accel_pipeline.data import host_info
+from accel_pipeline.data import host_info, run_memory_budget
 from accel_pipeline.layout import (
     frozen_edited,
     layer_write_verdict,
@@ -455,8 +457,10 @@ class CodexExecBackend:
             # does not have to read it back through a shell (whose output codex truncates).
             via_stdin = bool(fork) or bool(getattr(self, "prompt_via_stdin", False))
             cmd.append("-" if via_stdin else str(task_path))
-            # An OS sandbox to run codex (and its MCP server) in, e.g. bwrap.
-            cmd = list(getattr(self, "command_prefix", None) or []) + cmd
+            # An OS sandbox to run codex (and its MCP server) in, e.g. bwrap, all of it under one memory cap: the
+            # sandbox cannot make the per-run caps its gates and tests would get outside it.
+            cmd = [sys.executable, str(RUN_OUTCOME), "cap", str(run_memory_budget()), "--",
+                   *(getattr(self, "command_prefix", None) or []), *cmd]
             try:
                 outcome = self._supervise(cmd, env, task if via_stdin else None, started_wall, **({"watched": False} if fork else {}))
             except FileNotFoundError as exc:
@@ -813,16 +817,20 @@ def run_in_session(backend: Any, request: Any, *, pipeline_config: Any, art: Pat
 
 @contextmanager
 def agent_run(art: Path | None, stage: str, pipeline_config: Any) -> Iterator[None]:
-    """Marks a running agent for the MCP budget footer: its start and deadlines."""
+    """Marks a running agent for the MCP budget footer (its start and deadlines) and launches the background gates
+    it requests."""
     if art is None:
         yield
         return
+    from accel_pipeline.gates import BG_DIRNAME, background_launcher  # gates imports repair, which imports this module
+
     cfg = pipeline_config.session
     write_json(art / RUN_FILE, {"stage": stage, "started": time.time(),
                             "soft_deadline_sec": cfg.soft_deadline_for(stage), "hard_deadline_sec": cfg.hard_deadline_sec,
                             "no_progress": dict(zip(("nudge_sec", "redirect_sec"), cfg.no_progress.for_stage(stage)))})
     try:
-        yield
+        with background_launcher(gates_dir_for_query(art) / BG_DIRNAME):
+            yield
     finally:
         for name in (RUN_FILE, PROGRESS_FILE):
             (art / name).unlink(missing_ok=True)

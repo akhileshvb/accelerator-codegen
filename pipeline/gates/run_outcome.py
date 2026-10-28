@@ -105,14 +105,15 @@ def _exec_gdb(pids: list[int], stacks_log: str) -> None:
     os.execv(gdb, [gdb, "-batch", "-nx", "-q", *(a for c in cmds for a in ("-ex", c))])
 
 
-def capped(cmd: list[str]) -> list[str]:
-    """`cmd` in a user scope with MemoryMax ACCEL_RUN_MEMORY_MB (swap off), when the budget is set and the user's
-    systemd can make scopes; else `cmd` unchanged. The scope execs the command in place: it stays our descendant."""
-    mb = os.environ.get("ACCEL_RUN_MEMORY_MB", "")
+def capped(cmd: list[str], mb: str = "") -> list[str]:
+    """`cmd` in a user scope with MemoryMax `mb` (default ACCEL_RUN_MEMORY_MB; swap off), when the budget is set and
+    the user's systemd can make scopes; else `cmd` unchanged. The scope execs the command in place: it stays our
+    descendant. Past the cap the kernel kills the process that grew, not its peers (OOMPolicy=continue)."""
+    mb = mb or os.environ.get("ACCEL_RUN_MEMORY_MB", "")
     if not mb.isdigit() or not _scopes():
         return cmd
     return ["systemd-run", "--user", "--scope", "-q", "--collect", "-p", f"MemoryMax={mb}M", "-p", "MemorySwapMax=0",
-            "--", *cmd]
+            "-p", "OOMPolicy=continue", "--", *cmd]
 
 
 def _scopes() -> bool:
@@ -225,9 +226,10 @@ def main(argv: list[str]) -> int:
         assert sep == "--" and cmd, "usage: run <seconds> <outcome json> <label> -- <command...>"
         return run(float(seconds), outcome, label, cmd)
     if verb == "cap":
+        mb = args.pop(0) if args and args[0] != "--" else ""
         sep, *cmd = args
-        assert sep == "--" and cmd, "usage: cap -- <command...>"
-        cmd = capped(cmd)
+        assert sep == "--" and cmd, "usage: cap [<mb>] -- <command...>"
+        cmd = capped(cmd, mb)
         os.execvp(cmd[0], cmd)
     if verb == "fold":
         fold(Path(args[0]))

@@ -46,6 +46,7 @@ from accel_pipeline.layout import (
 
 DEFAULT_BUILD_DIR = "build-release"
 DEFAULT_GATES_DIR = "pipeline/gates"
+RUN_OUTCOME = Path(__file__).resolve().parents[2] / "gates" / "run_outcome.py"  # this tree's: caps a run's memory
 SANDBOXES = ("bwrap", "none")
 WRITE_POLICIES = ("enforce", "warn", "off")
 TOOL_CALL_LIMIT_S = float(os.environ.get("ACCEL_TOOL_CALL_LIMIT", 1800))  # the agent client's limit on one tool call

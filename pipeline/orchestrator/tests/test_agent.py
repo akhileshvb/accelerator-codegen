@@ -223,6 +223,18 @@ def test_agent_run_file_marks_the_run_for_the_budget_footer(tmp_path, monkeypatc
     assert seen == [True] and not (tmp_path / "art" / "agent_run.json").exists()
 
 
+def test_the_agent_session_runs_under_one_memory_cap(tmp_path, monkeypatch):
+    from accel_pipeline.config import RUN_OUTCOME
+
+    backend = _fake_backend(tmp_path, monkeypatch)
+    backend.command_prefix = ["sandbox"]
+    seen = []
+    backend._supervise = lambda cmd, *a, **k: seen.append(cmd) or (_ for _ in ()).throw(FileNotFoundError("stop"))
+    backend.run_stage(_codex_request())
+    _python, outcome, verb, mb, sep, sandbox = seen[0][:6]
+    assert (outcome, verb, sep, sandbox) == (str(RUN_OUTCOME), "cap", "--", "sandbox") and int(mb) > 0
+
+
 def test_query_stages_get_the_artifact_dir_so_their_progress_clock_runs(monkeypatch, tmp_path):
     """analysis and test_suite are watched like the implementation stages: the backend knows the query's artifact dir."""
     from types import SimpleNamespace
