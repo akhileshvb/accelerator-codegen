@@ -129,7 +129,11 @@ public:
   Seq BeginCommit(uint64_t txn, std::vector<ColumnarBatchRef> batches);
   // The engine committed at `epoch`: maintain (lookups see the database as
   // the commit left it) and publish; queued for catch-up if not synced.
-  void PublishCommit(Epoch epoch);
+  // `ends_commit` false: other accelerators of the commit still publish; the caller
+  // then ends the commit (EndCommit) when they all have.
+  void PublishCommit(Epoch epoch, bool ends_commit = true);
+  // The engine commit at `epoch` has published everywhere: its store may install it.
+  void EndCommit(Epoch epoch);
   void AbortCommit(); // the engine rolled back
 
   // ---- shipped commits (Postgres worker main thread) ----

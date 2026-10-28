@@ -61,10 +61,10 @@ pub unsafe extern "C" fn tpchw_gbase_free(gb: *mut Arc<GBase>) {
     }
 }
 
-/// A batch on a base (every slot carried).
+/// A batch on a base for the commit visible from engine epoch `from` (every slot carried).
 #[no_mangle]
-pub unsafe extern "C" fn tpchw_batch_new(gb: *const Arc<GBase>) -> *mut Batch {
-    Box::into_raw(Box::new(batch_new(&*gb)))
+pub unsafe extern "C" fn tpchw_batch_new(gb: *const Arc<GBase>, from: u64) -> *mut Batch {
+    Box::into_raw(Box::new(batch_new(&*gb, from)))
 }
 
 #[no_mangle]
@@ -74,12 +74,13 @@ pub unsafe extern "C" fn tpchw_batch_free(b: *mut Batch) {
     }
 }
 
-/// Install the batch (consumed) as the next version, current from engine
-/// epoch `from`; keep the versions snapshots at or after `floor` select;
-/// end_commit != 0 also ends the commit in flight.  0: appended; 1: stale.
+/// Install the batch (consumed) as the next version, current from its epoch;
+/// keep the versions snapshots at or after `floor` select; end_commit != 0
+/// installs it as the commit in flight (the store checks it is the one).
+/// 0: appended; 1: stale.
 #[no_mangle]
-pub unsafe extern "C" fn tpchw_install(st: *const GStore, b: *mut Batch, from: u64, floor: u64, end_commit: i32) -> i32 {
-    let p = batch_finish(*Box::from_raw(b));
+pub unsafe extern "C" fn tpchw_install(st: *const GStore, b: *mut Batch, floor: u64, end_commit: i32) -> i32 {
+    let (p, from) = batch_finish(*Box::from_raw(b));
     let r = if end_commit != 0 { (*st).commit(p, from, floor) } else { (*st).install(p, from, floor) };
     match r {
         Install::Applied => 0,
@@ -108,11 +109,12 @@ pub unsafe extern "C" fn tpchw_head_1(gb: *const Arc<GBase>) -> *mut Head<D1> {
     Box::into_raw(Box::new(head_1(&**gb)))
 }
 
-/// Put a slot staged by the kit (consumed) in the batch.  1: taken; 0: it was staged on
-/// another base, the slot is invalid.
+/// Put a slot staged by the kit (consumed) in the batch, for the commit at engine epoch
+/// `from`.  1: taken; 0: it was staged on another base or put for another commit, the
+/// slot is invalid.
 #[no_mangle]
-pub unsafe extern "C" fn tpchw_put_1(b: *mut Batch, st: *mut Staged<D1, S1>) -> i32 {
-    let (nb, taken) = put_1(ptr::read(b), *Box::from_raw(st));
+pub unsafe extern "C" fn tpchw_put_1(b: *mut Batch, st: *mut Staged<D1, S1>, from: u64) -> i32 {
+    let (nb, taken) = put_1(ptr::read(b), *Box::from_raw(st), from);
     ptr::write(b, nb);
     taken as i32
 }
@@ -165,11 +167,12 @@ pub unsafe extern "C" fn tpchw_head_2(gb: *const Arc<GBase>) -> *mut Head<D2> {
     Box::into_raw(Box::new(head_2(&**gb)))
 }
 
-/// Put a slot staged by the kit (consumed) in the batch.  1: taken; 0: it was staged on
-/// another base, the slot is invalid.
+/// Put a slot staged by the kit (consumed) in the batch, for the commit at engine epoch
+/// `from`.  1: taken; 0: it was staged on another base or put for another commit, the
+/// slot is invalid.
 #[no_mangle]
-pub unsafe extern "C" fn tpchw_put_2(b: *mut Batch, st: *mut Staged<D2, S2>) -> i32 {
-    let (nb, taken) = put_2(ptr::read(b), *Box::from_raw(st));
+pub unsafe extern "C" fn tpchw_put_2(b: *mut Batch, st: *mut Staged<D2, S2>, from: u64) -> i32 {
+    let (nb, taken) = put_2(ptr::read(b), *Box::from_raw(st), from);
     ptr::write(b, nb);
     taken as i32
 }
@@ -222,11 +225,12 @@ pub unsafe extern "C" fn tpchw_head_3(gb: *const Arc<GBase>) -> *mut Head<D3> {
     Box::into_raw(Box::new(head_3(&**gb)))
 }
 
-/// Put a slot staged by the kit (consumed) in the batch.  1: taken; 0: it was staged on
-/// another base, the slot is invalid.
+/// Put a slot staged by the kit (consumed) in the batch, for the commit at engine epoch
+/// `from`.  1: taken; 0: it was staged on another base or put for another commit, the
+/// slot is invalid.
 #[no_mangle]
-pub unsafe extern "C" fn tpchw_put_3(b: *mut Batch, st: *mut Staged<D3, S3>) -> i32 {
-    let (nb, taken) = put_3(ptr::read(b), *Box::from_raw(st));
+pub unsafe extern "C" fn tpchw_put_3(b: *mut Batch, st: *mut Staged<D3, S3>, from: u64) -> i32 {
+    let (nb, taken) = put_3(ptr::read(b), *Box::from_raw(st), from);
     ptr::write(b, nb);
     taken as i32
 }
@@ -279,11 +283,12 @@ pub unsafe extern "C" fn tpchw_head_4(gb: *const Arc<GBase>) -> *mut Head<D4> {
     Box::into_raw(Box::new(head_4(&**gb)))
 }
 
-/// Put a slot staged by the kit (consumed) in the batch.  1: taken; 0: it was staged on
-/// another base, the slot is invalid.
+/// Put a slot staged by the kit (consumed) in the batch, for the commit at engine epoch
+/// `from`.  1: taken; 0: it was staged on another base or put for another commit, the
+/// slot is invalid.
 #[no_mangle]
-pub unsafe extern "C" fn tpchw_put_4(b: *mut Batch, st: *mut Staged<D4, S4>) -> i32 {
-    let (nb, taken) = put_4(ptr::read(b), *Box::from_raw(st));
+pub unsafe extern "C" fn tpchw_put_4(b: *mut Batch, st: *mut Staged<D4, S4>, from: u64) -> i32 {
+    let (nb, taken) = put_4(ptr::read(b), *Box::from_raw(st), from);
     ptr::write(b, nb);
     taken as i32
 }
@@ -336,11 +341,12 @@ pub unsafe extern "C" fn tpchw_head_5(gb: *const Arc<GBase>) -> *mut Head<D5> {
     Box::into_raw(Box::new(head_5(&**gb)))
 }
 
-/// Put a slot staged by the kit (consumed) in the batch.  1: taken; 0: it was staged on
-/// another base, the slot is invalid.
+/// Put a slot staged by the kit (consumed) in the batch, for the commit at engine epoch
+/// `from`.  1: taken; 0: it was staged on another base or put for another commit, the
+/// slot is invalid.
 #[no_mangle]
-pub unsafe extern "C" fn tpchw_put_5(b: *mut Batch, st: *mut Staged<D5, S5>) -> i32 {
-    let (nb, taken) = put_5(ptr::read(b), *Box::from_raw(st));
+pub unsafe extern "C" fn tpchw_put_5(b: *mut Batch, st: *mut Staged<D5, S5>, from: u64) -> i32 {
+    let (nb, taken) = put_5(ptr::read(b), *Box::from_raw(st), from);
     ptr::write(b, nb);
     taken as i32
 }
@@ -393,11 +399,12 @@ pub unsafe extern "C" fn tpchw_head_6(gb: *const Arc<GBase>) -> *mut Head<D6> {
     Box::into_raw(Box::new(head_6(&**gb)))
 }
 
-/// Put a slot staged by the kit (consumed) in the batch.  1: taken; 0: it was staged on
-/// another base, the slot is invalid.
+/// Put a slot staged by the kit (consumed) in the batch, for the commit at engine epoch
+/// `from`.  1: taken; 0: it was staged on another base or put for another commit, the
+/// slot is invalid.
 #[no_mangle]
-pub unsafe extern "C" fn tpchw_put_6(b: *mut Batch, st: *mut Staged<D6, S6>) -> i32 {
-    let (nb, taken) = put_6(ptr::read(b), *Box::from_raw(st));
+pub unsafe extern "C" fn tpchw_put_6(b: *mut Batch, st: *mut Staged<D6, S6>, from: u64) -> i32 {
+    let (nb, taken) = put_6(ptr::read(b), *Box::from_raw(st), from);
     ptr::write(b, nb);
     taken as i32
 }
@@ -450,11 +457,12 @@ pub unsafe extern "C" fn tpchw_head_7(gb: *const Arc<GBase>) -> *mut Head<D7> {
     Box::into_raw(Box::new(head_7(&**gb)))
 }
 
-/// Put a slot staged by the kit (consumed) in the batch.  1: taken; 0: it was staged on
-/// another base, the slot is invalid.
+/// Put a slot staged by the kit (consumed) in the batch, for the commit at engine epoch
+/// `from`.  1: taken; 0: it was staged on another base or put for another commit, the
+/// slot is invalid.
 #[no_mangle]
-pub unsafe extern "C" fn tpchw_put_7(b: *mut Batch, st: *mut Staged<D7, S7>) -> i32 {
-    let (nb, taken) = put_7(ptr::read(b), *Box::from_raw(st));
+pub unsafe extern "C" fn tpchw_put_7(b: *mut Batch, st: *mut Staged<D7, S7>, from: u64) -> i32 {
+    let (nb, taken) = put_7(ptr::read(b), *Box::from_raw(st), from);
     ptr::write(b, nb);
     taken as i32
 }
@@ -507,11 +515,12 @@ pub unsafe extern "C" fn tpchw_head_8(gb: *const Arc<GBase>) -> *mut Head<D8> {
     Box::into_raw(Box::new(head_8(&**gb)))
 }
 
-/// Put a slot staged by the kit (consumed) in the batch.  1: taken; 0: it was staged on
-/// another base, the slot is invalid.
+/// Put a slot staged by the kit (consumed) in the batch, for the commit at engine epoch
+/// `from`.  1: taken; 0: it was staged on another base or put for another commit, the
+/// slot is invalid.
 #[no_mangle]
-pub unsafe extern "C" fn tpchw_put_8(b: *mut Batch, st: *mut Staged<D8, S8>) -> i32 {
-    let (nb, taken) = put_8(ptr::read(b), *Box::from_raw(st));
+pub unsafe extern "C" fn tpchw_put_8(b: *mut Batch, st: *mut Staged<D8, S8>, from: u64) -> i32 {
+    let (nb, taken) = put_8(ptr::read(b), *Box::from_raw(st), from);
     ptr::write(b, nb);
     taken as i32
 }
@@ -564,11 +573,12 @@ pub unsafe extern "C" fn tpchw_head_9(gb: *const Arc<GBase>) -> *mut Head<D9> {
     Box::into_raw(Box::new(head_9(&**gb)))
 }
 
-/// Put a slot staged by the kit (consumed) in the batch.  1: taken; 0: it was staged on
-/// another base, the slot is invalid.
+/// Put a slot staged by the kit (consumed) in the batch, for the commit at engine epoch
+/// `from`.  1: taken; 0: it was staged on another base or put for another commit, the
+/// slot is invalid.
 #[no_mangle]
-pub unsafe extern "C" fn tpchw_put_9(b: *mut Batch, st: *mut Staged<D9, S9>) -> i32 {
-    let (nb, taken) = put_9(ptr::read(b), *Box::from_raw(st));
+pub unsafe extern "C" fn tpchw_put_9(b: *mut Batch, st: *mut Staged<D9, S9>, from: u64) -> i32 {
+    let (nb, taken) = put_9(ptr::read(b), *Box::from_raw(st), from);
     ptr::write(b, nb);
     taken as i32
 }
@@ -621,11 +631,12 @@ pub unsafe extern "C" fn tpchw_head_10(gb: *const Arc<GBase>) -> *mut Head<D10> 
     Box::into_raw(Box::new(head_10(&**gb)))
 }
 
-/// Put a slot staged by the kit (consumed) in the batch.  1: taken; 0: it was staged on
-/// another base, the slot is invalid.
+/// Put a slot staged by the kit (consumed) in the batch, for the commit at engine epoch
+/// `from`.  1: taken; 0: it was staged on another base or put for another commit, the
+/// slot is invalid.
 #[no_mangle]
-pub unsafe extern "C" fn tpchw_put_10(b: *mut Batch, st: *mut Staged<D10, S10>) -> i32 {
-    let (nb, taken) = put_10(ptr::read(b), *Box::from_raw(st));
+pub unsafe extern "C" fn tpchw_put_10(b: *mut Batch, st: *mut Staged<D10, S10>, from: u64) -> i32 {
+    let (nb, taken) = put_10(ptr::read(b), *Box::from_raw(st), from);
     ptr::write(b, nb);
     taken as i32
 }
@@ -678,11 +689,12 @@ pub unsafe extern "C" fn tpchw_head_11(gb: *const Arc<GBase>) -> *mut Head<D11> 
     Box::into_raw(Box::new(head_11(&**gb)))
 }
 
-/// Put a slot staged by the kit (consumed) in the batch.  1: taken; 0: it was staged on
-/// another base, the slot is invalid.
+/// Put a slot staged by the kit (consumed) in the batch, for the commit at engine epoch
+/// `from`.  1: taken; 0: it was staged on another base or put for another commit, the
+/// slot is invalid.
 #[no_mangle]
-pub unsafe extern "C" fn tpchw_put_11(b: *mut Batch, st: *mut Staged<D11, S11>) -> i32 {
-    let (nb, taken) = put_11(ptr::read(b), *Box::from_raw(st));
+pub unsafe extern "C" fn tpchw_put_11(b: *mut Batch, st: *mut Staged<D11, S11>, from: u64) -> i32 {
+    let (nb, taken) = put_11(ptr::read(b), *Box::from_raw(st), from);
     ptr::write(b, nb);
     taken as i32
 }
@@ -735,11 +747,12 @@ pub unsafe extern "C" fn tpchw_head_12(gb: *const Arc<GBase>) -> *mut Head<D12> 
     Box::into_raw(Box::new(head_12(&**gb)))
 }
 
-/// Put a slot staged by the kit (consumed) in the batch.  1: taken; 0: it was staged on
-/// another base, the slot is invalid.
+/// Put a slot staged by the kit (consumed) in the batch, for the commit at engine epoch
+/// `from`.  1: taken; 0: it was staged on another base or put for another commit, the
+/// slot is invalid.
 #[no_mangle]
-pub unsafe extern "C" fn tpchw_put_12(b: *mut Batch, st: *mut Staged<D12, S12>) -> i32 {
-    let (nb, taken) = put_12(ptr::read(b), *Box::from_raw(st));
+pub unsafe extern "C" fn tpchw_put_12(b: *mut Batch, st: *mut Staged<D12, S12>, from: u64) -> i32 {
+    let (nb, taken) = put_12(ptr::read(b), *Box::from_raw(st), from);
     ptr::write(b, nb);
     taken as i32
 }
@@ -792,11 +805,12 @@ pub unsafe extern "C" fn tpchw_head_13(gb: *const Arc<GBase>) -> *mut Head<D13> 
     Box::into_raw(Box::new(head_13(&**gb)))
 }
 
-/// Put a slot staged by the kit (consumed) in the batch.  1: taken; 0: it was staged on
-/// another base, the slot is invalid.
+/// Put a slot staged by the kit (consumed) in the batch, for the commit at engine epoch
+/// `from`.  1: taken; 0: it was staged on another base or put for another commit, the
+/// slot is invalid.
 #[no_mangle]
-pub unsafe extern "C" fn tpchw_put_13(b: *mut Batch, st: *mut Staged<D13, S13>) -> i32 {
-    let (nb, taken) = put_13(ptr::read(b), *Box::from_raw(st));
+pub unsafe extern "C" fn tpchw_put_13(b: *mut Batch, st: *mut Staged<D13, S13>, from: u64) -> i32 {
+    let (nb, taken) = put_13(ptr::read(b), *Box::from_raw(st), from);
     ptr::write(b, nb);
     taken as i32
 }
@@ -849,11 +863,12 @@ pub unsafe extern "C" fn tpchw_head_14(gb: *const Arc<GBase>) -> *mut Head<D14> 
     Box::into_raw(Box::new(head_14(&**gb)))
 }
 
-/// Put a slot staged by the kit (consumed) in the batch.  1: taken; 0: it was staged on
-/// another base, the slot is invalid.
+/// Put a slot staged by the kit (consumed) in the batch, for the commit at engine epoch
+/// `from`.  1: taken; 0: it was staged on another base or put for another commit, the
+/// slot is invalid.
 #[no_mangle]
-pub unsafe extern "C" fn tpchw_put_14(b: *mut Batch, st: *mut Staged<D14, S14>) -> i32 {
-    let (nb, taken) = put_14(ptr::read(b), *Box::from_raw(st));
+pub unsafe extern "C" fn tpchw_put_14(b: *mut Batch, st: *mut Staged<D14, S14>, from: u64) -> i32 {
+    let (nb, taken) = put_14(ptr::read(b), *Box::from_raw(st), from);
     ptr::write(b, nb);
     taken as i32
 }
@@ -906,11 +921,12 @@ pub unsafe extern "C" fn tpchw_head_15(gb: *const Arc<GBase>) -> *mut Head<D15> 
     Box::into_raw(Box::new(head_15(&**gb)))
 }
 
-/// Put a slot staged by the kit (consumed) in the batch.  1: taken; 0: it was staged on
-/// another base, the slot is invalid.
+/// Put a slot staged by the kit (consumed) in the batch, for the commit at engine epoch
+/// `from`.  1: taken; 0: it was staged on another base or put for another commit, the
+/// slot is invalid.
 #[no_mangle]
-pub unsafe extern "C" fn tpchw_put_15(b: *mut Batch, st: *mut Staged<D15, S15>) -> i32 {
-    let (nb, taken) = put_15(ptr::read(b), *Box::from_raw(st));
+pub unsafe extern "C" fn tpchw_put_15(b: *mut Batch, st: *mut Staged<D15, S15>, from: u64) -> i32 {
+    let (nb, taken) = put_15(ptr::read(b), *Box::from_raw(st), from);
     ptr::write(b, nb);
     taken as i32
 }
@@ -963,11 +979,12 @@ pub unsafe extern "C" fn tpchw_head_16(gb: *const Arc<GBase>) -> *mut Head<D16> 
     Box::into_raw(Box::new(head_16(&**gb)))
 }
 
-/// Put a slot staged by the kit (consumed) in the batch.  1: taken; 0: it was staged on
-/// another base, the slot is invalid.
+/// Put a slot staged by the kit (consumed) in the batch, for the commit at engine epoch
+/// `from`.  1: taken; 0: it was staged on another base or put for another commit, the
+/// slot is invalid.
 #[no_mangle]
-pub unsafe extern "C" fn tpchw_put_16(b: *mut Batch, st: *mut Staged<D16, S16>) -> i32 {
-    let (nb, taken) = put_16(ptr::read(b), *Box::from_raw(st));
+pub unsafe extern "C" fn tpchw_put_16(b: *mut Batch, st: *mut Staged<D16, S16>, from: u64) -> i32 {
+    let (nb, taken) = put_16(ptr::read(b), *Box::from_raw(st), from);
     ptr::write(b, nb);
     taken as i32
 }
@@ -1020,11 +1037,12 @@ pub unsafe extern "C" fn tpchw_head_17(gb: *const Arc<GBase>) -> *mut Head<D17> 
     Box::into_raw(Box::new(head_17(&**gb)))
 }
 
-/// Put a slot staged by the kit (consumed) in the batch.  1: taken; 0: it was staged on
-/// another base, the slot is invalid.
+/// Put a slot staged by the kit (consumed) in the batch, for the commit at engine epoch
+/// `from`.  1: taken; 0: it was staged on another base or put for another commit, the
+/// slot is invalid.
 #[no_mangle]
-pub unsafe extern "C" fn tpchw_put_17(b: *mut Batch, st: *mut Staged<D17, S17>) -> i32 {
-    let (nb, taken) = put_17(ptr::read(b), *Box::from_raw(st));
+pub unsafe extern "C" fn tpchw_put_17(b: *mut Batch, st: *mut Staged<D17, S17>, from: u64) -> i32 {
+    let (nb, taken) = put_17(ptr::read(b), *Box::from_raw(st), from);
     ptr::write(b, nb);
     taken as i32
 }
@@ -1077,11 +1095,12 @@ pub unsafe extern "C" fn tpchw_head_18(gb: *const Arc<GBase>) -> *mut Head<D18> 
     Box::into_raw(Box::new(head_18(&**gb)))
 }
 
-/// Put a slot staged by the kit (consumed) in the batch.  1: taken; 0: it was staged on
-/// another base, the slot is invalid.
+/// Put a slot staged by the kit (consumed) in the batch, for the commit at engine epoch
+/// `from`.  1: taken; 0: it was staged on another base or put for another commit, the
+/// slot is invalid.
 #[no_mangle]
-pub unsafe extern "C" fn tpchw_put_18(b: *mut Batch, st: *mut Staged<D18, S18>) -> i32 {
-    let (nb, taken) = put_18(ptr::read(b), *Box::from_raw(st));
+pub unsafe extern "C" fn tpchw_put_18(b: *mut Batch, st: *mut Staged<D18, S18>, from: u64) -> i32 {
+    let (nb, taken) = put_18(ptr::read(b), *Box::from_raw(st), from);
     ptr::write(b, nb);
     taken as i32
 }
@@ -1134,11 +1153,12 @@ pub unsafe extern "C" fn tpchw_head_19(gb: *const Arc<GBase>) -> *mut Head<D19> 
     Box::into_raw(Box::new(head_19(&**gb)))
 }
 
-/// Put a slot staged by the kit (consumed) in the batch.  1: taken; 0: it was staged on
-/// another base, the slot is invalid.
+/// Put a slot staged by the kit (consumed) in the batch, for the commit at engine epoch
+/// `from`.  1: taken; 0: it was staged on another base or put for another commit, the
+/// slot is invalid.
 #[no_mangle]
-pub unsafe extern "C" fn tpchw_put_19(b: *mut Batch, st: *mut Staged<D19, S19>) -> i32 {
-    let (nb, taken) = put_19(ptr::read(b), *Box::from_raw(st));
+pub unsafe extern "C" fn tpchw_put_19(b: *mut Batch, st: *mut Staged<D19, S19>, from: u64) -> i32 {
+    let (nb, taken) = put_19(ptr::read(b), *Box::from_raw(st), from);
     ptr::write(b, nb);
     taken as i32
 }
@@ -1191,11 +1211,12 @@ pub unsafe extern "C" fn tpchw_head_20(gb: *const Arc<GBase>) -> *mut Head<D20> 
     Box::into_raw(Box::new(head_20(&**gb)))
 }
 
-/// Put a slot staged by the kit (consumed) in the batch.  1: taken; 0: it was staged on
-/// another base, the slot is invalid.
+/// Put a slot staged by the kit (consumed) in the batch, for the commit at engine epoch
+/// `from`.  1: taken; 0: it was staged on another base or put for another commit, the
+/// slot is invalid.
 #[no_mangle]
-pub unsafe extern "C" fn tpchw_put_20(b: *mut Batch, st: *mut Staged<D20, S20>) -> i32 {
-    let (nb, taken) = put_20(ptr::read(b), *Box::from_raw(st));
+pub unsafe extern "C" fn tpchw_put_20(b: *mut Batch, st: *mut Staged<D20, S20>, from: u64) -> i32 {
+    let (nb, taken) = put_20(ptr::read(b), *Box::from_raw(st), from);
     ptr::write(b, nb);
     taken as i32
 }
@@ -1248,11 +1269,12 @@ pub unsafe extern "C" fn tpchw_head_21(gb: *const Arc<GBase>) -> *mut Head<D21> 
     Box::into_raw(Box::new(head_21(&**gb)))
 }
 
-/// Put a slot staged by the kit (consumed) in the batch.  1: taken; 0: it was staged on
-/// another base, the slot is invalid.
+/// Put a slot staged by the kit (consumed) in the batch, for the commit at engine epoch
+/// `from`.  1: taken; 0: it was staged on another base or put for another commit, the
+/// slot is invalid.
 #[no_mangle]
-pub unsafe extern "C" fn tpchw_put_21(b: *mut Batch, st: *mut Staged<D21, S21>) -> i32 {
-    let (nb, taken) = put_21(ptr::read(b), *Box::from_raw(st));
+pub unsafe extern "C" fn tpchw_put_21(b: *mut Batch, st: *mut Staged<D21, S21>, from: u64) -> i32 {
+    let (nb, taken) = put_21(ptr::read(b), *Box::from_raw(st), from);
     ptr::write(b, nb);
     taken as i32
 }
@@ -1305,11 +1327,12 @@ pub unsafe extern "C" fn tpchw_head_22(gb: *const Arc<GBase>) -> *mut Head<D22> 
     Box::into_raw(Box::new(head_22(&**gb)))
 }
 
-/// Put a slot staged by the kit (consumed) in the batch.  1: taken; 0: it was staged on
-/// another base, the slot is invalid.
+/// Put a slot staged by the kit (consumed) in the batch, for the commit at engine epoch
+/// `from`.  1: taken; 0: it was staged on another base or put for another commit, the
+/// slot is invalid.
 #[no_mangle]
-pub unsafe extern "C" fn tpchw_put_22(b: *mut Batch, st: *mut Staged<D22, S22>) -> i32 {
-    let (nb, taken) = put_22(ptr::read(b), *Box::from_raw(st));
+pub unsafe extern "C" fn tpchw_put_22(b: *mut Batch, st: *mut Staged<D22, S22>, from: u64) -> i32 {
+    let (nb, taken) = put_22(ptr::read(b), *Box::from_raw(st), from);
     ptr::write(b, nb);
     taken as i32
 }

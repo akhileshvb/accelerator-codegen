@@ -365,6 +365,10 @@ public:
   virtual ValidityResult CheckValidity(const QueryKey &,
                                        const VisibilityToken &) const = 0;
 
+  // A reader that finds the state being rebuilt waits for it (up to the read
+  // ceiling) instead of weighing the wait against its SQL.
+  virtual bool WaitsForRebuild() const { return false; }
+
   // Invalid for every snapshot. (Commits go through BeginCommit /
   // FinishCommit below.)
   virtual void Invalidate(const InvalidationPlan &) = 0;
@@ -404,6 +408,9 @@ public:
   }
   // After BeginCommit, instead of FinishCommit: nothing changes.
   virtual void AbortCommit(const AcceleratorId &) {}
+  // Every accelerator of the engine commit at `epoch` has published (or not):
+  // a store that assembles one version across accelerators installs it now.
+  virtual void EndCommit(uint64_t /*epoch*/) {}
 };
 
 class AuxEngineServices {

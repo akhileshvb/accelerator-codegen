@@ -267,13 +267,13 @@ double AcceleratorRuntime::UntilServableUs() const {
 // Whether a reader that cannot be served yet should keep waiting (C11): an
 // in-flight commit always; otherwise only while the state is expected sooner
 // than the query's own SQL would finish (measured, else the cost model's).
-// Without estimates yet (the first build has not started): yes. Holds
-// state_mutex.
+// Without estimates yet (the first build has not started): yes; likewise
+// for a store that WaitsForRebuild. Holds state_mutex.
 bool AcceleratorRuntime::WaitWorthIt(Epoch epoch) const {
   if (impl->Synced() && epoch >= impl->in_flight_from) {
     return true;
   }
-  if (!impl->model) {
+  if (!impl->model || impl->store.store->WaitsForRebuild()) {
     return true;
   }
   const double sql = impl->sql_us > 0 ? impl->sql_us : impl->model->sql_us;
@@ -493,7 +493,7 @@ Seq AcceleratorRuntime::BeginCommit(uint64_t txn, std::vector<ColumnarBatchRef> 
   return impl->in_flight.seq;
 }
 
-void AcceleratorRuntime::PublishCommit(Epoch epoch) {
+void AcceleratorRuntime::PublishCommit(Epoch epoch, bool ends_commit) {
   std::unique_lock<CommitLock> commit(impl->commit_mutex, std::adopt_lock);
   auto change = std::move(impl->in_flight);
   change.epoch = epoch;
@@ -520,10 +520,15 @@ void AcceleratorRuntime::PublishCommit(Epoch epoch) {
   }
   commit.unlock();
   impl->state_cv.notify_all();
+  if (ends_commit) {
+    EndCommit(epoch);
+  }
   if (stale) {
     RequestBuild();
   }
 }
+
+void AcceleratorRuntime::EndCommit(Epoch epoch) { impl->store.store->EndCommit(epoch); }
 
 void AcceleratorRuntime::AbortCommit() {
   std::unique_lock<CommitLock> commit(impl->commit_mutex, std::adopt_lock);

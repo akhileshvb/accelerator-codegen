@@ -7,6 +7,7 @@
 #include <cctype>
 #include <cstdint>
 #include <chrono>
+#include <condition_variable>
 #include <cstdio>
 #include <cmath>
 #include <cstdlib>
@@ -193,6 +194,7 @@ public:
 
   const void *Handle() const { return store; }
   const Glue &GlueOf() const override { return glue; }
+  bool WaitsForRebuild() const override { return true; }
 
   std::shared_ptr<const KitStaged> StageApply(const Changes &changes, Host &host, int32_t *err) const override {
     void *base = glue.store.newest_base(store);
@@ -364,11 +366,14 @@ private:
 // ---- the world store (ACCEL_AUX_STORE=verus_global) ----
 // One verified store for every accelerator of a benchmark (world_glue.cpp).  A commit's
 // accelerators each stage their new slot on the same base (the newest version's world,
-// `Base()`); the first to begin marks the commit in flight, each finish puts its slot in
-// one batch made from that base, and the last one installs the batch as ONE version (or,
-// if any aborted, drops it).  The batch takes a slot only if it was staged on its base
-// (verified, world.rs); the assembly here is host code, the store, the batch's world and
-// every reading are verified (world.rs, store.rs).
+// `Base()`); the first to begin marks the commit (its engine epoch) in flight, each finish
+// puts its slot in one batch made from that base, and the end of the commit installs the
+// batch as ONE version (or, if any aborted, drops it).  Commits of disjoint accelerators
+// may publish at once: one is assembled at a time and the others wait at `Begin`.  The
+// batch takes a slot only if it was staged on its base and put for its commit's epoch,
+// and the store installs it only as the commit marked in flight (verified, world.rs,
+// store.rs); the assembly here is host code, the store, the batch's world and every
+// reading are verified.
 std::vector<const World *> &Worlds() {
   static std::vector<const World *> worlds;
   return worlds;
@@ -396,11 +401,17 @@ public:
     return BaseLocked();
   }
 
+  // The commit at engine epoch `from` takes part: opens it (waiting for another commit
+  // in flight to end) or joins the open one.
   void Begin(VerusAuxStore::Epoch from) {
-    std::lock_guard<std::mutex> lock(mutex);
-    if (participants == 0 && !world.begin(store, from))
-      throw std::logic_error(std::string("concurrent commits on the Verus world ") + world.bench);
-    ++participants;
+    std::unique_lock<std::mutex> lock(mutex);
+    ended.wait(lock, [&] { return !open || open_from == from; });
+    if (!open) {
+      if (!world.begin(store, from))
+        throw std::logic_error(std::string("commit already in flight on the Verus world ") + world.bench);
+      open = true;
+      open_from = from;
+    }
   }
 
   // set: the accelerator's slot changes (the staged slot, or null for invalid);
@@ -408,28 +419,29 @@ public:
   void Finish(const WorldKitOps &kit, bool set, const KitStaged *staged, VerusAuxStore::Epoch from,
               VerusAuxStore::Epoch floor) {
     std::lock_guard<std::mutex> lock(mutex);
+    open_floor = floor;
     if (set)
-      Put(kit, staged);
-    if (++finished < participants)
-      return;
-    if (aborted || !batch) {
-      if (batch)
-        world.batch_free(batch);
-      world.abort(store);
-    } else if (world.install(store, batch, from, floor, 1) != 0) {
-      NoteStale();
-    }
-    Reset();
+      Put(kit, staged, from);
   }
 
   void Abort() {
     std::lock_guard<std::mutex> lock(mutex);
     aborted = true;
-    if (++finished < participants)
+  }
+
+  // Every accelerator of the commit at `from` has finished: install its version.
+  void End(VerusAuxStore::Epoch from) {
+    std::lock_guard<std::mutex> lock(mutex);
+    if (!open || open_from != from)
       return;
-    if (batch)
-      world.batch_free(batch);
-    world.abort(store);
+    if (!aborted && batch && world.install(store, batch, open_floor, 1) != 0) {
+      NoteStale();
+      world.abort(store); // a refusal may leave the commit marked
+    } else if (aborted || !batch) {
+      if (batch)
+        world.batch_free(batch);
+      world.abort(store);
+    }
     Reset();
   }
 
@@ -441,14 +453,14 @@ public:
     std::lock_guard<std::mutex> lock(mutex);
     std::shared_ptr<void> gb = staged && staged->base ? staged->base : BaseLocked();
     ++generation;
-    void *b = gb ? world.batch_new(gb.get()) : nullptr;
+    void *b = gb ? world.batch_new(gb.get(), from) : nullptr;
     if (!b)
       return;
     if (staged)
-      NotePut(kit.put(b, staged->Take()));
+      NotePut(kit.put(b, staged->Take(), from));
     else
       kit.put_invalid(b);
-    if (world.install(store, b, from, floor, 0) != 0)
+    if (world.install(store, b, floor, 0) != 0)
       NoteStale();
   }
 
@@ -469,7 +481,7 @@ private:
   }
   static void NotePut(int32_t taken) {
     if (!taken)
-      core::RecordAuxFallbackCause("event:put_foreign_base");
+      core::RecordAuxFallbackCause("event:put_refused");
   }
   std::shared_ptr<void> BaseLocked() {
     const uint64_t newest = world.newest(store);
@@ -485,32 +497,33 @@ private:
   }
 
   // The slot staged on the batch's base is put; a slot staged elsewhere, or none, is invalid.
-  void Put(const WorldKitOps &kit, const KitStaged *staged) {
+  void Put(const WorldKitOps &kit, const KitStaged *staged, VerusAuxStore::Epoch from) {
     if (!batch) {
       std::shared_ptr<void> gb = staged && staged->base ? staged->base : BaseLocked();
       if (gb)
-        batch = world.batch_new(gb.get());
+        batch = world.batch_new(gb.get(), from);
     }
     if (!batch)
       return;
     if (staged)
-      NotePut(kit.put(batch, staged->Take()));
+      NotePut(kit.put(batch, staged->Take(), from));
     else
       kit.put_invalid(batch);
   }
 
   void Reset() {
     batch = nullptr;
-    participants = finished = 0;
-    aborted = false;
+    open = aborted = false;
     ++generation;
+    ended.notify_all();
   }
 
   // mutex guards the commit assembly below (shared by every accelerator of the
   // world): a leaf lock, taken inside the accelerators' commit locks.
   std::mutex mutex;
-  int participants = 0, finished = 0;
-  bool aborted = false;
+  std::condition_variable ended;
+  bool open = false, aborted = false; // a commit (at open_from) is being assembled
+  VerusAuxStore::Epoch open_from = 0, open_floor = 0;
   void *batch = nullptr;
   std::shared_ptr<void> base;
   uint64_t base_epoch = 0, base_generation = 0, generation = 1;
@@ -523,6 +536,7 @@ public:
         pending_wait_micros(core::PendingWaitMicrosFromEnv()) {}
 
   const Glue &GlueOf() const override { return glue; }
+  bool WaitsForRebuild() const override { return true; }
 
   std::shared_ptr<const KitStaged> StageApply(const Changes &changes, Host &host, int32_t *err) const override {
     std::shared_ptr<void> gb = world.Base();
@@ -627,6 +641,7 @@ public:
   }
 
   void AbortCommit(const core::AcceleratorId &) override { world.Abort(); }
+  void EndCommit(uint64_t epoch) override { world.End(epoch); }
 
   void Install(std::vector<core::StateImage> images, const core::AcceleratorId &, Epoch from_epoch) override {
     bool set = false;
@@ -835,20 +850,24 @@ public:
     }
     if (Fault() == "skip_apply")
       return outcome; // deliberate bug: the state misses the commit
-    const auto decision = services.ChooseMaintenance(
-        {static_cast<uint64_t>(total), 1, true, false, true, false, false, core::MaintenanceAction::NoOp,
-         services.ExpectedQueriesBeforeNextWrite()});
-    if (decision.action == core::MaintenanceAction::RebuildPartition) {
-      core::RecordAuxFallbackCause("event:rebuild_cost_model");
-      core::FinishRebuildAll(outcome);
-      return outcome;
-    }
-    if (decision.action != core::MaintenanceAction::ApplyDelta) {
-      core::RecordAuxFallbackCause("event:rebuild_cost_model");
-      outcome.action = decision.action;
-      outcome.invalidations = core::AllPartitionsPlan();
-      outcome.pending_rebuild = outcome.invalidations;
-      return outcome;
+    // A Verus store always applies (the proofs make apply total below the store's history);
+    // it rebuilds only when the apply declines or there is no state to apply to.
+    if (!StagingStore(services)) {
+      const auto decision = services.ChooseMaintenance(
+          {static_cast<uint64_t>(total), 1, true, false, true, false, false, core::MaintenanceAction::NoOp,
+           services.ExpectedQueriesBeforeNextWrite()});
+      if (decision.action == core::MaintenanceAction::RebuildPartition) {
+        core::RecordAuxFallbackCause("event:rebuild_cost_model");
+        core::FinishRebuildAll(outcome);
+        return outcome;
+      }
+      if (decision.action != core::MaintenanceAction::ApplyDelta) {
+        core::RecordAuxFallbackCause("event:rebuild_cost_model");
+        outcome.action = decision.action;
+        outcome.invalidations = core::AllPartitionsPlan();
+        outcome.pending_rebuild = outcome.invalidations;
+        return outcome;
+      }
     }
     Changes changes = buffer.changes;
     const std::string &fault = Fault();

@@ -240,7 +240,7 @@ struct WorldKitOps {
   const char *accelerator;
   void *(*base)(const void *gbase); // its state of the base, for prepare_apply (the kit's base_free); NULL: invalid
   void *(*head)(const void *gbase); // its head of the base, for prepare_build (the kit's head_free)
-  int32_t (*put)(void *batch, void *staged); // consumes the staged slot; 0: staged on another base, invalid
+  int32_t (*put)(void *batch, void *staged, uint64_t from); // consumes the staged slot; 0: another base or commit, invalid
   void (*put_invalid)(void *batch);
   const void *(*read)(const void *store, uint64_t at, uint64_t tries, int32_t *status); // a reading
   void (*release)(const void *reading);
@@ -255,9 +255,9 @@ struct World {
   void *(*gbase_new)(const void *store); // the newest version as a base; NULL: none can follow
   uint64_t (*newest)(const void *store);
   void (*gbase_free)(void *gbase);
-  void *(*batch_new)(const void *gbase);
+  void *(*batch_new)(const void *gbase, uint64_t from); // for the commit visible from `from`
   void (*batch_free)(void *batch);
-  int32_t (*install)(const void *store, void *batch, uint64_t from, uint64_t floor, int32_t end_commit);
+  int32_t (*install)(const void *store, void *batch, uint64_t floor, int32_t end_commit); // current from the batch's epoch
   size_t (*version_count)(const void *store);
   std::vector<WorldKitOps> kits;
 };
