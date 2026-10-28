@@ -9,14 +9,15 @@
 //   (INSERT/DELETE/UPDATE incl. key and filter columns that move rows in and
 //   out of the result), commits and rollbacks.  After every transaction the aux
 //   output must equal the plain DuckDB execution of benchmarks/sec_edgar/
-//   queries/q4.sql.
+//   queries/q4.sql bound to the same parameters.
 // file: the same invariants on a (writable copy of a) real SEC-EDGAR database
 //   with hand-picked, high-impact writes.
 //
-// Q4 takes (sic_lo, sic_hi, stmt, uom): the state keeps every (sic, tlabel,
-// stmt, uom) group, so after every transaction the default read AND three
-// random-parameter reads (SIC divisions, random/inverted/edge ranges, NULLs,
-// stmt/uom incl. unknown values) are compared with plain SQL.  The data-domain
+// Q4 takes (sic_lo, sic_hi, stmt, uom) and has no default binding: the state keeps every
+// (sic, tlabel, stmt, uom) group, so after every transaction the reads of the parameter sets drawn
+// by eval/harness/param_sets (ACCEL_PARAM_SEED, ACCEL_PARAM_SETS, ACCEL_PARAM_FILE; the seed is
+// printed as "[params]") AND three random-parameter reads (SIC divisions, random/inverted/edge
+// ranges, NULLs, stmt/uom incl. unknown values) are compared with plain SQL.  The data-domain
 // edge values (sic 3999/4000/4999/5000, uom USD/usd/EUR/shares, stmt EQ/NULL,
 // abstract 0/1/NULL, tlabel NULL) are covered by the generator.
 #ifdef NDEBUG
@@ -34,6 +35,8 @@
 #include <vector>
 
 #include "eval/harness/differential.hpp"
+#include "eval/harness/param_sets.hpp"
+#include "backends/duckdb/api/sql_fallback.hpp"
 #include "substrate/aux/core/aux_types.hpp"
 #include "eval/tests/test_support/module_runtime.hpp"
 #include "catalog/query_catalog.hpp"
@@ -151,7 +154,7 @@ public:
 struct Env {
   Env(duckdb::Connection &connection, bool parallel)
       : con(connection), scan(connection),
-        entry(&engine::LookupSharedQuery("sec_edgar", 4)) {
+        entry(&engine::LookupSharedQuery("sec_edgar", 4)), sets(harness::ArgumentSets(*entry)) {
     const SecEdgarQ4Config cfg{1, 2, 3, 4};
 #ifdef ACCEL_ENABLE_PARALLEL_AUX
     if (parallel) {
@@ -185,9 +188,9 @@ struct Env {
     Require(runtime->Read(args, sink), "state must be valid (served incrementally)");
   }
 
-  std::vector<core::AuxRow> Execute() {
+  std::vector<core::AuxRow> Execute(const core::QueryArguments &args) {
     MaterializeSink sink;
-    ReadState({}, sink);
+    ReadState(args, sink);
     return std::move(sink.rows);
   }
 
@@ -208,16 +211,23 @@ struct Env {
   size_t param_rows = 0;
   int param_checks = 0;
 
+  // Every drawn parameter set against the catalog's SQL bound to it.
   void Compare(const std::string &what, int step) {
-    const auto rows = Execute();
-    try {
-      harness::CompareAuxRowsToSql(con, *entry, q4gen::BaseSql(q4gen::Params{}), rows);
-    } catch (const std::exception &e) {
-      std::cerr << "FAIL step " << step << " (" << what << "): " << e.what() << '\n';
-      Dump(rows, q4gen::BaseSql(q4gen::Params{}));
-      std::exit(1);
+    for (const auto &args : sets) {
+      const auto rows = Execute(args);
+      const auto sql = engine::BindArguments(entry->base_sql, args);
+      try {
+        harness::CompareAuxRowsToSql(con, *entry, sql, rows);
+      } catch (const std::exception &e) {
+        std::cerr << "FAIL step " << step << " (" << what << ") params(" << harness::ArgumentLiterals(args)
+                  << "): " << e.what() << '\n';
+        Dump(rows, sql);
+        std::exit(1);
+      }
+      drawn_rows += rows.size();
     }
   }
+  size_t drawn_rows = 0; // answer rows over all Compare reads
 
   void Dump(const std::vector<core::AuxRow> &rows, const std::string &sql) {
     auto fmt = [](const core::AuxRow &r) {
@@ -240,6 +250,7 @@ struct Env {
   duckdb::Connection &con;
   SecEdgarQ4DuckDbScan scan;
   const engine::SharedQueryCatalogEntry *entry;
+  std::vector<core::QueryArguments> sets;
   std::shared_ptr<core::AuxQueryModule> module;
   std::unique_ptr<support::ModuleRuntime> runtime;
   int *builds = nullptr;
@@ -254,7 +265,7 @@ int RunSynthetic(int seeds, int steps, bool parallel) {
     cfg.big_values = false;   // keep cancellation noise below the 1e-6 comparison
     cfg.unique_sums = true;   // no exact ties => ORDER BY is deterministic
     cfg.wide_keys = seed % 2 == 1;                  // negative / huge cik values
-    cfg.nonfinite = !limit_case && seed % 3 != 0;   // inf, NaN, 1e300, subnormals
+    cfg.nonfinite = false;  // inf, NaN, 1e30..1e300: the shared comparison reads a >29-digit double as an exact decimal
     q4gen::Model model(static_cast<uint64_t>(seed) * 104729, cfg);
     duckdb::DuckDB db(nullptr);
     duckdb::Connection con(db);
@@ -266,7 +277,7 @@ int RunSynthetic(int seeds, int steps, bool parallel) {
     env.Compare("initial", 0);
     for (int k = 0; k < 12; ++k) env.ComparePerParams(q4gen::RandomParams(model), "initial", 0);
     if (limit_case) {
-      Require(env.Execute().size() == 500, "LIMIT 500 must truncate");
+      Require(env.Execute(q4gen::ToQueryArgs(q4gen::DenseParams(model))).size() == 500, "LIMIT 500 must truncate");
     }
     int incremental = 0, rebuilt = 0;
     size_t result_rows = 0;
@@ -292,7 +303,7 @@ int RunSynthetic(int seeds, int steps, bool parallel) {
       }
       (*env.builds > builds_before ? rebuilt : incremental)++;
       env.Compare(rollback ? "rollback" : model.last_what, step);
-      result_rows += env.Execute().size();
+      result_rows += env.Execute(q4gen::ToQueryArgs(q4gen::DenseParams(model))).size();
       for (int k = 0; k < 3; ++k) {
         env.ComparePerParams(q4gen::RandomParams(model), rollback ? "rollback" : model.last_what, step);
       }
@@ -329,7 +340,7 @@ struct WriteOp {
   std::string new_select; // post-image (may be empty)
 };
 
-q4gen::Params g_round_params; // parameters of the current file-mode round (non-default)
+q4gen::Params g_round_params; // parameters of the current file-mode round
 
 void ApplyOp(Env &env, const WriteOp &op, int step) {
   auto &con = env.con;
@@ -370,29 +381,41 @@ int RunFile(const std::string &path, int ops, bool parallel) {
   auto q = [](const std::string &v) { return q4gen::Q(v); };
 
   int step = 0;
-  // Round r exercises another (stmt, uom, sic range) than the defaults.
+  // Round r exercises the r-th drawn (sic range, stmt, uom); a round whose binding has no qualifying
+  // row in the database is skipped.
   struct Cell {
-    const char *stmt, *uom;
     int lo, hi;
+    std::string stmt, uom;
   };
-  static const Cell kCells[] = {{"EQ", "USD", 4000, 4999}, {"BS", "USD", 1000, 3999},
-                                {"CF", "USD", 5000, 9999}, {"IS", "shares", 100, 9999},
-                                {"EQ", "shares", 4000, 4999}, {"BS", "USD", 4000, 4999}};
+  const auto cell_of = [](const core::QueryArguments &a) {
+    const auto text = [&](size_t i) { return std::get<std::string>(a.values[i].payload); };
+    return Cell{static_cast<int>(std::get<int64_t>(a.values[0].payload)),
+                static_cast<int>(std::get<int64_t>(a.values[1].payload)), text(2), text(3)};
+  };
+  int rounds_run = 0;
   for (int round = 0; round < ops; ++round) {
-    const Cell &cell = kCells[round % 6];
-    const std::string st = std::string("'") + cell.stmt + "'", um = std::string("'") + cell.uom + "'";
+    const Cell cell = cell_of(env.sets[static_cast<size_t>(round) % env.sets.size()]);
+    const std::string st = q4gen::Q(cell.stmt), um = q4gen::Q(cell.uom);
     const std::string in_range = "BETWEEN " + std::to_string(cell.lo) + " AND " + std::to_string(cell.hi);
     g_round_params.lo = cell.lo;
     g_round_params.hi = cell.hi;
-    g_round_params.stmt = std::string(cell.stmt);
-    g_round_params.uom = std::string(cell.uom);
+    g_round_params.stmt = cell.stmt;
+    g_round_params.uom = cell.uom;
     std::cerr << "round " << round << ": " << cell.stmt << "/" << cell.uom << " sic " << cell.lo << ".."
               << cell.hi << "\n";
-    // A qualifying num row (cohort sic, uom, bridge key present).
-    const auto num = pick(
-        "SELECT n.rowid, n.adsh, n.tag, n.version FROM num n JOIN pre p ON n.adsh=p.adsh AND "
-        "n.tag=p.tag AND n.version=p.version AND p.stmt=" + st + " JOIN sub s ON s.adsh=n.adsh AND "
-        "s.sic " + in_range + " WHERE n.uom=" + um + " AND n.value IS NOT NULL USING SAMPLE reservoir(200 ROWS) REPEATABLE (" + std::to_string(round * 4 + 1) + ")");
+    // A qualifying num row (cohort sic, uom, bridge key present, concrete tag).
+    const auto candidates = Fetch(
+        con, "SELECT n.rowid, n.adsh, n.tag, n.version FROM num n JOIN pre p ON n.adsh=p.adsh AND "
+             "n.tag=p.tag AND n.version=p.version AND p.stmt=" + st + " JOIN sub s ON s.adsh=n.adsh AND "
+             "s.sic " + in_range + " JOIN tag t ON t.tag=n.tag AND t.version=n.version AND t.abstract=0 "
+             "WHERE n.uom=" + um + " AND n.value IS NOT NULL USING SAMPLE reservoir(200 ROWS) REPEATABLE (" +
+             std::to_string(round * 4 + 1) + ")");
+    if (candidates.empty()) {
+      std::cerr << "  no qualifying row for this binding: round skipped\n";
+      continue;
+    }
+    ++rounds_run;
+    const auto &num = candidates[rng() % candidates.size()];
     const std::string rid = std::to_string(std::get<int64_t>(num.values[0].payload));
     const auto where = " FROM num WHERE rowid = " + rid;
     // value update
@@ -457,7 +480,8 @@ int RunFile(const std::string &path, int ops, bool parallel) {
     ApplyOp(env, {"pre delete", 4, core::MutationKind::Delete, {}, "SELECT * FROM pre WHERE rowid = " + prid,
                   {"DELETE FROM pre WHERE rowid = " + prid}, ""}, ++step);
   }
-  std::cerr << "file differential ok, rebuilds=" << (*env.builds - 1) << '\n';
+  Require(rounds_run > 0, "none of the drawn parameter sets has a qualifying row in the database");
+  std::cerr << "file differential ok, rounds=" << rounds_run << "/" << ops << " rebuilds=" << (*env.builds - 1) << '\n';
   return *env.builds - 1;
 }
 
@@ -535,7 +559,7 @@ int RunSweep(const std::string &path, int random_ranges, bool parallel) {
            " GROUP BY sic, tlabel, stmt HAVING COUNT(DISTINCT cik) >= 2 "
            "ORDER BY total_value DESC, sic, tlabel NULLS FIRST LIMIT 500";
   };
-  env.Compare("default vs q4.sql", 0);
+  env.Compare("drawn sets vs q4.sql", 0);
 
   static const int kDiv[10][2] = {{100, 999},   {1000, 1499}, {1500, 1799}, {2000, 3999},
                                   {4000, 4999}, {5000, 5199}, {5200, 5999}, {6000, 6799},
@@ -624,6 +648,13 @@ int RunSweep(const std::string &path, int random_ranges, bool parallel) {
   return 0;
 }
 
+bool NonEmptyAnswer(const std::string &path, const engine::SharedQueryCatalogEntry &entry,
+                    const core::QueryArguments &args) {
+  duckdb::DuckDB db(path.c_str());
+  duckdb::Connection con(db);
+  return !Fetch(con, engine::BindArguments(entry.base_sql, args)).empty();
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -644,10 +675,20 @@ int main(int argc, char **argv) {
       RunSweep(argv[2], argc > 3 && std::isdigit(argv[3][0]) ? std::atoi(argv[3]) : 120, parallel);
     } else if (mode == "harness") {
       // The generic shared harness (probe-based incremental + adversarial writes).
+      // The write checks need an answer the writes can change: sets with an empty answer are skipped.
       const auto &entry = engine::LookupSharedQuery("sec_edgar", 4);
-      harness::RunDifferentialCheck(argv[2], entry);
-      harness::RunIncrementalDifferentialCheck(argv[2], entry);
-      harness::RunAdversarialWriteDifferentialCheck(argv[2], entry, 5, 1, false);
+      int ran = 0;
+      for (const auto &args : harness::ArgumentSets(entry)) {
+        if (NonEmptyAnswer(argv[2], entry, args)) {
+          harness::RunDifferentialCheck(argv[2], entry, args);
+          harness::RunIncrementalDifferentialCheck(argv[2], entry, args);
+          harness::RunAdversarialWriteDifferentialCheck(argv[2], entry, args, 5, 1, false);
+          ++ran;
+        } else {
+          std::cerr << "params(" << harness::ArgumentLiterals(args) << "): empty answer, skipped\n";
+        }
+      }
+      Require(ran > 0, "every drawn parameter set has an empty answer on the database");
     } else {
       Require(false, "unknown mode " + mode);
     }
