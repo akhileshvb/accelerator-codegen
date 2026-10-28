@@ -15,6 +15,7 @@ is written, how it phrases feedback and how many rounds it gets. One runner serv
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import difflib
 import importlib.util
@@ -1246,17 +1247,44 @@ def run_host_bootstrap(pipeline_config: PipelineConfig, model_config: ModelConfi
                                            reason="dry_run" if dry_run else "skip_gates")
         return {"engine_name": engine, "status": "pass", "skipped": False, "path": str(path)}
 
-    if not force and not pending_harness_requests(repo_root, engine):
-        results, failed = run_bootstrap_gates(pipeline_config, workload, query, iteration=0)
-        if failed is None:
-            path = write_host_bootstrap_status(repo_root, engine, status="pass",
-                                               reason="the existing harness passes the gate",
-                                               extra={"gate_data": results[0].data})
-            print(f"[host_bootstrap] engine={engine}: the existing harness passes; no agent run", flush=True)
-            return {"engine_name": engine, "status": "pass", "skipped": True, "path": str(path)}
+    with declining_query(pipeline_config, workload, query):
+        if not force and not pending_harness_requests(repo_root, engine):
+            results, failed = run_bootstrap_gates(pipeline_config, workload, query, iteration=0)
+            if failed is None:
+                path = write_host_bootstrap_status(repo_root, engine, status="pass",
+                                                   reason="the existing harness passes the gate",
+                                                   extra={"gate_data": results[0].data})
+                print(f"[host_bootstrap] engine={engine}: the existing harness passes; no agent run", flush=True)
+                return {"engine_name": engine, "status": "pass", "skipped": True, "path": str(path)}
+        return _bootstrap_under_repair(pipeline_config, model_config, engine, representative_workload, workload, query,
+                                       model_overrides)
 
-    return _bootstrap_under_repair(pipeline_config, model_config, engine, representative_workload, workload, query,
-                                   model_overrides)
+
+@contextlib.contextmanager
+def declining_query(pipeline_config: PipelineConfig, workload: dict[str, Any], query: int):
+    """The query registered with the module that declines every call while host_bootstrap works: its own module
+    may be mid-implementation and not compile, and the harnesses link it. Its engine directory waits in the query's
+    artifacts (outside every build glob) and is put back however the bootstrap ends."""
+    from accel_pipeline.stages import materialize_registration
+
+    repo = pipeline_config.repo_root
+    register = str((workload.get("engine_host") or {}).get("aux_register_path") or "")
+    engine_dir = (repo / register).parent.parent if register else None  # accelerators/<bench>/q<N>/<engine>
+    aside = query_artifacts_dir(repo, query, workload=workload) / "implementation_aside"
+    if engine_dir is not None and aside.is_dir():  # a bootstrap that died before putting it back
+        shutil.rmtree(engine_dir, ignore_errors=True)
+        shutil.move(aside, engine_dir)
+    if engine_dir is None or not engine_dir.is_dir():
+        yield
+        return
+    aside.parent.mkdir(parents=True, exist_ok=True)
+    shutil.move(engine_dir, aside)
+    try:
+        materialize_registration(pipeline_config, workload, query)
+        yield
+    finally:
+        shutil.rmtree(engine_dir, ignore_errors=True)
+        shutil.move(aside, engine_dir)
 
 
 def run_conformance(pipeline_config: PipelineConfig, workload: dict[str, Any], query: int, *,
