@@ -4,7 +4,9 @@ aux_exit reports every failed phase; a benchmark's build.cmake cannot redefine a
 from __future__ import annotations
 
 import json
+import os
 import shutil
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -130,12 +132,15 @@ def test_a_run_over_its_memory_cap_dies_alone_and_says_so(tmp_path, monkeypatch)
 
 def test_in_a_sandbox_a_run_gets_a_cgroup_under_the_delegated_one_and_ended_runs_are_pruned(tmp_path, monkeypatch):
     monkeypatch.setenv("ACCEL_CGROUP", str(tmp_path))
-    (tmp_path / "run-ended").mkdir()
+    ended = subprocess.Popen(["true"])
+    ended.wait()
+    (tmp_path / f"run-{ended.pid}-0").mkdir()
+    (tmp_path / f"run-{os.getpid()}-1").mkdir()  # a live process's run, not entered yet: kept
     cmd = run_outcome.capped(["true"], "64")
     cgroup = Path(cmd[3])
     assert cmd[:2] == ["sh", "-c"] and cmd[4:] == ["true"] and cgroup.parent == tmp_path
     assert (cgroup / "memory.max").read_text() == "64M" and (cgroup / "memory.swap.max").read_text() == "0"
-    assert not (tmp_path / "run-ended").exists()
+    assert not (tmp_path / f"run-{ended.pid}-0").exists() and (tmp_path / f"run-{os.getpid()}-1").exists()
     (cgroup / "memory.events").write_text("low 0\nhigh 0\nmax 3\noom 1\noom_kill 0\n")
     assert not run_outcome._over_cap(cmd)  # killed by another signal
     (cgroup / "memory.events").write_text("low 0\nhigh 0\nmax 3\noom 1\noom_kill 1\n")

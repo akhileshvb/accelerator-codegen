@@ -63,9 +63,14 @@ cmd_load() { # schema.sql [constraints.sql]
 }
 
 cmd_build() { # [target...]
-  [[ -f "${BUILD}/CMakeCache.txt" && -f "${BUILD}/build.ninja" ]] ||  # an interrupted configure leaves only the cache
-    cmake -S "${ROOT}" -B "${BUILD}" -G Ninja -DCMAKE_BUILD_TYPE=Release \
+  # configured again when an interrupted configure left only the cache, or when the dir was configured against
+  # another DuckDB (CMake finds it at configure time only)
+  if [[ ! -f "${BUILD}/CMakeCache.txt" || ! -f "${BUILD}/build.ninja" ||
+    "$(cat "${BUILD}/duckdb_root" 2>/dev/null)" != "${DUCKDB_ROOT}" ]]; then
+    ACCEL_DUCKDB_ROOT="${DUCKDB_ROOT}" cmake -S "${ROOT}" -B "${BUILD}" -G Ninja -DCMAKE_BUILD_TYPE=Release \
       -DACCEL_CODEGEN_ENGINE=duckdb ${ACCEL_CMAKE_ARGS:-}
+    echo "${DUCKDB_ROOT}" >"${BUILD}/duckdb_root"
+  fi
   cmake --build "${BUILD}" --target "${@:-accelerator_codegen}" -j"${ACCEL_BUILD_JOBS:-$(nproc)}"
 }
 

@@ -124,10 +124,13 @@ def capped(cmd: list[str], mb: str = "") -> list[str]:
 
 
 def _run_cgroup(root: Path, mb: str) -> Path:
-    for done in root.glob("run-*"):  # runs that ended (a populated cgroup refuses rmdir)
-        with contextlib.suppress(OSError):
-            done.rmdir()
-    cgroup = root / f"run-{uuid.uuid4().hex[:12]}"
+    """A cgroup for this process's run, named for it: it is in use while that process lives (the cap execs in place,
+    a run waits for its child), even before the run enters it, so only those of ended processes are pruned."""
+    for done in root.glob("run-*"):
+        with contextlib.suppress(OSError, ValueError):
+            if not _alive(int(done.name.split("-")[1])):
+                done.rmdir()  # a populated cgroup refuses it
+    cgroup = root / f"run-{os.getpid()}-{uuid.uuid4().hex[:8]}"
     cgroup.mkdir()
     (cgroup / "memory.max").write_text(f"{mb}M")
     (cgroup / "memory.swap.max").write_text("0")
