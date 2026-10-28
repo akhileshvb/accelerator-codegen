@@ -54,6 +54,7 @@ export ACCEL_INTERFERENCE_ISOLATED_SAMPLES="${ACCEL_INTERFERENCE_ISOLATED_SAMPLE
 export ACCEL_AUX_BENCHMARK="${BENCHMARK_NAME}"
 
 # written beside the config and moved into place when done: a bench running at the same time (aux_exit) never reads a half-written file
+mkdir -p "$(dirname "${CONFIG}")"  # the gate names the path; the query's config dir may not exist yet
 engine_measure "${TARGET}" --query "${QUERY}" "${CONFIG}.new"
 [[ ${RC} -ne 0 || ! -f "${CONFIG}.new" ]] || mv -f "${CONFIG}.new" "${CONFIG}"
 RC_RUN=${RC}
