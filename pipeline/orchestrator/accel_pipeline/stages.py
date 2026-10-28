@@ -819,7 +819,7 @@ def _record_baseline(pipeline_config, workload: dict, query: int, analysis_path,
 
 
 AUDIT_TASK = (
-    "Produce final_audit.md: verify correctness, cite SF1 sweep numbers, "
+    "Produce final_audit.md: verify correctness, cite the bench sweep numbers, "
     "and review scale-safety + harness fairness (no brittle gate chasing).\n\n"
     "Start from the query digest and the cumulative diff below; read a file only where they leave a question open."
 )

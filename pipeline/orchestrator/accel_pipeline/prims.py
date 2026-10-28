@@ -178,7 +178,7 @@ def vocabulary_hits(primary: Path, texts: dict[str, str]) -> list[dict[str, Any]
     vocab = mod.workload_vocabulary(primary)
     hits = []
     for label, text in texts.items():
-        for no, match, line in mod.scan_vocab_text(text, vocab):
+        for no, match, line in mod.scan_vocab_text(text, vocab, primary):
             hits.append({"file": label, "line": no, "word": match, "text": line})
     return hits
 

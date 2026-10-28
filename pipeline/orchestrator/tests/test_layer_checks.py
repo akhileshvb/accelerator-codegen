@@ -74,6 +74,47 @@ def test_query_free_ignores_generic_code(tmp_path: Path):
     assert r.returncode == 0, r.stdout
 
 
+def _script_in_repo_with_benchmarks(tmp_path: Path, *benchmarks: str) -> Path:
+    """A copy of the checker in a repo whose workloads/ holds the given benchmarks (each with a one-table schema)."""
+    (tmp_path / "scripts").mkdir()
+    script = tmp_path / "scripts" / QUERY_FREE.name
+    script.write_text(QUERY_FREE.read_text(encoding="utf-8"), encoding="utf-8")
+    for name in benchmarks:
+        (tmp_path / "workloads" / name).mkdir(parents=True)
+        (tmp_path / "workloads" / name / "schema.sql").write_text(f"CREATE TABLE {name}_trips (id INT);", encoding="utf-8")
+    return script
+
+
+def test_benchmark_names_match_whole_identifier_parts_of_any_benchmark(tmp_path: Path):
+    script = _script_in_repo_with_benchmarks(tmp_path, "job", "web_logs")
+    f = tmp_path / "harness.cpp"
+    f.write_text(
+        "int jobs = 0; void Jobs(); int bjob = 1;\n"                  # the name inside a longer word is not the name
+        "auto db = getenv(\"ACCEL_JOB_DB\");\n"                         # UPPER snake
+        "struct WebLogsQ3Module {};\n"                                  # CamelCase
+        "auto p = \"web_logs/q3/engine\";\n",
+        encoding="utf-8")
+    r = _run(str(script), "--file", str(f), "--bench-free")
+    flagged = {line.split(":")[1] for line in r.stdout.splitlines() if line.startswith("harness.cpp")}
+    assert r.returncode == 1 and flagged == {"2", "3", "4"}, r.stdout
+    assert "name: WebLogsQ3" in r.stdout and "name: web_logs/q3/" in r.stdout
+
+
+def test_benchmark_free_generic_code_passes_with_a_short_benchmark_name(tmp_path: Path):
+    script = _script_in_repo_with_benchmarks(tmp_path, "job")
+    f = tmp_path / "scheduler.cpp"
+    f.write_text("size_t jobs = queue.size(); auto Jobs = 1; int bjob = 2;\n", encoding="utf-8")
+    assert _run(str(script), "--file", str(f), "--bench-free").returncode == 0
+
+
+def test_prims_vocabulary_comes_from_every_workload_schema(tmp_path: Path):
+    script = _script_in_repo_with_benchmarks(tmp_path, "taxi")
+    f = tmp_path / "prim.hpp"
+    f.write_text("// sized for taxi_trips\nint x = 0;\n", encoding="utf-8")
+    r = _run(str(script), "--prims-file", str(f))
+    assert r.returncode == 1 and "taxi_trips" in r.stdout
+
+
 def test_query_free_scans_substrate_and_backends():
     r = _run(str(QUERY_FREE), "--json", "--no-prims-vocab")
     data = json.loads(r.stdout)

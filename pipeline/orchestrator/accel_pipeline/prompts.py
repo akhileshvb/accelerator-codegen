@@ -43,7 +43,7 @@ from accel_pipeline.data import (
     dependent_table_names,
     format_host_block,
 )
-from accel_pipeline.layout import file_signature, git, is_relevant, query_dir as query_dir_of
+from accel_pipeline.layout import ACCELERATORS, file_signature, git, is_relevant, query_dir as query_dir_of
 from accel_pipeline.runlog import squeeze_truncate
 
 
@@ -451,7 +451,7 @@ DUAL_AXIS_NOTES = (
     "- Do not trade a big write-mix regression for a small read win. End-of-iteration fair "
     "sweep still covers 0/1/10/50%.\n"
     "- **Scale**: per-query and per-write cost must stay O(touched rows/partitions) or better; "
-    "size from bind-time `row_estimate` — never SF1-hardcoded capacities."
+    "size from bind-time `row_estimate` — never capacities hardcoded from the iteration database."
 )
 
 
@@ -538,6 +538,14 @@ def _existing(repo: Path, rel: str) -> str | None:
     return rel if path.is_file() else None
 
 
+def _sibling_query_dir(repo: Path, benchmark: str, query: int, engine: str) -> Path | None:
+    """Another query's directory to mirror: this benchmark's first, else any benchmark's; one that has the engine."""
+    own = repo / query_dir_of(benchmark, query)
+    siblings = sorted((d for d in (repo / ACCELERATORS).glob("*/q[0-9]*") if d != own and (d / engine).is_dir()),
+                      key=lambda d: (d.parent.name != benchmark, d.parent.name, int(d.name[1:]) if d.name[1:].isdigit() else 0))
+    return siblings[0] if siblings else None
+
+
 def build_implementation_bootstrap(
     repo: Path,
     workload: dict[str, Any],
@@ -570,16 +578,17 @@ def build_implementation_bootstrap(
         f"{qdir}/{engine}/base/query.hpp",
         f"{qdir}/tests/test_{benchmark}_{q}.cpp",
         f"{qdir}/tests/{q}_manifest.hpp",
-        "eval/tests/test_tpch_module.cpp",
-        f"accelerators/{benchmark}/q14/bench/benchmark_q14.cpp",
         cost_model_config,
-        f"accelerators/{benchmark}/q14/cost_model.hpp",
-        f"accelerators/{benchmark}/q14/layout.hpp",
-        f"accelerators/{benchmark}/q14/{engine}/register.cpp",
         "eval/tests/test_support/cross_accel_helpers.cpp",
         "pipeline/prompts/aux_state/shared/read_path_scaffold.md",
         "pipeline/prompts/aux_state/shared/unit_test_contract.md",
     ]
+    sibling = _sibling_query_dir(repo, benchmark, query, engine)
+    if sibling:
+        sq = sibling.name
+        templates += [f"{sibling.relative_to(repo)}/{rel}" for rel in
+                      (f"bench/benchmark_{sq}.cpp", "cost_model.hpp", "layout.hpp",
+                       f"{engine}/aux/register.cpp", f"{engine}/base/single-threaded/register.cpp")]
     for rel in templates:
         if _existing(repo, rel):
             lines.append(f"- `{rel}`")

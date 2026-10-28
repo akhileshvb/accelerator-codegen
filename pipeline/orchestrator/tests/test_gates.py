@@ -790,7 +790,7 @@ def test_a_subset_build_too_short_to_time_is_judged_on_the_last_sweeps_full_scal
     reports = [{"build_seconds": 0.05}, {"build_seconds": 0.06}]
     kwargs = dict(scale=50.0, threads=8, budget_s=15.0, expected_scaling=True)
     _, defect = gates.build_report(reports, sweep_scaling=SF1_SERIAL, **kwargs)
-    assert "6.58 s at 8 threads vs 6.93 s at 1 (1.1x)" in defect and "full SF1" in defect and "core::PartitionedBuild" in defect
+    assert "6.58 s at 8 threads vs 6.93 s at 1 (1.1x)" in defect and "full iteration database" in defect and "core::PartitionedBuild" in defect
     assert gates.build_report(reports, sweep_scaling={**SF1_SERIAL, "build_ms_at_N": 1200.0}, **kwargs)[1] == ""
     assert gates.build_report(reports, sweep_scaling={**SF1_SERIAL, "threads": 2}, **kwargs)[1] == ""
     assert gates.build_report(reports, **kwargs)[1] == ""

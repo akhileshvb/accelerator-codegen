@@ -55,7 +55,7 @@ cmd_load() { # schema.sql [constraints.sql]
     # in the schema's table order, so a foreign key's referenced table is loaded first
     for table in $(grep -oiE 'create table +[a-z_0-9]+' "${schema}" | awk '{print $3}'); do
       tbl="${ACCEL_DATASET_DIR}/${table}.tbl"
-      [[ ! -s "${tbl}" ]] || echo "COPY ${table} FROM '${tbl}' (DELIMITER '|', HEADER false);"  # an empty table loads as empty
+      [[ ! -s "${tbl}" ]] || echo "COPY ${table} FROM '${tbl}' (DELIMITER '|', HEADER false, ALLOW_QUOTED_NULLS false);"  # an empty table loads as empty
     done
     [[ -z "${constraints}" ]] || cat "${constraints}"
   } | duckdb_cli "${DB}"
