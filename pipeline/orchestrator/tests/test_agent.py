@@ -565,6 +565,17 @@ def test_a_harness_blocker_is_recorded_as_a_request_to_host_bootstrap(tmp_path):
     assert "ties on every ORDER BY key" in pending_harness_requests(cfg.repo_root, "toyengine")
 
 
+def test_an_agents_backend_blocker_is_recorded_without_reopening_the_backend(tmp_path):
+    from accel_pipeline.engine_backend import checked_backend_requests, pending
+    from accel_pipeline.mcp import build_mcp_tool_callables
+
+    cfg = _repo_config(tmp_path)
+    tools = build_mcp_tool_callables(cfg, {"engine_name": "toyengine", "benchmark_name": "toybench"}, "w", 3,
+                                     "implementation", 0, tmp_path)
+    tools["report_blocker"]("the load looks stuck", "228 s in host load", "backend")
+    assert pending(cfg.repo_root, "toyengine", "backend") and not checked_backend_requests(cfg.repo_root, "toyengine")
+
+
 # ---- the repair loop ----
 
 class World:

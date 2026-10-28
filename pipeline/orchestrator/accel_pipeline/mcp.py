@@ -266,7 +266,9 @@ def build_mcp_tool_callables(
         if owner in (HARNESS, BACKEND) and workload.get("engine_name"):
             record(pipeline_config.repo_root, sanitize_engine_name(str(workload["engine_name"])), {
                 "benchmark": str(workload.get("benchmark_name") or ""), "query": query, "scope": owner,
-                "helper": summary.strip()[:200], "check": f"report_blocker:{stage}", "reason": evidence.strip()})
+                "helper": summary.strip()[:200], "reason": evidence.strip(),
+                # a harness revision is cheap, so an agent's word reopens it; the backend reopens only on a failed gate
+                **({"check": f"report_blocker:{stage}"} if owner == HARNESS else {})})
         return "Blocker recorded. Stop now; the orchestrator takes over. Do not continue working."
 
     def ask_advisor(question: str) -> str:
@@ -504,8 +506,8 @@ def register_core(tool, call) -> None:
         missing input) instead of investigating it. Writes blocker.md and ends your turn.
 
         owner: who the obstacle belongs to. "harness": the engine's workload harnesses are wrong (host_bootstrap
-        fixes them before your next check). "backend": the engine backend under backends/ (its validation fixes it
-        before your next check when the defect is backed by a failing check; else you adapt). "engine": the engine
+        fixes them before your next check). "backend": the engine backend under backends/ (recorded for the engine
+        backend's own run; you adapt meanwhile. A gate that fails on the backend reopens it by itself). "engine": the engine
         itself, its source outside the repository (the run stops with a report). "data": the workload's data or
         test cut (the run stops with a report). "pipeline": a gate or the orchestrator (the run stops with a
         report). "infra": the machine or a provider. Else "query" (the default).
