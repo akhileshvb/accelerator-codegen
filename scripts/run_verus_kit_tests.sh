@@ -13,7 +13,8 @@
 #   BENCH        tpch    (null_double: NULL and DOUBLE cells, TEST_DB from
 #                accelerators/null_double/q1/tests/make_test_db.sh)
 #   TEST_DB      pristine test database, never modified (default ../accelerator-codegen-duckdb/tpch_test.duckdb;
-#                scripts/create_tpch_test_db.py makes one)
+#                scripts/create_tpch_test_db.py makes one from the current schema: BIGINT keys, which the
+#                big-key transactions of the workloads (keys up to 2^62) need)
 #   OUT          results dir (default <build_dir>/verus_kit_tests): qN_<mode>.{json,err,rc}, summary.txt
 #   MODES        "validate differential snapshots"     STORE  ACCEL_AUX_STORE (default verus_global)
 #   DIFF_EVERY   10 (all tuples checked every N txns)
