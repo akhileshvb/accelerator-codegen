@@ -1758,6 +1758,12 @@ def _aux_write_frequencies(
     )
 
 
+def database_env(paths: dict[str, str]) -> dict[str, str]:
+    """The worker's private copy of the dataset, under the host contract's ACCEL_DB (what the workload harnesses
+    read when the bench runs outside host.sh) and the workload's own variable."""
+    return {"ACCEL_DB": str(paths["dataset_db"]), paths["db_env_var"]: str(paths["dataset_db"])}
+
+
 def _aux_bench_env(
     paths: dict[str, str], *, query: int, workload: dict[str, Any], freqs: list[int], acceptance: bool = True,
     include_profile: bool = False,
@@ -1767,7 +1773,7 @@ def _aux_bench_env(
         if acceptance else _quick_tier_settings(workload)
     )
     env = {
-        paths["db_env_var"]: str(paths["dataset_db"]),
+        **database_env(paths),
         f"ACCEL_Q{query}_BENCH_SUITE": paths["aux_bench_suites"],
         "ACCEL_AUX_WRITE_FREQUENCIES": ",".join(str(f) for f in freqs),
         "ACCEL_BENCH_WARMUP": str(int(tier["bench_warmup"])),
@@ -1785,7 +1791,7 @@ def _aux_bench_env(
 
 def _base_benchmark_env(paths: dict[str, str], *, query: int, include_profile: bool) -> dict[str, str]:
     env = {
-        paths["db_env_var"]: str(paths["dataset_db"]),
+        **database_env(paths),
         "ACCEL_BENCH_WARMUP": "1",
         "ACCEL_BENCH_ITERS": "3",
         "ACCEL_BENCH_FILTER": f"seed_1_q{query}",

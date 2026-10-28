@@ -50,6 +50,7 @@ from accel_pipeline.optimization.bench import (
     AttemptOutcome,
     MultiSampleBenchmark,
     aux_optimization_score,
+    database_env,
     build_win,
     check_measurement,
     eval_config_from_pipeline,
@@ -469,9 +470,7 @@ def run_smoke_correctness(pipeline_config: PipelineConfig, workload: dict, query
         return SmokeResult(passed=False, output="no smoke test regex configured")
     build_dir = pipeline_config.build_dir
     ctest = build_dir / "ctest"
-    env = dict(os.environ)
-    if paths.get("db_env_var") and paths.get("dataset_db"):
-        env[str(paths["db_env_var"])] = str(paths["dataset_db"])
+    env = {**os.environ, **(database_env(paths) if paths.get("dataset_db") else {})}
     proc = subprocess.run([str(ctest if ctest.is_file() else "ctest"), "--test-dir", str(build_dir), "-R", regex, "--output-on-failure"],
                           cwd=pipeline_config.repo_root, capture_output=True, text=True, check=False, timeout=timeout_sec, env=env)
     return SmokeResult(passed=proc.returncode == 0, output=((proc.stdout or "") + (proc.stderr or ""))[-6000:], regex=regex)

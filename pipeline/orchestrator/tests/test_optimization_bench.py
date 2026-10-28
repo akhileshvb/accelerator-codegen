@@ -708,6 +708,7 @@ def test_quick_benchmark_env_aux_uses_fast_settings():
     assert env["ACCEL_BENCH_WARMUP"] == "3"
     assert env["ACCEL_AUX_CUSTOM_PROFILE"] == "1"
     assert "ACCEL_BENCH_PROFILE" not in env
+    assert env["ACCEL_DB"] == env[paths["db_env_var"]] == str(paths["dataset_db"])  # the host contract's variable too
 
 
 def test_quick_tier_env_is_the_cheap_read_only_sweep():
