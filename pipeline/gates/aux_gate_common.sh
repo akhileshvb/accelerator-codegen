@@ -237,6 +237,8 @@ run_limit() {
 # instead of stalling the run, with every thread's stack at the deadline. Sets LOG, RC and, on a timeout, RUN_REASON.
 # The output goes to <gate json>.run.<random>.log while it runs (gate_status shows its last line).
 engine_run() { _engine_run "" "$@"; }
+# What the last engine_run left (a gate may skip every run: a sanitizer quick_check without a differential).
+RC=0 LOG="" RUN_REASON=""
 
 # engine_run for a benchmark: queues for the host-wide measurement lease (outside the time limit), runs
 # pinned to the measurement CPUs (ACCEL_RUN_CPUS: to those instead), and records the queueing as the phase

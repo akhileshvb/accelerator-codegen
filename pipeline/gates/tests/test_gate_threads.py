@@ -160,6 +160,12 @@ def test_a_sanitizer_quick_check_runs_the_differential_at_its_one_thread_count_o
     assert thread_values(log) == ["3"]
 
 
+def test_a_sanitizer_quick_check_without_the_differential_runs_nothing_and_passes(repo):
+    proc, _, _, gj, _ = run_gate(repo, "run_aux_quick_check.sh", "5", env_extra={**SAN_ENV, "ACCEL_QUICK_DIFFERENTIAL": "0"})
+    assert proc.returncode == 0, proc.stdout + proc.stderr  # no run set LOG: the gate must not trip on it
+    assert result(gj, "quick_check")["status"] == "pass"
+
+
 def test_a_report_with_a_frame_in_the_query_fails_and_engine_reports_do_not(repo):
     proc, _, _, gj, _ = run_gate(repo, "run_aux_quick_check.sh", "5", env_extra={**SAN_ENV, "FAKE_TSAN_REPORT": f"/r/{qdir('tpch', 5)}"})
     assert proc.returncode == 1
