@@ -59,8 +59,8 @@ def test_composite_score_uses_min_workload_speedup():
     rows = parse_sweep_csv_from_text(SAMPLE_CSV)
     summary = summarize_sweep_rows(rows)
     assert summary["composite_workload_speedup"] == 7.23
-    assert summary["read_only_query_speedup"] == 40.61
-    assert summary["composite_score"] == round(7.23 + 0.1 * 40.61, 4)
+    assert summary["read_only_query_speedup"] == round(166496 / 4100, 4)
+    assert summary["composite_score"] == round(7.23 + 0.1 * 166496 / 4100, 4)
 
 
 def test_summarize_ignores_non_discriminative_write_intervals():
@@ -240,7 +240,7 @@ def test_state_never_built():
     "over, needle",
     [
         ({"accel_hit_median_us": 0.0}, "hit median is 0"),
-        ({"query_only_speedup": float("inf")}, "query_only_speedup is inf"),
+        ({"query_only_speedup": float("inf"), "ref_query_median_us": None}, "query_only_speedup is inf"),
         ({"workload_speedup": float("nan")}, "workload_speedup is nan"),
         ({"ref_query_median_us": 0.1}, "reference query median"),
         ({"ref_query_median_us": 7e8}, "reference query median"),
@@ -252,9 +252,9 @@ def test_implausible_timings(over, needle):
     assert any(needle in d for d in diagnoses([row(0, **over)]))
 
 
-def test_read_axis_must_be_the_engine_reference_over_the_hit():
-    assert any("against the engine's own SQL" in d for d in diagnoses([row(0, query_only_speedup=1.06)]))
-    assert check([row(0, query_only_speedup=100.4)]) == []
+def test_the_read_axis_is_the_engine_reference_over_the_hit_whatever_the_bench_reports():
+    point = summarize_sweep_rows([row(0, query_only_speedup=1.06)])["by_write_frequency_pct"]["0"]
+    assert point["query_only_speedup"] == 100.0
 
 
 def test_sample_spread():
@@ -628,8 +628,8 @@ def test_a_build_win_does_not_buy_a_score_drop_a_small_gain_or_a_write_regressio
 
 Q18_AUX_OUTPUT = """\
 suite,write_policy,locality,write_frequency_pct,quantity_threshold,num_queries,writes_executed,duckdb_ref_query_median_us,base_kernel_median_us,base_write_median_us,accel_write_median_us,accel_hit_median_us,fallback_median_us,accel_hit_rate,fallback_rate,total_duckdb_query_us,total_accel_query_us,total_base_write_us,total_accel_write_us,duckdb_workload_us,accel_workload_us,workload_speedup,cold_start_workload_speedup,query_only_speedup,blended_query_speedup,cold_start_accel_workload_us,setup_full_build_ms
-lineitem_only,hybrid,global,0,312,5,0,150000.00,3500000.00,22000.00,0.00,3200000.00,0.00,1.00,0.00,750000.00,16000000.00,0.00,0.00,750000.00,16000000.00,0.05,0.04,4.70,4.70,16100000.00,9000.00
-lineitem_only,hybrid,global,50,312,5,2,150000.00,3500000.00,22000.00,1200.00,3200000.00,0.00,1.00,0.00,750000.00,16000000.00,44000.00,2400.00,794000.00,16002400.00,0.05,0.04,4.70,4.70,161002400.00,9100.00
+lineitem_only,hybrid,global,0,312,5,0,146875.00,3500000.00,22000.00,0.00,31250.00,0.00,1.00,0.00,750000.00,16000000.00,0.00,0.00,750000.00,16000000.00,0.05,0.04,4.70,4.70,16100000.00,9000.00
+lineitem_only,hybrid,global,50,312,5,2,146875.00,3500000.00,22000.00,1200.00,31250.00,0.00,1.00,0.00,750000.00,16000000.00,44000.00,2400.00,794000.00,16002400.00,0.05,0.04,4.70,4.70,161002400.00,9100.00
 """
 
 
