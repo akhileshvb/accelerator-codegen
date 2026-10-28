@@ -776,7 +776,7 @@ def test_every_bench_and_smoke_command_goes_through_the_host_in_the_workers_inst
     assert loop.run_smoke_correctness(config, workload, 6).passed
     lines = log.read_text().splitlines()
     instance = lines[0].split()[1]
-    assert instance.startswith("instance=") and instance.endswith("-bench")
+    assert instance.startswith("instance=") and instance.endswith("-optimization")  # not the gates' -bench, which aux_exit writes
     assert all(line.split()[1] == instance for line in lines)  # the one instance of this worker, never the quick or default one
     assert [line.split()[0] for line in lines].count("run") == 3  # two sweep points, one ctest
     assert {line.split()[0] for line in lines} == {"up", "load", "build", "run"}

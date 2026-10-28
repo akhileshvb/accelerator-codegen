@@ -1454,10 +1454,11 @@ class HostRun:
 
     @classmethod
     def worker(cls, cfg: PipelineConfig, workload: dict[str, Any]) -> HostRun:
-        """The instance this worker's own benchmarks and smoke run in, loaded with the workload's dataset."""
+        """The instance this worker's own benchmarks and smoke run in, loaded with the workload's dataset: apart from
+        the gates' instances (aux_exit's bench phase writes `<instance>-bench`), which may run at the same time."""
         own = instance_env(cfg.repo_root, str(workload.get("engine_name") or ""), cfg.build_dir)
-        return cls(cfg, workload, {"engine_instance": own["ACCEL_ENGINE_INSTANCE"] + "-bench",
-                                   "engine_state_dir": own["ACCEL_ENGINE_STATE_DIR"] + "-bench",
+        return cls(cfg, workload, {"engine_instance": own["ACCEL_ENGINE_INSTANCE"] + "-optimization",
+                                   "engine_state_dir": own["ACCEL_ENGINE_STATE_DIR"] + "-optimization",
                                    "dataset": workload_dataset_dir(workload)})
 
     @property
