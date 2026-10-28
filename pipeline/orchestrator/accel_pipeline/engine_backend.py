@@ -1264,7 +1264,8 @@ def run_host_bootstrap(pipeline_config: PipelineConfig, model_config: ModelConfi
 def declining_query(pipeline_config: PipelineConfig, workload: dict[str, Any], query: int):
     """The query registered with the module that declines every call while host_bootstrap works: its own module
     may be mid-implementation and not compile, and the harnesses link it. Its engine directory waits in the query's
-    artifacts (outside every build glob) and is put back however the bootstrap ends."""
+    artifacts (outside every build glob) and is put back however the bootstrap ends, its files touched: a move keeps
+    their old mtimes, and the build would keep the declining module's newer objects."""
     from accel_pipeline.stages import materialize_registration
 
     repo = pipeline_config.repo_root
@@ -1272,8 +1273,7 @@ def declining_query(pipeline_config: PipelineConfig, workload: dict[str, Any], q
     engine_dir = (repo / register).parent.parent if register else None  # accelerators/<bench>/q<N>/<engine>
     aside = query_artifacts_dir(repo, query, workload=workload) / "implementation_aside"
     if engine_dir is not None and aside.is_dir():  # a bootstrap that died before putting it back
-        shutil.rmtree(engine_dir, ignore_errors=True)
-        shutil.move(aside, engine_dir)
+        _put_back(aside, engine_dir)
     if engine_dir is None or not engine_dir.is_dir():
         yield
         return
@@ -1283,8 +1283,15 @@ def declining_query(pipeline_config: PipelineConfig, workload: dict[str, Any], q
         materialize_registration(pipeline_config, workload, query)
         yield
     finally:
-        shutil.rmtree(engine_dir, ignore_errors=True)
-        shutil.move(aside, engine_dir)
+        _put_back(aside, engine_dir)
+
+
+def _put_back(aside: Path, engine_dir: Path) -> None:
+    shutil.rmtree(engine_dir, ignore_errors=True)
+    shutil.move(aside, engine_dir)
+    for path in engine_dir.rglob("*"):
+        if path.is_file():
+            path.touch()
 
 
 def run_conformance(pipeline_config: PipelineConfig, workload: dict[str, Any], query: int, *,

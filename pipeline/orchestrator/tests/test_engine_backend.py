@@ -6,6 +6,8 @@ host_bootstrap with its harness acceptance."""
 from __future__ import annotations
 
 import json
+import os
+import time
 import shutil
 from dataclasses import replace
 from pathlib import Path
@@ -1071,6 +1073,7 @@ def test_host_bootstrap_works_on_the_declining_module_and_puts_the_querys_own_ba
     module.parent.mkdir(parents=True)
     module.write_text("does not compile")
     (module.parent / "register.cpp").write_text("the query's own")
+    os.utime(module, (1, 1))  # older than anything a build made during the bootstrap
     monkeypatch.setattr(stages, "materialize_registration",
                         lambda cfg, w, q: (tmp_path / register).parent.mkdir(parents=True) or (tmp_path / register).write_text("declining"))
     workload = {"engine_host": {"aux_register_path": register}, "benchmark_name": "toybench", "engine_name": "toydb"}
@@ -1079,3 +1082,4 @@ def test_host_bootstrap_works_on_the_declining_module_and_puts_the_querys_own_ba
         assert (tmp_path / register).read_text() == "declining" and not module.exists()
         raise RuntimeError("the bootstrap failed")
     assert module.read_text() == "does not compile" and (tmp_path / register).read_text() == "the query's own"
+    assert module.stat().st_mtime > time.time() - 60  # newer than the declining module's objects: the build redoes it
