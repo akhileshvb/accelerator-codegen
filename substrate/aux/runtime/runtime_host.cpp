@@ -227,7 +227,10 @@ void RuntimeHost::Commit(uint64_t txn, Epoch epoch) {
   // Each accelerator maintains independently; fork-join over the maintenance cap
   // (1: in id order on this thread).
   impl->threads.ParallelFor(
-      staged.size(), [&](std::size_t i) { staged[i]->PublishCommit(epoch); }, impl->threads.MaintenanceLimit());
+      staged.size(), [&](std::size_t i) { staged[i]->PublishCommit(epoch, false); }, impl->threads.MaintenanceLimit());
+  for (auto *runtime : staged) {
+    runtime->EndCommit(epoch);
+  }
 }
 
 void RuntimeHost::Abort(uint64_t txn) {

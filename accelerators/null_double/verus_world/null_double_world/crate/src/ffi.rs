@@ -61,10 +61,10 @@ pub unsafe extern "C" fn null_doublew_gbase_free(gb: *mut Arc<GBase>) {
     }
 }
 
-/// A batch on a base (every slot carried).
+/// A batch on a base for the commit visible from engine epoch `from` (every slot carried).
 #[no_mangle]
-pub unsafe extern "C" fn null_doublew_batch_new(gb: *const Arc<GBase>) -> *mut Batch {
-    Box::into_raw(Box::new(batch_new(&*gb)))
+pub unsafe extern "C" fn null_doublew_batch_new(gb: *const Arc<GBase>, from: u64) -> *mut Batch {
+    Box::into_raw(Box::new(batch_new(&*gb, from)))
 }
 
 #[no_mangle]
@@ -74,12 +74,13 @@ pub unsafe extern "C" fn null_doublew_batch_free(b: *mut Batch) {
     }
 }
 
-/// Install the batch (consumed) as the next version, current from engine
-/// epoch `from`; keep the versions snapshots at or after `floor` select;
-/// end_commit != 0 also ends the commit in flight.  0: appended; 1: stale.
+/// Install the batch (consumed) as the next version, current from its epoch;
+/// keep the versions snapshots at or after `floor` select; end_commit != 0
+/// installs it as the commit in flight (the store checks it is the one).
+/// 0: appended; 1: stale.
 #[no_mangle]
-pub unsafe extern "C" fn null_doublew_install(st: *const GStore, b: *mut Batch, from: u64, floor: u64, end_commit: i32) -> i32 {
-    let p = batch_finish(*Box::from_raw(b));
+pub unsafe extern "C" fn null_doublew_install(st: *const GStore, b: *mut Batch, floor: u64, end_commit: i32) -> i32 {
+    let (p, from) = batch_finish(*Box::from_raw(b));
     let r = if end_commit != 0 { (*st).commit(p, from, floor) } else { (*st).install(p, from, floor) };
     match r {
         Install::Applied => 0,
@@ -108,11 +109,12 @@ pub unsafe extern "C" fn null_doublew_head_1(gb: *const Arc<GBase>) -> *mut Head
     Box::into_raw(Box::new(head_1(&**gb)))
 }
 
-/// Put a slot staged by the kit (consumed) in the batch.  1: taken; 0: it was staged on
-/// another base, the slot is invalid.
+/// Put a slot staged by the kit (consumed) in the batch, for the commit at engine epoch
+/// `from`.  1: taken; 0: it was staged on another base or put for another commit, the
+/// slot is invalid.
 #[no_mangle]
-pub unsafe extern "C" fn null_doublew_put_1(b: *mut Batch, st: *mut Staged<D1, S1>) -> i32 {
-    let (nb, taken) = put_1(ptr::read(b), *Box::from_raw(st));
+pub unsafe extern "C" fn null_doublew_put_1(b: *mut Batch, st: *mut Staged<D1, S1>, from: u64) -> i32 {
+    let (nb, taken) = put_1(ptr::read(b), *Box::from_raw(st), from);
     ptr::write(b, nb);
     taken as i32
 }

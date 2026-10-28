@@ -9,8 +9,10 @@
 // commit changes stages its slot with its kit's stage_apply / stage_build on
 // its part of the newest version (`base_k` / `head_k` of a `GBase`), and the
 // `Batch` made from that GBase takes it (`put_k`) only if the slot was staged
-// on that very base; any other slot becomes invalid.  So every put state is
-// produced by verified code from slot k of the batch's base world.
+// on that very base and is put for the batch's commit (its engine epoch);
+// any other slot becomes invalid.  So every put state is produced by
+// verified code from slot k of the batch's base world, for one commit.  The
+// store installs the batch only as the commit in flight (store.rs `commit`).
 // Readers resolve their snapshot under the read lock (substrate store.rs:
 // the snapshot and commit-order theorems) and are narrowed to their
 // accelerator (`read_k`); the kit's `answer` is Theorem 5.4 on that reading.
@@ -2147,6 +2149,7 @@ pub struct Batch {
     base: Arc<GBase>,
     next: World,
     target: Ghost<GDb>,
+    from: u64,
 }
 
 impl Batch {
@@ -2173,8 +2176,8 @@ impl Batch {
     }
 }
 
-/// A batch on a base, every slot carried.
-pub fn batch_new(base: &Arc<GBase>) -> (r: Batch)
+/// A batch on a base for the commit visible from engine epoch `from`, every slot carried.
+pub fn batch_new(base: &Arc<GBase>, from: u64) -> (r: Batch)
     ensures
         r.epoch() == base.epoch(),
         r.timeline() == base.timeline(),
@@ -2183,29 +2186,30 @@ pub fn batch_new(base: &Arc<GBase>) -> (r: Batch)
     proof {
         use_type_invariant(&**base);
     }
-    Batch { base: base.clone(), next: base.w.share(), target: Ghost((base.timeline@)(base.e as nat)) }
+    Batch { base: base.clone(), next: base.w.share(), target: Ghost((base.timeline@)(base.e as nat)), from }
 }
 
-/// The next version (consumes the batch).  HOST CONTRACT (the requires): the
-/// accelerators the batch did not replace are unchanged by this commit, so
-/// the target is the database at e + 1.
-pub fn batch_finish(b: Batch) -> (p: GPrepared)
+/// The next version (consumes the batch) and the epoch it is current from.
+/// HOST CONTRACT (the requires): the accelerators the batch did not replace are
+/// unchanged by this commit, so the target is the database at e + 1.
+pub fn batch_finish(b: Batch) -> (r: (GPrepared, u64))
     requires
         b.target() == b.next_db(),
     ensures
-        p.epoch() == b.epoch(),
-        p.timeline() == b.timeline(),
+        r.0.epoch() == b.epoch(),
+        r.0.timeline() == b.timeline(),
 {
     proof {
         use_type_invariant(&b);
         use_type_invariant(&*b.base);
     }
-    Prepared::new(b.base.e, b.next, b.base.timeline)
+    (Prepared::new(b.base.e, b.next, b.base.timeline), b.from)
 }
 
-/// Replace tpch_q1_vgen's slot by the one staged on this batch's base: true.  A slot
-/// staged on another base is not taken: the slot becomes invalid (false).
-pub fn put_1(b: Batch, st: Staged<D1, S1>) -> (r: (Batch, bool))
+/// Replace tpch_q1_vgen's slot by the one staged on this batch's base, for the batch's
+/// commit (`from`): true.  A slot staged on another base, or put for another
+/// commit, is not taken: the slot becomes invalid (false).
+pub fn put_1(b: Batch, st: Staged<D1, S1>, from: u64) -> (r: (Batch, bool))
     ensures
         r.0.epoch() == b.epoch(),
         r.0.timeline() == b.timeline(),
@@ -2215,7 +2219,7 @@ pub fn put_1(b: Batch, st: Staged<D1, S1>) -> (r: (Batch, bool))
         use_type_invariant(&b);
         use_type_invariant(&*b.base);
     }
-    let same = st.head().same(&b.base.h1);
+    let same = from == b.from && st.head().same(&b.base.h1);
     let ghost (se, stl) = (st.epoch(), st.timeline());
     let slot = if same {
         st.into_slot()
@@ -2224,7 +2228,7 @@ pub fn put_1(b: Batch, st: Staged<D1, S1>) -> (r: (Batch, bool))
     };
     assert(same ==> slot.ok(db_1(b.next_db())));
     let next = replace_1(&b.next, slot, Ghost(b.target@), Ghost(db_1(b.next_db())));
-    (Batch { base: b.base, next, target: Ghost(with_1(b.target@, db_1(b.next_db()))) }, same)
+    (Batch { base: b.base, next, target: Ghost(with_1(b.target@, db_1(b.next_db()))), from: b.from }, same)
 }
 
 /// Make tpch_q1_vgen's slot invalid in the batch.
@@ -2238,7 +2242,7 @@ pub fn put_invalid_1(b: Batch) -> (r: Batch)
         use_type_invariant(&b);
     }
     let next = replace_1(&b.next, Slot::Invalid, Ghost(b.target@), Ghost(db_1(b.next_db())));
-    Batch { base: b.base, next, target: Ghost(with_1(b.target@, db_1(b.next_db()))) }
+    Batch { base: b.base, next, target: Ghost(with_1(b.target@, db_1(b.next_db()))), from: b.from }
 }
 
 /// What a snapshot at engine epoch `at` sees of tpch_q1_vgen (waiting up to `tries`
@@ -2290,9 +2294,10 @@ pub fn invalidate_1(store: &GStore) {
     g.end(c);
 }
 
-/// Replace tpch_q2_vgen's slot by the one staged on this batch's base: true.  A slot
-/// staged on another base is not taken: the slot becomes invalid (false).
-pub fn put_2(b: Batch, st: Staged<D2, S2>) -> (r: (Batch, bool))
+/// Replace tpch_q2_vgen's slot by the one staged on this batch's base, for the batch's
+/// commit (`from`): true.  A slot staged on another base, or put for another
+/// commit, is not taken: the slot becomes invalid (false).
+pub fn put_2(b: Batch, st: Staged<D2, S2>, from: u64) -> (r: (Batch, bool))
     ensures
         r.0.epoch() == b.epoch(),
         r.0.timeline() == b.timeline(),
@@ -2302,7 +2307,7 @@ pub fn put_2(b: Batch, st: Staged<D2, S2>) -> (r: (Batch, bool))
         use_type_invariant(&b);
         use_type_invariant(&*b.base);
     }
-    let same = st.head().same(&b.base.h2);
+    let same = from == b.from && st.head().same(&b.base.h2);
     let ghost (se, stl) = (st.epoch(), st.timeline());
     let slot = if same {
         st.into_slot()
@@ -2311,7 +2316,7 @@ pub fn put_2(b: Batch, st: Staged<D2, S2>) -> (r: (Batch, bool))
     };
     assert(same ==> slot.ok(db_2(b.next_db())));
     let next = replace_2(&b.next, slot, Ghost(b.target@), Ghost(db_2(b.next_db())));
-    (Batch { base: b.base, next, target: Ghost(with_2(b.target@, db_2(b.next_db()))) }, same)
+    (Batch { base: b.base, next, target: Ghost(with_2(b.target@, db_2(b.next_db()))), from: b.from }, same)
 }
 
 /// Make tpch_q2_vgen's slot invalid in the batch.
@@ -2325,7 +2330,7 @@ pub fn put_invalid_2(b: Batch) -> (r: Batch)
         use_type_invariant(&b);
     }
     let next = replace_2(&b.next, Slot::Invalid, Ghost(b.target@), Ghost(db_2(b.next_db())));
-    Batch { base: b.base, next, target: Ghost(with_2(b.target@, db_2(b.next_db()))) }
+    Batch { base: b.base, next, target: Ghost(with_2(b.target@, db_2(b.next_db()))), from: b.from }
 }
 
 /// What a snapshot at engine epoch `at` sees of tpch_q2_vgen (waiting up to `tries`
@@ -2377,9 +2382,10 @@ pub fn invalidate_2(store: &GStore) {
     g.end(c);
 }
 
-/// Replace tpch_q3_vgen's slot by the one staged on this batch's base: true.  A slot
-/// staged on another base is not taken: the slot becomes invalid (false).
-pub fn put_3(b: Batch, st: Staged<D3, S3>) -> (r: (Batch, bool))
+/// Replace tpch_q3_vgen's slot by the one staged on this batch's base, for the batch's
+/// commit (`from`): true.  A slot staged on another base, or put for another
+/// commit, is not taken: the slot becomes invalid (false).
+pub fn put_3(b: Batch, st: Staged<D3, S3>, from: u64) -> (r: (Batch, bool))
     ensures
         r.0.epoch() == b.epoch(),
         r.0.timeline() == b.timeline(),
@@ -2389,7 +2395,7 @@ pub fn put_3(b: Batch, st: Staged<D3, S3>) -> (r: (Batch, bool))
         use_type_invariant(&b);
         use_type_invariant(&*b.base);
     }
-    let same = st.head().same(&b.base.h3);
+    let same = from == b.from && st.head().same(&b.base.h3);
     let ghost (se, stl) = (st.epoch(), st.timeline());
     let slot = if same {
         st.into_slot()
@@ -2398,7 +2404,7 @@ pub fn put_3(b: Batch, st: Staged<D3, S3>) -> (r: (Batch, bool))
     };
     assert(same ==> slot.ok(db_3(b.next_db())));
     let next = replace_3(&b.next, slot, Ghost(b.target@), Ghost(db_3(b.next_db())));
-    (Batch { base: b.base, next, target: Ghost(with_3(b.target@, db_3(b.next_db()))) }, same)
+    (Batch { base: b.base, next, target: Ghost(with_3(b.target@, db_3(b.next_db()))), from: b.from }, same)
 }
 
 /// Make tpch_q3_vgen's slot invalid in the batch.
@@ -2412,7 +2418,7 @@ pub fn put_invalid_3(b: Batch) -> (r: Batch)
         use_type_invariant(&b);
     }
     let next = replace_3(&b.next, Slot::Invalid, Ghost(b.target@), Ghost(db_3(b.next_db())));
-    Batch { base: b.base, next, target: Ghost(with_3(b.target@, db_3(b.next_db()))) }
+    Batch { base: b.base, next, target: Ghost(with_3(b.target@, db_3(b.next_db()))), from: b.from }
 }
 
 /// What a snapshot at engine epoch `at` sees of tpch_q3_vgen (waiting up to `tries`
@@ -2464,9 +2470,10 @@ pub fn invalidate_3(store: &GStore) {
     g.end(c);
 }
 
-/// Replace tpch_q4_vgen's slot by the one staged on this batch's base: true.  A slot
-/// staged on another base is not taken: the slot becomes invalid (false).
-pub fn put_4(b: Batch, st: Staged<D4, S4>) -> (r: (Batch, bool))
+/// Replace tpch_q4_vgen's slot by the one staged on this batch's base, for the batch's
+/// commit (`from`): true.  A slot staged on another base, or put for another
+/// commit, is not taken: the slot becomes invalid (false).
+pub fn put_4(b: Batch, st: Staged<D4, S4>, from: u64) -> (r: (Batch, bool))
     ensures
         r.0.epoch() == b.epoch(),
         r.0.timeline() == b.timeline(),
@@ -2476,7 +2483,7 @@ pub fn put_4(b: Batch, st: Staged<D4, S4>) -> (r: (Batch, bool))
         use_type_invariant(&b);
         use_type_invariant(&*b.base);
     }
-    let same = st.head().same(&b.base.h4);
+    let same = from == b.from && st.head().same(&b.base.h4);
     let ghost (se, stl) = (st.epoch(), st.timeline());
     let slot = if same {
         st.into_slot()
@@ -2485,7 +2492,7 @@ pub fn put_4(b: Batch, st: Staged<D4, S4>) -> (r: (Batch, bool))
     };
     assert(same ==> slot.ok(db_4(b.next_db())));
     let next = replace_4(&b.next, slot, Ghost(b.target@), Ghost(db_4(b.next_db())));
-    (Batch { base: b.base, next, target: Ghost(with_4(b.target@, db_4(b.next_db()))) }, same)
+    (Batch { base: b.base, next, target: Ghost(with_4(b.target@, db_4(b.next_db()))), from: b.from }, same)
 }
 
 /// Make tpch_q4_vgen's slot invalid in the batch.
@@ -2499,7 +2506,7 @@ pub fn put_invalid_4(b: Batch) -> (r: Batch)
         use_type_invariant(&b);
     }
     let next = replace_4(&b.next, Slot::Invalid, Ghost(b.target@), Ghost(db_4(b.next_db())));
-    Batch { base: b.base, next, target: Ghost(with_4(b.target@, db_4(b.next_db()))) }
+    Batch { base: b.base, next, target: Ghost(with_4(b.target@, db_4(b.next_db()))), from: b.from }
 }
 
 /// What a snapshot at engine epoch `at` sees of tpch_q4_vgen (waiting up to `tries`
@@ -2551,9 +2558,10 @@ pub fn invalidate_4(store: &GStore) {
     g.end(c);
 }
 
-/// Replace tpch_q5_vgen's slot by the one staged on this batch's base: true.  A slot
-/// staged on another base is not taken: the slot becomes invalid (false).
-pub fn put_5(b: Batch, st: Staged<D5, S5>) -> (r: (Batch, bool))
+/// Replace tpch_q5_vgen's slot by the one staged on this batch's base, for the batch's
+/// commit (`from`): true.  A slot staged on another base, or put for another
+/// commit, is not taken: the slot becomes invalid (false).
+pub fn put_5(b: Batch, st: Staged<D5, S5>, from: u64) -> (r: (Batch, bool))
     ensures
         r.0.epoch() == b.epoch(),
         r.0.timeline() == b.timeline(),
@@ -2563,7 +2571,7 @@ pub fn put_5(b: Batch, st: Staged<D5, S5>) -> (r: (Batch, bool))
         use_type_invariant(&b);
         use_type_invariant(&*b.base);
     }
-    let same = st.head().same(&b.base.h5);
+    let same = from == b.from && st.head().same(&b.base.h5);
     let ghost (se, stl) = (st.epoch(), st.timeline());
     let slot = if same {
         st.into_slot()
@@ -2572,7 +2580,7 @@ pub fn put_5(b: Batch, st: Staged<D5, S5>) -> (r: (Batch, bool))
     };
     assert(same ==> slot.ok(db_5(b.next_db())));
     let next = replace_5(&b.next, slot, Ghost(b.target@), Ghost(db_5(b.next_db())));
-    (Batch { base: b.base, next, target: Ghost(with_5(b.target@, db_5(b.next_db()))) }, same)
+    (Batch { base: b.base, next, target: Ghost(with_5(b.target@, db_5(b.next_db()))), from: b.from }, same)
 }
 
 /// Make tpch_q5_vgen's slot invalid in the batch.
@@ -2586,7 +2594,7 @@ pub fn put_invalid_5(b: Batch) -> (r: Batch)
         use_type_invariant(&b);
     }
     let next = replace_5(&b.next, Slot::Invalid, Ghost(b.target@), Ghost(db_5(b.next_db())));
-    Batch { base: b.base, next, target: Ghost(with_5(b.target@, db_5(b.next_db()))) }
+    Batch { base: b.base, next, target: Ghost(with_5(b.target@, db_5(b.next_db()))), from: b.from }
 }
 
 /// What a snapshot at engine epoch `at` sees of tpch_q5_vgen (waiting up to `tries`
@@ -2638,9 +2646,10 @@ pub fn invalidate_5(store: &GStore) {
     g.end(c);
 }
 
-/// Replace tpch_q6_vgen's slot by the one staged on this batch's base: true.  A slot
-/// staged on another base is not taken: the slot becomes invalid (false).
-pub fn put_6(b: Batch, st: Staged<D6, S6>) -> (r: (Batch, bool))
+/// Replace tpch_q6_vgen's slot by the one staged on this batch's base, for the batch's
+/// commit (`from`): true.  A slot staged on another base, or put for another
+/// commit, is not taken: the slot becomes invalid (false).
+pub fn put_6(b: Batch, st: Staged<D6, S6>, from: u64) -> (r: (Batch, bool))
     ensures
         r.0.epoch() == b.epoch(),
         r.0.timeline() == b.timeline(),
@@ -2650,7 +2659,7 @@ pub fn put_6(b: Batch, st: Staged<D6, S6>) -> (r: (Batch, bool))
         use_type_invariant(&b);
         use_type_invariant(&*b.base);
     }
-    let same = st.head().same(&b.base.h6);
+    let same = from == b.from && st.head().same(&b.base.h6);
     let ghost (se, stl) = (st.epoch(), st.timeline());
     let slot = if same {
         st.into_slot()
@@ -2659,7 +2668,7 @@ pub fn put_6(b: Batch, st: Staged<D6, S6>) -> (r: (Batch, bool))
     };
     assert(same ==> slot.ok(db_6(b.next_db())));
     let next = replace_6(&b.next, slot, Ghost(b.target@), Ghost(db_6(b.next_db())));
-    (Batch { base: b.base, next, target: Ghost(with_6(b.target@, db_6(b.next_db()))) }, same)
+    (Batch { base: b.base, next, target: Ghost(with_6(b.target@, db_6(b.next_db()))), from: b.from }, same)
 }
 
 /// Make tpch_q6_vgen's slot invalid in the batch.
@@ -2673,7 +2682,7 @@ pub fn put_invalid_6(b: Batch) -> (r: Batch)
         use_type_invariant(&b);
     }
     let next = replace_6(&b.next, Slot::Invalid, Ghost(b.target@), Ghost(db_6(b.next_db())));
-    Batch { base: b.base, next, target: Ghost(with_6(b.target@, db_6(b.next_db()))) }
+    Batch { base: b.base, next, target: Ghost(with_6(b.target@, db_6(b.next_db()))), from: b.from }
 }
 
 /// What a snapshot at engine epoch `at` sees of tpch_q6_vgen (waiting up to `tries`
@@ -2725,9 +2734,10 @@ pub fn invalidate_6(store: &GStore) {
     g.end(c);
 }
 
-/// Replace tpch_q7_vgen's slot by the one staged on this batch's base: true.  A slot
-/// staged on another base is not taken: the slot becomes invalid (false).
-pub fn put_7(b: Batch, st: Staged<D7, S7>) -> (r: (Batch, bool))
+/// Replace tpch_q7_vgen's slot by the one staged on this batch's base, for the batch's
+/// commit (`from`): true.  A slot staged on another base, or put for another
+/// commit, is not taken: the slot becomes invalid (false).
+pub fn put_7(b: Batch, st: Staged<D7, S7>, from: u64) -> (r: (Batch, bool))
     ensures
         r.0.epoch() == b.epoch(),
         r.0.timeline() == b.timeline(),
@@ -2737,7 +2747,7 @@ pub fn put_7(b: Batch, st: Staged<D7, S7>) -> (r: (Batch, bool))
         use_type_invariant(&b);
         use_type_invariant(&*b.base);
     }
-    let same = st.head().same(&b.base.h7);
+    let same = from == b.from && st.head().same(&b.base.h7);
     let ghost (se, stl) = (st.epoch(), st.timeline());
     let slot = if same {
         st.into_slot()
@@ -2746,7 +2756,7 @@ pub fn put_7(b: Batch, st: Staged<D7, S7>) -> (r: (Batch, bool))
     };
     assert(same ==> slot.ok(db_7(b.next_db())));
     let next = replace_7(&b.next, slot, Ghost(b.target@), Ghost(db_7(b.next_db())));
-    (Batch { base: b.base, next, target: Ghost(with_7(b.target@, db_7(b.next_db()))) }, same)
+    (Batch { base: b.base, next, target: Ghost(with_7(b.target@, db_7(b.next_db()))), from: b.from }, same)
 }
 
 /// Make tpch_q7_vgen's slot invalid in the batch.
@@ -2760,7 +2770,7 @@ pub fn put_invalid_7(b: Batch) -> (r: Batch)
         use_type_invariant(&b);
     }
     let next = replace_7(&b.next, Slot::Invalid, Ghost(b.target@), Ghost(db_7(b.next_db())));
-    Batch { base: b.base, next, target: Ghost(with_7(b.target@, db_7(b.next_db()))) }
+    Batch { base: b.base, next, target: Ghost(with_7(b.target@, db_7(b.next_db()))), from: b.from }
 }
 
 /// What a snapshot at engine epoch `at` sees of tpch_q7_vgen (waiting up to `tries`
@@ -2812,9 +2822,10 @@ pub fn invalidate_7(store: &GStore) {
     g.end(c);
 }
 
-/// Replace tpch_q8_vgen's slot by the one staged on this batch's base: true.  A slot
-/// staged on another base is not taken: the slot becomes invalid (false).
-pub fn put_8(b: Batch, st: Staged<D8, S8>) -> (r: (Batch, bool))
+/// Replace tpch_q8_vgen's slot by the one staged on this batch's base, for the batch's
+/// commit (`from`): true.  A slot staged on another base, or put for another
+/// commit, is not taken: the slot becomes invalid (false).
+pub fn put_8(b: Batch, st: Staged<D8, S8>, from: u64) -> (r: (Batch, bool))
     ensures
         r.0.epoch() == b.epoch(),
         r.0.timeline() == b.timeline(),
@@ -2824,7 +2835,7 @@ pub fn put_8(b: Batch, st: Staged<D8, S8>) -> (r: (Batch, bool))
         use_type_invariant(&b);
         use_type_invariant(&*b.base);
     }
-    let same = st.head().same(&b.base.h8);
+    let same = from == b.from && st.head().same(&b.base.h8);
     let ghost (se, stl) = (st.epoch(), st.timeline());
     let slot = if same {
         st.into_slot()
@@ -2833,7 +2844,7 @@ pub fn put_8(b: Batch, st: Staged<D8, S8>) -> (r: (Batch, bool))
     };
     assert(same ==> slot.ok(db_8(b.next_db())));
     let next = replace_8(&b.next, slot, Ghost(b.target@), Ghost(db_8(b.next_db())));
-    (Batch { base: b.base, next, target: Ghost(with_8(b.target@, db_8(b.next_db()))) }, same)
+    (Batch { base: b.base, next, target: Ghost(with_8(b.target@, db_8(b.next_db()))), from: b.from }, same)
 }
 
 /// Make tpch_q8_vgen's slot invalid in the batch.
@@ -2847,7 +2858,7 @@ pub fn put_invalid_8(b: Batch) -> (r: Batch)
         use_type_invariant(&b);
     }
     let next = replace_8(&b.next, Slot::Invalid, Ghost(b.target@), Ghost(db_8(b.next_db())));
-    Batch { base: b.base, next, target: Ghost(with_8(b.target@, db_8(b.next_db()))) }
+    Batch { base: b.base, next, target: Ghost(with_8(b.target@, db_8(b.next_db()))), from: b.from }
 }
 
 /// What a snapshot at engine epoch `at` sees of tpch_q8_vgen (waiting up to `tries`
@@ -2899,9 +2910,10 @@ pub fn invalidate_8(store: &GStore) {
     g.end(c);
 }
 
-/// Replace tpch_q9_vgen's slot by the one staged on this batch's base: true.  A slot
-/// staged on another base is not taken: the slot becomes invalid (false).
-pub fn put_9(b: Batch, st: Staged<D9, S9>) -> (r: (Batch, bool))
+/// Replace tpch_q9_vgen's slot by the one staged on this batch's base, for the batch's
+/// commit (`from`): true.  A slot staged on another base, or put for another
+/// commit, is not taken: the slot becomes invalid (false).
+pub fn put_9(b: Batch, st: Staged<D9, S9>, from: u64) -> (r: (Batch, bool))
     ensures
         r.0.epoch() == b.epoch(),
         r.0.timeline() == b.timeline(),
@@ -2911,7 +2923,7 @@ pub fn put_9(b: Batch, st: Staged<D9, S9>) -> (r: (Batch, bool))
         use_type_invariant(&b);
         use_type_invariant(&*b.base);
     }
-    let same = st.head().same(&b.base.h9);
+    let same = from == b.from && st.head().same(&b.base.h9);
     let ghost (se, stl) = (st.epoch(), st.timeline());
     let slot = if same {
         st.into_slot()
@@ -2920,7 +2932,7 @@ pub fn put_9(b: Batch, st: Staged<D9, S9>) -> (r: (Batch, bool))
     };
     assert(same ==> slot.ok(db_9(b.next_db())));
     let next = replace_9(&b.next, slot, Ghost(b.target@), Ghost(db_9(b.next_db())));
-    (Batch { base: b.base, next, target: Ghost(with_9(b.target@, db_9(b.next_db()))) }, same)
+    (Batch { base: b.base, next, target: Ghost(with_9(b.target@, db_9(b.next_db()))), from: b.from }, same)
 }
 
 /// Make tpch_q9_vgen's slot invalid in the batch.
@@ -2934,7 +2946,7 @@ pub fn put_invalid_9(b: Batch) -> (r: Batch)
         use_type_invariant(&b);
     }
     let next = replace_9(&b.next, Slot::Invalid, Ghost(b.target@), Ghost(db_9(b.next_db())));
-    Batch { base: b.base, next, target: Ghost(with_9(b.target@, db_9(b.next_db()))) }
+    Batch { base: b.base, next, target: Ghost(with_9(b.target@, db_9(b.next_db()))), from: b.from }
 }
 
 /// What a snapshot at engine epoch `at` sees of tpch_q9_vgen (waiting up to `tries`
@@ -2986,9 +2998,10 @@ pub fn invalidate_9(store: &GStore) {
     g.end(c);
 }
 
-/// Replace tpch_q10_vgen's slot by the one staged on this batch's base: true.  A slot
-/// staged on another base is not taken: the slot becomes invalid (false).
-pub fn put_10(b: Batch, st: Staged<D10, S10>) -> (r: (Batch, bool))
+/// Replace tpch_q10_vgen's slot by the one staged on this batch's base, for the batch's
+/// commit (`from`): true.  A slot staged on another base, or put for another
+/// commit, is not taken: the slot becomes invalid (false).
+pub fn put_10(b: Batch, st: Staged<D10, S10>, from: u64) -> (r: (Batch, bool))
     ensures
         r.0.epoch() == b.epoch(),
         r.0.timeline() == b.timeline(),
@@ -2998,7 +3011,7 @@ pub fn put_10(b: Batch, st: Staged<D10, S10>) -> (r: (Batch, bool))
         use_type_invariant(&b);
         use_type_invariant(&*b.base);
     }
-    let same = st.head().same(&b.base.h10);
+    let same = from == b.from && st.head().same(&b.base.h10);
     let ghost (se, stl) = (st.epoch(), st.timeline());
     let slot = if same {
         st.into_slot()
@@ -3007,7 +3020,7 @@ pub fn put_10(b: Batch, st: Staged<D10, S10>) -> (r: (Batch, bool))
     };
     assert(same ==> slot.ok(db_10(b.next_db())));
     let next = replace_10(&b.next, slot, Ghost(b.target@), Ghost(db_10(b.next_db())));
-    (Batch { base: b.base, next, target: Ghost(with_10(b.target@, db_10(b.next_db()))) }, same)
+    (Batch { base: b.base, next, target: Ghost(with_10(b.target@, db_10(b.next_db()))), from: b.from }, same)
 }
 
 /// Make tpch_q10_vgen's slot invalid in the batch.
@@ -3021,7 +3034,7 @@ pub fn put_invalid_10(b: Batch) -> (r: Batch)
         use_type_invariant(&b);
     }
     let next = replace_10(&b.next, Slot::Invalid, Ghost(b.target@), Ghost(db_10(b.next_db())));
-    Batch { base: b.base, next, target: Ghost(with_10(b.target@, db_10(b.next_db()))) }
+    Batch { base: b.base, next, target: Ghost(with_10(b.target@, db_10(b.next_db()))), from: b.from }
 }
 
 /// What a snapshot at engine epoch `at` sees of tpch_q10_vgen (waiting up to `tries`
@@ -3073,9 +3086,10 @@ pub fn invalidate_10(store: &GStore) {
     g.end(c);
 }
 
-/// Replace tpch_q11_vgen's slot by the one staged on this batch's base: true.  A slot
-/// staged on another base is not taken: the slot becomes invalid (false).
-pub fn put_11(b: Batch, st: Staged<D11, S11>) -> (r: (Batch, bool))
+/// Replace tpch_q11_vgen's slot by the one staged on this batch's base, for the batch's
+/// commit (`from`): true.  A slot staged on another base, or put for another
+/// commit, is not taken: the slot becomes invalid (false).
+pub fn put_11(b: Batch, st: Staged<D11, S11>, from: u64) -> (r: (Batch, bool))
     ensures
         r.0.epoch() == b.epoch(),
         r.0.timeline() == b.timeline(),
@@ -3085,7 +3099,7 @@ pub fn put_11(b: Batch, st: Staged<D11, S11>) -> (r: (Batch, bool))
         use_type_invariant(&b);
         use_type_invariant(&*b.base);
     }
-    let same = st.head().same(&b.base.h11);
+    let same = from == b.from && st.head().same(&b.base.h11);
     let ghost (se, stl) = (st.epoch(), st.timeline());
     let slot = if same {
         st.into_slot()
@@ -3094,7 +3108,7 @@ pub fn put_11(b: Batch, st: Staged<D11, S11>) -> (r: (Batch, bool))
     };
     assert(same ==> slot.ok(db_11(b.next_db())));
     let next = replace_11(&b.next, slot, Ghost(b.target@), Ghost(db_11(b.next_db())));
-    (Batch { base: b.base, next, target: Ghost(with_11(b.target@, db_11(b.next_db()))) }, same)
+    (Batch { base: b.base, next, target: Ghost(with_11(b.target@, db_11(b.next_db()))), from: b.from }, same)
 }
 
 /// Make tpch_q11_vgen's slot invalid in the batch.
@@ -3108,7 +3122,7 @@ pub fn put_invalid_11(b: Batch) -> (r: Batch)
         use_type_invariant(&b);
     }
     let next = replace_11(&b.next, Slot::Invalid, Ghost(b.target@), Ghost(db_11(b.next_db())));
-    Batch { base: b.base, next, target: Ghost(with_11(b.target@, db_11(b.next_db()))) }
+    Batch { base: b.base, next, target: Ghost(with_11(b.target@, db_11(b.next_db()))), from: b.from }
 }
 
 /// What a snapshot at engine epoch `at` sees of tpch_q11_vgen (waiting up to `tries`
@@ -3160,9 +3174,10 @@ pub fn invalidate_11(store: &GStore) {
     g.end(c);
 }
 
-/// Replace tpch_q12_vgen's slot by the one staged on this batch's base: true.  A slot
-/// staged on another base is not taken: the slot becomes invalid (false).
-pub fn put_12(b: Batch, st: Staged<D12, S12>) -> (r: (Batch, bool))
+/// Replace tpch_q12_vgen's slot by the one staged on this batch's base, for the batch's
+/// commit (`from`): true.  A slot staged on another base, or put for another
+/// commit, is not taken: the slot becomes invalid (false).
+pub fn put_12(b: Batch, st: Staged<D12, S12>, from: u64) -> (r: (Batch, bool))
     ensures
         r.0.epoch() == b.epoch(),
         r.0.timeline() == b.timeline(),
@@ -3172,7 +3187,7 @@ pub fn put_12(b: Batch, st: Staged<D12, S12>) -> (r: (Batch, bool))
         use_type_invariant(&b);
         use_type_invariant(&*b.base);
     }
-    let same = st.head().same(&b.base.h12);
+    let same = from == b.from && st.head().same(&b.base.h12);
     let ghost (se, stl) = (st.epoch(), st.timeline());
     let slot = if same {
         st.into_slot()
@@ -3181,7 +3196,7 @@ pub fn put_12(b: Batch, st: Staged<D12, S12>) -> (r: (Batch, bool))
     };
     assert(same ==> slot.ok(db_12(b.next_db())));
     let next = replace_12(&b.next, slot, Ghost(b.target@), Ghost(db_12(b.next_db())));
-    (Batch { base: b.base, next, target: Ghost(with_12(b.target@, db_12(b.next_db()))) }, same)
+    (Batch { base: b.base, next, target: Ghost(with_12(b.target@, db_12(b.next_db()))), from: b.from }, same)
 }
 
 /// Make tpch_q12_vgen's slot invalid in the batch.
@@ -3195,7 +3210,7 @@ pub fn put_invalid_12(b: Batch) -> (r: Batch)
         use_type_invariant(&b);
     }
     let next = replace_12(&b.next, Slot::Invalid, Ghost(b.target@), Ghost(db_12(b.next_db())));
-    Batch { base: b.base, next, target: Ghost(with_12(b.target@, db_12(b.next_db()))) }
+    Batch { base: b.base, next, target: Ghost(with_12(b.target@, db_12(b.next_db()))), from: b.from }
 }
 
 /// What a snapshot at engine epoch `at` sees of tpch_q12_vgen (waiting up to `tries`
@@ -3247,9 +3262,10 @@ pub fn invalidate_12(store: &GStore) {
     g.end(c);
 }
 
-/// Replace tpch_q13_vgen's slot by the one staged on this batch's base: true.  A slot
-/// staged on another base is not taken: the slot becomes invalid (false).
-pub fn put_13(b: Batch, st: Staged<D13, S13>) -> (r: (Batch, bool))
+/// Replace tpch_q13_vgen's slot by the one staged on this batch's base, for the batch's
+/// commit (`from`): true.  A slot staged on another base, or put for another
+/// commit, is not taken: the slot becomes invalid (false).
+pub fn put_13(b: Batch, st: Staged<D13, S13>, from: u64) -> (r: (Batch, bool))
     ensures
         r.0.epoch() == b.epoch(),
         r.0.timeline() == b.timeline(),
@@ -3259,7 +3275,7 @@ pub fn put_13(b: Batch, st: Staged<D13, S13>) -> (r: (Batch, bool))
         use_type_invariant(&b);
         use_type_invariant(&*b.base);
     }
-    let same = st.head().same(&b.base.h13);
+    let same = from == b.from && st.head().same(&b.base.h13);
     let ghost (se, stl) = (st.epoch(), st.timeline());
     let slot = if same {
         st.into_slot()
@@ -3268,7 +3284,7 @@ pub fn put_13(b: Batch, st: Staged<D13, S13>) -> (r: (Batch, bool))
     };
     assert(same ==> slot.ok(db_13(b.next_db())));
     let next = replace_13(&b.next, slot, Ghost(b.target@), Ghost(db_13(b.next_db())));
-    (Batch { base: b.base, next, target: Ghost(with_13(b.target@, db_13(b.next_db()))) }, same)
+    (Batch { base: b.base, next, target: Ghost(with_13(b.target@, db_13(b.next_db()))), from: b.from }, same)
 }
 
 /// Make tpch_q13_vgen's slot invalid in the batch.
@@ -3282,7 +3298,7 @@ pub fn put_invalid_13(b: Batch) -> (r: Batch)
         use_type_invariant(&b);
     }
     let next = replace_13(&b.next, Slot::Invalid, Ghost(b.target@), Ghost(db_13(b.next_db())));
-    Batch { base: b.base, next, target: Ghost(with_13(b.target@, db_13(b.next_db()))) }
+    Batch { base: b.base, next, target: Ghost(with_13(b.target@, db_13(b.next_db()))), from: b.from }
 }
 
 /// What a snapshot at engine epoch `at` sees of tpch_q13_vgen (waiting up to `tries`
@@ -3334,9 +3350,10 @@ pub fn invalidate_13(store: &GStore) {
     g.end(c);
 }
 
-/// Replace tpch_q14_vgen's slot by the one staged on this batch's base: true.  A slot
-/// staged on another base is not taken: the slot becomes invalid (false).
-pub fn put_14(b: Batch, st: Staged<D14, S14>) -> (r: (Batch, bool))
+/// Replace tpch_q14_vgen's slot by the one staged on this batch's base, for the batch's
+/// commit (`from`): true.  A slot staged on another base, or put for another
+/// commit, is not taken: the slot becomes invalid (false).
+pub fn put_14(b: Batch, st: Staged<D14, S14>, from: u64) -> (r: (Batch, bool))
     ensures
         r.0.epoch() == b.epoch(),
         r.0.timeline() == b.timeline(),
@@ -3346,7 +3363,7 @@ pub fn put_14(b: Batch, st: Staged<D14, S14>) -> (r: (Batch, bool))
         use_type_invariant(&b);
         use_type_invariant(&*b.base);
     }
-    let same = st.head().same(&b.base.h14);
+    let same = from == b.from && st.head().same(&b.base.h14);
     let ghost (se, stl) = (st.epoch(), st.timeline());
     let slot = if same {
         st.into_slot()
@@ -3355,7 +3372,7 @@ pub fn put_14(b: Batch, st: Staged<D14, S14>) -> (r: (Batch, bool))
     };
     assert(same ==> slot.ok(db_14(b.next_db())));
     let next = replace_14(&b.next, slot, Ghost(b.target@), Ghost(db_14(b.next_db())));
-    (Batch { base: b.base, next, target: Ghost(with_14(b.target@, db_14(b.next_db()))) }, same)
+    (Batch { base: b.base, next, target: Ghost(with_14(b.target@, db_14(b.next_db()))), from: b.from }, same)
 }
 
 /// Make tpch_q14_vgen's slot invalid in the batch.
@@ -3369,7 +3386,7 @@ pub fn put_invalid_14(b: Batch) -> (r: Batch)
         use_type_invariant(&b);
     }
     let next = replace_14(&b.next, Slot::Invalid, Ghost(b.target@), Ghost(db_14(b.next_db())));
-    Batch { base: b.base, next, target: Ghost(with_14(b.target@, db_14(b.next_db()))) }
+    Batch { base: b.base, next, target: Ghost(with_14(b.target@, db_14(b.next_db()))), from: b.from }
 }
 
 /// What a snapshot at engine epoch `at` sees of tpch_q14_vgen (waiting up to `tries`
@@ -3421,9 +3438,10 @@ pub fn invalidate_14(store: &GStore) {
     g.end(c);
 }
 
-/// Replace tpch_q15_vgen's slot by the one staged on this batch's base: true.  A slot
-/// staged on another base is not taken: the slot becomes invalid (false).
-pub fn put_15(b: Batch, st: Staged<D15, S15>) -> (r: (Batch, bool))
+/// Replace tpch_q15_vgen's slot by the one staged on this batch's base, for the batch's
+/// commit (`from`): true.  A slot staged on another base, or put for another
+/// commit, is not taken: the slot becomes invalid (false).
+pub fn put_15(b: Batch, st: Staged<D15, S15>, from: u64) -> (r: (Batch, bool))
     ensures
         r.0.epoch() == b.epoch(),
         r.0.timeline() == b.timeline(),
@@ -3433,7 +3451,7 @@ pub fn put_15(b: Batch, st: Staged<D15, S15>) -> (r: (Batch, bool))
         use_type_invariant(&b);
         use_type_invariant(&*b.base);
     }
-    let same = st.head().same(&b.base.h15);
+    let same = from == b.from && st.head().same(&b.base.h15);
     let ghost (se, stl) = (st.epoch(), st.timeline());
     let slot = if same {
         st.into_slot()
@@ -3442,7 +3460,7 @@ pub fn put_15(b: Batch, st: Staged<D15, S15>) -> (r: (Batch, bool))
     };
     assert(same ==> slot.ok(db_15(b.next_db())));
     let next = replace_15(&b.next, slot, Ghost(b.target@), Ghost(db_15(b.next_db())));
-    (Batch { base: b.base, next, target: Ghost(with_15(b.target@, db_15(b.next_db()))) }, same)
+    (Batch { base: b.base, next, target: Ghost(with_15(b.target@, db_15(b.next_db()))), from: b.from }, same)
 }
 
 /// Make tpch_q15_vgen's slot invalid in the batch.
@@ -3456,7 +3474,7 @@ pub fn put_invalid_15(b: Batch) -> (r: Batch)
         use_type_invariant(&b);
     }
     let next = replace_15(&b.next, Slot::Invalid, Ghost(b.target@), Ghost(db_15(b.next_db())));
-    Batch { base: b.base, next, target: Ghost(with_15(b.target@, db_15(b.next_db()))) }
+    Batch { base: b.base, next, target: Ghost(with_15(b.target@, db_15(b.next_db()))), from: b.from }
 }
 
 /// What a snapshot at engine epoch `at` sees of tpch_q15_vgen (waiting up to `tries`
@@ -3508,9 +3526,10 @@ pub fn invalidate_15(store: &GStore) {
     g.end(c);
 }
 
-/// Replace tpch_q16_vgen's slot by the one staged on this batch's base: true.  A slot
-/// staged on another base is not taken: the slot becomes invalid (false).
-pub fn put_16(b: Batch, st: Staged<D16, S16>) -> (r: (Batch, bool))
+/// Replace tpch_q16_vgen's slot by the one staged on this batch's base, for the batch's
+/// commit (`from`): true.  A slot staged on another base, or put for another
+/// commit, is not taken: the slot becomes invalid (false).
+pub fn put_16(b: Batch, st: Staged<D16, S16>, from: u64) -> (r: (Batch, bool))
     ensures
         r.0.epoch() == b.epoch(),
         r.0.timeline() == b.timeline(),
@@ -3520,7 +3539,7 @@ pub fn put_16(b: Batch, st: Staged<D16, S16>) -> (r: (Batch, bool))
         use_type_invariant(&b);
         use_type_invariant(&*b.base);
     }
-    let same = st.head().same(&b.base.h16);
+    let same = from == b.from && st.head().same(&b.base.h16);
     let ghost (se, stl) = (st.epoch(), st.timeline());
     let slot = if same {
         st.into_slot()
@@ -3529,7 +3548,7 @@ pub fn put_16(b: Batch, st: Staged<D16, S16>) -> (r: (Batch, bool))
     };
     assert(same ==> slot.ok(db_16(b.next_db())));
     let next = replace_16(&b.next, slot, Ghost(b.target@), Ghost(db_16(b.next_db())));
-    (Batch { base: b.base, next, target: Ghost(with_16(b.target@, db_16(b.next_db()))) }, same)
+    (Batch { base: b.base, next, target: Ghost(with_16(b.target@, db_16(b.next_db()))), from: b.from }, same)
 }
 
 /// Make tpch_q16_vgen's slot invalid in the batch.
@@ -3543,7 +3562,7 @@ pub fn put_invalid_16(b: Batch) -> (r: Batch)
         use_type_invariant(&b);
     }
     let next = replace_16(&b.next, Slot::Invalid, Ghost(b.target@), Ghost(db_16(b.next_db())));
-    Batch { base: b.base, next, target: Ghost(with_16(b.target@, db_16(b.next_db()))) }
+    Batch { base: b.base, next, target: Ghost(with_16(b.target@, db_16(b.next_db()))), from: b.from }
 }
 
 /// What a snapshot at engine epoch `at` sees of tpch_q16_vgen (waiting up to `tries`
@@ -3595,9 +3614,10 @@ pub fn invalidate_16(store: &GStore) {
     g.end(c);
 }
 
-/// Replace tpch_q17_vgen's slot by the one staged on this batch's base: true.  A slot
-/// staged on another base is not taken: the slot becomes invalid (false).
-pub fn put_17(b: Batch, st: Staged<D17, S17>) -> (r: (Batch, bool))
+/// Replace tpch_q17_vgen's slot by the one staged on this batch's base, for the batch's
+/// commit (`from`): true.  A slot staged on another base, or put for another
+/// commit, is not taken: the slot becomes invalid (false).
+pub fn put_17(b: Batch, st: Staged<D17, S17>, from: u64) -> (r: (Batch, bool))
     ensures
         r.0.epoch() == b.epoch(),
         r.0.timeline() == b.timeline(),
@@ -3607,7 +3627,7 @@ pub fn put_17(b: Batch, st: Staged<D17, S17>) -> (r: (Batch, bool))
         use_type_invariant(&b);
         use_type_invariant(&*b.base);
     }
-    let same = st.head().same(&b.base.h17);
+    let same = from == b.from && st.head().same(&b.base.h17);
     let ghost (se, stl) = (st.epoch(), st.timeline());
     let slot = if same {
         st.into_slot()
@@ -3616,7 +3636,7 @@ pub fn put_17(b: Batch, st: Staged<D17, S17>) -> (r: (Batch, bool))
     };
     assert(same ==> slot.ok(db_17(b.next_db())));
     let next = replace_17(&b.next, slot, Ghost(b.target@), Ghost(db_17(b.next_db())));
-    (Batch { base: b.base, next, target: Ghost(with_17(b.target@, db_17(b.next_db()))) }, same)
+    (Batch { base: b.base, next, target: Ghost(with_17(b.target@, db_17(b.next_db()))), from: b.from }, same)
 }
 
 /// Make tpch_q17_vgen's slot invalid in the batch.
@@ -3630,7 +3650,7 @@ pub fn put_invalid_17(b: Batch) -> (r: Batch)
         use_type_invariant(&b);
     }
     let next = replace_17(&b.next, Slot::Invalid, Ghost(b.target@), Ghost(db_17(b.next_db())));
-    Batch { base: b.base, next, target: Ghost(with_17(b.target@, db_17(b.next_db()))) }
+    Batch { base: b.base, next, target: Ghost(with_17(b.target@, db_17(b.next_db()))), from: b.from }
 }
 
 /// What a snapshot at engine epoch `at` sees of tpch_q17_vgen (waiting up to `tries`
@@ -3682,9 +3702,10 @@ pub fn invalidate_17(store: &GStore) {
     g.end(c);
 }
 
-/// Replace tpch_q18_vgen's slot by the one staged on this batch's base: true.  A slot
-/// staged on another base is not taken: the slot becomes invalid (false).
-pub fn put_18(b: Batch, st: Staged<D18, S18>) -> (r: (Batch, bool))
+/// Replace tpch_q18_vgen's slot by the one staged on this batch's base, for the batch's
+/// commit (`from`): true.  A slot staged on another base, or put for another
+/// commit, is not taken: the slot becomes invalid (false).
+pub fn put_18(b: Batch, st: Staged<D18, S18>, from: u64) -> (r: (Batch, bool))
     ensures
         r.0.epoch() == b.epoch(),
         r.0.timeline() == b.timeline(),
@@ -3694,7 +3715,7 @@ pub fn put_18(b: Batch, st: Staged<D18, S18>) -> (r: (Batch, bool))
         use_type_invariant(&b);
         use_type_invariant(&*b.base);
     }
-    let same = st.head().same(&b.base.h18);
+    let same = from == b.from && st.head().same(&b.base.h18);
     let ghost (se, stl) = (st.epoch(), st.timeline());
     let slot = if same {
         st.into_slot()
@@ -3703,7 +3724,7 @@ pub fn put_18(b: Batch, st: Staged<D18, S18>) -> (r: (Batch, bool))
     };
     assert(same ==> slot.ok(db_18(b.next_db())));
     let next = replace_18(&b.next, slot, Ghost(b.target@), Ghost(db_18(b.next_db())));
-    (Batch { base: b.base, next, target: Ghost(with_18(b.target@, db_18(b.next_db()))) }, same)
+    (Batch { base: b.base, next, target: Ghost(with_18(b.target@, db_18(b.next_db()))), from: b.from }, same)
 }
 
 /// Make tpch_q18_vgen's slot invalid in the batch.
@@ -3717,7 +3738,7 @@ pub fn put_invalid_18(b: Batch) -> (r: Batch)
         use_type_invariant(&b);
     }
     let next = replace_18(&b.next, Slot::Invalid, Ghost(b.target@), Ghost(db_18(b.next_db())));
-    Batch { base: b.base, next, target: Ghost(with_18(b.target@, db_18(b.next_db()))) }
+    Batch { base: b.base, next, target: Ghost(with_18(b.target@, db_18(b.next_db()))), from: b.from }
 }
 
 /// What a snapshot at engine epoch `at` sees of tpch_q18_vgen (waiting up to `tries`
@@ -3769,9 +3790,10 @@ pub fn invalidate_18(store: &GStore) {
     g.end(c);
 }
 
-/// Replace tpch_q19_vgen's slot by the one staged on this batch's base: true.  A slot
-/// staged on another base is not taken: the slot becomes invalid (false).
-pub fn put_19(b: Batch, st: Staged<D19, S19>) -> (r: (Batch, bool))
+/// Replace tpch_q19_vgen's slot by the one staged on this batch's base, for the batch's
+/// commit (`from`): true.  A slot staged on another base, or put for another
+/// commit, is not taken: the slot becomes invalid (false).
+pub fn put_19(b: Batch, st: Staged<D19, S19>, from: u64) -> (r: (Batch, bool))
     ensures
         r.0.epoch() == b.epoch(),
         r.0.timeline() == b.timeline(),
@@ -3781,7 +3803,7 @@ pub fn put_19(b: Batch, st: Staged<D19, S19>) -> (r: (Batch, bool))
         use_type_invariant(&b);
         use_type_invariant(&*b.base);
     }
-    let same = st.head().same(&b.base.h19);
+    let same = from == b.from && st.head().same(&b.base.h19);
     let ghost (se, stl) = (st.epoch(), st.timeline());
     let slot = if same {
         st.into_slot()
@@ -3790,7 +3812,7 @@ pub fn put_19(b: Batch, st: Staged<D19, S19>) -> (r: (Batch, bool))
     };
     assert(same ==> slot.ok(db_19(b.next_db())));
     let next = replace_19(&b.next, slot, Ghost(b.target@), Ghost(db_19(b.next_db())));
-    (Batch { base: b.base, next, target: Ghost(with_19(b.target@, db_19(b.next_db()))) }, same)
+    (Batch { base: b.base, next, target: Ghost(with_19(b.target@, db_19(b.next_db()))), from: b.from }, same)
 }
 
 /// Make tpch_q19_vgen's slot invalid in the batch.
@@ -3804,7 +3826,7 @@ pub fn put_invalid_19(b: Batch) -> (r: Batch)
         use_type_invariant(&b);
     }
     let next = replace_19(&b.next, Slot::Invalid, Ghost(b.target@), Ghost(db_19(b.next_db())));
-    Batch { base: b.base, next, target: Ghost(with_19(b.target@, db_19(b.next_db()))) }
+    Batch { base: b.base, next, target: Ghost(with_19(b.target@, db_19(b.next_db()))), from: b.from }
 }
 
 /// What a snapshot at engine epoch `at` sees of tpch_q19_vgen (waiting up to `tries`
@@ -3856,9 +3878,10 @@ pub fn invalidate_19(store: &GStore) {
     g.end(c);
 }
 
-/// Replace tpch_q20_vgen's slot by the one staged on this batch's base: true.  A slot
-/// staged on another base is not taken: the slot becomes invalid (false).
-pub fn put_20(b: Batch, st: Staged<D20, S20>) -> (r: (Batch, bool))
+/// Replace tpch_q20_vgen's slot by the one staged on this batch's base, for the batch's
+/// commit (`from`): true.  A slot staged on another base, or put for another
+/// commit, is not taken: the slot becomes invalid (false).
+pub fn put_20(b: Batch, st: Staged<D20, S20>, from: u64) -> (r: (Batch, bool))
     ensures
         r.0.epoch() == b.epoch(),
         r.0.timeline() == b.timeline(),
@@ -3868,7 +3891,7 @@ pub fn put_20(b: Batch, st: Staged<D20, S20>) -> (r: (Batch, bool))
         use_type_invariant(&b);
         use_type_invariant(&*b.base);
     }
-    let same = st.head().same(&b.base.h20);
+    let same = from == b.from && st.head().same(&b.base.h20);
     let ghost (se, stl) = (st.epoch(), st.timeline());
     let slot = if same {
         st.into_slot()
@@ -3877,7 +3900,7 @@ pub fn put_20(b: Batch, st: Staged<D20, S20>) -> (r: (Batch, bool))
     };
     assert(same ==> slot.ok(db_20(b.next_db())));
     let next = replace_20(&b.next, slot, Ghost(b.target@), Ghost(db_20(b.next_db())));
-    (Batch { base: b.base, next, target: Ghost(with_20(b.target@, db_20(b.next_db()))) }, same)
+    (Batch { base: b.base, next, target: Ghost(with_20(b.target@, db_20(b.next_db()))), from: b.from }, same)
 }
 
 /// Make tpch_q20_vgen's slot invalid in the batch.
@@ -3891,7 +3914,7 @@ pub fn put_invalid_20(b: Batch) -> (r: Batch)
         use_type_invariant(&b);
     }
     let next = replace_20(&b.next, Slot::Invalid, Ghost(b.target@), Ghost(db_20(b.next_db())));
-    Batch { base: b.base, next, target: Ghost(with_20(b.target@, db_20(b.next_db()))) }
+    Batch { base: b.base, next, target: Ghost(with_20(b.target@, db_20(b.next_db()))), from: b.from }
 }
 
 /// What a snapshot at engine epoch `at` sees of tpch_q20_vgen (waiting up to `tries`
@@ -3943,9 +3966,10 @@ pub fn invalidate_20(store: &GStore) {
     g.end(c);
 }
 
-/// Replace tpch_q21_vgen's slot by the one staged on this batch's base: true.  A slot
-/// staged on another base is not taken: the slot becomes invalid (false).
-pub fn put_21(b: Batch, st: Staged<D21, S21>) -> (r: (Batch, bool))
+/// Replace tpch_q21_vgen's slot by the one staged on this batch's base, for the batch's
+/// commit (`from`): true.  A slot staged on another base, or put for another
+/// commit, is not taken: the slot becomes invalid (false).
+pub fn put_21(b: Batch, st: Staged<D21, S21>, from: u64) -> (r: (Batch, bool))
     ensures
         r.0.epoch() == b.epoch(),
         r.0.timeline() == b.timeline(),
@@ -3955,7 +3979,7 @@ pub fn put_21(b: Batch, st: Staged<D21, S21>) -> (r: (Batch, bool))
         use_type_invariant(&b);
         use_type_invariant(&*b.base);
     }
-    let same = st.head().same(&b.base.h21);
+    let same = from == b.from && st.head().same(&b.base.h21);
     let ghost (se, stl) = (st.epoch(), st.timeline());
     let slot = if same {
         st.into_slot()
@@ -3964,7 +3988,7 @@ pub fn put_21(b: Batch, st: Staged<D21, S21>) -> (r: (Batch, bool))
     };
     assert(same ==> slot.ok(db_21(b.next_db())));
     let next = replace_21(&b.next, slot, Ghost(b.target@), Ghost(db_21(b.next_db())));
-    (Batch { base: b.base, next, target: Ghost(with_21(b.target@, db_21(b.next_db()))) }, same)
+    (Batch { base: b.base, next, target: Ghost(with_21(b.target@, db_21(b.next_db()))), from: b.from }, same)
 }
 
 /// Make tpch_q21_vgen's slot invalid in the batch.
@@ -3978,7 +4002,7 @@ pub fn put_invalid_21(b: Batch) -> (r: Batch)
         use_type_invariant(&b);
     }
     let next = replace_21(&b.next, Slot::Invalid, Ghost(b.target@), Ghost(db_21(b.next_db())));
-    Batch { base: b.base, next, target: Ghost(with_21(b.target@, db_21(b.next_db()))) }
+    Batch { base: b.base, next, target: Ghost(with_21(b.target@, db_21(b.next_db()))), from: b.from }
 }
 
 /// What a snapshot at engine epoch `at` sees of tpch_q21_vgen (waiting up to `tries`
@@ -4030,9 +4054,10 @@ pub fn invalidate_21(store: &GStore) {
     g.end(c);
 }
 
-/// Replace tpch_q22_vgen's slot by the one staged on this batch's base: true.  A slot
-/// staged on another base is not taken: the slot becomes invalid (false).
-pub fn put_22(b: Batch, st: Staged<D22, S22>) -> (r: (Batch, bool))
+/// Replace tpch_q22_vgen's slot by the one staged on this batch's base, for the batch's
+/// commit (`from`): true.  A slot staged on another base, or put for another
+/// commit, is not taken: the slot becomes invalid (false).
+pub fn put_22(b: Batch, st: Staged<D22, S22>, from: u64) -> (r: (Batch, bool))
     ensures
         r.0.epoch() == b.epoch(),
         r.0.timeline() == b.timeline(),
@@ -4042,7 +4067,7 @@ pub fn put_22(b: Batch, st: Staged<D22, S22>) -> (r: (Batch, bool))
         use_type_invariant(&b);
         use_type_invariant(&*b.base);
     }
-    let same = st.head().same(&b.base.h22);
+    let same = from == b.from && st.head().same(&b.base.h22);
     let ghost (se, stl) = (st.epoch(), st.timeline());
     let slot = if same {
         st.into_slot()
@@ -4051,7 +4076,7 @@ pub fn put_22(b: Batch, st: Staged<D22, S22>) -> (r: (Batch, bool))
     };
     assert(same ==> slot.ok(db_22(b.next_db())));
     let next = replace_22(&b.next, slot, Ghost(b.target@), Ghost(db_22(b.next_db())));
-    (Batch { base: b.base, next, target: Ghost(with_22(b.target@, db_22(b.next_db()))) }, same)
+    (Batch { base: b.base, next, target: Ghost(with_22(b.target@, db_22(b.next_db()))), from: b.from }, same)
 }
 
 /// Make tpch_q22_vgen's slot invalid in the batch.
@@ -4065,7 +4090,7 @@ pub fn put_invalid_22(b: Batch) -> (r: Batch)
         use_type_invariant(&b);
     }
     let next = replace_22(&b.next, Slot::Invalid, Ghost(b.target@), Ghost(db_22(b.next_db())));
-    Batch { base: b.base, next, target: Ghost(with_22(b.target@, db_22(b.next_db()))) }
+    Batch { base: b.base, next, target: Ghost(with_22(b.target@, db_22(b.next_db()))), from: b.from }
 }
 
 /// What a snapshot at engine epoch `at` sees of tpch_q22_vgen (waiting up to `tries`

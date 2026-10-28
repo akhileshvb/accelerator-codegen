@@ -9,8 +9,10 @@
 // commit changes stages its slot with its kit's stage_apply / stage_build on
 // its part of the newest version (`base_k` / `head_k` of a `GBase`), and the
 // `Batch` made from that GBase takes it (`put_k`) only if the slot was staged
-// on that very base; any other slot becomes invalid.  So every put state is
-// produced by verified code from slot k of the batch's base world.
+// on that very base and is put for the batch's commit (its engine epoch);
+// any other slot becomes invalid.  So every put state is produced by
+// verified code from slot k of the batch's base world, for one commit.  The
+// store installs the batch only as the commit in flight (store.rs `commit`).
 // Readers resolve their snapshot under the read lock (substrate store.rs:
 // the snapshot and commit-order theorems) and are narrowed to their
 // accelerator (`read_k`); the kit's `answer` is Theorem 5.4 on that reading.
@@ -173,6 +175,7 @@ pub struct Batch {
     base: Arc<GBase>,
     next: World,
     target: Ghost<GDb>,
+    from: u64,
 }
 
 impl Batch {
@@ -199,8 +202,8 @@ impl Batch {
     }
 }
 
-/// A batch on a base, every slot carried.
-pub fn batch_new(base: &Arc<GBase>) -> (r: Batch)
+/// A batch on a base for the commit visible from engine epoch `from`, every slot carried.
+pub fn batch_new(base: &Arc<GBase>, from: u64) -> (r: Batch)
     ensures
         r.epoch() == base.epoch(),
         r.timeline() == base.timeline(),
@@ -209,29 +212,30 @@ pub fn batch_new(base: &Arc<GBase>) -> (r: Batch)
     proof {
         use_type_invariant(&**base);
     }
-    Batch { base: base.clone(), next: base.w.share(), target: Ghost((base.timeline@)(base.e as nat)) }
+    Batch { base: base.clone(), next: base.w.share(), target: Ghost((base.timeline@)(base.e as nat)), from }
 }
 
-/// The next version (consumes the batch).  HOST CONTRACT (the requires): the
-/// accelerators the batch did not replace are unchanged by this commit, so
-/// the target is the database at e + 1.
-pub fn batch_finish(b: Batch) -> (p: GPrepared)
+/// The next version (consumes the batch) and the epoch it is current from.
+/// HOST CONTRACT (the requires): the accelerators the batch did not replace are
+/// unchanged by this commit, so the target is the database at e + 1.
+pub fn batch_finish(b: Batch) -> (r: (GPrepared, u64))
     requires
         b.target() == b.next_db(),
     ensures
-        p.epoch() == b.epoch(),
-        p.timeline() == b.timeline(),
+        r.0.epoch() == b.epoch(),
+        r.0.timeline() == b.timeline(),
 {
     proof {
         use_type_invariant(&b);
         use_type_invariant(&*b.base);
     }
-    Prepared::new(b.base.e, b.next, b.base.timeline)
+    (Prepared::new(b.base.e, b.next, b.base.timeline), b.from)
 }
 
-/// Replace null_double_q1_vgen's slot by the one staged on this batch's base: true.  A slot
-/// staged on another base is not taken: the slot becomes invalid (false).
-pub fn put_1(b: Batch, st: Staged<D1, S1>) -> (r: (Batch, bool))
+/// Replace null_double_q1_vgen's slot by the one staged on this batch's base, for the batch's
+/// commit (`from`): true.  A slot staged on another base, or put for another
+/// commit, is not taken: the slot becomes invalid (false).
+pub fn put_1(b: Batch, st: Staged<D1, S1>, from: u64) -> (r: (Batch, bool))
     ensures
         r.0.epoch() == b.epoch(),
         r.0.timeline() == b.timeline(),
@@ -241,7 +245,7 @@ pub fn put_1(b: Batch, st: Staged<D1, S1>) -> (r: (Batch, bool))
         use_type_invariant(&b);
         use_type_invariant(&*b.base);
     }
-    let same = st.head().same(&b.base.h1);
+    let same = from == b.from && st.head().same(&b.base.h1);
     let ghost (se, stl) = (st.epoch(), st.timeline());
     let slot = if same {
         st.into_slot()
@@ -250,7 +254,7 @@ pub fn put_1(b: Batch, st: Staged<D1, S1>) -> (r: (Batch, bool))
     };
     assert(same ==> slot.ok(db_1(b.next_db())));
     let next = replace_1(&b.next, slot, Ghost(b.target@), Ghost(db_1(b.next_db())));
-    (Batch { base: b.base, next, target: Ghost(with_1(b.target@, db_1(b.next_db()))) }, same)
+    (Batch { base: b.base, next, target: Ghost(with_1(b.target@, db_1(b.next_db()))), from: b.from }, same)
 }
 
 /// Make null_double_q1_vgen's slot invalid in the batch.
@@ -264,7 +268,7 @@ pub fn put_invalid_1(b: Batch) -> (r: Batch)
         use_type_invariant(&b);
     }
     let next = replace_1(&b.next, Slot::Invalid, Ghost(b.target@), Ghost(db_1(b.next_db())));
-    Batch { base: b.base, next, target: Ghost(with_1(b.target@, db_1(b.next_db()))) }
+    Batch { base: b.base, next, target: Ghost(with_1(b.target@, db_1(b.next_db()))), from: b.from }
 }
 
 /// What a snapshot at engine epoch `at` sees of null_double_q1_vgen (waiting up to `tries`

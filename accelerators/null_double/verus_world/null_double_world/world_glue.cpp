@@ -15,17 +15,17 @@ const kit::World kWorld = {
     [](const void *st) { return static_cast<void *>(null_doublew_gbase_new(static_cast<const null_doublew_store *>(st))); },
     [](const void *st) { return null_doublew_newest(static_cast<const null_doublew_store *>(st)); },
     [](void *gb) { null_doublew_gbase_free(static_cast<null_doublew_gbase *>(gb)); },
-    [](const void *gb) { return static_cast<void *>(null_doublew_batch_new(static_cast<const null_doublew_gbase *>(gb))); },
+    [](const void *gb, uint64_t from) { return static_cast<void *>(null_doublew_batch_new(static_cast<const null_doublew_gbase *>(gb), from)); },
     [](void *b) { null_doublew_batch_free(static_cast<null_doublew_batch *>(b)); },
-    [](const void *st, void *b, uint64_t from, uint64_t floor, int32_t end) {
-      return null_doublew_install(static_cast<const null_doublew_store *>(st), static_cast<null_doublew_batch *>(b), from, floor, end);
+    [](const void *st, void *b, uint64_t floor, int32_t end) {
+      return null_doublew_install(static_cast<const null_doublew_store *>(st), static_cast<null_doublew_batch *>(b), floor, end);
     },
     [](const void *st) { return null_doublew_version_count(static_cast<const null_doublew_store *>(st)); },
     {
         {"null_double_q1_vgen",
          [](const void *gb) { return null_doublew_base_1(static_cast<const null_doublew_gbase *>(gb)); },
          [](const void *gb) { return null_doublew_head_1(static_cast<const null_doublew_gbase *>(gb)); },
-         [](void *b, void *staged) { return null_doublew_put_1(static_cast<null_doublew_batch *>(b), staged); },
+         [](void *b, void *staged, uint64_t from) { return null_doublew_put_1(static_cast<null_doublew_batch *>(b), staged, from); },
          [](void *b) { null_doublew_put_invalid_1(static_cast<null_doublew_batch *>(b)); },
          [](const void *st, uint64_t at, uint64_t tries, int32_t *status) -> const void * {
            return null_doublew_read_1(static_cast<const null_doublew_store *>(st), at, tries, status);

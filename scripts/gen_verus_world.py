@@ -48,8 +48,10 @@ def main() -> None:
     w("// commit changes stages its slot with its kit's stage_apply / stage_build on")
     w("// its part of the newest version (`base_k` / `head_k` of a `GBase`), and the")
     w("// `Batch` made from that GBase takes it (`put_k`) only if the slot was staged")
-    w("// on that very base; any other slot becomes invalid.  So every put state is")
-    w("// produced by verified code from slot k of the batch's base world.")
+    w("// on that very base and is put for the batch's commit (its engine epoch);")
+    w("// any other slot becomes invalid.  So every put state is produced by")
+    w("// verified code from slot k of the batch's base world, for one commit.  The")
+    w("// store installs the batch only as the commit in flight (store.rs `commit`).")
     w("// Readers resolve their snapshot under the read lock (substrate store.rs:")
     w("// the snapshot and commit-order theorems) and are narrowed to their")
     w("// accelerator (`read_k`); the kit's `answer` is Theorem 5.4 on that reading.")
@@ -225,6 +227,7 @@ pub struct Batch {
     base: Arc<GBase>,
     next: World,
     target: Ghost<GDb>,
+    from: u64,
 }
 
 impl Batch {
@@ -251,8 +254,8 @@ impl Batch {
     }
 }
 
-/// A batch on a base, every slot carried.
-pub fn batch_new(base: &Arc<GBase>) -> (r: Batch)
+/// A batch on a base for the commit visible from engine epoch `from`, every slot carried.
+pub fn batch_new(base: &Arc<GBase>, from: u64) -> (r: Batch)
     ensures
         r.epoch() == base.epoch(),
         r.timeline() == base.timeline(),
@@ -261,30 +264,31 @@ pub fn batch_new(base: &Arc<GBase>) -> (r: Batch)
     proof {
         use_type_invariant(&**base);
     }
-    Batch { base: base.clone(), next: base.w.share(), target: Ghost((base.timeline@)(base.e as nat)) }
+    Batch { base: base.clone(), next: base.w.share(), target: Ghost((base.timeline@)(base.e as nat)), from }
 }
 
-/// The next version (consumes the batch).  HOST CONTRACT (the requires): the
-/// accelerators the batch did not replace are unchanged by this commit, so
-/// the target is the database at e + 1.
-pub fn batch_finish(b: Batch) -> (p: GPrepared)
+/// The next version (consumes the batch) and the epoch it is current from.
+/// HOST CONTRACT (the requires): the accelerators the batch did not replace are
+/// unchanged by this commit, so the target is the database at e + 1.
+pub fn batch_finish(b: Batch) -> (r: (GPrepared, u64))
     requires
         b.target() == b.next_db(),
     ensures
-        p.epoch() == b.epoch(),
-        p.timeline() == b.timeline(),
+        r.0.epoch() == b.epoch(),
+        r.0.timeline() == b.timeline(),
 {
     proof {
         use_type_invariant(&b);
         use_type_invariant(&*b.base);
     }
-    Prepared::new(b.base.e, b.next, b.base.timeline)
+    (Prepared::new(b.base.e, b.next, b.base.timeline), b.from)
 }
 """)
     for k, kit in zip(idx, kits):
-        w(f"""/// Replace {kit}'s slot by the one staged on this batch's base: true.  A slot
-/// staged on another base is not taken: the slot becomes invalid (false).
-pub fn put_{k}(b: Batch, st: Staged<D{k}, S{k}>) -> (r: (Batch, bool))
+        w(f"""/// Replace {kit}'s slot by the one staged on this batch's base, for the batch's
+/// commit (`from`): true.  A slot staged on another base, or put for another
+/// commit, is not taken: the slot becomes invalid (false).
+pub fn put_{k}(b: Batch, st: Staged<D{k}, S{k}>, from: u64) -> (r: (Batch, bool))
     ensures
         r.0.epoch() == b.epoch(),
         r.0.timeline() == b.timeline(),
@@ -294,7 +298,7 @@ pub fn put_{k}(b: Batch, st: Staged<D{k}, S{k}>) -> (r: (Batch, bool))
         use_type_invariant(&b);
         use_type_invariant(&*b.base);
     }}
-    let same = st.head().same(&b.base.h{k});
+    let same = from == b.from && st.head().same(&b.base.h{k});
     let ghost (se, stl) = (st.epoch(), st.timeline());
     let slot = if same {{
         st.into_slot()
@@ -303,7 +307,7 @@ pub fn put_{k}(b: Batch, st: Staged<D{k}, S{k}>) -> (r: (Batch, bool))
     }};
     assert(same ==> slot.ok(db_{k}(b.next_db())));
     let next = replace_{k}(&b.next, slot, Ghost(b.target@), Ghost(db_{k}(b.next_db())));
-    (Batch {{ base: b.base, next, target: Ghost(with_{k}(b.target@, db_{k}(b.next_db()))) }}, same)
+    (Batch {{ base: b.base, next, target: Ghost(with_{k}(b.target@, db_{k}(b.next_db()))), from: b.from }}, same)
 }}
 
 /// Make {kit}'s slot invalid in the batch.
@@ -317,7 +321,7 @@ pub fn put_invalid_{k}(b: Batch) -> (r: Batch)
         use_type_invariant(&b);
     }}
     let next = replace_{k}(&b.next, Slot::Invalid, Ghost(b.target@), Ghost(db_{k}(b.next_db())));
-    Batch {{ base: b.base, next, target: Ghost(with_{k}(b.target@, db_{k}(b.next_db()))) }}
+    Batch {{ base: b.base, next, target: Ghost(with_{k}(b.target@, db_{k}(b.next_db()))), from: b.from }}
 }}
 
 /// What a snapshot at engine epoch `at` sees of {kit} (waiting up to `tries`
@@ -442,10 +446,10 @@ pub fn invalidate_{k}(store: &GStore) {{
     a("    }")
     a("}")
     a("")
-    a("/// A batch on a base (every slot carried).")
+    a("/// A batch on a base for the commit visible from engine epoch `from` (every slot carried).")
     a("#[no_mangle]")
-    a(f"pub unsafe extern \"C\" fn {prefix}_batch_new(gb: *const Arc<GBase>) -> *mut Batch {{")
-    a("    Box::into_raw(Box::new(batch_new(&*gb)))")
+    a(f"pub unsafe extern \"C\" fn {prefix}_batch_new(gb: *const Arc<GBase>, from: u64) -> *mut Batch {{")
+    a("    Box::into_raw(Box::new(batch_new(&*gb, from)))")
     a("}")
     a("")
     a("#[no_mangle]")
@@ -455,12 +459,13 @@ pub fn invalidate_{k}(store: &GStore) {{
     a("    }")
     a("}")
     a("")
-    a("/// Install the batch (consumed) as the next version, current from engine")
-    a("/// epoch `from`; keep the versions snapshots at or after `floor` select;")
-    a("/// end_commit != 0 also ends the commit in flight.  0: appended; 1: stale.")
+    a("/// Install the batch (consumed) as the next version, current from its epoch;")
+    a("/// keep the versions snapshots at or after `floor` select; end_commit != 0")
+    a("/// installs it as the commit in flight (the store checks it is the one).")
+    a("/// 0: appended; 1: stale.")
     a("#[no_mangle]")
-    a(f"pub unsafe extern \"C\" fn {prefix}_install(st: *const GStore, b: *mut Batch, from: u64, floor: u64, end_commit: i32) -> i32 {{")
-    a("    let p = batch_finish(*Box::from_raw(b));")
+    a(f"pub unsafe extern \"C\" fn {prefix}_install(st: *const GStore, b: *mut Batch, floor: u64, end_commit: i32) -> i32 {{")
+    a("    let (p, from) = batch_finish(*Box::from_raw(b));")
     a("    let r = if end_commit != 0 { (*st).commit(p, from, floor) } else { (*st).install(p, from, floor) };")
     a("    match r {")
     a("        Install::Applied => 0,")
@@ -490,11 +495,12 @@ pub fn invalidate_{k}(store: &GStore) {{
         a(f"    Box::into_raw(Box::new(head_{k}(&**gb)))")
         a("}")
         a("")
-        a("/// Put a slot staged by the kit (consumed) in the batch.  1: taken; 0: it was staged on")
-        a("/// another base, the slot is invalid.")
+        a("/// Put a slot staged by the kit (consumed) in the batch, for the commit at engine epoch")
+        a("/// `from`.  1: taken; 0: it was staged on another base or put for another commit, the")
+        a("/// slot is invalid.")
         a("#[no_mangle]")
-        a(f"pub unsafe extern \"C\" fn {prefix}_put_{k}(b: *mut Batch, st: *mut Staged<D{k}, S{k}>) -> i32 {{")
-        a(f"    let (nb, taken) = put_{k}(ptr::read(b), *Box::from_raw(st));")
+        a(f"pub unsafe extern \"C\" fn {prefix}_put_{k}(b: *mut Batch, st: *mut Staged<D{k}, S{k}>, from: u64) -> i32 {{")
+        a(f"    let (nb, taken) = put_{k}(ptr::read(b), *Box::from_raw(st), from);")
         a("    ptr::write(b, nb);")
         a("    taken as i32")
         a("}")
@@ -541,13 +547,13 @@ pub fn invalidate_{k}(store: &GStore) {{
          f"int32_t {prefix}_begin(const {prefix}_store *st, uint64_t from);", f"void {prefix}_abort(const {prefix}_store *st);",
          f"{prefix}_gbase *{prefix}_gbase_new(const {prefix}_store *st);", f"uint64_t {prefix}_newest(const {prefix}_store *st);",
          f"void {prefix}_gbase_free({prefix}_gbase *gb);",
-         f"{prefix}_batch *{prefix}_batch_new(const {prefix}_gbase *gb);", f"void {prefix}_batch_free({prefix}_batch *b);",
-         f"int32_t {prefix}_install(const {prefix}_store *st, {prefix}_batch *b, uint64_t from, uint64_t floor, int32_t end_commit);",
+         f"{prefix}_batch *{prefix}_batch_new(const {prefix}_gbase *gb, uint64_t from);", f"void {prefix}_batch_free({prefix}_batch *b);",
+         f"int32_t {prefix}_install(const {prefix}_store *st, {prefix}_batch *b, uint64_t floor, int32_t end_commit);",
          f"size_t {prefix}_version_count(const {prefix}_store *st);"]
     for k in idx:
         h += [f"void *{prefix}_base_{k}(const {prefix}_gbase *gb);",
               f"void *{prefix}_head_{k}(const {prefix}_gbase *gb);",
-              f"int32_t {prefix}_put_{k}({prefix}_batch *b, void *staged);",
+              f"int32_t {prefix}_put_{k}({prefix}_batch *b, void *staged, uint64_t from);",
               f"void {prefix}_put_invalid_{k}({prefix}_batch *b);",
               f"void *{prefix}_read_{k}(const {prefix}_store *st, uint64_t at, uint64_t tries, int32_t *status);",
               f"void {prefix}_release_{k}(void *reading);",
@@ -569,10 +575,10 @@ pub fn invalidate_{k}(store: &GStore) {{
          f"    [](const void *st) {{ return static_cast<void *>({prefix}_gbase_new({st_t}(st))); }},",
          f"    [](const void *st) {{ return {prefix}_newest({st_t}(st)); }},",
          f"    [](void *gb) {{ {prefix}_gbase_free(static_cast<{prefix}_gbase *>(gb)); }},",
-         f"    [](const void *gb) {{ return static_cast<void *>({prefix}_batch_new({gb_t}(gb))); }},",
+         f"    [](const void *gb, uint64_t from) {{ return static_cast<void *>({prefix}_batch_new({gb_t}(gb), from)); }},",
          f"    [](void *b) {{ {prefix}_batch_free(static_cast<{prefix}_batch *>(b)); }},",
-         f"    [](const void *st, void *b, uint64_t from, uint64_t floor, int32_t end) {{",
-         f"      return {prefix}_install({st_t}(st), static_cast<{prefix}_batch *>(b), from, floor, end);",
+         f"    [](const void *st, void *b, uint64_t floor, int32_t end) {{",
+         f"      return {prefix}_install({st_t}(st), static_cast<{prefix}_batch *>(b), floor, end);",
          "    },",
          f"    [](const void *st) {{ return {prefix}_version_count({st_t}(st)); }},",
          "    {"]
@@ -580,7 +586,7 @@ pub fn invalidate_{k}(store: &GStore) {{
         g += [f'        {{"{kit}",',
               f"         [](const void *gb) {{ return {prefix}_base_{k}({gb_t}(gb)); }},",
               f"         [](const void *gb) {{ return {prefix}_head_{k}({gb_t}(gb)); }},",
-              f"         [](void *b, void *staged) {{ return {prefix}_put_{k}(static_cast<{prefix}_batch *>(b), staged); }},",
+              f"         [](void *b, void *staged, uint64_t from) {{ return {prefix}_put_{k}(static_cast<{prefix}_batch *>(b), staged, from); }},",
               f"         [](void *b) {{ {prefix}_put_invalid_{k}(static_cast<{prefix}_batch *>(b)); }},",
               f"         [](const void *st, uint64_t at, uint64_t tries, int32_t *status) -> const void * {{",
               f"           return {prefix}_read_{k}({st_t}(st), at, tries, status);",

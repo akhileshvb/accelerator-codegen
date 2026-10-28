@@ -15,17 +15,17 @@ const kit::World kWorld = {
     [](const void *st) { return static_cast<void *>(tpchw_gbase_new(static_cast<const tpchw_store *>(st))); },
     [](const void *st) { return tpchw_newest(static_cast<const tpchw_store *>(st)); },
     [](void *gb) { tpchw_gbase_free(static_cast<tpchw_gbase *>(gb)); },
-    [](const void *gb) { return static_cast<void *>(tpchw_batch_new(static_cast<const tpchw_gbase *>(gb))); },
+    [](const void *gb, uint64_t from) { return static_cast<void *>(tpchw_batch_new(static_cast<const tpchw_gbase *>(gb), from)); },
     [](void *b) { tpchw_batch_free(static_cast<tpchw_batch *>(b)); },
-    [](const void *st, void *b, uint64_t from, uint64_t floor, int32_t end) {
-      return tpchw_install(static_cast<const tpchw_store *>(st), static_cast<tpchw_batch *>(b), from, floor, end);
+    [](const void *st, void *b, uint64_t floor, int32_t end) {
+      return tpchw_install(static_cast<const tpchw_store *>(st), static_cast<tpchw_batch *>(b), floor, end);
     },
     [](const void *st) { return tpchw_version_count(static_cast<const tpchw_store *>(st)); },
     {
         {"tpch_q1_vgen",
          [](const void *gb) { return tpchw_base_1(static_cast<const tpchw_gbase *>(gb)); },
          [](const void *gb) { return tpchw_head_1(static_cast<const tpchw_gbase *>(gb)); },
-         [](void *b, void *staged) { return tpchw_put_1(static_cast<tpchw_batch *>(b), staged); },
+         [](void *b, void *staged, uint64_t from) { return tpchw_put_1(static_cast<tpchw_batch *>(b), staged, from); },
          [](void *b) { tpchw_put_invalid_1(static_cast<tpchw_batch *>(b)); },
          [](const void *st, uint64_t at, uint64_t tries, int32_t *status) -> const void * {
            return tpchw_read_1(static_cast<const tpchw_store *>(st), at, tries, status);
@@ -35,7 +35,7 @@ const kit::World kWorld = {
         {"tpch_q2_vgen",
          [](const void *gb) { return tpchw_base_2(static_cast<const tpchw_gbase *>(gb)); },
          [](const void *gb) { return tpchw_head_2(static_cast<const tpchw_gbase *>(gb)); },
-         [](void *b, void *staged) { return tpchw_put_2(static_cast<tpchw_batch *>(b), staged); },
+         [](void *b, void *staged, uint64_t from) { return tpchw_put_2(static_cast<tpchw_batch *>(b), staged, from); },
          [](void *b) { tpchw_put_invalid_2(static_cast<tpchw_batch *>(b)); },
          [](const void *st, uint64_t at, uint64_t tries, int32_t *status) -> const void * {
            return tpchw_read_2(static_cast<const tpchw_store *>(st), at, tries, status);
@@ -45,7 +45,7 @@ const kit::World kWorld = {
         {"tpch_q3_vgen",
          [](const void *gb) { return tpchw_base_3(static_cast<const tpchw_gbase *>(gb)); },
          [](const void *gb) { return tpchw_head_3(static_cast<const tpchw_gbase *>(gb)); },
-         [](void *b, void *staged) { return tpchw_put_3(static_cast<tpchw_batch *>(b), staged); },
+         [](void *b, void *staged, uint64_t from) { return tpchw_put_3(static_cast<tpchw_batch *>(b), staged, from); },
          [](void *b) { tpchw_put_invalid_3(static_cast<tpchw_batch *>(b)); },
          [](const void *st, uint64_t at, uint64_t tries, int32_t *status) -> const void * {
            return tpchw_read_3(static_cast<const tpchw_store *>(st), at, tries, status);
@@ -55,7 +55,7 @@ const kit::World kWorld = {
         {"tpch_q4_vgen",
          [](const void *gb) { return tpchw_base_4(static_cast<const tpchw_gbase *>(gb)); },
          [](const void *gb) { return tpchw_head_4(static_cast<const tpchw_gbase *>(gb)); },
-         [](void *b, void *staged) { return tpchw_put_4(static_cast<tpchw_batch *>(b), staged); },
+         [](void *b, void *staged, uint64_t from) { return tpchw_put_4(static_cast<tpchw_batch *>(b), staged, from); },
          [](void *b) { tpchw_put_invalid_4(static_cast<tpchw_batch *>(b)); },
          [](const void *st, uint64_t at, uint64_t tries, int32_t *status) -> const void * {
            return tpchw_read_4(static_cast<const tpchw_store *>(st), at, tries, status);
@@ -65,7 +65,7 @@ const kit::World kWorld = {
         {"tpch_q5_vgen",
          [](const void *gb) { return tpchw_base_5(static_cast<const tpchw_gbase *>(gb)); },
          [](const void *gb) { return tpchw_head_5(static_cast<const tpchw_gbase *>(gb)); },
-         [](void *b, void *staged) { return tpchw_put_5(static_cast<tpchw_batch *>(b), staged); },
+         [](void *b, void *staged, uint64_t from) { return tpchw_put_5(static_cast<tpchw_batch *>(b), staged, from); },
          [](void *b) { tpchw_put_invalid_5(static_cast<tpchw_batch *>(b)); },
          [](const void *st, uint64_t at, uint64_t tries, int32_t *status) -> const void * {
            return tpchw_read_5(static_cast<const tpchw_store *>(st), at, tries, status);
@@ -75,7 +75,7 @@ const kit::World kWorld = {
         {"tpch_q6_vgen",
          [](const void *gb) { return tpchw_base_6(static_cast<const tpchw_gbase *>(gb)); },
          [](const void *gb) { return tpchw_head_6(static_cast<const tpchw_gbase *>(gb)); },
-         [](void *b, void *staged) { return tpchw_put_6(static_cast<tpchw_batch *>(b), staged); },
+         [](void *b, void *staged, uint64_t from) { return tpchw_put_6(static_cast<tpchw_batch *>(b), staged, from); },
          [](void *b) { tpchw_put_invalid_6(static_cast<tpchw_batch *>(b)); },
          [](const void *st, uint64_t at, uint64_t tries, int32_t *status) -> const void * {
            return tpchw_read_6(static_cast<const tpchw_store *>(st), at, tries, status);
@@ -85,7 +85,7 @@ const kit::World kWorld = {
         {"tpch_q7_vgen",
          [](const void *gb) { return tpchw_base_7(static_cast<const tpchw_gbase *>(gb)); },
          [](const void *gb) { return tpchw_head_7(static_cast<const tpchw_gbase *>(gb)); },
-         [](void *b, void *staged) { return tpchw_put_7(static_cast<tpchw_batch *>(b), staged); },
+         [](void *b, void *staged, uint64_t from) { return tpchw_put_7(static_cast<tpchw_batch *>(b), staged, from); },
          [](void *b) { tpchw_put_invalid_7(static_cast<tpchw_batch *>(b)); },
          [](const void *st, uint64_t at, uint64_t tries, int32_t *status) -> const void * {
            return tpchw_read_7(static_cast<const tpchw_store *>(st), at, tries, status);
@@ -95,7 +95,7 @@ const kit::World kWorld = {
         {"tpch_q8_vgen",
          [](const void *gb) { return tpchw_base_8(static_cast<const tpchw_gbase *>(gb)); },
          [](const void *gb) { return tpchw_head_8(static_cast<const tpchw_gbase *>(gb)); },
-         [](void *b, void *staged) { return tpchw_put_8(static_cast<tpchw_batch *>(b), staged); },
+         [](void *b, void *staged, uint64_t from) { return tpchw_put_8(static_cast<tpchw_batch *>(b), staged, from); },
          [](void *b) { tpchw_put_invalid_8(static_cast<tpchw_batch *>(b)); },
          [](const void *st, uint64_t at, uint64_t tries, int32_t *status) -> const void * {
            return tpchw_read_8(static_cast<const tpchw_store *>(st), at, tries, status);
@@ -105,7 +105,7 @@ const kit::World kWorld = {
         {"tpch_q9_vgen",
          [](const void *gb) { return tpchw_base_9(static_cast<const tpchw_gbase *>(gb)); },
          [](const void *gb) { return tpchw_head_9(static_cast<const tpchw_gbase *>(gb)); },
-         [](void *b, void *staged) { return tpchw_put_9(static_cast<tpchw_batch *>(b), staged); },
+         [](void *b, void *staged, uint64_t from) { return tpchw_put_9(static_cast<tpchw_batch *>(b), staged, from); },
          [](void *b) { tpchw_put_invalid_9(static_cast<tpchw_batch *>(b)); },
          [](const void *st, uint64_t at, uint64_t tries, int32_t *status) -> const void * {
            return tpchw_read_9(static_cast<const tpchw_store *>(st), at, tries, status);
@@ -115,7 +115,7 @@ const kit::World kWorld = {
         {"tpch_q10_vgen",
          [](const void *gb) { return tpchw_base_10(static_cast<const tpchw_gbase *>(gb)); },
          [](const void *gb) { return tpchw_head_10(static_cast<const tpchw_gbase *>(gb)); },
-         [](void *b, void *staged) { return tpchw_put_10(static_cast<tpchw_batch *>(b), staged); },
+         [](void *b, void *staged, uint64_t from) { return tpchw_put_10(static_cast<tpchw_batch *>(b), staged, from); },
          [](void *b) { tpchw_put_invalid_10(static_cast<tpchw_batch *>(b)); },
          [](const void *st, uint64_t at, uint64_t tries, int32_t *status) -> const void * {
            return tpchw_read_10(static_cast<const tpchw_store *>(st), at, tries, status);
@@ -125,7 +125,7 @@ const kit::World kWorld = {
         {"tpch_q11_vgen",
          [](const void *gb) { return tpchw_base_11(static_cast<const tpchw_gbase *>(gb)); },
          [](const void *gb) { return tpchw_head_11(static_cast<const tpchw_gbase *>(gb)); },
-         [](void *b, void *staged) { return tpchw_put_11(static_cast<tpchw_batch *>(b), staged); },
+         [](void *b, void *staged, uint64_t from) { return tpchw_put_11(static_cast<tpchw_batch *>(b), staged, from); },
          [](void *b) { tpchw_put_invalid_11(static_cast<tpchw_batch *>(b)); },
          [](const void *st, uint64_t at, uint64_t tries, int32_t *status) -> const void * {
            return tpchw_read_11(static_cast<const tpchw_store *>(st), at, tries, status);
@@ -135,7 +135,7 @@ const kit::World kWorld = {
         {"tpch_q12_vgen",
          [](const void *gb) { return tpchw_base_12(static_cast<const tpchw_gbase *>(gb)); },
          [](const void *gb) { return tpchw_head_12(static_cast<const tpchw_gbase *>(gb)); },
-         [](void *b, void *staged) { return tpchw_put_12(static_cast<tpchw_batch *>(b), staged); },
+         [](void *b, void *staged, uint64_t from) { return tpchw_put_12(static_cast<tpchw_batch *>(b), staged, from); },
          [](void *b) { tpchw_put_invalid_12(static_cast<tpchw_batch *>(b)); },
          [](const void *st, uint64_t at, uint64_t tries, int32_t *status) -> const void * {
            return tpchw_read_12(static_cast<const tpchw_store *>(st), at, tries, status);
@@ -145,7 +145,7 @@ const kit::World kWorld = {
         {"tpch_q13_vgen",
          [](const void *gb) { return tpchw_base_13(static_cast<const tpchw_gbase *>(gb)); },
          [](const void *gb) { return tpchw_head_13(static_cast<const tpchw_gbase *>(gb)); },
-         [](void *b, void *staged) { return tpchw_put_13(static_cast<tpchw_batch *>(b), staged); },
+         [](void *b, void *staged, uint64_t from) { return tpchw_put_13(static_cast<tpchw_batch *>(b), staged, from); },
          [](void *b) { tpchw_put_invalid_13(static_cast<tpchw_batch *>(b)); },
          [](const void *st, uint64_t at, uint64_t tries, int32_t *status) -> const void * {
            return tpchw_read_13(static_cast<const tpchw_store *>(st), at, tries, status);
@@ -155,7 +155,7 @@ const kit::World kWorld = {
         {"tpch_q14_vgen",
          [](const void *gb) { return tpchw_base_14(static_cast<const tpchw_gbase *>(gb)); },
          [](const void *gb) { return tpchw_head_14(static_cast<const tpchw_gbase *>(gb)); },
-         [](void *b, void *staged) { return tpchw_put_14(static_cast<tpchw_batch *>(b), staged); },
+         [](void *b, void *staged, uint64_t from) { return tpchw_put_14(static_cast<tpchw_batch *>(b), staged, from); },
          [](void *b) { tpchw_put_invalid_14(static_cast<tpchw_batch *>(b)); },
          [](const void *st, uint64_t at, uint64_t tries, int32_t *status) -> const void * {
            return tpchw_read_14(static_cast<const tpchw_store *>(st), at, tries, status);
@@ -165,7 +165,7 @@ const kit::World kWorld = {
         {"tpch_q15_vgen",
          [](const void *gb) { return tpchw_base_15(static_cast<const tpchw_gbase *>(gb)); },
          [](const void *gb) { return tpchw_head_15(static_cast<const tpchw_gbase *>(gb)); },
-         [](void *b, void *staged) { return tpchw_put_15(static_cast<tpchw_batch *>(b), staged); },
+         [](void *b, void *staged, uint64_t from) { return tpchw_put_15(static_cast<tpchw_batch *>(b), staged, from); },
          [](void *b) { tpchw_put_invalid_15(static_cast<tpchw_batch *>(b)); },
          [](const void *st, uint64_t at, uint64_t tries, int32_t *status) -> const void * {
            return tpchw_read_15(static_cast<const tpchw_store *>(st), at, tries, status);
@@ -175,7 +175,7 @@ const kit::World kWorld = {
         {"tpch_q16_vgen",
          [](const void *gb) { return tpchw_base_16(static_cast<const tpchw_gbase *>(gb)); },
          [](const void *gb) { return tpchw_head_16(static_cast<const tpchw_gbase *>(gb)); },
-         [](void *b, void *staged) { return tpchw_put_16(static_cast<tpchw_batch *>(b), staged); },
+         [](void *b, void *staged, uint64_t from) { return tpchw_put_16(static_cast<tpchw_batch *>(b), staged, from); },
          [](void *b) { tpchw_put_invalid_16(static_cast<tpchw_batch *>(b)); },
          [](const void *st, uint64_t at, uint64_t tries, int32_t *status) -> const void * {
            return tpchw_read_16(static_cast<const tpchw_store *>(st), at, tries, status);
@@ -185,7 +185,7 @@ const kit::World kWorld = {
         {"tpch_q17_vgen",
          [](const void *gb) { return tpchw_base_17(static_cast<const tpchw_gbase *>(gb)); },
          [](const void *gb) { return tpchw_head_17(static_cast<const tpchw_gbase *>(gb)); },
-         [](void *b, void *staged) { return tpchw_put_17(static_cast<tpchw_batch *>(b), staged); },
+         [](void *b, void *staged, uint64_t from) { return tpchw_put_17(static_cast<tpchw_batch *>(b), staged, from); },
          [](void *b) { tpchw_put_invalid_17(static_cast<tpchw_batch *>(b)); },
          [](const void *st, uint64_t at, uint64_t tries, int32_t *status) -> const void * {
            return tpchw_read_17(static_cast<const tpchw_store *>(st), at, tries, status);
@@ -195,7 +195,7 @@ const kit::World kWorld = {
         {"tpch_q18_vgen",
          [](const void *gb) { return tpchw_base_18(static_cast<const tpchw_gbase *>(gb)); },
          [](const void *gb) { return tpchw_head_18(static_cast<const tpchw_gbase *>(gb)); },
-         [](void *b, void *staged) { return tpchw_put_18(static_cast<tpchw_batch *>(b), staged); },
+         [](void *b, void *staged, uint64_t from) { return tpchw_put_18(static_cast<tpchw_batch *>(b), staged, from); },
          [](void *b) { tpchw_put_invalid_18(static_cast<tpchw_batch *>(b)); },
          [](const void *st, uint64_t at, uint64_t tries, int32_t *status) -> const void * {
            return tpchw_read_18(static_cast<const tpchw_store *>(st), at, tries, status);
@@ -205,7 +205,7 @@ const kit::World kWorld = {
         {"tpch_q19_vgen",
          [](const void *gb) { return tpchw_base_19(static_cast<const tpchw_gbase *>(gb)); },
          [](const void *gb) { return tpchw_head_19(static_cast<const tpchw_gbase *>(gb)); },
-         [](void *b, void *staged) { return tpchw_put_19(static_cast<tpchw_batch *>(b), staged); },
+         [](void *b, void *staged, uint64_t from) { return tpchw_put_19(static_cast<tpchw_batch *>(b), staged, from); },
          [](void *b) { tpchw_put_invalid_19(static_cast<tpchw_batch *>(b)); },
          [](const void *st, uint64_t at, uint64_t tries, int32_t *status) -> const void * {
            return tpchw_read_19(static_cast<const tpchw_store *>(st), at, tries, status);
@@ -215,7 +215,7 @@ const kit::World kWorld = {
         {"tpch_q20_vgen",
          [](const void *gb) { return tpchw_base_20(static_cast<const tpchw_gbase *>(gb)); },
          [](const void *gb) { return tpchw_head_20(static_cast<const tpchw_gbase *>(gb)); },
-         [](void *b, void *staged) { return tpchw_put_20(static_cast<tpchw_batch *>(b), staged); },
+         [](void *b, void *staged, uint64_t from) { return tpchw_put_20(static_cast<tpchw_batch *>(b), staged, from); },
          [](void *b) { tpchw_put_invalid_20(static_cast<tpchw_batch *>(b)); },
          [](const void *st, uint64_t at, uint64_t tries, int32_t *status) -> const void * {
            return tpchw_read_20(static_cast<const tpchw_store *>(st), at, tries, status);
@@ -225,7 +225,7 @@ const kit::World kWorld = {
         {"tpch_q21_vgen",
          [](const void *gb) { return tpchw_base_21(static_cast<const tpchw_gbase *>(gb)); },
          [](const void *gb) { return tpchw_head_21(static_cast<const tpchw_gbase *>(gb)); },
-         [](void *b, void *staged) { return tpchw_put_21(static_cast<tpchw_batch *>(b), staged); },
+         [](void *b, void *staged, uint64_t from) { return tpchw_put_21(static_cast<tpchw_batch *>(b), staged, from); },
          [](void *b) { tpchw_put_invalid_21(static_cast<tpchw_batch *>(b)); },
          [](const void *st, uint64_t at, uint64_t tries, int32_t *status) -> const void * {
            return tpchw_read_21(static_cast<const tpchw_store *>(st), at, tries, status);
@@ -235,7 +235,7 @@ const kit::World kWorld = {
         {"tpch_q22_vgen",
          [](const void *gb) { return tpchw_base_22(static_cast<const tpchw_gbase *>(gb)); },
          [](const void *gb) { return tpchw_head_22(static_cast<const tpchw_gbase *>(gb)); },
-         [](void *b, void *staged) { return tpchw_put_22(static_cast<tpchw_batch *>(b), staged); },
+         [](void *b, void *staged, uint64_t from) { return tpchw_put_22(static_cast<tpchw_batch *>(b), staged, from); },
          [](void *b) { tpchw_put_invalid_22(static_cast<tpchw_batch *>(b)); },
          [](const void *st, uint64_t at, uint64_t tries, int32_t *status) -> const void * {
            return tpchw_read_22(static_cast<const tpchw_store *>(st), at, tries, status);

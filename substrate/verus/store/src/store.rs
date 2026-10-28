@@ -52,7 +52,10 @@
 // that the state a writer prepares answers for the database at its version
 // (the capture and scan contracts); `floor` is at most the oldest open
 // snapshot.  With one store for every accelerator (a world: one slot each,
-// world.rs `Both`), one install per commit makes the same hold for all.
+// world.rs `Both`), one install per commit makes the same hold for all.  The
+// store itself checks that `commit` installs the commit that `begin` marked
+// (same `from`), and the world binds a batch to one `from`, so slots of two
+// commits are never installed as one version.
 //
 // Concurrency.
 //   * A reader resolves its snapshot and clones the state pointers (`Arc`)
@@ -1072,7 +1075,8 @@ impl<D, W: AuxWorld<D>> Store<D, W> {
         self.append(p, from, floor, false)
     }
 
-    /// `install`, ending the commit in flight (`begin`).
+    /// `install`, as the commit in flight: `begin(from)` marked it, and it is
+    /// ended.  Any other commit (or none in flight) is refused, unchanged.
     pub fn commit(&self, p: Prepared<D, W>, from: u64, floor: u64) -> (r: Install)
         requires
             p.timeline() == self.timeline(),
@@ -1096,6 +1100,11 @@ impl<D, W: AuxWorld<D>> Store<D, W> {
             return Install::Stale;
         }
         if end_pending {
+            if c.pending != Some(from) {
+                // not the commit in flight: it stays marked, nothing is installed
+                g.end(c);
+                return Install::Stale;
+            }
             c.pending = None;
         }
         let newest = c.newest_epoch(Ghost(self.timeline()));
