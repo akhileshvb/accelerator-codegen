@@ -47,6 +47,7 @@ mkdir -p "${RUNS}"
 # The bench at every point of POINTS: one call with the list when the host says bench_multi_point, else one per point.
 bench_points() {
   local out="" rc=0 reason="" point
+  without_suite
   if [[ "${MULTI_POINT}" == True ]]; then
     ACCEL_AUX_WRITE_FREQUENCIES="${POINTS}" engine_run "${HARNESS_BENCH_TARGET}" --query "${QUERY}"
     return
@@ -58,6 +59,10 @@ bench_points() {
   done
   LOG="${out}" RC=${rc} RUN_REASON="${reason}"
 }
+
+# The bench and the calibrator run as the bench sweep and the calibration gate run them: without the suite.
+without_suite() { unset "${!ACCEL_SUITE_@}"; }
+calibrate() { without_suite; engine_run "${HARNESS_CALIBRATE_TARGET}" --query "${QUERY}" "${RUNS}/cost_model.json"; }
 
 # launch <name> <command...>: run it in the background, keeping its output and outcome under <RUNS>/<name>.*
 PIDS=()
@@ -128,7 +133,7 @@ settle
 failed_run bench_hitting bench-run
 message="$(python3 "${CHECKS}" bench-hits "${RUNS}/bench_hitting.log" "${RUNS}/bench_forced.log")"
 [[ -z "${message}" ]] || fail "${message}"
-launch calibrate engine_run "${HARNESS_CALIBRATE_TARGET}" --query "${QUERY}" "${RUNS}/cost_model.json"
+launch calibrate calibrate
 settle
 failed_run calibrate calibrate-cost-model
 message="$(python3 "${CHECKS}" cost-model "${RUNS}/cost_model.json")"

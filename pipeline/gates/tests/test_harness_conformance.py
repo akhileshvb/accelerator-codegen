@@ -58,6 +58,11 @@ def test_a_calibrator_that_measures_no_interference_on_the_declining_module_conf
     assert proc.returncode == 0, data
 
 
+def test_the_bench_runs_without_the_suite_as_the_bench_sweep_runs_it(repo):
+    proc, _, data = conformance(repo, FAKE_BENCH_NO_SUITE="1")  # a bench that reads the suite when it is set
+    assert proc.returncode == 0, data
+
+
 def test_a_failed_harness_names_its_exit_code_and_the_query(repo):
     _, _, data = conformance(repo, FAKE_RC_run="1")
     assert "exited 1 on query 5 with every read answered by the reference SQL" in data["reason"] and data["exit_code"] == 1

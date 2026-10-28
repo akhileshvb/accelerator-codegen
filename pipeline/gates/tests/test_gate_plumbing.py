@@ -39,6 +39,7 @@ case "${verb}" in
         echo "lineitem_only,${pct},3.0,2.0,4.0,$((400 / t)),$((500 / t)),$((800 / t)),1.0,0"
       done
     elif [[ "$1" == benchmark* && "$2" == --query ]]; then  # a bench that counts hits (or, FAKE_BENCH_CONSTANT, one that assumes them)
+      [[ -z "${FAKE_BENCH_NO_SUITE:-}" || -z "${ACCEL_SUITE_DIR:-}" ]] || { echo "benchmark has no query binding"; exit 1; }
       rate=0.0; [[ -z "${FAKE_BENCH_CONSTANT:-}" && -n "${ACCEL_AUX_FORCE_FALLBACK:-}" ]] || rate=1.0
       [[ -z "${FAKE_BENCH_DECLINES:-}" ]] || rate=0.0  # no module behind the registration: nothing ever hits
       [[ -z "${ACCEL_PROFILE_CONTROL:-}" || -n "${FAKE_BENCH_NO_PROFILE:-}" ]] || echo enable >"${ACCEL_PROFILE_CONTROL}"
