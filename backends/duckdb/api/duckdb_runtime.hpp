@@ -100,6 +100,7 @@ public:
   // ApplyMutationBatch (tests that hand-build them while writing SQL).
   void UseManualCapture();
   void ExecuteBaseQuery();
+  void ExecuteBaseQuery(const core::QueryArguments &arguments);
 
   // ---- diagnostics ----
   bool UsesVerusStore() const;
@@ -133,12 +134,14 @@ private:
 // query, timed together.
 class DuckdbCalibrationEngine final : public core::CalibrationEngine {
 public:
-  explicit DuckdbCalibrationEngine(DuckdbRuntime &runtime_p) : runtime(runtime_p) {}
+  DuckdbCalibrationEngine(DuckdbRuntime &runtime_p, core::QueryArguments arguments_p)
+      : runtime(runtime_p), arguments(std::move(arguments_p)) {}
   Timed WriteThenRead(const std::string &sql,
                       std::optional<maintenance::MaintenanceAction> forced) override;
 
 private:
   DuckdbRuntime &runtime;
+  core::QueryArguments arguments;
 };
 
 } // namespace accelerator_codegen::aux_state::engine::duckdb

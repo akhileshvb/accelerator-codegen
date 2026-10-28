@@ -144,7 +144,7 @@ struct SecEdgarQ4GroupAggregatesPartition {
 struct SecEdgarQ4OutputRow {
 	int32_t sic = 0;
 	std::string tlabel;
-	std::string stmt = "EQ";
+	std::string stmt;
 	int64_t num_companies = 0;
 	double total_value = 0.0;
 	double avg_value = 0.0;
@@ -153,14 +153,5 @@ struct SecEdgarQ4OutputRow {
 struct SecEdgarQ4OutputPartition {
 	std::vector<SecEdgarQ4OutputRow> output_rows;
 };
-
-std::vector<SecEdgarQ4PartitionKey> SecEdgarQ4FixedPartitionKeys();
-void RefreshSecEdgarQ4Output(const SecEdgarQ4GroupAggregatesPartition &aggregates,
-                             const SecEdgarQ4TagTlabelPartition &tag_tlabel, SecEdgarQ4OutputPartition &output);
-bool ApplySecEdgarQ4UsdNumDelta(const SecEdgarQ4SicCohortPartition &cohort,
-                                const SecEdgarQ4PreEqBridgePartition &pre_bridge,
-                                const SecEdgarQ4TagTlabelPartition &tag_tlabel, SecEdgarQ4GroupAggregatesPartition &aggregates,
-                                SecEdgarQ4OutputPartition &output, const SecEdgarQ4AdshKey &adsh_key,
-                                const SecEdgarQ4TagVersionKey &tag_version_key, double value, int8_t sign);
 
 } // namespace accelerator_codegen

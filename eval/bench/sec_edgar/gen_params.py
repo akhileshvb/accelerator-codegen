@@ -5,8 +5,9 @@ Same contract as eval/compare/gen_tpch_params.py (the benchmark pack's `params_g
 
     python3 eval/bench/sec_edgar/gen_params.py [sets=8] [seed=1]
 
-prints {"seed", "queries": {"<N>": {"sets": [{"params", "verus"}]}}}, where `verus` is the kit's
-argument list: SQL literals in the $n order of workloads/sec_edgar/q<N>.sql (the json's `params` order).
+prints {"seed", "queries": {"<N>": {"sets": [{"params", "verus", "cpp"}]}}}, where `verus` is the kit's
+argument list and `cpp` the C++ accelerator's (the same for SEC): SQL literals in the $n order of
+workloads/sec_edgar/q<N>.sql (the json's `params` order).
 """
 import json
 import os
@@ -29,7 +30,7 @@ def distinct_sets(spec, n, seed):
         args = ", ".join(sweep_params.lit(vals[p["name"]]) for p in spec["params"])
         if args not in seen:
             seen.add(args)
-            sets.append({"params": vals, "verus": args})
+            sets.append({"params": vals, "verus": args, "cpp": args})
         if len(sets) == n:
             break
     return sets

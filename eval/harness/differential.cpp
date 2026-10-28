@@ -19,6 +19,7 @@
 #include "eval/harness/suite.hpp"
 #include "eval/harness/tpch_rf.hpp"
 #include "backends/duckdb/api/duckdb_runtime.hpp"
+#include "backends/duckdb/api/sql_fallback.hpp"
 #include "substrate/aux/core/aux_maintenance_decision_log.hpp"
 #include "substrate/aux/core/aux_maintenance_policy.hpp"
 #include "substrate/aux/maintenance/maintenance_action.hpp"
@@ -33,6 +34,8 @@ namespace aux_engine = ::accelerator_codegen::aux_state::engine;
 using aux_engine::duckdb::DuckdbRuntime;
 using aux_engine::SharedQueryCatalogEntry;
 using aux_engine::SharedProbe;
+using aux_engine::BindArguments;
+using aux_engine::DefaultArguments;
 using aux_engine::CollectInvalidatingSharedProbes;
 using aux_engine::FindSharedProbe;
 using aux_engine::FindInvalidatingSharedProbe;
@@ -368,10 +371,14 @@ void CompareRows(duckdb::MaterializedQueryResult &base,
 
 } // namespace
 
-void CompareAuxRowsToBase(duckdb::Connection &connection,
-                          const SharedQueryCatalogEntry &entry,
+void CompareAuxRowsToBase(duckdb::Connection &connection, const SharedQueryCatalogEntry &entry,
+                          const core::QueryArguments &arguments, const std::vector<core::AuxRow> &accelerated) {
+  CompareAuxRowsToSql(connection, entry, BindArguments(entry.base_sql, arguments), accelerated);
+}
+
+void CompareAuxRowsToBase(duckdb::Connection &connection, const SharedQueryCatalogEntry &entry,
                           const std::vector<core::AuxRow> &accelerated) {
-  CompareAuxRowsToSql(connection, entry, entry.base_sql, accelerated);
+  CompareAuxRowsToBase(connection, entry, DefaultArguments(entry), accelerated);
 }
 
 void CompareAuxRowsToSql(duckdb::Connection &connection,
@@ -386,54 +393,72 @@ void CompareAuxRowsToSql(duckdb::Connection &connection,
   CompareRows(base, accelerated, entry, base_sql);
 }
 
+void RequireSharedMatchesBase(duckdb::Connection &connection, DuckdbRuntime &runtime,
+                              const SharedQueryCatalogEntry &entry, const core::QueryArguments &arguments) {
+  CompareAuxRowsToBase(connection, entry, arguments, runtime.ExecuteCollect(arguments));
+}
+
 void RequireSharedMatchesBase(duckdb::Connection &connection,
                               DuckdbRuntime &runtime,
                               const SharedQueryCatalogEntry &entry) {
-  CompareAuxRowsToBase(connection, entry, runtime.ExecuteCollect());
+  RequireSharedMatchesBase(connection, runtime, entry, DefaultArguments(entry));
 }
 
 DifferentialSession::DifferentialSession(const std::string &db_path, const SharedQueryCatalogEntry &entry_p)
-    : entry(entry_p), database(db_path.c_str()), connection(database), runtime(connection, entry_p, 10.0) {}
+    : DifferentialSession(db_path, entry_p, DefaultArguments(entry_p)) {}
+
+DifferentialSession::DifferentialSession(const std::string &db_path, const SharedQueryCatalogEntry &entry_p,
+                                         core::QueryArguments arguments_p)
+    : entry(entry_p), arguments(std::move(arguments_p)), database(db_path.c_str()), connection(database),
+      runtime(connection, entry_p, 10.0) {}
 
 void CheckReadOnly(DifferentialSession &session) {
-  RequireSharedMatchesBase(session.connection, session.runtime, session.entry);
+  RequireSharedMatchesBase(session.connection, session.runtime, session.entry, session.arguments);
 }
 
 void CheckIncrementalWrite(DifferentialSession &session) {
-  auto &[entry, database, connection, runtime] = session;
-  const auto before_fp = FingerprintSharedBaseSql(connection, entry);
-  auto probe = FindInvalidatingSharedProbe(connection, entry);
-  Require(SharedProbeChangesBaseResult(connection, entry, probe, before_fp),
+  auto &[entry, arguments, database, connection, runtime] = session;
+  const auto before_fp = FingerprintSharedBaseSql(connection, entry, arguments);
+  auto probe = FindInvalidatingSharedProbe(connection, entry, arguments);
+  Require(SharedProbeChangesBaseResult(connection, entry, arguments, probe, before_fp),
           "selected probe no longer changes DuckDB result for Q" +
               std::to_string(entry.query_id));
   runtime.Apply(probe);
   RequireForcedMaintenanceAction(runtime);
-  const auto after_fp = FingerprintSharedBaseSql(connection, entry);
+  const auto after_fp = FingerprintSharedBaseSql(connection, entry, arguments);
   Require(after_fp != before_fp,
           "Apply() did not change DuckDB Q" + std::to_string(entry.query_id) +
               " result — write did not invalidate observable query state");
-  RequireSharedMatchesBase(connection, runtime, entry);
+  RequireSharedMatchesBase(connection, runtime, entry, arguments);
   runtime.ApplyWrite(probe.restore_sql);
-  RequireSharedMatchesBase(connection, runtime, entry);
+  RequireSharedMatchesBase(connection, runtime, entry, arguments);
 }
 
-void RunDifferentialCheck(const std::string &db_path,
-                          const SharedQueryCatalogEntry &entry) {
-  DifferentialSession session(db_path, entry);
+void RunDifferentialCheck(const std::string &db_path, const SharedQueryCatalogEntry &entry,
+                          const core::QueryArguments &arguments) {
+  DifferentialSession session(db_path, entry, arguments);
   session.runtime.Build();
   CheckReadOnly(session);
 }
 
-void RunIncrementalDifferentialCheck(const std::string &db_path,
-                                     const SharedQueryCatalogEntry &entry) {
-  DifferentialSession session(db_path, entry);
+void RunDifferentialCheck(const std::string &db_path, const SharedQueryCatalogEntry &entry) {
+  RunDifferentialCheck(db_path, entry, DefaultArguments(entry));
+}
+
+void RunIncrementalDifferentialCheck(const std::string &db_path, const SharedQueryCatalogEntry &entry,
+                                     const core::QueryArguments &arguments) {
+  DifferentialSession session(db_path, entry, arguments);
   session.runtime.Build();
   CheckReadOnly(session);
   CheckIncrementalWrite(session);
 }
 
+void RunIncrementalDifferentialCheck(const std::string &db_path, const SharedQueryCatalogEntry &entry) {
+  RunIncrementalDifferentialCheck(db_path, entry, DefaultArguments(entry));
+}
+
 void CheckRfChunks(DifferentialSession &session, int num_chunks, int order_count) {
-  auto &[entry, database, connection, runtime] = session;
+  auto &[entry, arguments, database, connection, runtime] = session;
   Require(entry.workload == aux_engine::SharedWorkloadKind::Tpch,
           "RF differential is TPC-H only");
   Require(entry.query_id != 11,
@@ -442,7 +467,7 @@ void CheckRfChunks(DifferentialSession &session, int num_chunks, int order_count
   Require(order_count > 0, "order_count must be positive");
 
   const auto fallbacks_before = runtime.Stats().reads_fallback;
-  const auto before_fp = FingerprintSharedBaseSql(connection, entry);
+  const auto before_fp = FingerprintSharedBaseSql(connection, entry, arguments);
   bool changed = false;
   int orders = order_count;
   int seq = 0;
@@ -451,13 +476,13 @@ void CheckRfChunks(DifferentialSession &session, int num_chunks, int order_count
   for (int attempt = 0; attempt < kMaxAttempts && !changed; ++attempt) {
     ApplyTpchRfChunk(connection, runtime, seq++, orders);
     try {
-      RequireSharedMatchesBase(connection, runtime, entry);
+      RequireSharedMatchesBase(connection, runtime, entry, arguments);
     } catch (const std::exception &ex) {
       throw std::runtime_error(std::string(ex.what()) + " (after RF chunk seq=" +
                                std::to_string(seq - 1) + " order_count=" +
                                std::to_string(orders) + ")");
     }
-    if (FingerprintSharedBaseSql(connection, entry) != before_fp) {
+    if (FingerprintSharedBaseSql(connection, entry, arguments) != before_fp) {
       changed = true;
       break;
     }
@@ -468,13 +493,13 @@ void CheckRfChunks(DifferentialSession &session, int num_chunks, int order_count
     // Standard TPC-H RF date ranges often miss historical predicates (e.g. Q3
     // TOP-10). Still require a write that invalidates this query: apply a
     // result-changing shared probe after RF maintenance has run.
-    auto probe = FindInvalidatingSharedProbe(connection, entry);
+    auto probe = FindInvalidatingSharedProbe(connection, entry, arguments);
     runtime.Apply(probe);
-    const auto after_fp = FingerprintSharedBaseSql(connection, entry);
+    const auto after_fp = FingerprintSharedBaseSql(connection, entry, arguments);
     Require(after_fp != before_fp,
             "RF+probe did not change DuckDB Q" + std::to_string(entry.query_id) +
                 " result — cannot confirm aux invalidation");
-    RequireSharedMatchesBase(connection, runtime, entry);
+    RequireSharedMatchesBase(connection, runtime, entry, arguments);
     changed = true;
   }
 
@@ -482,7 +507,7 @@ void CheckRfChunks(DifferentialSession &session, int num_chunks, int order_count
   while (seq < num_chunks) {
     ApplyTpchRfChunk(connection, runtime, seq++, order_count);
     try {
-      RequireSharedMatchesBase(connection, runtime, entry);
+      RequireSharedMatchesBase(connection, runtime, entry, arguments);
     } catch (const std::exception &ex) {
       throw std::runtime_error(std::string(ex.what()) + " (after RF chunk seq=" +
                                std::to_string(seq - 1) + " order_count=" +
@@ -509,7 +534,7 @@ void RunRfChunkDifferentialCheck(const std::string &db_path,
 void CheckNoDrift(DifferentialSession &session, const std::function<suite::Rows()> &answers) {
   const auto maintained = answers();
   session.runtime.Build();
-  RequireSharedMatchesBase(session.connection, session.runtime, session.entry);
+  RequireSharedMatchesBase(session.connection, session.runtime, session.entry, session.arguments);
   Require(suite::SameRows(answers(), maintained),
           "Q" + std::to_string(session.entry.query_id) +
               ": the maintained state answers differently from one built from scratch on the same data");
@@ -518,7 +543,7 @@ void CheckNoDrift(DifferentialSession &session, const std::function<suite::Rows(
 void CheckNoDrift(DifferentialSession &session) {
   CheckNoDrift(session, [&] {
     suite::Rows rows;
-    for (const auto &row : session.runtime.ExecuteCollect()) {
+    for (const auto &row : session.runtime.ExecuteCollect(session.arguments)) {
       rows.emplace_back();
       for (const auto &value : row.values)
         rows.back().push_back(AuxValueText(value));
@@ -862,8 +887,8 @@ AdversarialPlan AdversarialPlanFromEnv(int max_probes, int min_chunks, bool requ
 }
 
 void CheckAdversarialWrites(DifferentialSession &session, const AdversarialPlan &plan) {
-  auto &[entry, database, connection, runtime] = session;
-  auto probes = CollectInvalidatingSharedProbes(connection, entry, 256, plan.max_probes);
+  auto &[entry, arguments, database, connection, runtime] = session;
+  auto probes = CollectInvalidatingSharedProbes(connection, entry, arguments, 256, plan.max_probes);
   Require(static_cast<int>(probes.size()) >= plan.min_probes,
           "adversarial needs >= " + std::to_string(plan.min_probes) +
               " invalidating catalog probes for Q" +
@@ -873,8 +898,8 @@ void CheckAdversarialWrites(DifferentialSession &session, const AdversarialPlan 
   // Every write and its undo go through the runtime, which maintains the state for both.
   for (std::size_t i = 0; i < probes.size(); ++i) {
     auto probe = probes[i];
-    const auto before_fp = FingerprintSharedBaseSql(connection, entry);
-    Require(SharedProbeChangesBaseResult(connection, entry, probe, before_fp),
+    const auto before_fp = FingerprintSharedBaseSql(connection, entry, arguments);
+    Require(SharedProbeChangesBaseResult(connection, entry, arguments, probe, before_fp),
             "adversarial probe " + std::to_string(i) +
                 " no longer changes DuckDB result for Q" +
                 std::to_string(entry.query_id));
@@ -884,25 +909,25 @@ void CheckAdversarialWrites(DifferentialSession &session, const AdversarialPlan 
     suite::ProbeCostsMs().push_back((after_stats.apply_us + after_stats.build_us - before_stats.apply_us -
                                      before_stats.build_us) / 1000.0);
     RequireForcedMaintenanceAction(runtime);
-    const auto after_fp = FingerprintSharedBaseSql(connection, entry);
+    const auto after_fp = FingerprintSharedBaseSql(connection, entry, arguments);
     Require(after_fp != before_fp,
             "adversarial Apply() did not invalidate DuckDB Q" +
                 std::to_string(entry.query_id) + " probe=" +
                 std::to_string(i));
-    RequireSharedMatchesBase(connection, runtime, entry);
+    RequireSharedMatchesBase(connection, runtime, entry, arguments);
     runtime.ApplyWrite(probe.restore_sql);
-    RequireSharedMatchesBase(connection, runtime, entry);
+    RequireSharedMatchesBase(connection, runtime, entry, arguments);
   }
 
   const std::size_t sequence_len = std::min<std::size_t>(3, probes.size());
   for (std::size_t i = 0; i < sequence_len; ++i) {
     runtime.Apply(probes[i]);
-    RequireSharedMatchesBase(connection, runtime, entry);
+    RequireSharedMatchesBase(connection, runtime, entry, arguments);
   }
   for (std::size_t i = sequence_len; i-- > 0;) {
     runtime.ApplyWrite(probes[i].restore_sql);
   }
-  RequireSharedMatchesBase(connection, runtime, entry);
+  RequireSharedMatchesBase(connection, runtime, entry, arguments);
 }
 
 void CheckRefreshWrites(DifferentialSession &session, const AdversarialPlan &plan) {
@@ -917,12 +942,16 @@ void CheckRefreshWrites(DifferentialSession &session, const AdversarialPlan &pla
   CheckRfChunks(session, plan.min_chunks, 1);
 }
 
-void RunAdversarialWriteDifferentialCheck(const std::string &db_path,
-                                          const SharedQueryCatalogEntry &entry,
-                                          int max_probes, int min_chunks,
+void RunAdversarialWriteDifferentialCheck(const std::string &db_path, const SharedQueryCatalogEntry &entry,
+                                          int max_probes, int min_chunks, bool require_bulk) {
+  RunAdversarialWriteDifferentialCheck(db_path, entry, DefaultArguments(entry), max_probes, min_chunks, require_bulk);
+}
+
+void RunAdversarialWriteDifferentialCheck(const std::string &db_path, const SharedQueryCatalogEntry &entry,
+                                          const core::QueryArguments &arguments, int max_probes, int min_chunks,
                                           bool require_bulk) {
   const auto plan = AdversarialPlanFromEnv(max_probes, min_chunks, require_bulk);
-  DifferentialSession session(db_path, entry);
+  DifferentialSession session(db_path, entry, arguments);
   session.runtime.Build();
   CheckReadOnly(session);
   CheckAdversarialWrites(session, plan);

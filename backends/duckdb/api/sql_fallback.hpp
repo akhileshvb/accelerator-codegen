@@ -24,9 +24,12 @@ void SetFallbackTrap(std::optional<bool> trapped);
 // `sql` with each $n replaced by the n-th value as a parenthesized SQL literal
 // (highest n first, so $1 never matches inside $10).
 std::string WithLiterals(const std::string &sql, const ::duckdb::vector<::duckdb::Value> &values);
+// The same for a call's arguments: how every SQL template of a catalog entry is bound.
+std::string BindArguments(const std::string &sql, const core::QueryArguments &arguments);
 
 // The SQL that answers the query for these arguments (the base query when
-// there are none), empty if the entry has none. Throws when FallbackTrapped().
+// there are none, for an entry with a default binding), empty if the entry has none.
+// Throws when FallbackTrapped().
 std::string FallbackSql(const SharedQueryCatalogEntry &entry, const core::QueryArguments &arguments);
 
 // False: the entry has no SQL for these arguments.
