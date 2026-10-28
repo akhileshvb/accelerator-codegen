@@ -209,10 +209,10 @@ def suite_ctx(repo, suite_yaml: str) -> dict:
                            "schema_sql": "", "config": asdict(ts.SuiteConfig()), "param_names": [], "aux": True}}
 
 
-def test_the_quick_tier_caps_the_differential_probes(repo):
+def test_the_quick_tier_caps_the_differential_probes_and_requires_none(repo):
     ctx = suite_ctx(repo, "point_writes: {max_probes: 9, min_count: 6}\n")
     host = repo / "backends" / "fake" / "host.sh"
-    host.write_text('#!/usr/bin/env bash\n[[ "$1" != run ]] || echo "$2 probes=${ACCEL_ADV_MAX_PROBES:-unset}" >> "${FAKE_LOG}.probes"\n')
+    host.write_text('#!/usr/bin/env bash\n[[ "$1" != run ]] || echo "$2 probes=${ACCEL_ADV_MAX_PROBES:-unset}/${ACCEL_ADV_MIN_PROBES:-unset}" >> "${FAKE_LOG}.probes"\n')
     seen = {}
     for tier in ("quick", "full"):
         proc, *_ = run_gate(repo, "run_aux_correctness.sh", "5", ctx_extra=ctx, env_extra={"ACCEL_GATE_TIER": tier})
@@ -220,7 +220,7 @@ def test_the_quick_tier_caps_the_differential_probes(repo):
         probes = (repo / "host.log.probes").read_text().splitlines()
         seen[tier] = next(line for line in probes if line.startswith("diff_bin")).split("=")[1]
         (repo / "host.log.probes").unlink()
-    assert seen == {"quick": "3", "full": "9"}
+    assert seen == {"quick": "3/0", "full": "9/6"}  # the subset may hold fewer answer-changing rows than min_count
 
 
 def test_the_iterate_tier_uses_the_minimum_probes_the_full_dataset_and_one_thread_count(repo):
