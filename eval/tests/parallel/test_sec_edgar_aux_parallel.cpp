@@ -373,9 +373,9 @@ void ApplyInvalidatingWrite(duckdb::Connection &connection,
 
 void RunCatalogChecks() {
   for (int query_id : kSecQueries) {
-    const auto &st = catalog::LookupSharedQuery(catalog::SharedWorkloadKind::SecEdgar, query_id);
+    const auto &st = catalog::LookupSharedQuery("sec_edgar", query_id);
     const auto &parallel =
-        catalog::LookupSharedQueryParallel(catalog::SharedWorkloadKind::SecEdgar, query_id);
+        catalog::LookupSharedQueryParallel("sec_edgar", query_id);
     Require(std::string(st.accelerator_id).find("_aux_parallel") == std::string::npos,
             "ST accelerator id must not be parallel");
     Require(catalog::IsParallelAuxAccelerator(parallel.accelerator_id),
@@ -499,9 +499,9 @@ void RunSyntheticSuite() {
   const int n = HardwareThreads();
   for (int query_id : kSecQueries) {
     const auto &st =
-        catalog::LookupSharedQuery(catalog::SharedWorkloadKind::SecEdgar, query_id);
+        catalog::LookupSharedQuery("sec_edgar", query_id);
     const auto &parallel =
-        catalog::LookupSharedQueryParallel(catalog::SharedWorkloadKind::SecEdgar, query_id);
+        catalog::LookupSharedQueryParallel("sec_edgar", query_id);
     CompareRuntimes(connection, st, parallel, 1);
     CompareRuntimes(connection, st, parallel, n);
     CompareTriple(connection, st, parallel, 1);
@@ -509,7 +509,7 @@ void RunSyntheticSuite() {
   }
   for (int query_id : kSecQueries) {
     const auto &parallel =
-        catalog::LookupSharedQueryParallel(catalog::SharedWorkloadKind::SecEdgar, query_id);
+        catalog::LookupSharedQueryParallel("sec_edgar", query_id);
     std::cerr << "synthetic invalidating write Q" << query_id << " t=1\n";
     ApplyInvalidatingWrite(connection, parallel, 1);
     std::cerr << "synthetic invalidating write Q" << query_id << " t=" << n << '\n';
@@ -527,9 +527,9 @@ void RunLargeSyntheticSuite() {
   ScopedEnv aux("ACCEL_AUX_THREADS", std::to_string(n));
   for (int query_id : kSecQueries) {
     const auto &st =
-        catalog::LookupSharedQuery(catalog::SharedWorkloadKind::SecEdgar, query_id);
+        catalog::LookupSharedQuery("sec_edgar", query_id);
     const auto &parallel =
-        catalog::LookupSharedQueryParallel(catalog::SharedWorkloadKind::SecEdgar, query_id);
+        catalog::LookupSharedQueryParallel("sec_edgar", query_id);
     CompareTriple(connection, st, parallel, n);
     std::cerr << "large synthetic Q" << query_id << " OK\n";
   }
@@ -562,9 +562,9 @@ void RunFileReadOnlySuite(const std::string &path) {
   std::cerr << "file read-only suite db=" << path << " threads=" << n << '\n';
   for (int query_id : kSecQueries) {
     const auto &st =
-        catalog::LookupSharedQuery(catalog::SharedWorkloadKind::SecEdgar, query_id);
+        catalog::LookupSharedQuery("sec_edgar", query_id);
     const auto &parallel =
-        catalog::LookupSharedQueryParallel(catalog::SharedWorkloadKind::SecEdgar, query_id);
+        catalog::LookupSharedQueryParallel("sec_edgar", query_id);
     CompareRuntimes(connection, st, parallel, 1);
     CompareRuntimes(connection, st, parallel, n);
     CompareTriple(connection, st, parallel, 1);
@@ -745,7 +745,7 @@ void RunFileWriteSuite(const std::string &source) {
   const int thread_counts[] = {1, n};
   for (int query_id : kSecQueries) {
     const auto &parallel =
-        catalog::LookupSharedQueryParallel(catalog::SharedWorkloadKind::SecEdgar, query_id);
+        catalog::LookupSharedQueryParallel("sec_edgar", query_id);
     for (int threads : thread_counts) {
       const auto work = WorkCopyPath(query_id, threads, "write");
       CopyDb(source, work);

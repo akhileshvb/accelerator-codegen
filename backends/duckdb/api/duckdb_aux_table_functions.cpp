@@ -81,7 +81,7 @@ struct AuxBindData : public ::duckdb::FunctionData {
   bool Equals(const ::duckdb::FunctionData &other_p) const override {
     auto &other = other_p.Cast<AuxBindData>();
     return entry.query_id == other.entry.query_id &&
-           entry.workload == other.entry.workload && arguments == other.arguments &&
+           std::string(entry.workload_name) == other.entry.workload_name && arguments == other.arguments &&
            types == other.types && names == other.names;
   }
 };

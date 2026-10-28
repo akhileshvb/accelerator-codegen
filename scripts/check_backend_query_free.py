@@ -173,7 +173,7 @@ def benchmark_names(root: Path = ROOT) -> re.Pattern[str]:
 
 def scan_benchmark_names(path: Path, label: str, pattern: re.Pattern[str]) -> list[dict]:
     """Benchmark names in one file's code (comments ignored): the harnesses take the benchmark as an input."""
-    marker = "#" if path.suffix == ".cmake" else ""
+    marker = "#" if path.suffix in (".cmake", ".sh") else ""
     hits = []
     for no, raw in enumerate(path.read_text(encoding="utf-8", errors="replace").splitlines()):
         m = pattern.search(strip_comment(raw, path.suffix == ".sql", marker))

@@ -37,14 +37,14 @@ bool HasProbeRow(const std::string &db_path, const engine::SharedQueryCatalogEnt
 }
 
 // Runs every query of `workload`; returns the ids skipped for lack of probe rows.
-std::vector<int> RunWorkload(const std::string &db_path, engine::SharedWorkloadKind workload) {
+std::vector<int> RunWorkload(const std::string &db_path, const std::string &workload) {
   std::vector<int> no_probe_rows;
   for (const int query_id : engine::SharedQueriesForWorkload(workload)) {
     const auto &entry = engine::LookupSharedQuery(workload, query_id);
     // TPC-H: the DB is generated with every query's seeds, so a missing probe
     // row is a real failure (left to the check). SEC-EDGAR: the test DB is a
     // sample of an external dataset that may predate a query's probe.
-    if (workload == engine::SharedWorkloadKind::SecEdgar && !HasProbeRow(db_path, entry)) {
+    if (workload == "sec_edgar" && !HasProbeRow(db_path, entry)) {
       std::cerr << "NO PROBE ROWS " << entry.workload_name << " Q" << entry.query_id << '\n';
       no_probe_rows.push_back(query_id);
       continue;
@@ -87,10 +87,10 @@ int main(int argc, char **argv) {
     struct Run {
       std::string db;
       const char *env;
-      engine::SharedWorkloadKind workload;
+      const char *workload;
     };
-    const Run runs[] = {{tpch_db, "ACCEL_TPCH_TEST_DB", engine::SharedWorkloadKind::Tpch},
-                        {sec_db, "ACCEL_SEC_EDGAR_TEST_DB", engine::SharedWorkloadKind::SecEdgar}};
+    const Run runs[] = {{tpch_db, "ACCEL_TPCH_TEST_DB", "tpch"},
+                        {sec_db, "ACCEL_SEC_EDGAR_TEST_DB", "sec_edgar"}};
     for (const auto &run : runs) {
       if (run.db != "-" && !std::filesystem::exists(run.db)) {
         std::cerr << "SKIP: test database " << run.db << " does not exist (set " << run.env << ")\n";
@@ -104,7 +104,7 @@ int main(int argc, char **argv) {
         continue;
       }
       for (const int query_id : RunWorkload(ts::PrivateDbCopy(run.db, scratch), run.workload)) {
-        gaps += " " + std::string(run.workload == engine::SharedWorkloadKind::Tpch ? "tpch" : "sec_edgar") +
+        gaps += " " + std::string(run.workload) +
                 " Q" + std::to_string(query_id) + " (" + run.db + ")";
       }
     }

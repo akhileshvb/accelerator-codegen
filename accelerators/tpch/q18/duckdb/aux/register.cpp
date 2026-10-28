@@ -54,7 +54,6 @@ SharedProbe BuildTpchQ18Probe(::duckdb::MaterializedQueryResult &result,
 }
 
 const SharedQueryRegistrar kEntry{SharedQueryCatalogEntry{18,
-     SharedWorkloadKind::Tpch,
      "tpch",
      query::TpchQ18Layout::kAccelerator,
      "SELECT c_name, c_custkey, o_orderkey, o_orderdate, o_totalprice, "

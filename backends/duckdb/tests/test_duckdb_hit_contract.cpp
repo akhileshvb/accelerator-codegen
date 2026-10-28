@@ -45,7 +45,7 @@ int main() {
     accelerator_codegen::RegisterAcceleratorFunctions(connection);
 
     const int query = ts::EnvOrInt("ACCEL_HIT_CONTRACT_QUERY", 6);
-    const auto &entry = engine::LookupSharedQuery(engine::SharedWorkloadKind::Tpch, query);
+    const auto &entry = engine::LookupSharedQuery("tpch", query);
     engine::duckdb::DuckdbRuntime accelerator(connection, entry, 10.0);
     Require(accelerator.Stats().builds == 0, "the state was built before the first read");
 

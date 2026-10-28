@@ -21,7 +21,7 @@ namespace accelerator_codegen::aux_state::engine::duckdb {
 
 struct DecliningQuery {
   int query_id = 0;
-  std::string workload_name; // "tpch", "sec_edgar"
+  std::string workload_name; // the benchmark, as its workload names it
   std::string accelerator_id;
   std::string table_function;
   std::vector<std::string> argument_types; // SQL type names of the table function's arguments
@@ -105,7 +105,6 @@ inline const char *Keep(std::string text) {
 inline void RegisterDecliningQuery(const DecliningQuery &query) {
   SharedQueryCatalogEntry entry;
   entry.query_id = query.query_id;
-  entry.workload = query.workload_name == "sec_edgar" ? SharedWorkloadKind::SecEdgar : SharedWorkloadKind::Tpch;
   entry.workload_name = declining_detail::Keep(query.workload_name);
   entry.accelerator_id = declining_detail::Keep(query.accelerator_id);
   entry.base_sql = declining_detail::Keep(query.base_sql);

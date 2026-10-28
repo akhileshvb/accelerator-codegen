@@ -4,16 +4,6 @@
 #include <stdexcept>
 
 namespace accelerator_codegen::aux_state::engine {
-bool SharedQueryEngine::HasSharedQuery(SharedWorkloadKind workload,
-                                       int query_id) {
-  try {
-    (void)LookupSharedQuery(workload, query_id);
-    return true;
-  } catch (...) {
-    return false;
-  }
-}
-
 bool SharedQueryEngine::HasSharedQuery(const std::string &workload_name,
                                        int query_id) {
   try {

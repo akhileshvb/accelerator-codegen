@@ -194,15 +194,12 @@ double RebuildTargetPartitionUs(duckdb::Connection &connection, int target_query
 	using namespace accelerator_codegen::aux_state::engine;
 	using namespace accelerator_codegen::aux_state::engine::duckdb;
 	const auto benchmark = DetectCrossAccelBenchmark();
-	const auto workload =
-	    benchmark == CrossAccelBenchmark::SecEdgar ? SharedWorkloadKind::SecEdgar
-	                                               : SharedWorkloadKind::Tpch;
 	const char *workload_name =
 	    benchmark == CrossAccelBenchmark::SecEdgar ? "sec_edgar" : "tpch";
 	if (!SharedQueryEngine::HasSharedQuery(workload_name, target_query)) {
 		throw std::runtime_error("unsupported rebuild for Q" + std::to_string(target_query));
 	}
-	const auto &entry = LookupSharedQuery(workload, target_query);
+	const auto &entry = LookupSharedQuery(workload_name, target_query);
 	const auto start = Clock::now();
 	DuckdbRuntime runtime(connection, entry, 10.0);
 	const auto probe = FindSharedProbe(connection, entry);

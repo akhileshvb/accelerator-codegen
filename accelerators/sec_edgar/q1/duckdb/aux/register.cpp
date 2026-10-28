@@ -64,7 +64,6 @@ SharedProbe BuildSecEdgarQ1Probe(::duckdb::MaterializedQueryResult &result,
 }
 
 const SharedQueryRegistrar kEntry{SharedQueryCatalogEntry{1,
-     SharedWorkloadKind::SecEdgar,
      "sec_edgar",
      core::SecEdgarQ1Layout::kAccelerator,
      "SELECT stmt, rfile, COUNT(*) AS cnt, COUNT(DISTINCT adsh) AS num_filings, "

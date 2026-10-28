@@ -40,7 +40,7 @@ int main(int argc, char **argv) {
     return 2;
   }
   try {
-    const auto &entry = engine::LookupSharedQuery(engine::SharedWorkloadKind::Tpch, std::stoi(argv[2]));
+    const auto &entry = engine::LookupSharedQuery("tpch", std::stoi(argv[2]));
     ts::ScratchDir scratch("host_lifetime");
     duckdb::weak_ptr<duckdb::DatabaseInstance> instance;
     {

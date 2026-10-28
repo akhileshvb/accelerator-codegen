@@ -1,6 +1,7 @@
 #include "sec_edgar/q1/duckdb/aux/parallel/module.hpp"
 
 #include "backends/duckdb/api/parallel/aux_parallel_scan.hpp"
+#include "sec_edgar/common/scan_specs.hpp"
 
 #include <algorithm>
 #include <stdexcept>
@@ -55,7 +56,7 @@ SecEdgarQ1ParallelModule::BuildState(core::AuxEngineServices &services) const {
   const auto workers = std::max<std::size_t>(1, services.WorkerCount());
   std::vector<q1::Builder> local(workers);
   const auto spec = SecEdgarPreScan({"stmt", "rfile", "adsh", "line"});
-  const bool scanned = ScanSecEdgarParallel(
+  const bool scanned = ScanParallel(
       services, spec, [&](duckdb::idx_t worker, duckdb::DataChunk &chunk) {
         local[worker].ConsumeChunk(chunk);
       });

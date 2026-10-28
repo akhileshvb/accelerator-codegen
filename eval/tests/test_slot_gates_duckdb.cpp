@@ -125,7 +125,7 @@ class DuckdbEngine final : public gates::Engine {
 public:
   DuckdbEngine(const std::string &db_path, const std::vector<int> &queries) : db(db_path), setup(db) {
     for (int q : queries) {
-      const auto &entry = engine::LookupSharedQuery(engine::SharedWorkloadKind::Tpch, q);
+      const auto &entry = engine::LookupSharedQuery("tpch", q);
       auto runtime = std::make_unique<DuckdbRuntime>(setup, entry, 10.0);
       runtime->Build();
       cases.push_back({"Q" + std::to_string(q), entry.duckdb_aux_sql, entry.base_sql});

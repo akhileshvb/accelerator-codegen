@@ -63,7 +63,6 @@ SharedProbe BuildTpchQ21Probe(::duckdb::MaterializedQueryResult &result,
 }
 
 const SharedQueryRegistrar kEntry{SharedQueryCatalogEntry{21,
-     SharedWorkloadKind::Tpch,
      "tpch",
      query::TpchQ21Layout::kAccelerator,
      "SELECT s_name, COUNT(*) AS numwait FROM supplier, lineitem l1, orders, "

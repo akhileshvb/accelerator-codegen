@@ -189,7 +189,7 @@ int main(int argc, char **argv) {
         ts::PrivateDbCopy(argc > 1 ? argv[1] : ts::TpchTestDbPath(), scratch);
     duckdb::DuckDB database(db_path.c_str());
     duckdb::Connection connection(database);
-    ModuleCheck(connection, engine::LookupSharedQuery(engine::SharedWorkloadKind::Tpch, kQuery)).Run();
+    ModuleCheck(connection, engine::LookupSharedQuery("tpch", kQuery)).Run();
     std::cout << "PASS tpch Q" << kQuery << " aux module\n";
     return 0;
   } catch (const std::exception &error) {

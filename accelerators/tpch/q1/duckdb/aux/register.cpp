@@ -55,7 +55,6 @@ SharedProbe BuildTpchQ1Probe(::duckdb::MaterializedQueryResult &result,
 }
 
 const SharedQueryRegistrar kEntry{SharedQueryCatalogEntry{1,
-     SharedWorkloadKind::Tpch,
      "tpch",
      core::TpchQ1Layout::kAccelerator,
      "SELECT l_returnflag, l_linestatus, "

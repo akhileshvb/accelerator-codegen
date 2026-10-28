@@ -100,7 +100,7 @@ int main(int argc, char **argv) {
   duckdb::DuckDB db(argv[1]);
   duckdb::Connection c(db);
   accelerator_codegen::RegisterAcceleratorFunctions(c);
-  const auto &entry = engine::LookupSharedQuery(engine::SharedWorkloadKind::Tpch, q);
+  const auto &entry = engine::LookupSharedQuery("tpch", q);
   DuckdbRuntime runtime(c, entry, 10.0);
   runtime.Build();
 

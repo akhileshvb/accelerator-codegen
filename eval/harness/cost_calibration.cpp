@@ -14,7 +14,6 @@ namespace accelerator_codegen::aux_state::harness {
 
 namespace core = accelerator_codegen::aux_state::core;
 namespace aux_engine = ::accelerator_codegen::aux_state::engine;
-using aux_engine::SharedWorkloadKind;
 using aux_engine::SharedQueryCatalogEntry;
 using aux_engine::SharedProbe;
 using aux_engine::FindSharedProbe;
@@ -127,10 +126,8 @@ core::AuxCalibrationResult CalibrateSharedQueryCostModel(
 void WriteSharedQueryCostModel(const std::string &path,
                                const core::AuxCalibrationResult &result,
                                const SharedQueryCatalogEntry &entry) {
-  const char *workload =
-      entry.workload == SharedWorkloadKind::Tpch ? "tpch" : "sec_edgar";
   core::WriteAuxCostModelJson(path, result, "duckdb",
-                              std::string(workload) + "_q" +
+                              std::string(entry.workload_name) + "_q" +
                                   std::to_string(entry.query_id));
 }
 

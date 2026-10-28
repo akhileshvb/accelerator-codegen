@@ -56,7 +56,6 @@ SharedProbe BuildTpchQ9Probe(::duckdb::MaterializedQueryResult &result,
 }
 
 const SharedQueryRegistrar kEntry{SharedQueryCatalogEntry{9,
-     SharedWorkloadKind::Tpch,
      "tpch",
      query::TpchQ9Layout::kAccelerator,
      "SELECT nation, o_year, SUM(amount) AS sum_profit FROM ("
