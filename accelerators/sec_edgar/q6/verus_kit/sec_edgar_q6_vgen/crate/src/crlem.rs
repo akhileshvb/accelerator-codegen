@@ -292,3 +292,88 @@ pub proof fn lemma_hn_put_ok(db: Db, c: ClassRec, n: ClassRec, nk: KeyView)
 }
 
 } // verus!
+
+verus! {
+
+/// A unit's frontier group replaced by a better group of the unit keeps the record well formed and every group accounted for.
+#[verifier::rlimit(100)]
+#[verifier::spinoff_prover]
+pub proof fn lemma_f_swap_ok(db: Db, c: ClassRec, n: ClassRec, b: Grp, g: Grp)
+    requires
+        crec_struct(c), crec_sem(db, c), crec_head(c, n), n.f.wf(), n.fb.wf(),
+        c.fb.at(nkey_v(ov(b.name))) == Some(b), nkey_v(ov(g.name)) == nkey_v(ov(b.name)),
+        forall|q: KeyView| #![trigger n.f.at(q)] n.f.at(q) == if q == rkey(g) { Some(g) } else if q == rkey(b) { None } else { c.f.at(q) },
+        forall|q: KeyView| #![trigger n.fb.at(q)] n.fb.at(q) == if q == nkey_v(ov(g.name)) { Some(g) } else { c.fb.at(q) },
+        ix_same(n.r, c.r), ix_same(n.hp, c.hp), ix_same(n.hn, c.hn),
+        exact_g(db, c, g), key_lt(rkey(g), rkey(b)),
+        forall|q: KeyView| #![trigger c.r.at(q)] c.r.at(q) is Some ==> key_lt(q, rkey(g)) && c.r.at(q)->0.ik() != g.ik(),
+    ensures
+        crec_struct(n), crec_sem(db, n), cov_mono(c, n),
+        covered_in(n, cls_gk(c, g), g.sum@, g.cnt@),
+{
+    let k0 = cls_gk(c, g);
+    lemma_key_order(rkey(g), rkey(b));
+    assert(c.f.at(rkey(b)) == c.fb.at(nkey_v(ov(b.name))));
+    assert(rkey(g) != rkey(b));
+    assert forall|q: KeyView| n.f.at(q) is Some implies {
+        &&& q == rkey(n.f.at(q)->0)
+        &&& n.fb.at(nkey_v(ov(n.f.at(q)->0.name))) == n.f.at(q)
+    } by {
+        if q != rkey(g) {
+            let h = c.f.at(q)->0;
+            assert(c.fb.at(nkey_v(ov(h.name))) == c.f.at(q));
+            assert(nkey_v(ov(h.name)) != nkey_v(ov(g.name))) by {
+                if nkey_v(ov(h.name)) == nkey_v(ov(g.name)) { assert(c.f.at(q) == c.fb.at(nkey_v(ov(b.name)))); assert(q == rkey(b)); }
+            }
+        }
+    }
+    assert forall|nk: KeyView| n.fb.at(nk) is Some implies {
+        &&& nk == nkey_v(ov(n.fb.at(nk)->0.name))
+        &&& n.f.at(rkey(n.fb.at(nk)->0)) == n.fb.at(nk)
+    } by {
+        if nk != nkey_v(ov(g.name)) {
+            let h = c.fb.at(nk)->0;
+            assert(c.f.at(rkey(h)) == c.fb.at(nk));
+            assert(rkey(h) != rkey(g)) by {
+                if rkey(h) == rkey(g) { lemma_rkey_fields(h, g); assert(nk == nkey_v(ov(h.name))); assert(c.fb.at(nkey_v(ov(g.name))) is Some); }
+            }
+            assert(rkey(h) != rkey(b)) by {
+                if rkey(h) == rkey(b) { lemma_rkey_fields(h, b); assert(nk == nkey_v(ov(h.name))); assert(nk == nkey_v(ov(b.name))); }
+            }
+        }
+    }
+    assert forall|r1: KeyView, r2: KeyView| n.r.at(r1) is Some && n.f.at(r2) is Some implies key_lt(r1, r2) && n.r.at(r1)->0.ik() != n.f.at(r2)->0.ik() by {
+        assert(c.r.at(r1) is Some);
+        if r2 != rkey(g) { assert(c.f.at(r2) is Some); } else { assert(key_lt(r1, rkey(g))); assert(c.r.at(r1)->0.ik() != g.ik()); }
+    }
+    assert forall|q: KeyView| n.f.at(q) is Some implies exact_g(db, n, n.f.at(q)->0) by {
+        if q != rkey(g) { assert(c.f.at(q) is Some); }
+    }
+    assert(cls_gk(n, g) == k0);
+    assert forall|k: GK, s: int, m: int| covered_in(c, k, s, m) implies #[trigger] covered_in(n, k, s, m) by {
+        if s <= max_val() && s >= -max_val() {
+            if r_has(c, k) {
+                let rk = choose|rk: KeyView| #![trigger c.r.at(rk)] c.r.at(rk) is Some && cls_gk(c, c.r.at(rk)->0) == k;
+                assert(n.r.at(rk) is Some);
+                assert(cls_gk(n, n.r.at(rk)->0) == k);
+            } else {
+                let b2 = choose|b2: u64| #![trigger okbits(b2, s, m)] okbits(b2, s, m) && c.fb.at(nkey_v(k.name)) is Some && !key_lt(rkey_gk(b2, k), rkey(c.fb.at(nkey_v(k.name))->0));
+                if nkey_v(k.name) == nkey_v(ov(g.name)) {
+                    assert(c.fb.at(nkey_v(k.name))->0 == b);
+                    assert(!key_lt(rkey_gk(b2, k), rkey(b)));
+                    lemma_key_order(rkey_gk(b2, k), rkey(b));
+                    if rkey_gk(b2, k) != rkey(b) { lemma_key_trans(rkey(g), rkey(b), rkey_gk(b2, k)); }
+                    lemma_key_order(rkey_gk(b2, k), rkey(g));
+                    assert(n.fb.at(nkey_v(k.name)) == Some(g));
+                } else {
+                    assert(n.fb.at(nkey_v(k.name)) == c.fb.at(nkey_v(k.name)));
+                }
+            }
+        }
+    }
+    assert(okbits(g.bits, g.sum@, g.cnt@));
+    assert(rkey_gk(g.bits, k0) == rkey(g));
+    lemma_key_order(rkey(g), rkey(g));
+}
+
+} // verus!

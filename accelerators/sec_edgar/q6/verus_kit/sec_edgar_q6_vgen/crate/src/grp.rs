@@ -85,7 +85,7 @@ pub fn grp_bits(tab: &Pow2Tab, maxv: &Wide, minv: &Wide, c: &Wide, s: &Wide, Gho
         rep_db(db),
         c@ == crate::model::cntk(db, k), s@ == crate::model::sumk(db, k), c@ > 0,
     ensures
-        r matches Some(b) ==> okbits(b, s@, c@),
+        r matches Some(b) ==> okbits(b, s@, c@) && f64_in_range(s@),
         r is None ==> (s@ > max_val() || s@ < -max_val()),
 {
     proof { lemma_pow2_consts(); }
