@@ -517,6 +517,7 @@ pub proof fn lemma_pick_facts(c: ClassRec, u: Index<UnitRef>, w: Index<UnitRef>,
     ensures ({
         let pk = pick_of(c, u, refill);
         &&& forall|i: int| 0 <= i < pk.len() ==> c.f.at(rkey(#[trigger] pk[i])) == Some(pk[i])
+        &&& forall|i: int| 0 <= i < pk.len() ==> i < vsel(c.f.entries(), c.fy as int, u).len() && rkey(#[trigger] pk[i]) == vsel(c.f.entries(), c.fy as int, u)[i]
         &&& forall|i: int| 0 <= i < pk.len() ==> wn(w, c.fy as int, nkey_v(ov((#[trigger] pk[i]).name))) && !wn(u, c.fy as int, nkey_v(ov(pk[i].name)))
         &&& forall|i: int, q: KeyView| #![trigger pk[i], c.f.at(q)] 0 <= i < pk.len() && c.f.at(q) is Some && !wn(w, c.fy as int, nkey_v(ov(c.f.at(q)->0.name))) ==> key_lt(rkey(pk[i]), q)
     }),
@@ -538,6 +539,14 @@ pub proof fn lemma_pick_facts(c: ClassRec, u: Index<UnitRef>, w: Index<UnitRef>,
             assert(c.f.at(es[j].0) == Some(es[j].1));
             assert(pk[i] == c.f.at(k)->0);
             assert(rkey(pk[i]) == k) by { assert(c.f.at(k) is Some); }
+        }
+        assert forall|i: int| 0 <= i < pk.len() implies i < vs.len() && rkey(#[trigger] pk[i]) == vs[i] by {
+            let k = vs[i];
+            assert(nk.contains(k)) by { assert(nk.take(if nk.len() < 512 { nk.len() as int } else { 512int })[i] == nk[i]); }
+            let j = choose|j: int| 0 <= j < es.len() && es[j].0 == k && !u_has(u, c.fy as int, ov(es[j].1.name));
+            assert(c.f.at(es[j].0) == Some(es[j].1));
+            assert(pk[i] == c.f.at(k)->0);
+            assert(rkey(pk[i]) == k);
         }
         assert forall|i: int| 0 <= i < pk.len() implies wn(w, c.fy as int, nkey_v(ov((#[trigger] pk[i]).name))) && !wn(u, c.fy as int, nkey_v(ov(pk[i].name))) by {
             let k = vs[i];

@@ -42,3 +42,4 @@ pub mod evict;
 pub mod cnt;
 pub mod place;
 pub mod trim;
+pub mod bridge;
