@@ -76,6 +76,10 @@ pub open spec fn crec_struct(c: ClassRec) -> bool {
     &&& forall|r1: KeyView, r2: KeyView| #![trigger c.r.at(r1), c.f.at(r2)] c.r.at(r1) is Some && c.f.at(r2) is Some ==> key_lt(r1, r2)
     &&& forall|r1: KeyView, r2: KeyView| #![trigger c.r.at(r1), c.r.at(r2)]
         c.r.at(r1) is Some && c.r.at(r2) is Some && c.r.at(r1)->0.ik() == c.r.at(r2)->0.ik() ==> r1 == r2
+    &&& forall|r1: KeyView, r2: KeyView| #![trigger c.r.at(r1), c.f.at(r2)]
+        c.r.at(r1) is Some && c.f.at(r2) is Some ==> c.r.at(r1)->0.ik() != c.f.at(r2)->0.ik()
+    &&& forall|nk: KeyView| #![trigger c.hp.at(nk)] c.hp.at(nk) is Some ==> nk.0 == 0
+    &&& forall|nk: KeyView| #![trigger c.hn.at(nk)] c.hn.at(nk) is Some ==> nk.0 == 0
 }
 
 pub open spec fn has_cand(db: Db, c: ClassRec, nk: KeyView, above: bool) -> bool {

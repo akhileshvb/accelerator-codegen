@@ -18,6 +18,10 @@ pub open spec fn tbl_keyed(cls: Index<ClassRec>) -> bool {
     cls.wf() && forall|ok: KeyView| #![trigger cls.at(ok)] cls.at(ok) is Some ==> ok == cls_key(cls.at(ok)->0)
 }
 
+pub open spec fn tbl_str(cls: Index<ClassRec>) -> bool {
+    cls.wf() && forall|ok: KeyView| #![trigger cls.at(ok)] cls.at(ok) is Some ==> ok == cls_key(cls.at(ok)->0) && crec_struct(cls.at(ok)->0)
+}
+
 /// Every record of the table is well formed and exact for db (kept groups are in the class's order, not yet their number).
 pub open spec fn tbl_wf(db: Db, cls: Index<ClassRec>) -> bool {
     &&& cls.wf()

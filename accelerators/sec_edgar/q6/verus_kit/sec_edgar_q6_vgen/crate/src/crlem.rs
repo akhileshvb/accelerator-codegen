@@ -29,7 +29,7 @@ pub proof fn lemma_r_put_ok(db: Db, c: ClassRec, n: ClassRec, g: Grp)
         forall|q: KeyView| #![trigger n.r.at(q)] n.r.at(q) == if q == rkey(g) { Some(g) } else { c.r.at(q) },
         ix_same(n.f, c.f), ix_same(n.fb, c.fb), ix_same(n.hp, c.hp), ix_same(n.hn, c.hn),
         exact_g(db, c, g),
-        forall|q: KeyView| #![trigger c.f.at(q)] c.f.at(q) is Some ==> key_lt(rkey(g), q),
+        forall|q: KeyView| #![trigger c.f.at(q)] c.f.at(q) is Some ==> key_lt(rkey(g), q) && c.f.at(q)->0.ik() != g.ik(),
         forall|q: KeyView| #![trigger c.r.at(q)] c.r.at(q) is Some ==> c.r.at(q)->0.ik() != g.ik(),
     ensures
         crec_struct(n), crec_sem(db, n), r_has(n, cls_gk(c, g)), cov_mono(c, n),
@@ -49,6 +49,9 @@ pub proof fn lemma_r_put_ok(db: Db, c: ClassRec, n: ClassRec, g: Grp)
     assert forall|q: KeyView| n.r.at(q) is Some implies exact_g(db, n, n.r.at(q)->0) by {
         if q != rkey(g) { assert(c.r.at(q) is Some); }
     }
+    assert forall|r1: KeyView, r2: KeyView| n.r.at(r1) is Some && n.f.at(r2) is Some implies n.r.at(r1)->0.ik() != n.f.at(r2)->0.ik() by {
+        if r1 != rkey(g) { assert(c.r.at(r1) is Some); }
+    }
     assert(r_has(n, cls_gk(c, g))) by { assert(n.r.at(rkey(g)) == Some(g)); }
     assert forall|k: GK, s: int, m: int| covered_in(c, k, s, m) implies #[trigger] covered_in(n, k, s, m) by {
         if s <= max_val() && s >= -max_val() && r_has(c, k) {
@@ -67,7 +70,7 @@ pub proof fn lemma_f_put_ok(db: Db, c: ClassRec, n: ClassRec, g: Grp)
         ix_same(n.r, c.r), ix_same(n.hp, c.hp), ix_same(n.hn, c.hn),
         exact_g(db, c, g),
         c.fb.at(nkey_v(ov(g.name))) is None,
-        forall|q: KeyView| #![trigger c.r.at(q)] c.r.at(q) is Some ==> key_lt(q, rkey(g)),
+        forall|q: KeyView| #![trigger c.r.at(q)] c.r.at(q) is Some ==> key_lt(q, rkey(g)) && c.r.at(q)->0.ik() != g.ik(),
     ensures
         crec_struct(n), crec_sem(db, n), cov_mono(c, n),
         covered_in(n, cls_gk(c, g), g.sum@, g.cnt@),
@@ -108,6 +111,10 @@ pub proof fn lemma_f_put_ok(db: Db, c: ClassRec, n: ClassRec, g: Grp)
     }
     assert forall|q: KeyView| n.f.at(q) is Some implies exact_g(db, n, n.f.at(q)->0) by {
         if q != rkey(g) { assert(c.f.at(q) is Some); }
+    }
+    assert forall|r1: KeyView, r2: KeyView| n.r.at(r1) is Some && n.f.at(r2) is Some implies n.r.at(r1)->0.ik() != n.f.at(r2)->0.ik() by {
+        assert(c.r.at(r1) is Some);
+        if r2 != rkey(g) { assert(c.f.at(r2) is Some); }
     }
     assert(cls_gk(n, g) == k0);
     assert forall|k: GK, s: int, m: int| covered_in(c, k, s, m) implies #[trigger] covered_in(n, k, s, m) by {
@@ -164,7 +171,7 @@ pub proof fn lemma_f_del_ok(db: Db, c: ClassRec, n: ClassRec, nk: KeyView)
             assert(c.f.at(rkey(h)) == c.fb.at(q));
             assert(rkey(h) != rkey(b)) by { if rkey(h) == rkey(b) { assert(c.f.at(rkey(b)) == c.fb.at(q)); assert(c.f.at(rkey(b)) == c.fb.at(nk)); assert(q == nkey_v(ov(h.name)) && nk == nkey_v(ov(b.name))); } }
         }
-        assert forall|r1: KeyView, r2: KeyView| n.r.at(r1) is Some && n.f.at(r2) is Some implies key_lt(r1, r2) by {
+        assert forall|r1: KeyView, r2: KeyView| n.r.at(r1) is Some && n.f.at(r2) is Some implies key_lt(r1, r2) && n.r.at(r1)->0.ik() != n.f.at(r2)->0.ik() by {
             assert(c.r.at(r1) is Some); assert(c.f.at(r2) is Some);
         }
         assert forall|q: KeyView| n.f.at(q) is Some implies exact_g(db, n, n.f.at(q)->0) by { assert(c.f.at(q) is Some); }
@@ -193,7 +200,7 @@ pub proof fn lemma_r_del_ok(db: Db, c: ClassRec, n: ClassRec, rk: KeyView)
             covered_in(c, k, s, m) && (c.r.at(rk) is Some ==> k != cls_gk(c, c.r.at(rk)->0)) ==> covered_in(n, k, s, m),
 {
     assert forall|q: KeyView| n.r.at(q) is Some implies q == rkey(n.r.at(q)->0) by { assert(c.r.at(q) is Some); }
-    assert forall|r1: KeyView, r2: KeyView| n.r.at(r1) is Some && n.f.at(r2) is Some implies key_lt(r1, r2) by { assert(c.r.at(r1) is Some); }
+    assert forall|r1: KeyView, r2: KeyView| n.r.at(r1) is Some && n.f.at(r2) is Some implies key_lt(r1, r2) && n.r.at(r1)->0.ik() != n.f.at(r2)->0.ik() by { assert(c.r.at(r1) is Some); }
     assert forall|r1: KeyView, r2: KeyView| n.r.at(r1) is Some && n.r.at(r2) is Some && n.r.at(r1)->0.ik() == n.r.at(r2)->0.ik() implies r1 == r2 by {
         assert(c.r.at(r1) is Some && c.r.at(r2) is Some);
     }
@@ -229,17 +236,19 @@ pub proof fn lemma_h_del_ok(db: Db, c: ClassRec, n: ClassRec, nk: KeyView)
     }
 }
 
+#[verifier::rlimit(60)]
+#[verifier::spinoff_prover]
 pub proof fn lemma_hp_put_ok(db: Db, c: ClassRec, n: ClassRec, nk: KeyView)
     requires
         crec_struct(c), crec_sem(db, c), crec_head(c, n), n.hp.wf(),
         forall|q: KeyView| #![trigger n.hp.at(q)] n.hp.at(q) == if q == nk { Some(()) } else { c.hp.at(q) },
         ix_same(n.r, c.r), ix_same(n.f, c.f), ix_same(n.fb, c.fb), ix_same(n.hn, c.hn),
-        has_cand(db, c, nk, true),
+        has_cand(db, c, nk, true), nk.0 == 0,
     ensures
         crec_struct(n), crec_sem(db, n), cov_mono(c, n),
         forall|k: GK, s: int, m: int| #![trigger covered_in(n, k, s, m)] s > max_val() && nkey_v(k.name) == nk ==> covered_in(n, k, s, m),
 {
-    assert forall|q: KeyView| n.hp.at(q) is Some implies has_cand(db, n, q, true) by {
+    assert forall|q: KeyView| n.hp.at(q) is Some implies has_cand(db, n, q, true) && q.0 == 0 by {
         if q != nk { assert(c.hp.at(q) is Some); }
     }
     assert forall|k: GK, s: int, m: int| s > max_val() && nkey_v(k.name) == nk implies #[trigger] covered_in(n, k, s, m) by {
@@ -254,17 +263,19 @@ pub proof fn lemma_hp_put_ok(db: Db, c: ClassRec, n: ClassRec, nk: KeyView)
     }
 }
 
+#[verifier::rlimit(60)]
+#[verifier::spinoff_prover]
 pub proof fn lemma_hn_put_ok(db: Db, c: ClassRec, n: ClassRec, nk: KeyView)
     requires
         crec_struct(c), crec_sem(db, c), crec_head(c, n), n.hn.wf(),
         forall|q: KeyView| #![trigger n.hn.at(q)] n.hn.at(q) == if q == nk { Some(()) } else { c.hn.at(q) },
         ix_same(n.r, c.r), ix_same(n.f, c.f), ix_same(n.fb, c.fb), ix_same(n.hp, c.hp),
-        has_cand(db, c, nk, false),
+        has_cand(db, c, nk, false), nk.0 == 0,
     ensures
         crec_struct(n), crec_sem(db, n), cov_mono(c, n),
         forall|k: GK, s: int, m: int| #![trigger covered_in(n, k, s, m)] s < -max_val() && nkey_v(k.name) == nk ==> covered_in(n, k, s, m),
 {
-    assert forall|q: KeyView| n.hn.at(q) is Some implies has_cand(db, n, q, false) by {
+    assert forall|q: KeyView| n.hn.at(q) is Some implies has_cand(db, n, q, false) && q.0 == 0 by {
         if q != nk { assert(c.hn.at(q) is Some); }
     }
     lemma_max_pos();

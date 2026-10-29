@@ -13,6 +13,7 @@ use crate::inv::*;
 use crate::crops::*;
 use crate::grp::*;
 use crate::units::*;
+use crate::tbl::*;
 use crate::lists::*;
 
 verus! {
@@ -460,6 +461,214 @@ pub fn select_f(c: &ClassRec, u: &Index<UnitRef>) -> (picked: Vec<Arc<Grp>>)
         }
     }
     picked
+}
+
+/// A frontier group moved into its class's kept groups.
+pub struct Mv {
+    pub fy: i64,
+    pub stmt: Vec<u8>,
+    pub uom: Vec<u8>,
+    pub g: Arc<Grp>,
+}
+
+pub open spec fn mv_ok(cls: Index<ClassRec>, ct: Index<ClassRef>, u: Index<UnitRef>, mvs: Seq<Mv>) -> bool {
+    &&& forall|i: int| 0 <= i < mvs.len() ==> {
+        let m = #[trigger] mvs[i];
+        let ok = okey(m.fy as int, m.stmt@, m.uom@);
+        &&& ct.at(ok) is Some
+        &&& cls.at(ok) is Some
+        &&& notu_keys(cls.at(ok)->0.r.entries(), m.fy as int, u).len() < k_limit()
+        &&& cls.at(ok)->0.f.at(rkey(*m.g)) == Some(*m.g)
+        &&& vsel(cls.at(ok)->0.f.entries(), m.fy as int, u).contains(rkey(*m.g))
+    }
+    &&& forall|ok: KeyView, k: KeyView| #![trigger ct.at(ok), vsel(cls.at(ok)->0.f.entries(), cls.at(ok)->0.fy as int, u).contains(k)]
+        ct.at(ok) is Some && cls.at(ok) is Some && notu_keys(cls.at(ok)->0.r.entries(), cls.at(ok)->0.fy as int, u).len() < k_limit()
+        && vsel(cls.at(ok)->0.f.entries(), cls.at(ok)->0.fy as int, u).contains(k) ==>
+        exists|i: int| 0 <= i < mvs.len() && okey((#[trigger] mvs[i]).fy as int, mvs[i].stmt@, mvs[i].uom@) == ok && rkey(*mvs[i].g) == k
+}
+
+/// The refills: per touched class with few kept groups outside u, the frontier groups of its first units outside u.
+pub fn plan_mv(cls: &Index<ClassRec>, ct: &Index<ClassRef>, u: &Index<UnitRef>) -> (mvs: Vec<Mv>)
+    requires tbl_str(*cls), cset_ok(*ct), uset_ok(*u),
+    ensures mv_ok(*cls, *ct, *u, mvs@),
+{
+    let mut mvs: Vec<Mv> = Vec::new();
+    let ents = ct.rows();
+    let ghost es = ct.entries();
+    proof { ct.model(); }
+    let mut i = 0;
+    while i < ents.len()
+        invariant
+            i <= ents.len(), tbl_str(*cls), cset_ok(*ct), uset_ok(*u), ct.wf(),
+            ents@.map_values(|row: (Key, Arc<ClassRef>)| (row.0.view(), *row.1)) == es, es == ct.entries(),
+            forall|pos: int| #![trigger es[pos]] 0 <= pos < es.len() ==> ct.at(es[pos].0) == Some(es[pos].1),
+            forall|j: int| 0 <= j < mvs.len() ==> {
+                let m = #[trigger] mvs@[j];
+                let ok = okey(m.fy as int, m.stmt@, m.uom@);
+                &&& ct.at(ok) is Some
+                &&& cls.at(ok) is Some
+                &&& notu_keys(cls.at(ok)->0.r.entries(), m.fy as int, *u).len() < k_limit()
+                &&& cls.at(ok)->0.f.at(rkey(*m.g)) == Some(*m.g)
+                &&& vsel(cls.at(ok)->0.f.entries(), m.fy as int, *u).contains(rkey(*m.g))
+            },
+            forall|pos: int, k: KeyView| 0 <= pos < i && cls.at(es[pos].0) is Some && #[trigger] vsel(cls.at(es[pos].0)->0.f.entries(), cls.at(es[pos].0)->0.fy as int, *u).contains(k)
+                && notu_keys(cls.at(es[pos].0)->0.r.entries(), cls.at(es[pos].0)->0.fy as int, *u).len() < k_limit() ==>
+                exists|j: int| 0 <= j < mvs.len() && okey((#[trigger] mvs@[j]).fy as int, mvs@[j].stmt@, mvs@[j].uom@) == es[pos].0 && rkey(*mvs@[j].g) == k,
+        decreases ents.len() - i,
+    {
+        let cr = &ents[i].1;
+        let key = &ents[i].0;
+        proof { assert(es[i as int] == (key.view(), arc_val(cr))); assert(ct.at(key.view()) == Some(arc_val(cr))); }
+        match cls.get(key) {
+            None => {
+                proof { assert(cls.at(es[i as int].0) is None); }
+            }
+            Some(c) => {
+                proof {
+                    assert(cls.at(key.view()) == Some(arc_val(&c)));
+                    assert(key.view() == cls_key(arc_val(&c)));
+                    assert(arc_val(cr).fy == arc_val(&c).fy) by { lemma_okey_inj(arc_val(cr).fy as int, arc_val(cr).stmt@, arc_val(cr).uom@, arc_val(&c).fy as int, arc_val(&c).stmt@, arc_val(&c).uom@); }
+                }
+                let n = count_notu(&c, u);
+                if n < 200 {
+                    let picked = select_f(&c, u);
+                    let ghost mvs0 = mvs@;
+                    let mut j = 0;
+                    while j < picked.len()
+                        invariant
+                            j <= picked.len(), tbl_str(*cls), cset_ok(*ct), uset_ok(*u), ct.wf(),
+                            cls.at(key.view()) == Some(arc_val(&c)),
+                            ct.at(key.view()) == Some(arc_val(cr)),
+                            arc_val(cr).fy == arc_val(&c).fy,
+                            (n as int) < k_limit() && n as int == notu_keys(arc_val(&c).r.entries(), arc_val(&c).fy as int, *u).len(),
+                            picked@.map_values(|g: Arc<Grp>| rkey(*g)) == vsel(arc_val(&c).f.entries(), arc_val(&c).fy as int, *u),
+                            forall|jj: int| 0 <= jj < picked.len() ==> arc_val(&c).f.at(rkey(*(#[trigger] picked@[jj]))) == Some(*picked@[jj]),
+                            mvs@.subrange(0, mvs0.len() as int) == mvs0,
+                            mvs.len() == mvs0.len() + j,
+                            forall|jj: int| 0 <= jj < j ==> {
+                                &&& okey((#[trigger] mvs@[mvs0.len() + jj]).fy as int, mvs@[mvs0.len() + jj].stmt@, mvs@[mvs0.len() + jj].uom@) == key.view()
+                                &&& rkey(*mvs@[mvs0.len() + jj].g) == rkey(*picked@[jj])
+                                &&& *mvs@[mvs0.len() + jj].g == *picked@[jj]
+                            },
+                            forall|jj: int| 0 <= jj < mvs0.len() ==> {
+                                let m = #[trigger] mvs@[jj];
+                                let ok = okey(m.fy as int, m.stmt@, m.uom@);
+                                &&& ct.at(ok) is Some
+                                &&& cls.at(ok) is Some
+                                &&& notu_keys(cls.at(ok)->0.r.entries(), m.fy as int, *u).len() < k_limit()
+                                &&& cls.at(ok)->0.f.at(rkey(*m.g)) == Some(*m.g)
+                                &&& vsel(cls.at(ok)->0.f.entries(), m.fy as int, *u).contains(rkey(*m.g))
+                            },
+                        decreases picked.len() - j,
+                    {
+                        let g = picked[j].clone();
+                        mvs.push(Mv { fy: cr.fy, stmt: copy_bytes(cr.stmt.as_slice()), uom: copy_bytes(cr.uom.as_slice()), g });
+                        j += 1;
+                        proof { assert(mvs@.subrange(0, mvs0.len() as int) =~= mvs0); }
+                    }
+                    proof {
+                        let ok = es[i as int].0;
+                        assert forall|jj: int| 0 <= jj < mvs.len() implies {
+                            let m = #[trigger] mvs@[jj];
+                            let ok2 = okey(m.fy as int, m.stmt@, m.uom@);
+                            &&& ct.at(ok2) is Some
+                            &&& cls.at(ok2) is Some
+                            &&& notu_keys(cls.at(ok2)->0.r.entries(), m.fy as int, *u).len() < k_limit()
+                            &&& cls.at(ok2)->0.f.at(rkey(*m.g)) == Some(*m.g)
+                            &&& vsel(cls.at(ok2)->0.f.entries(), m.fy as int, *u).contains(rkey(*m.g))
+                        } by {
+                            if jj >= mvs0.len() {
+                                let t = jj - mvs0.len();
+                                assert(mvs0.len() + t == jj);
+                                assert(0 <= t < picked.len());
+                                assert(okey(mvs@[mvs0.len() + t].fy as int, mvs@[mvs0.len() + t].stmt@, mvs@[mvs0.len() + t].uom@) == key.view());
+                                assert(okey(mvs@[jj].fy as int, mvs@[jj].stmt@, mvs@[jj].uom@) == ok);
+                                lemma_okey_inj(mvs@[jj].fy as int, mvs@[jj].stmt@, mvs@[jj].uom@, arc_val(&c).fy as int, arc_val(&c).stmt@, arc_val(&c).uom@);
+                                assert(mvs@[jj].fy == arc_val(&c).fy);
+                                let vs = picked@.map_values(|g: Arc<Grp>| rkey(*g));
+                                assert(vs[t] == rkey(*picked@[t]));
+                                assert(vs.contains(rkey(*picked@[t])));
+                            } else {
+                                assert(mvs@[jj] == mvs0[jj]);
+                            }
+                        }
+                        assert forall|pos: int, k: KeyView| 0 <= pos < i + 1 && cls.at(es[pos].0) is Some && #[trigger] vsel(cls.at(es[pos].0)->0.f.entries(), cls.at(es[pos].0)->0.fy as int, *u).contains(k)
+                            && notu_keys(cls.at(es[pos].0)->0.r.entries(), cls.at(es[pos].0)->0.fy as int, *u).len() < k_limit() implies
+                            exists|jj: int| 0 <= jj < mvs.len() && okey((#[trigger] mvs@[jj]).fy as int, mvs@[jj].stmt@, mvs@[jj].uom@) == es[pos].0 && rkey(*mvs@[jj].g) == k by {
+                            if pos < i {
+                                let jj = choose|jj: int| 0 <= jj < mvs0.len() && okey(mvs0[jj].fy as int, mvs0[jj].stmt@, mvs0[jj].uom@) == es[pos].0 && rkey(*mvs0[jj].g) == k;
+                                assert(mvs@[jj] == mvs0[jj]);
+                            } else {
+                                let vs = picked@.map_values(|g: Arc<Grp>| rkey(*g));
+                                assert(vs.contains(k));
+                                let t = choose|t: int| 0 <= t < vs.len() && vs[t] == k;
+                                assert(rkey(*picked@[t]) == k);
+                                assert(mvs@[mvs0.len() + t].fy == cr.fy);
+                            }
+                        }
+                    }
+                } else {
+                    proof {
+                        assert forall|pos: int, k: KeyView| 0 <= pos < i + 1 && cls.at(es[pos].0) is Some && #[trigger] vsel(cls.at(es[pos].0)->0.f.entries(), cls.at(es[pos].0)->0.fy as int, *u).contains(k)
+                            && notu_keys(cls.at(es[pos].0)->0.r.entries(), cls.at(es[pos].0)->0.fy as int, *u).len() < k_limit() implies
+                            exists|jj: int| 0 <= jj < mvs.len() && okey((#[trigger] mvs@[jj]).fy as int, mvs@[jj].stmt@, mvs@[jj].uom@) == es[pos].0 && rkey(*mvs@[jj].g) == k by {
+                            if pos == i { assert(false); }
+                        }
+                    }
+                }
+            }
+        }
+        i += 1;
+    }
+    proof {
+        assert forall|ok: KeyView, k: KeyView| ct.at(ok) is Some && cls.at(ok) is Some && notu_keys(cls.at(ok)->0.r.entries(), cls.at(ok)->0.fy as int, *u).len() < k_limit()
+            && #[trigger] vsel(cls.at(ok)->0.f.entries(), cls.at(ok)->0.fy as int, *u).contains(k) implies
+            exists|j: int| 0 <= j < mvs.len() && okey((#[trigger] mvs@[j]).fy as int, mvs@[j].stmt@, mvs@[j].uom@) == ok && rkey(*mvs@[j].g) == k by {
+            let pos = choose|pos: int| #![auto] 0 <= pos < es.len() && es[pos].0 == ok;
+        }
+    }
+    mvs
+}
+
+pub open spec fn mv_has(mvs: Seq<Mv>, fy: int, name: Option<Seq<u8>>) -> bool {
+    exists|i: int| 0 <= i < mvs.len() && (#[trigger] mvs[i]).fy as int == fy && ov(mvs[i].g.name) == name
+}
+
+/// The units to recompute: those u names and those whose frontier group was moved.
+pub fn plan_w(u: &Index<UnitRef>, mvs: &Vec<Mv>) -> (w: Index<UnitRef>)
+    requires uset_ok(*u),
+    ensures
+        uset_ok(w),
+        forall|fy: int, name: Option<Seq<u8>>| #![trigger u_has(w, fy, name)] u_has(w, fy, name) <==> (u_has(*u, fy, name) || mv_has(mvs@, fy, name)),
+{
+    let mut w = sh(u);
+    proof {
+        assert forall|q: KeyView| w.at(q) is Some implies q == ukey(w.at(q)->0.fy as int, ov(w.at(q)->0.name)) by { assert(u.at(q) == w.at(q)); }
+    }
+    let mut i = 0;
+    while i < mvs.len()
+        invariant
+            i <= mvs.len(), uset_ok(w),
+            forall|fy: int, name: Option<Seq<u8>>| #![trigger u_has(w, fy, name)] u_has(w, fy, name) <==>
+                (u_has(*u, fy, name) || (exists|j: int| 0 <= j < i && (#[trigger] mvs@[j]).fy as int == fy && ov(mvs@[j].g.name) == name)),
+        decreases mvs.len() - i,
+    {
+        uset_add(&mut w, mvs[i].fy, &mvs[i].g.name);
+        i += 1;
+        proof {
+            assert forall|fy: int, name: Option<Seq<u8>>| u_has(w, fy, name) <==>
+                (u_has(*u, fy, name) || (exists|j: int| 0 <= j < i && (#[trigger] mvs@[j]).fy as int == fy && ov(mvs@[j].g.name) == name)) by {
+                if fy == mvs@[i - 1].fy as int && name == ov(mvs@[i - 1].g.name) { assert(mvs@[(i - 1) as int].fy as int == fy); }
+                if exists|j: int| 0 <= j < i - 1 && mvs@[j].fy as int == fy && ov(mvs@[j].g.name) == name {
+                    let j = choose|j: int| 0 <= j < i - 1 && mvs@[j].fy as int == fy && ov(mvs@[j].g.name) == name;
+                }
+                if exists|j: int| 0 <= j < i && mvs@[j].fy as int == fy && ov(mvs@[j].g.name) == name {
+                    let j = choose|j: int| 0 <= j < i && mvs@[j].fy as int == fy && ov(mvs@[j].g.name) == name;
+                }
+            }
+        }
+    }
+    w
 }
 
 } // verus!
