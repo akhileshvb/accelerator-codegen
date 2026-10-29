@@ -14,3 +14,7 @@ pub mod gmap;
 pub mod merge;
 pub mod keys;
 pub mod cmap;
+pub mod rows;
+pub mod f64bits;
+pub mod wideval;
+pub mod loops;
