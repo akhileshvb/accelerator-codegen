@@ -19,6 +19,9 @@ null_doublew_batch *null_doublew_batch_new(const null_doublew_gbase *gb, uint64_
 void null_doublew_batch_free(null_doublew_batch *b);
 int32_t null_doublew_install(const null_doublew_store *st, null_doublew_batch *b, uint64_t floor, int32_t end_commit);
 size_t null_doublew_version_count(const null_doublew_store *st);
+size_t null_doublew_heap_bytes(void);
+size_t null_doublew_heap_peak_bytes(void);
+void null_doublew_heap_reset_peak(void);
 void *null_doublew_base_1(const null_doublew_gbase *gb);
 void *null_doublew_head_1(const null_doublew_gbase *gb);
 int32_t null_doublew_put_1(null_doublew_batch *b, void *staged, uint64_t from);

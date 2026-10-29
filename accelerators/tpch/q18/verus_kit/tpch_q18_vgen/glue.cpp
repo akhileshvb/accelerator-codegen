@@ -210,6 +210,9 @@ const kit::Glue kGlue = {
         [](const void *reading) { tpchq18vgens_reading_free(const_cast<tpchq18vgens_reading *>(static_cast<const tpchq18vgens_reading *>(reading))); },
         [](const void *store) { tpchq18vgens_invalidate_all(static_cast<const tpchq18vgens_store *>(store)); },
         [](const void *store) -> std::size_t { return tpchq18vgens_version_count(static_cast<const tpchq18vgens_store *>(store)); },
+        []() -> std::size_t { return tpchq18vgens_heap_bytes(); },
+        []() -> std::size_t { return tpchq18vgens_heap_peak_bytes(); },
+        []() { tpchq18vgens_heap_reset_peak(); },
     },
 };
 

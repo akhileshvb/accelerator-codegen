@@ -21,6 +21,9 @@ const kit::World kWorld = {
       return sec_edgarw_install(static_cast<const sec_edgarw_store *>(st), static_cast<sec_edgarw_batch *>(b), floor, end);
     },
     [](const void *st) { return sec_edgarw_version_count(static_cast<const sec_edgarw_store *>(st)); },
+    []() -> size_t { return sec_edgarw_heap_bytes(); },
+    []() -> size_t { return sec_edgarw_heap_peak_bytes(); },
+    []() { sec_edgarw_heap_reset_peak(); },
     {
         {"sec_edgar_q1_vgen",
          [](const void *gb) { return sec_edgarw_base_1(static_cast<const sec_edgarw_gbase *>(gb)); },

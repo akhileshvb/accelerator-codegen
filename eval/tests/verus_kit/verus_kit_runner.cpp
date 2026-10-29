@@ -30,6 +30,9 @@
 // bench: per parameter tuple, median latency of the query vs the
 //   accelerator; then mixes of queries and writes (fraction of writes per
 //   operation), base (plain writes + query) vs accelerated.
+// state: the build, then the first N transactions of the spec; reports the store's measured heap
+//   after each (state_bytes_*; every mode's JSON also has state_bytes_after_build, build_peak_bytes,
+//   state_bytes, peak_bytes: the counting allocator of substrate/verus/heap, 0 for a non-Verus store).
 //   The writes come from VERUS_KIT_WRITE_MODE:
 //     txns    the spec's bench_txns (default)
 //     rf      TPC-H refresh functions in mini-chunks (VERUS_KIT_RF_CHUNK orders,
@@ -167,10 +170,26 @@ std::string CauseFields() {
   return "\"causes\":{" + causes + "},\"events\":{" + events + "}";
 }
 
-std::string StoreFields(DuckdbRuntime &rt) {
+// The Verus store's measured heap (counting allocator, substrate/verus/heap) at the end of the
+// build: the state of one version plus whatever the build left; its peak during the build.  The
+// peak is then reset, so the end-of-run peak covers the writes and reads alone.
+struct BuildHeap {
+  std::size_t bytes = 0, peak = 0;
+};
+
+BuildHeap BuildHeapAfter(const DuckdbRuntime &rt) {
+  BuildHeap h{rt.StateHeapBytes(), rt.StateHeapPeakBytes()};
+  rt.ResetHeapPeak();
+  return h;
+}
+
+std::string StoreFields(DuckdbRuntime &rt, const BuildHeap &build) {
   const auto counts = core::ReadAuxExecuteCounts();
   return "\"store\":" + Json(rt.UsesVerusStore() ? "verus" : "cpp") + ",\"versions\":" +
-         std::to_string(rt.StateVersionCount()) + ",\"stale_installs\":" + std::to_string(rt.StaleInstallCount()) +
+         std::to_string(rt.StateVersionCount()) + ",\"state_bytes_after_build\":" + std::to_string(build.bytes) +
+         ",\"build_peak_bytes\":" + std::to_string(build.peak) + ",\"state_bytes\":" +
+         std::to_string(rt.StateHeapBytes()) + ",\"peak_bytes\":" + std::to_string(rt.StateHeapPeakBytes()) +
+         ",\"stale_installs\":" + std::to_string(rt.StaleInstallCount()) +
          ",\"executes\":{\"hit\":" + std::to_string(counts.hit) + ",\"fallback\":" + std::to_string(counts.fallback) +
          "},\"reader_fallbacks\":" + std::to_string(rt.reader_fallbacks.load()) + "," + CauseFields();
 }
@@ -183,6 +202,7 @@ int Differential(const std::string &path, const std::string &id, const Spec &spe
   core::ResetAuxExecuteCounts();
   const auto build_start = Clock::now();
   rt.Build();
+  const auto build_heap = BuildHeapAfter(rt);
   const double build_ms = std::chrono::duration<double, std::milli>(Clock::now() - build_start).count();
   Tally tally;
   const auto run = RunDifferentialLoop(
@@ -194,7 +214,7 @@ int Differential(const std::string &path, const std::string &id, const Spec &spe
     acts += (acts.size() > 1 ? "," : "") + Json(k) + ":" + std::to_string(v);
   std::cout << "{\"mode\":\"differential\",\"txns\":" << spec.txns.size() << ",\"write_errors\":" << run.write_errors
             << ",\"write_error_examples\":" << run.write_error_examples << "]" << ",\"build_ms\":" << build_ms << "," << tally.Fields() << ",\"staged_actions\":" << acts
-            << "},\"staged_action_names\":{\"1\":\"ApplyDelta\",\"3\":\"RebuildAll\"}," << StoreFields(rt) << "}"
+            << "},\"staged_action_names\":{\"1\":\"ApplyDelta\",\"3\":\"RebuildAll\"}," << StoreFields(rt, build_heap) << "}"
             << std::endl;
   // skipped comparisons (reference errors) must stay a minority: a run that compared
   // little or nothing proves little
@@ -210,6 +230,7 @@ int Snapshots(const std::string &path, const std::string &id, const Spec &spec, 
   const auto s = Prepare(setup, id, spec);
   DuckdbRuntime rt(wc, *s.entry, 10.0);
   rt.Build();
+  const auto build_heap = BuildHeapAfter(rt);
   std::atomic<bool> done{false};
   std::atomic<int> checks{0}, mismatches{0}, failures{0}, reference_errors{0}, oracle_retries{0};
   std::mutex ex_mutex;
@@ -292,7 +313,7 @@ int Snapshots(const std::string &path, const std::string &id, const Spec &spec, 
     ex += (i ? "," : "") + examples[i];
   std::cout << "{\"mode\":\"snapshots\",\"writes\":" << writes << ",\"write_errors\":" << write_errors
             << ",\"write_error_example\":" << Json(write_error_example) << ",\"readers\":" << readers << ",\"checks\":" << checks << ",\"reference_errors\":" << reference_errors
-            << ",\"mismatches\":" << mismatches << ",\"oracle_retries\":" << oracle_retries << ",\"reader_failures\":" << failures << ",\"examples\":" << ex << "]," << StoreFields(rt) << "}"
+            << ",\"mismatches\":" << mismatches << ",\"oracle_retries\":" << oracle_retries << ",\"reader_failures\":" << failures << ",\"examples\":" << ex << "]," << StoreFields(rt, build_heap) << "}"
             << std::endl;
   // some writes must commit, or the readers saw no concurrent maintenance
   return mismatches == 0 && failures == 0 && write_errors < writes && checks > 0 && reference_errors <= checks &&
@@ -421,9 +442,10 @@ int Bench(const std::string &path, const std::string &id, const Spec &spec, int 
   DuckdbRuntime rt(wc, *s.entry, 10.0);
   const auto build_start = Clock::now();
   rt.Build();
+  const auto build_heap = BuildHeapAfter(rt);
   const double build_ms = std::chrono::duration<double, std::milli>(Clock::now() - build_start).count();
   // a timed-out run says how far it got (the plain query can take seconds at scale)
-  std::cout << "bench: built build_ms=" << build_ms << std::endl;
+  std::cout << "bench: built build_ms=" << build_ms << " state_bytes=" << build_heap.bytes << " build_peak_bytes=" << build_heap.peak << std::endl;
   // the parameter tuples the plain query can evaluate on this database (the tests' extreme tuples can
   // overflow it at scale): those are what is timed, as many as the reads time
   constexpr std::size_t kTimedTuples = 12;
@@ -540,8 +562,36 @@ int Bench(const std::string &path, const std::string &id, const Spec &spec, int 
             << (maint_n ? maint_us_sum / maint_n : 0.0) << ",\"plain_write_us_mean\":"
             << (plain_write_n ? plain_write_us_sum / plain_write_n : 0.0) << ",\"write_errors\":" << write_errors
             << ",\"writes\":" << plain_write_n + maint_n << ",\"write_mode\":" << Json(write_mode)
-            << ",\"rf_chunk\":" << rf_chunk << "," << StoreFields(rt) << "}" << std::endl;
+            << ",\"rf_chunk\":" << rf_chunk << "," << StoreFields(rt, build_heap) << "}" << std::endl;
   return 0;
+}
+
+// state <db> <accel_id> <spec_dir> [writes]: the measured heap of the Verus store after the build and
+// after the first `writes` transactions of the spec (bench_txns, else txns), one by one.
+int StateBytes(const std::string &path, const std::string &id, const Spec &spec, std::size_t writes) {
+  Require(spec.bench_txns.size() >= writes, "state: the spec has fewer transactions than writes");
+  duckdb::DuckDB db(path);
+  duckdb::Connection wc(db), qc(db);
+  const auto s = Prepare(qc, id, spec, /*with_setup=*/false);
+  DuckdbRuntime rt(wc, *s.entry, 10.0);
+  const auto build_start = Clock::now();
+  rt.Build();
+  const double build_ms = std::chrono::duration<double, std::milli>(Clock::now() - build_start).count();
+  const auto build_heap = BuildHeapAfter(rt);
+  std::string series;
+  std::size_t errors = 0;
+  for (std::size_t i = 0; i < writes; ++i) {
+    try {
+      rt.ApplyWrite(spec.bench_txns[i]);
+    } catch (const std::exception &) {
+      ++errors;
+    }
+    series += (i ? "," : "") + std::to_string(rt.StateHeapBytes());
+  }
+  std::cout << "{\"mode\":\"state\",\"build_ms\":" << build_ms << ",\"writes\":" << writes
+            << ",\"write_errors\":" << errors << ",\"state_bytes_after_each_write\":[" << series << "],"
+            << StoreFields(rt, build_heap) << "}" << std::endl;
+  return errors == 0 ? 0 : 1;
 }
 
 } // namespace
@@ -662,7 +712,9 @@ int main(int argc, char **argv) {
       return Exec(argv[2], argv[3]);
     if (argc >= 4 && std::string(argv[1]) == "bench_writes")
       return BenchWrites(argv[2], LoadKitSpec(argv[3]), argc > 4 ? std::stoi(argv[4]) : 3);
-    Require(argc >= 5, "usage: verus_kit_runner differential|snapshots|bench <db> <accel_id> <spec_dir> [...]");
+    if (argc >= 5 && std::string(argv[1]) == "state")
+      return StateBytes(argv[2], argv[3], LoadKitSpec(argv[4]), argc > 5 ? std::stoul(argv[5]) : 0);
+    Require(argc >= 5, "usage: verus_kit_runner differential|snapshots|bench|state <db> <accel_id> <spec_dir> [...]");
     const std::string mode = argv[1], db = argv[2], id = argv[3];
     const Spec spec = LoadKitSpec(argv[4]);
     auto arg = [&](int i, const char *def) { return std::string(argc > i ? argv[i] : def); };

@@ -21,6 +21,9 @@ const kit::World kWorld = {
       return null_doublew_install(static_cast<const null_doublew_store *>(st), static_cast<null_doublew_batch *>(b), floor, end);
     },
     [](const void *st) { return null_doublew_version_count(static_cast<const null_doublew_store *>(st)); },
+    []() -> size_t { return null_doublew_heap_bytes(); },
+    []() -> size_t { return null_doublew_heap_peak_bytes(); },
+    []() { null_doublew_heap_reset_peak(); },
     {
         {"null_double_q1_vgen",
          [](const void *gb) { return null_doublew_base_1(static_cast<const null_doublew_gbase *>(gb)); },

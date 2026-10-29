@@ -93,6 +93,24 @@ pub unsafe extern "C" fn sec_edgarw_version_count(st: *const GStore) -> usize {
     (*st).version_count()
 }
 
+/// Bytes the library's Rust code holds live (substrate/verus/heap): every kept version, plus transients.
+#[no_mangle]
+pub extern "C" fn sec_edgarw_heap_bytes() -> usize {
+    verus_heap::live_bytes()
+}
+
+/// The most live bytes since the start or the last reset.
+#[no_mangle]
+pub extern "C" fn sec_edgarw_heap_peak_bytes() -> usize {
+    verus_heap::peak_bytes()
+}
+
+/// Start a new peak measurement from the current live bytes.
+#[no_mangle]
+pub extern "C" fn sec_edgarw_heap_reset_peak() {
+    verus_heap::reset_peak()
+}
+
 // ---- sec_edgar_q1_vgen ----
 /// Its state in the base, for the kit's stage_apply (free with the kit's base_free); NULL if invalid.
 #[no_mangle]

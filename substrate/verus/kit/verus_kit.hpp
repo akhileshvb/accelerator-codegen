@@ -178,6 +178,9 @@ struct StoreOps {
   void (*reading_free)(const void *);
   void (*invalidate_all)(const void *);
   std::size_t (*version_count)(const void *);
+  std::size_t (*heap_bytes)();      // the library's live Rust heap (substrate/verus/heap)
+  std::size_t (*heap_peak_bytes)(); // its peak since the last reset
+  void (*heap_reset_peak)();
 };
 
 struct Glue {
@@ -262,6 +265,9 @@ struct World {
   void (*batch_free)(void *batch);
   int32_t (*install)(const void *store, void *batch, uint64_t floor, int32_t end_commit); // current from the batch's epoch
   size_t (*version_count)(const void *store);
+  size_t (*heap_bytes)();      // the world library's live Rust heap (substrate/verus/heap)
+  size_t (*heap_peak_bytes)(); // its peak since the last reset
+  void (*heap_reset_peak)();
   std::vector<WorldKitOps> kits;
 };
 void RegisterWorld(const World *world);

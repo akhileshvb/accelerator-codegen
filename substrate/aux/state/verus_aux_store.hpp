@@ -43,6 +43,12 @@ public:
   virtual std::size_t ValidPartitionCount() const = 0;
   virtual std::size_t TotalPartitionCount() const = 0;
   virtual std::size_t TotalVersionCount() const = 0;
+  // Bytes the kernel library's Rust code holds live (the verified store's state, all versions
+  // kept, plus transients in flight), measured by its counting allocator; its peak since the
+  // last reset.  Process-wide for the library: a world's accelerators share one count.
+  virtual std::size_t HeapBytes() const = 0;
+  virtual std::size_t HeapPeakBytes() const = 0;
+  virtual void ResetHeapPeak() const = 0;
   // Installs that found a newer version than the one they were prepared
   // from (the store then holds one invalid version).  Should stay 0.
   virtual std::size_t StaleInstalls() const = 0;

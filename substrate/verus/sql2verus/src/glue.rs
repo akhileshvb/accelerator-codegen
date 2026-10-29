@@ -710,6 +710,9 @@ impl<'m> Ffi<'m> {
         }
         out.push(f(&["Every kept version's state becomes invalid."], format!("{ps}_invalidate_all"), vec![st("st")], vec![stc("st")], ("", "void".into()), "    (*st).invalidate_all()\n".into()));
         out.push(f(&["How many versions are kept."], format!("{ps}_version_count"), vec![st("st")], vec![stc("st")], ("usize", "size_t".into()), "    (*st).version_count()\n".into()));
+        out.push(f(&["Bytes the library's Rust code holds live (a counting global allocator,", "substrate/verus/heap): every kept version, plus transients in flight."], format!("{ps}_heap_bytes"), vec![], vec![], ("usize", "size_t".into()), "    verus_heap::live_bytes()\n".into()));
+        out.push(f(&["The most live bytes since the start or the last reset."], format!("{ps}_heap_peak_bytes"), vec![], vec![], ("usize", "size_t".into()), "    verus_heap::peak_bytes()\n".into()));
+        out.push(f(&["Start a new peak measurement from the current live bytes."], format!("{ps}_heap_reset_peak"), vec![], vec![], ("", "void".into()), "    verus_heap::reset_peak()\n".into()));
         out
     }
 }
@@ -1392,6 +1395,9 @@ pub(crate) fn kit(m: &Model, prefix: &str, header: &str, accel_id: &str, workloa
         ("reading_free", format!("[](const void *r) {{ {ps}_reading_free(const_cast<{ps}_reading *>(static_cast<const {ps}_reading *>(r))); }}")),
         ("invalidate_all", format!("[](const void *st) {{ {ps}_invalidate_all(static_cast<const {ps}_store *>(st)); }}")),
         ("version_count", format!("[](const void *st) -> size_t {{ return {ps}_version_count(static_cast<const {ps}_store *>(st)); }}")),
+        ("heap_bytes", format!("[]() -> size_t {{ return {ps}_heap_bytes(); }}")),
+        ("heap_peak_bytes", format!("[]() -> size_t {{ return {ps}_heap_peak_bytes(); }}")),
+        ("heap_reset_peak", format!("[]() {{ {ps}_heap_reset_peak(); }}")),
     ] {
         writeln!(w, "        /* {name} */ {lam},").unwrap();
     }

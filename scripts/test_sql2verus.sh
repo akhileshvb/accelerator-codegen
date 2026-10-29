@@ -24,6 +24,8 @@ SUITES=("$@"); [ ${#SUITES[@]} -eq 0 ] && SUITES=($(ls "$T/tests") queries)
 cargo build --release --quiet --manifest-path "$T/Cargo.toml"
 BIN="${CARGO_TARGET_DIR:-$T/target}/release/sql2verus"
 WORK="$(mktemp -d)"; trap 'rm -rf "$WORK"' EXIT
+"$VERUS" "$ROOT/substrate/verus/heap/src/lib.rs" --crate-type=lib --crate-name=verus_heap \
+  --compile -o "$WORK/libverus_heap.rlib" >/dev/null
 "$VERUS" "$ROOT/substrate/verus/common/src/lib.rs" --crate-type=lib --crate-name=verus_common \
   --export "$WORK/verus_common.vir" --compile -o "$WORK/libverus_common.rlib" >/dev/null
 "$VERUS" "$ROOT/substrate/verus/store/src/lib.rs" --crate-type=lib --crate-name=verus_substrate \
@@ -57,7 +59,7 @@ one() { # suite query expectation...
     printf '#![allow(unused_imports)]\npub mod gen_spec;\npub mod gen_obligations;\npub mod kernel;\npub mod gen_world;\npub mod gen_ffi;\n' > "$d/lib.rs"
     res=$("$VERUS" "$d/lib.rs" --crate-type=staticlib --crate-name="t_$q" --import "verus_common=$WORK/verus_common.vir" \
           --extern "verus_common=$WORK/libverus_common.rlib" --import "verus_substrate=$WORK/verus_substrate.vir" \
-          --extern "verus_substrate=$WORK/libverus_substrate.rlib" -L "dependency=$WORK" \
+          --extern "verus_substrate=$WORK/libverus_substrate.rlib" --extern "verus_heap=$WORK/libverus_heap.rlib" -L "dependency=$WORK" \
           --compile -C opt-level=0 -o "$d/libq.a" 2>&1 || true)
   else
     printf '#![allow(unused_imports)]\npub mod gen_spec;\n' > "$d/lib.rs"
@@ -98,6 +100,8 @@ int main(void) {
   if (tqs_begin(st, 6) != 1 || tqs_begin(st, 6) != 0) return 4;
   tqs_abort(st);
   if (tqs_version_count(st) != 1) return 5;
+  tqs_heap_reset_peak();
+  if (tqs_heap_bytes() == 0 || tqs_heap_peak_bytes() < tqs_heap_bytes()) return 6;
   tqs_free(st);
   printf("%%zu functions\\n", sizeof fs / sizeof fs[0]);
   return 0;

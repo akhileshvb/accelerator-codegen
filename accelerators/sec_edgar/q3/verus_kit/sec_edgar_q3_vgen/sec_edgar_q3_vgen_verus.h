@@ -122,6 +122,16 @@ void secq3vgens_invalidate_all(const secq3vgens_store *st);
 /* How many versions are kept. */
 size_t secq3vgens_version_count(const secq3vgens_store *st);
 
+/* Bytes the library's Rust code holds live (a counting global allocator,
+   substrate/verus/heap): every kept version, plus transients in flight. */
+size_t secq3vgens_heap_bytes(void);
+
+/* The most live bytes since the start or the last reset. */
+size_t secq3vgens_heap_peak_bytes(void);
+
+/* Start a new peak measurement from the current live bytes. */
+void secq3vgens_heap_reset_peak(void);
+
 #ifdef __cplusplus
 }
 #endif

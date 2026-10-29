@@ -479,6 +479,9 @@ const kit::Glue kGlue = {
         /* reading_free */ [](const void *r) { secq6vgens_reading_free(const_cast<secq6vgens_reading *>(static_cast<const secq6vgens_reading *>(r))); },
         /* invalidate_all */ [](const void *st) { secq6vgens_invalidate_all(static_cast<const secq6vgens_store *>(st)); },
         /* version_count */ [](const void *st) -> size_t { return secq6vgens_version_count(static_cast<const secq6vgens_store *>(st)); },
+        /* heap_bytes */ []() -> size_t { return secq6vgens_heap_bytes(); },
+        /* heap_peak_bytes */ []() -> size_t { return secq6vgens_heap_peak_bytes(); },
+        /* heap_reset_peak */ []() { secq6vgens_heap_reset_peak(); },
     },
 };
 
