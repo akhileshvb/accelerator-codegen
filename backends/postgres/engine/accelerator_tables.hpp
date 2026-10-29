@@ -31,14 +31,14 @@ struct WatchedTable {
 // The module's table numbers -> relation oids for `accelerator`, resolved in
 // this session (raises an ERROR for a relation that does not exist).
 runtime::TableMap HostTableMap(const PostgresAccelerator &accelerator);
-// The oids of the tables active accelerator `index` depends on.
+// The oids of the tables the members of active shard `index` depend on.
 std::vector<core::TableId> HostTables(int index);
 
 // nullptr if no active accelerator depends on `table`.
 const WatchedTable *WatchedBy(core::TableId table);
-// Whether active accelerator `index` depends on `table`.
+// Whether a member of active shard `index` depends on `table`.
 bool Depends(int index, core::TableId table);
-// The active accelerators (ascending index) that depend on any of `tables`.
+// The active shards (ascending index) with a member that depends on any of `tables`.
 std::vector<int> AcceleratorsOn(const std::set<core::TableId> &tables);
 
 } // namespace accelerator_codegen::aux_state::engine::postgres

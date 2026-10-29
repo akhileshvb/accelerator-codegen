@@ -5,6 +5,7 @@
 
 #include <map>
 #include <string>
+#include <vector>
 
 namespace accelerator_codegen::aux_state::engine::postgres {
 namespace {
@@ -24,6 +25,19 @@ void RegisterPostgresAccelerator(const char *id, PostgresAcceleratorGetter get) 
 PostgresAccelerator *FindPostgresAccelerator(const core::AcceleratorId &id) {
   const auto it = Accelerators().find(id);
   return it == Accelerators().end() ? nullptr : &it->second();
+}
+
+std::vector<PostgresAccelerator *> ShardMembers(const core::AcceleratorId &shard) {
+  if (auto *alone = FindPostgresAccelerator(shard); alone && alone->Shard() == shard) {
+    return {alone};
+  }
+  std::vector<PostgresAccelerator *> members;
+  for (const auto &entry : Accelerators()) {
+    if (auto &accelerator = entry.second(); accelerator.Shard() == shard) {
+      members.push_back(&accelerator);
+    }
+  }
+  return members;
 }
 
 } // namespace accelerator_codegen::aux_state::engine::postgres

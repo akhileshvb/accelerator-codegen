@@ -29,10 +29,11 @@ void EncodeCommit(const CommitMessage &message, std::string &out);
 // Throws std::runtime_error on malformed input.
 CommitMessage DecodeCommit(std::string_view in);
 
-// A read of the shard's accelerator at the reader's epoch. The reply goes to
+// A read of one of the shard's accelerators at the reader's epoch. The reply goes to
 // client slot `slot`.
 struct ReadRequest {
   uint32_t slot = 0;
+  uint32_t member = 0; // which accelerator of the shard (ShardMembers order)
   // The reader gives up at this steady-clock time (nanoseconds since its
   // epoch, shared by all processes of the machine).
   int64_t deadline_ns = 0;

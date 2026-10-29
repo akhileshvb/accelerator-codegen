@@ -27,6 +27,7 @@
 #include <string>
 #include <string_view>
 
+#include "backends/postgres/api/accelerators.hpp"
 #include "backends/postgres/state/shard_segment.hpp"
 #include "substrate/aux/core/aux_types.hpp"
 #include "substrate/aux/runtime/engine_slots.hpp"
@@ -54,12 +55,21 @@ bool SendCommit(int index, std::string_view message,
                 std::chrono::steady_clock::time_point deadline);
 
 enum class Remote { Served, Fallback };
-// Reader side: runs the read on shard `index` at `epoch` and writes the rows
-// into fcinfo's materialized result. Fallback: answer from SQL (state not
-// servable in time, worker unavailable or failed). Never raises for a worker
-// problem.
-Remote RemoteRead(int index, runtime::Epoch epoch, const core::QueryArguments &arguments,
+// Reader side: runs the read of member `member` of shard `index` at `epoch` and
+// writes the rows into fcinfo's materialized result. Fallback: answer from SQL
+// (state not servable in time, worker unavailable or failed). Never raises for
+// a worker problem.
+Remote RemoteRead(int index, uint32_t member, runtime::Epoch epoch, const core::QueryArguments &arguments,
                   FunctionCallInfo fcinfo);
+
+// The shard and member position of `accelerator`, activating its shard (which starts its worker).
+// False: no shard (registry full).
+bool ShardPosition(const PostgresAccelerator &accelerator, int &index, uint32_t &member);
+// Reader side for any accelerator: its shard's worker answers at the statement snapshot's epoch.
+// False: answer from SQL (this transaction wrote the shard's tables, the snapshot is older than
+// the epoch ring remembers, or the worker could not serve it).
+bool ServeFromShard(const PostgresAccelerator &accelerator, const core::QueryArguments &arguments,
+                    FunctionCallInfo fcinfo);
 
 // Defines the accel.* GUCs of the readers and workers (call from _PG_init).
 void DefineGucs();

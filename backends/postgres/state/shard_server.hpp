@@ -1,7 +1,7 @@
 // GENERATED BACKEND
 //
 // The worker's Postgres-free threads (S6): the commit thread that offers
-// shipped commits to the runtime, and the read threads that serve reads at the
+// shipped commits to the shard's runtimes, and the read threads that serve reads at the
 // reader's epoch. Neither ever calls Postgres (their signals are blocked);
 // everything that must, runs on the worker's main thread.
 #pragma once
@@ -39,7 +39,8 @@ private:
 
 class ShardServer {
 public:
-  ShardServer(ShardSegment &segment, uint32_t index, runtime::AcceleratorRuntime &runtime,
+  // `runtimes`: the shard's members, in ShardMembers order.
+  ShardServer(ShardSegment &segment, uint32_t index, std::vector<runtime::AcceleratorRuntime *> runtimes,
               CommitArrivals &arrivals);
   ~ShardServer();
 
@@ -61,12 +62,12 @@ private:
   void CommitLoop();
   void ReadLoop();
   void Serve(const std::string &message);
-  bool ReadWithin(const ReadRequest &request, Clock::time_point deadline, std::vector<core::AuxRow> &rows);
+  bool ReadWithin(runtime::AcceleratorRuntime &runtime, const ReadRequest &request, Clock::time_point deadline, std::vector<core::AuxRow> &rows);
   void Touch();
 
   ShardSegment &segment;
   const uint32_t index;
-  runtime::AcceleratorRuntime &runtime;
+  std::vector<runtime::AcceleratorRuntime *> runtimes;
   CommitArrivals &arrivals;
   std::atomic<bool> stopping{false};
   std::atomic<bool> failed{false};

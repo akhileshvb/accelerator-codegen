@@ -6,15 +6,20 @@
 
 #include "backends/postgres/state/shard_worker.hpp"
 
+#include <algorithm>
+
 #include "backends/postgres/api/pg_sink.hpp"
+#include "backends/postgres/engine/accelerator_tables.hpp"
 #include "backends/postgres/state/messages.hpp"
 #include "backends/postgres/state/shard_gucs.hpp"
+#include "backends/postgres/state/shared.hpp"
 
 extern "C" {
 #include <funcapi.h>
 #include <miscadmin.h>
 #include <storage/ipc.h>
 #include <utils/guc.h>
+#include <utils/snapmgr.h>
 }
 
 namespace accelerator_codegen::aux_state::engine::postgres::shard {
@@ -79,7 +84,7 @@ bool AwaitReply(ShardSegment &segment, uint32_t slot, Clock::time_point deadline
 
 } // namespace
 
-Remote RemoteRead(int index, runtime::Epoch epoch, const core::QueryArguments &arguments,
+Remote RemoteRead(int index, uint32_t member, runtime::Epoch epoch, const core::QueryArguments &arguments,
                   FunctionCallInfo fcinfo) {
   ShardSegment *segment = Segment(index);
   if (!segment) {
@@ -102,6 +107,7 @@ Remote RemoteRead(int index, runtime::Epoch epoch, const core::QueryArguments &a
   const auto deadline = Clock::now() + milliseconds(ReadTimeoutMs());
   ReadRequest request;
   request.slot = slot;
+  request.member = member;
   request.deadline_ns =
       std::chrono::duration_cast<std::chrono::nanoseconds>(deadline.time_since_epoch()).count();
   request.epoch = epoch;
@@ -132,6 +138,33 @@ Remote RemoteRead(int index, runtime::Epoch epoch, const core::QueryArguments &a
     sink.WriteRow(row);
   }
   return Remote::Served;
+}
+
+bool ShardPosition(const PostgresAccelerator &accelerator, int &index, uint32_t &member) {
+  index = shared::Activate(accelerator.Shard());
+  if (index < 0) {
+    return false;
+  }
+  const auto members = ShardMembers(accelerator.Shard());
+  const auto it = std::find_if(members.begin(), members.end(),
+                               [&](const PostgresAccelerator *m) { return m->Id() == accelerator.Id(); });
+  member = static_cast<uint32_t>(it - members.begin());
+  return it != members.end();
+}
+
+bool ServeFromShard(const PostgresAccelerator &accelerator, const core::QueryArguments &arguments,
+                    FunctionCallInfo fcinfo) {
+  int index;
+  uint32_t member;
+  if (!ShardPosition(accelerator, index, member) || ForceFallback()) {
+    return false;
+  }
+  // A transaction's own writes to the tables are in no worker's state.
+  if (shared::TransactionWrote(HostTables(index))) {
+    return false;
+  }
+  const auto epoch = shared::ReaderEpoch(index, GetActiveSnapshot());
+  return epoch && RemoteRead(index, member, *epoch, arguments, fcinfo) == Remote::Served;
 }
 
 } // namespace accelerator_codegen::aux_state::engine::postgres::shard

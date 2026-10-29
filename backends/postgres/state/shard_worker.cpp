@@ -12,6 +12,7 @@
 #include <csignal>
 #include <cstring>
 #include <dlfcn.h>
+#include <map>
 #include <memory>
 #include <string>
 #include <vector>
@@ -182,26 +183,34 @@ void WorkerExit(int, Datum) {
 // Publishes what the diagnostics read, and takes what they set.
 class Diagnostics {
 public:
-  Diagnostics(ShardSegment &segment_p, runtime::AcceleratorRuntime &runtime_p)
-      : segment(segment_p), runtime(runtime_p) {}
+  Diagnostics(ShardSegment &segment_p, std::vector<runtime::AcceleratorRuntime *> runtimes_p)
+      : segment(segment_p), runtimes(std::move(runtimes_p)) {}
 
   void Publish() {
-    const auto stats = runtime.Stats();
-    segment.stats.applied = stats.commits_applied;
-    segment.stats.builds = stats.builds;
-    segment.stats.gaps = stats.gaps;
-    segment.stats.synced = runtime.IsSynced();
-    if (stats.last_decision) {
-      core::SetGlobalMaintenanceDecision(*stats.last_decision);
-      std::string decision = core::FormatLastMaintenanceDecision();
-      if (decision != published_decision) {
-        segment.SetText(ShardSegment::kLastDecision, decision);
-        segment.SetText(ShardSegment::kLastAction,
-                        maintenance::MaintenanceActionName(stats.last_decision->staged_action));
-        segment.stats.decision_ns = NowNs();
-        published_decision = std::move(decision);
+    uint64_t applied = 0, builds = 0, gaps = 0, synced = 0;
+    for (auto *runtime : runtimes) {
+      const auto stats = runtime->Stats();
+      applied += stats.commits_applied;
+      builds += stats.builds;
+      gaps += stats.gaps;
+      synced += runtime->IsSynced();
+      if (stats.last_decision) {
+        core::SetGlobalMaintenanceDecision(*stats.last_decision);
+        std::string decision = core::FormatLastMaintenanceDecision();
+        std::string &published = published_decision[runtime];
+        if (decision != published) {
+          segment.SetText(ShardSegment::kLastDecision, decision);
+          segment.SetText(ShardSegment::kLastAction,
+                          maintenance::MaintenanceActionName(stats.last_decision->staged_action));
+          segment.stats.decision_ns = NowNs();
+          published = std::move(decision);
+        }
       }
     }
+    segment.stats.applied = applied;
+    segment.stats.builds = builds;
+    segment.stats.gaps = gaps;
+    segment.stats.synced = synced;
   }
 
   // Takes the forced maintenance action diagnostics set (before the next apply).
@@ -216,8 +225,8 @@ public:
 
 private:
   ShardSegment &segment;
-  runtime::AcceleratorRuntime &runtime;
-  std::string published_decision;
+  std::vector<runtime::AcceleratorRuntime *> runtimes;
+  std::map<runtime::AcceleratorRuntime *, std::string> published_decision;
   std::string applied_forced;
 };
 
@@ -251,32 +260,43 @@ void ApplyPhaseLimits(runtime::ThreadBudget &threads) {
 
   const core::AcceleratorId id = shared::IdOf(index);
   StartTransactionCommand();
-  PostgresAccelerator *accelerator = FindPostgresAccelerator(id);
-  if (!accelerator) {
+  const auto members = ShardMembers(id);
+  if (members.empty()) {
     elog(FATAL, "accelerator %s is not compiled into this module", id.c_str());
   }
-  const runtime::TableMap tables = HostTableMap(*accelerator);
+  std::vector<runtime::TableMap> tables;
+  for (auto *member : members) {
+    tables.push_back(HostTableMap(*member));
+  }
   CommitTransactionCommand();
 
   CommitArrivals arrivals;
-  PgSlots slots(index, *accelerator, arrivals);
+  PgSlots slots(index, members, arrivals);
   runtime::RuntimeHost host(slots, shared::ThreadBudget(), shared::ThreadTokens(index));
   ApplyPhaseLimits(host.Threads());
-  runtime::AcceleratorRuntime &runtime = host.Register(accelerator->Module(), nullptr, tables);
+  std::vector<runtime::AcceleratorRuntime *> runtimes;
+  for (std::size_t i = 0; i < members.size(); i++) {
+    runtimes.push_back(&host.Register(members[i]->Module(), members[i]->Stores(), tables[i]));
+  }
   slots.NotePreRegistrationWriters();
-  ShardServer server(*segment, index, runtime, arrivals);
+  ShardServer server(*segment, index, runtimes, arrivals);
   g_server = &server;
   server.Start(ReadThreads());
   // From here on, writers ship their commits (those visible before were
   // dropped, and are in the first build: its snapshot comes after this).
   segment->state = ShardSegment::kRunning;
-  elog(LOG, "accel shard worker started: accelerator %s (index %d), database %u", id.c_str(), index,
-       static_cast<unsigned>(MyDatabaseId));
+  elog(LOG, "accel shard worker started: %s (%zu accelerators, index %d), database %u", id.c_str(),
+       members.size(), index, static_cast<unsigned>(MyDatabaseId));
 
-  Diagnostics diagnostics(*segment, runtime);
+  Diagnostics diagnostics(*segment, runtimes);
+  const auto all_synced = [&] {
+    return std::all_of(runtimes.begin(), runtimes.end(), [](auto *runtime) { return runtime->IsSynced(); });
+  };
   uint64_t commits_seen = 0;
   auto last_pump = Clock::time_point();
   auto last_horizon = Clock::time_point();
+  // The members apply a shipped commit together and end it together: the world's one version per commit.
+  host.GroupCommitEnds();
   for (;;) {
     CHECK_FOR_INTERRUPTS();
     if (!PostmasterIsAlive()) {
@@ -287,7 +307,7 @@ void ApplyPhaseLimits(runtime::ThreadBudget &threads) {
       ProcessConfigFile(PGC_SIGHUP);
       ApplyPhaseLimits(host.Threads());
     }
-    server.WaitWork(milliseconds(runtime.IsSynced() ? 50 : 5));
+    server.WaitWork(milliseconds(all_synced() ? 50 : 5));
     if (server.Failed()) {
       elog(LOG, "accel shard worker %s: transport failed (%s); restarting on demand", id.c_str(),
            segment->GetText(ShardSegment::kLastError).c_str());
@@ -301,15 +321,23 @@ void ApplyPhaseLimits(runtime::ThreadBudget &threads) {
     if (built || commits != commits_seen || now - last_pump >= kIdlePump) {
       commits_seen = commits;
       last_pump = now;
-      runtime.AnnounceCommit(shared::AssignedEpoch(index));
+      for (auto *runtime : runtimes) {
+        runtime->AnnounceCommit(shared::AssignedEpoch(index));
+      }
       // Lookups see what the snapshot sees: apply once every commit up to its
       // epoch has arrived.
       diagnostics.TakeForced();
       const auto epoch = slots.BeginMaintenance();
-      if (epoch && runtime.IsSynced()) {
+      if (epoch && all_synced()) {
         arrivals.WaitThrough(*epoch, now + kArrivalWait);
       }
-      runtime.Pump();
+      for (auto *runtime : runtimes) {
+        runtime->Pump();
+      }
+      if (host.EndDeferredCommits()) {
+        last_pump = Clock::time_point(); // an accelerator waited for the commit that just ended
+        server.Wake();
+      }
       if (now - last_horizon >= kHorizonEvery) {
         last_horizon = now;
         slots.RefreshHorizon();

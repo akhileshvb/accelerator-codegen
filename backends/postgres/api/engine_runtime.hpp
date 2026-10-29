@@ -17,6 +17,7 @@
 
 #if defined(ACCELERATOR_CODEGEN_POSTGRES_EXTENSION)
 
+#include <algorithm>
 #include <chrono>
 #include <memory>
 #include <optional>
@@ -38,8 +39,8 @@ namespace detail {
 // What a module's ExecuteFallback sees: it reads SQL, not state.
 class SqlServices final : public core::AuxEngineServices {
 public:
-  explicit SqlServices(core::AcceleratorId accelerator_p)
-      : accelerator(std::move(accelerator_p)), store(VersionedAuxStore::Options{}) {}
+  SqlServices(core::AcceleratorId accelerator_p, const PostgresAccelerator &owner_p)
+      : accelerator(std::move(accelerator_p)), owner(owner_p), store(VersionedAuxStore::Options{}) {}
   core::VisibilityToken CurrentVisibility() const override { return {}; }
   core::AuxStateStore &StateStore() override { return store; }
 
@@ -52,15 +53,20 @@ public:
     }
     const auto start = std::chrono::steady_clock::now();
     AnswerFromPostgresSql(entry->fallback_sql, arguments, sink);
-    if (const int index = shared::Find(accelerator); index >= 0) {
+    if (const int index = shared::Find(owner.Shard()); index >= 0) {
+      const auto members = ShardMembers(owner.Shard());
+      const auto it = std::find_if(members.begin(), members.end(),
+                                   [&](const PostgresAccelerator *m) { return m->Id() == accelerator; });
       shared::NoteSqlFallbackUs(
-          index, std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - start).count());
+          index, static_cast<uint32_t>(it - members.begin()),
+          std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - start).count());
     }
     return true;
   }
 
 private:
   core::AcceleratorId accelerator;
+  const PostgresAccelerator &owner;
   VersionedAuxStore store;
 };
 
@@ -78,7 +84,7 @@ public:
           std::vector<CollationKey> c_collation_keys_p = {}, bool tune_build = false)
       : cost_model_env(cost_model_env), cost_model_location(std::move(cost_model_location)),
         accelerator(std::move(accelerator_p)), c_collation_keys(std::move(c_collation_keys_p)),
-        tune_build(tune_build), tables(std::move(tables_p)), sql(accelerator), scan(), module(config, &scan) {}
+        tune_build(tune_build), tables(std::move(tables_p)), sql(accelerator, *this), scan(), module(config, &scan) {}
 
   void Execute(const core::QueryArguments &arguments, FunctionCallInfo fcinfo) {
     RequireCCollation();
@@ -97,8 +103,17 @@ public:
     core::RecordAuxExecute(core::AuxExecutePath::Fallback);
   }
 
+  // Puts the accelerator in a shard with others (they share one worker, one commit sequence and
+  // the store `stores` makes), instead of alone with the default store.
+  void JoinShard(core::AcceleratorId shard_p, runtime::StoreFactory stores_p) {
+    shard = std::move(shard_p);
+    stores = std::move(stores_p);
+  }
+
   // ---- PostgresAccelerator ----
   const core::AcceleratorId &Id() const override { return accelerator; }
+  const core::AcceleratorId &Shard() const override { return shard.empty() ? accelerator : shard; }
+  runtime::StoreFactory Stores() override { return stores; }
   std::vector<core::TableDependency> Dependencies() const override {
     return module.Dependencies();
   }
@@ -115,19 +130,8 @@ public:
   }
 
 private:
-  // The worker's answer at the statement snapshot's epoch; false: answer from
-  // SQL.
   bool ServeFromWorker(const core::QueryArguments &arguments, FunctionCallInfo fcinfo) {
-    const int index = shared::Activate(accelerator);
-    if (index < 0 || shard::ForceFallback()) {
-      return false;
-    }
-    // A transaction's own writes to the tables are in no worker's state.
-    if (shared::TransactionWrote(HostTables(index))) {
-      return false;
-    }
-    const auto epoch = shared::ReaderEpoch(index, GetActiveSnapshot());
-    return epoch && shard::RemoteRead(index, *epoch, arguments, fcinfo) == shard::Remote::Served;
+    return shard::ServeFromShard(*this, arguments, fcinfo);
   }
 
   // Verified domain: the reference semantics orders text byte-wise
@@ -178,6 +182,8 @@ private:
   core::AuxCostModelLocation cost_model_location;
   std::optional<maintenance::CostModelParams> cost_model;
   core::AcceleratorId accelerator;
+  core::AcceleratorId shard;
+  runtime::StoreFactory stores;
   std::vector<CollationKey> c_collation_keys;
   bool tune_build;
   std::vector<AcceleratorTable> tables;

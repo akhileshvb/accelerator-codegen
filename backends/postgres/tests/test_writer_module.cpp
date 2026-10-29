@@ -51,6 +51,16 @@ PostgresAccelerator *FindPostgresAccelerator(const core::AcceleratorId &id) {
   const auto it = Registry().find(id);
   return it == Registry().end() ? nullptr : &it->second();
 }
+
+std::vector<PostgresAccelerator *> ShardMembers(const core::AcceleratorId &shard) {
+  std::vector<PostgresAccelerator *> members;
+  for (const auto &entry : Registry()) {
+    if (auto &accelerator = entry.second(); accelerator.Shard() == shard) {
+      members.push_back(&accelerator);
+    }
+  }
+  return members;
+}
 } // namespace accelerator_codegen::aux_state::engine::postgres
 
 namespace {
@@ -61,9 +71,11 @@ namespace {
 class FakeAccelerator final : public pg::PostgresAccelerator {
 public:
   FakeAccelerator(std::string id, std::vector<core::TableDependency> dependencies,
-                  std::vector<pg::AcceleratorTable> tables)
-      : id_(std::move(id)), dependencies_(std::move(dependencies)), tables_(std::move(tables)) {}
+                  std::vector<pg::AcceleratorTable> tables, std::string shard = "")
+      : id_(std::move(id)), shard_(shard.empty() ? id_ : std::move(shard)), dependencies_(std::move(dependencies)),
+        tables_(std::move(tables)) {}
   const core::AcceleratorId &Id() const override { return id_; }
+  const core::AcceleratorId &Shard() const override { return shard_; }
   std::vector<core::TableDependency> Dependencies() const override { return dependencies_; }
   std::vector<pg::AcceleratorTable> Tables() const override { return tables_; }
   std::shared_ptr<core::AuxQueryModule> Module() override { return nullptr; }
@@ -72,6 +84,7 @@ public:
 
 private:
   std::string id_;
+  std::string shard_;
   std::vector<core::TableDependency> dependencies_;
   std::vector<pg::AcceleratorTable> tables_;
   accelerator_codegen::aux_state::maintenance::CostModelParams cost_model_;
@@ -93,6 +106,17 @@ pg::PostgresAccelerator &FakeB() {
                                 {{"t1", 7}, {"t2", 8}});
   return accelerator;
 }
+// fake_c and fake_d share the shard "fake_cd": t4 (columns 0-1) and t6 (all).
+pg::PostgresAccelerator &FakeC() {
+  static FakeAccelerator accelerator("fake_c", {Dependency(1, {0, 1})}, {{"t4", 1}}, "fake_cd");
+  return accelerator;
+}
+pg::PostgresAccelerator &FakeD() {
+  static FakeAccelerator accelerator("fake_d", {Dependency(1, {})}, {{"t6", 1}}, "fake_cd");
+  return accelerator;
+}
+const pg::PostgresAcceleratorRegistrar register_c("fake_c", FakeC);
+const pg::PostgresAcceleratorRegistrar register_d("fake_d", FakeD);
 const pg::PostgresAcceleratorRegistrar register_a("fake_a", FakeA);
 const pg::PostgresAcceleratorRegistrar register_b("fake_b", FakeB);
 

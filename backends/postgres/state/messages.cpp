@@ -64,10 +64,11 @@ CommitMessage DecodeCommit(std::string_view in) {
   return message;
 }
 
-// u8 version | u32 slot | i64 deadline_ns | u64 epoch | u64 max_wait_us | arguments
+// u8 version | u32 slot | u32 member | i64 deadline_ns | u64 epoch | u64 max_wait_us | arguments
 void EncodeRequest(const ReadRequest &request, std::string &out) {
   Put<uint8_t>(out, kVersion);
   Put<uint32_t>(out, request.slot);
+  Put<uint32_t>(out, request.member);
   Put<int64_t>(out, request.deadline_ns);
   Put<uint64_t>(out, request.epoch);
   Put<uint64_t>(out, request.max_wait_us);
@@ -80,6 +81,7 @@ ReadRequest DecodeRequest(std::string_view in) {
   }
   ReadRequest request;
   request.slot = Get<uint32_t>(in);
+  request.member = Get<uint32_t>(in);
   request.deadline_ns = Get<int64_t>(in);
   request.epoch = Get<uint64_t>(in);
   request.max_wait_us = Get<uint64_t>(in);

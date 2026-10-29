@@ -23,7 +23,7 @@ namespace accelerator_codegen::aux_state::engine::postgres::shard {
 
 class PgSlots final : public runtime::EngineSlots {
 public:
-  PgSlots(int index, PostgresAccelerator &accelerator, CommitArrivals &arrivals);
+  PgSlots(int index, std::vector<PostgresAccelerator *> members, CommitArrivals &arrivals);
 
   // Remembers the writers running now: any of them may have written the
   // accelerator's tables before its capture existed (S5).
@@ -60,7 +60,8 @@ private:
   void End(bool failed);
 
   const int index;
-  PostgresAccelerator &accelerator;
+  PostgresAccelerator &Member(const core::AcceleratorId &id) const;
+  std::vector<PostgresAccelerator *> members;
   CommitArrivals &arrivals;
   std::vector<TransactionId> pre_registration;
   std::atomic<runtime::Epoch> horizon{kNoFloor};

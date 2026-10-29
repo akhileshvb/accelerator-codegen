@@ -53,28 +53,27 @@ const Tables &Current() {
   tables = Tables{};
   tables.generation = generation;
   for (const int index : shared::Active()) {
-    auto *accelerator = FindPostgresAccelerator(shared::IdOf(index));
-    if (accelerator == nullptr) {
-      continue; // activated by a build that has other accelerators compiled in
-    }
-    const auto host = ResolveTables(*accelerator, /*must_exist=*/false);
     auto &mine = tables.of_accelerator[index];
-    for (const auto &dependency : accelerator->Dependencies()) {
-      const auto oid = host.find(dependency.table);
-      if (oid == host.end()) { // its relation was reported missing by ResolveTables, or is not named at all
-        const auto named = accelerator->Tables();
-        if (std::none_of(named.begin(), named.end(),
-                         [&](const AcceleratorTable &t) { return t.module_id == dependency.table; })) {
-          ereport(WARNING, (errmsg("accelerator %s: table %llu is not named; its writes are not captured",
-                                   accelerator->Id().c_str(), static_cast<unsigned long long>(dependency.table))));
+    // activated by a build that has other accelerators compiled in: no members
+    for (auto *accelerator : ShardMembers(shared::IdOf(index))) {
+      const auto host = ResolveTables(*accelerator, /*must_exist=*/false);
+      for (const auto &dependency : accelerator->Dependencies()) {
+        const auto oid = host.find(dependency.table);
+        if (oid == host.end()) { // its relation was reported missing by ResolveTables, or is not named at all
+          const auto named = accelerator->Tables();
+          if (std::none_of(named.begin(), named.end(),
+                           [&](const AcceleratorTable &t) { return t.module_id == dependency.table; })) {
+            ereport(WARNING, (errmsg("accelerator %s: table %llu is not named; its writes are not captured",
+                                     accelerator->Id().c_str(), static_cast<unsigned long long>(dependency.table))));
+          }
+          continue;
         }
-        continue;
+        mine.insert(oid->second);
+        auto &watched = tables.watched[oid->second];
+        watched.whole_row |= dependency.mutation_attnums.empty();
+        watched.attnums.insert(watched.attnums.end(), dependency.mutation_attnums.begin(),
+                               dependency.mutation_attnums.end());
       }
-      mine.insert(oid->second);
-      auto &watched = tables.watched[oid->second];
-      watched.whole_row |= dependency.mutation_attnums.empty();
-      watched.attnums.insert(watched.attnums.end(), dependency.mutation_attnums.begin(),
-                             dependency.mutation_attnums.end());
     }
   }
   for (auto &entry : tables.watched) {

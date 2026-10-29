@@ -14,6 +14,7 @@
 
 #include "substrate/aux/core/aux_types.hpp"
 #include "substrate/aux/maintenance/cost_model.hpp"
+#include "substrate/aux/runtime/accelerator_runtime.hpp"
 
 namespace accelerator_codegen::aux_state::engine::postgres {
 
@@ -30,6 +31,9 @@ class PostgresAccelerator {
 public:
   virtual ~PostgresAccelerator() = default;
   virtual const core::AcceleratorId &Id() const = 0;
+  // The shard this accelerator lives in: one shard worker, one commit sequence and one gate for
+  // every member (accelerators that share a verified store). Default: alone.
+  virtual const core::AcceleratorId &Shard() const { return Id(); }
   virtual std::vector<core::TableDependency> Dependencies() const = 0;
   virtual std::vector<AcceleratorTable> Tables() const = 0;
   // Worker side: the module the shard worker registers with its runtime host
@@ -38,6 +42,8 @@ public:
   // Worker side: plans the state build with in-memory hash joins instead of
   // the session's planner settings (builds that join whole tables).
   virtual bool TuneBuild() const = 0;
+  // Worker side: the store of this accelerator's states; null keeps the runtime's default.
+  virtual runtime::StoreFactory Stores() { return nullptr; }
   virtual const maintenance::CostModelParams &CostModel() = 0;
 };
 
@@ -46,6 +52,9 @@ using PostgresAcceleratorGetter = std::function<PostgresAccelerator &()>;
 void RegisterPostgresAccelerator(const char *id, PostgresAcceleratorGetter get);
 // nullptr if no accelerator with `id` is compiled in.
 PostgresAccelerator *FindPostgresAccelerator(const core::AcceleratorId &id);
+
+// The members of shard `shard`, ascending by id (the same order in every process).
+std::vector<PostgresAccelerator *> ShardMembers(const core::AcceleratorId &shard);
 
 struct PostgresAcceleratorRegistrar {
   PostgresAcceleratorRegistrar(const char *id, PostgresAcceleratorGetter get) {

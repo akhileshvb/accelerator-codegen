@@ -57,7 +57,7 @@ struct Registry {
   // that wrote without an epoch for i began before it.
   pg_atomic_uint32 activated_xid[kMaxAccelerators];
   // Moving average of the microseconds a backend's SQL fallback took (0: none yet).
-  pg_atomic_uint64 sql_us[kMaxAccelerators];
+  pg_atomic_uint64 sql_us[kMaxAccelerators][kMaxMembers];
   char ids[kMaxAccelerators][kIdBytes];
   Slot slots[kMaxAccelerators];
 };
@@ -75,8 +75,10 @@ void InitRegistry(void *ptr) {
   for (auto &xid : registry->activated_xid) {
     pg_atomic_init_u32(&xid, InvalidTransactionId);
   }
-  for (auto &us : registry->sql_us) {
-    pg_atomic_init_u64(&us, 0);
+  for (auto &shard : registry->sql_us) {
+    for (auto &us : shard) {
+      pg_atomic_init_u64(&us, 0);
+    }
   }
   for (auto &slot : registry->slots) {
     pg_atomic_init_u64(&slot.assigned, 0);
@@ -295,15 +297,17 @@ void ReleaseGates() {
   g_held_gates.clear();
 }
 
-void NoteSqlFallbackUs(int index, double us) {
+void NoteSqlFallbackUs(int index, uint32_t member, double us) {
   // Racing backends may drop an update: it is an estimate.
-  auto &average = Reg().sql_us[index];
+  auto &average = Reg().sql_us[index][member % kMaxMembers];
   const double previous = static_cast<double>(pg_atomic_read_u64(&average));
   const double next = previous > 0 ? previous + 0.3 * (us - previous) : us;
   pg_atomic_write_u64(&average, static_cast<uint64>(next > 1 ? next : 1));
 }
 
-double SqlFallbackUs(int index) { return static_cast<double>(pg_atomic_read_u64(&Reg().sql_us[index])); }
+double SqlFallbackUs(int index, uint32_t member) {
+  return static_cast<double>(pg_atomic_read_u64(&Reg().sql_us[index][member % kMaxMembers]));
+}
 
 Epoch AssignedEpoch(int index) { return pg_atomic_read_u64(&Reg().slots[index].assigned); }
 

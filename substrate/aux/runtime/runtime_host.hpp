@@ -64,6 +64,12 @@ public:
   // Host-thread placement (S6: Postgres): runs queued engine work (builds,
   // shipped applies) on the calling thread; returns whether anything ran.
   bool RunEngineWork();
+  // Postgres worker: the shipped commit of every accelerator applies first and ends together, so
+  // a store shared by the accelerators (the Verus world) installs one version per commit.
+  void GroupCommitEnds();
+  // Ends the commits applied since the last call; true if an accelerator had to wait for one (call
+  // the pump again).
+  bool EndDeferredCommits();
 
   ThreadBudget &Threads();
   EngineSlots &Slots() { return slots; }

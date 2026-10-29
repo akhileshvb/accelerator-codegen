@@ -138,7 +138,8 @@ _accel_pg_module_setup(accelerator_codegen_pg_scan_test)
 # worker (test_writer_module.cpp) and fake accelerators, driven over libpq by
 # test_postgres_writer (needs a server with the module installed).
 add_library(accelerator_codegen_pg_writer_test MODULE
-  ${_PG_WRITER_SOURCES} backends/postgres/tests/test_writer_module.cpp)
+  ${_PG_WRITER_SOURCES} backends/postgres/tests/test_writer_module.cpp
+  backends/postgres/api/base/runtime_common.cpp backends/postgres/api/base/runtime_pg.cpp)
 _accel_pg_module_setup(accelerator_codegen_pg_writer_test)
 add_executable(test_postgres_writer backends/postgres/tests/test_postgres_writer.cpp)
 target_link_libraries(test_postgres_writer PRIVATE ${ACCEL_PG_LIBPQ} Threads::Threads)

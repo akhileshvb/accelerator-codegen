@@ -2,6 +2,7 @@
 #include "substrate/aux/runtime/accelerator_runtime.hpp"
 #include "substrate/aux/core/aux_execute_stats.hpp"
 
+#include <utility>
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -150,6 +151,8 @@ struct AcceleratorRuntime::Impl {
   Seq next_seq = 0;
   Epoch store_epoch = 0; // what the store's epoch provider returns
   bool registration_checked = false;
+  std::shared_ptr<CommitGroup> group; // shipped applies leave their commit open in it
+  Epoch deferred_end = 0;
 
   // state_mutex: everything below; shared with readers, never held across
   // module or store calls.
@@ -554,6 +557,16 @@ void AcceleratorRuntime::OfferCommit(CommittedChange change) {
   impl->applier.Offer(std::move(change));
 }
 
+void AcceleratorRuntime::SetCommitGroup(std::shared_ptr<CommitGroup> group) {
+  std::lock_guard<CommitLock> commit(impl->commit_mutex);
+  impl->group = std::move(group);
+}
+
+Epoch AcceleratorRuntime::TakeDeferredEnd() {
+  std::lock_guard<CommitLock> commit(impl->commit_mutex);
+  return std::exchange(impl->deferred_end, 0);
+}
+
 void AcceleratorRuntime::AnnounceCommit(Seq seq) {
   std::lock_guard<std::mutex> lock(impl->state_mutex);
   impl->applier.Announce(seq);
@@ -609,9 +622,23 @@ void AcceleratorRuntime::ApplyReady() {
                                 change.batches.end());
       }
     }
+    if (impl->group && impl->group->open && impl->group->open != combined.epoch && !combined.empty_commit) {
+      impl->group->blocked = true; // another accelerator's commit is open: apply after it ends
+      std::lock_guard<std::mutex> lock(impl->state_mutex);
+      requeue(ready);
+      requeue(held);
+      return;
+    }
     const auto start = Clock::now();
     const bool applied = ApplyChange(combined);
-    EndCommit(combined.epoch); // a replay publishes outside RuntimeHost::Commit: nothing else ends its commit group
+    if (impl->group) {
+      impl->deferred_end = combined.epoch;
+      if (!combined.empty_commit) {
+        impl->group->open = combined.epoch;
+      }
+    } else {
+      EndCommit(combined.epoch); // a replay publishes outside RuntimeHost::Commit: nothing else ends its commit group
+    }
     std::lock_guard<std::mutex> lock(impl->state_mutex);
     if (!applied) {
       // Replayed after the rebuild.
@@ -629,6 +656,9 @@ void AcceleratorRuntime::ApplyReady() {
     }
     if (!held.empty()) {
       requeue(held);
+      return;
+    }
+    if (impl->group) { // the next change begins a new commit, after this one ends
       return;
     }
   }

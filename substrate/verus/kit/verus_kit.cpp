@@ -1522,6 +1522,14 @@ std::unique_ptr<aux_state::VerusAuxStore> MakeWorldStore(const Glue &glue,
   return nullptr;
 }
 
+const char *WorldOf(const std::string &accelerator_id) {
+  for (const auto *world : Worlds())
+    for (const auto &kit : world->kits)
+      if (accelerator_id == kit.accelerator)
+        return world->bench;
+  return nullptr;
+}
+
 const std::string &Fault() {
   static const std::string fault = [] {
     const char *v = std::getenv("ACCEL_VERUS_KIT_FAULT");

@@ -41,6 +41,8 @@ namespace accelerator_codegen::aux_state::engine::postgres::shared {
 using runtime::Epoch;
 
 inline constexpr int kMaxAccelerators = 64;
+// Accelerators per shard.
+inline constexpr uint32_t kMaxMembers = 32;
 
 // ---- registry ----------------------------------------------------------------
 // The index of `id` in this database, activating it on first use (which
@@ -68,10 +70,10 @@ bool TransactionWrote(const std::vector<core::TableId> &tables);
 Epoch AssignedEpoch(int index);
 
 // ---- SQL fallback time (C11) ----------------------------------------------------
-// What a backend's SQL fallback of accelerator `index` took (moving average,
+// What a backend's SQL fallback of member `member` of shard `index` took (moving average,
 // microseconds; 0: never measured). The shard worker weighs it against waiting.
-void NoteSqlFallbackUs(int index, double us);
-double SqlFallbackUs(int index);
+void NoteSqlFallbackUs(int index, uint32_t member, double us);
+double SqlFallbackUs(int index, uint32_t member);
 
 // ---- reader epoch (S3) and version floor (S4) -------------------------------
 // The newest epoch of accelerator `index` that `snapshot` sees. nullopt if
