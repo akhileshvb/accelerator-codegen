@@ -17,6 +17,7 @@ args=("$DIR/crate/src/lib.rs" --crate-type=staticlib --crate-name="${WORLD}_veru
       --import "verus_common=$OUT/verus_common.vir" --extern "verus_common=$OUT/libverus_common.rlib"
       --import "verus_substrate=$OUT/verus_substrate.vir" --extern "verus_substrate=$OUT/libverus_substrate.rlib"
       --import "verus_prooflib=$OUT/verus_prooflib.vir" --extern "verus_prooflib=$OUT/libverus_prooflib.rlib"
+      --extern "verus_heap=$OUT/libverus_heap.rlib"
       -L "dependency=$OUT")
 # every kit the world names; a kit compiled before the proof library last changed is recompiled
 # (and re-verified) against it, or the world would link two versions of the library

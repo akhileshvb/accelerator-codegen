@@ -311,6 +311,9 @@ const Glue kGlue = {
         [](const void *reading) { tpchq15vgens_reading_free(const_cast<tpchq15vgens_reading *>(static_cast<const tpchq15vgens_reading *>(reading))); },
         [](const void *store) { tpchq15vgens_invalidate_all(static_cast<const tpchq15vgens_store *>(store)); },
         [](const void *store) -> std::size_t { return tpchq15vgens_version_count(static_cast<const tpchq15vgens_store *>(store)); },
+        []() -> std::size_t { return tpchq15vgens_heap_bytes(); },
+        []() -> std::size_t { return tpchq15vgens_heap_peak_bytes(); },
+        []() { tpchq15vgens_heap_reset_peak(); },
     },
 };
 

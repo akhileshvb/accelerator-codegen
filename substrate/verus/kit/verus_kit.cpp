@@ -306,6 +306,9 @@ public:
   }
   std::size_t TotalPartitionCount() const override { return 1; }
   std::size_t TotalVersionCount() const override { return glue.store.version_count(store); }
+  std::size_t HeapBytes() const override { return glue.store.heap_bytes(); }
+  std::size_t HeapPeakBytes() const override { return glue.store.heap_peak_bytes(); }
+  void ResetHeapPeak() const override { glue.store.heap_reset_peak(); }
   std::size_t StaleInstalls() const override { return stale_installs; }
 
 private:
@@ -659,6 +662,9 @@ public:
   }
   std::size_t TotalPartitionCount() const override { return 1; }
   std::size_t TotalVersionCount() const override { return world.world.version_count(world.store); }
+  std::size_t HeapBytes() const override { return world.world.heap_bytes(); }
+  std::size_t HeapPeakBytes() const override { return world.world.heap_peak_bytes(); }
+  void ResetHeapPeak() const override { world.world.heap_reset_peak(); }
   std::size_t StaleInstalls() const override { return world.stale; }
 
 private:

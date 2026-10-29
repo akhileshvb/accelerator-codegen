@@ -243,6 +243,9 @@ const kit::Glue kGlue = {
         [](const void *reading) { tpchq22vgens_reading_free(const_cast<tpchq22vgens_reading *>(static_cast<const tpchq22vgens_reading *>(reading))); },
         [](const void *store) { tpchq22vgens_invalidate_all(static_cast<const tpchq22vgens_store *>(store)); },
         [](const void *store) -> std::size_t { return tpchq22vgens_version_count(static_cast<const tpchq22vgens_store *>(store)); },
+        []() -> std::size_t { return tpchq22vgens_heap_bytes(); },
+        []() -> std::size_t { return tpchq22vgens_heap_peak_bytes(); },
+        []() { tpchq22vgens_heap_reset_peak(); },
     }};
 
 const kit::Registrar kRegistrar(&kGlue);

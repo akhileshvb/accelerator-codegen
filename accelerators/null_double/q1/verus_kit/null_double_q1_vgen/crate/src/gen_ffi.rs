@@ -389,3 +389,22 @@ pub unsafe extern "C" fn nulldoubleq1vgens_version_count(st: *const QStore) -> u
     (*st).version_count()
 }
 
+/// Bytes the library's Rust code holds live (a counting global allocator,
+/// substrate/verus/heap): every kept version, plus transients in flight.
+#[no_mangle]
+pub extern "C" fn nulldoubleq1vgens_heap_bytes() -> usize {
+    verus_heap::live_bytes()
+}
+
+/// The most live bytes since the start or the last reset.
+#[no_mangle]
+pub extern "C" fn nulldoubleq1vgens_heap_peak_bytes() -> usize {
+    verus_heap::peak_bytes()
+}
+
+/// Start a new peak measurement from the current live bytes.
+#[no_mangle]
+pub extern "C" fn nulldoubleq1vgens_heap_reset_peak() {
+    verus_heap::reset_peak()
+}
+

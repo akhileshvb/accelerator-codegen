@@ -21,6 +21,9 @@ const kit::World kWorld = {
       return tpchw_install(static_cast<const tpchw_store *>(st), static_cast<tpchw_batch *>(b), floor, end);
     },
     [](const void *st) { return tpchw_version_count(static_cast<const tpchw_store *>(st)); },
+    []() -> size_t { return tpchw_heap_bytes(); },
+    []() -> size_t { return tpchw_heap_peak_bytes(); },
+    []() { tpchw_heap_reset_peak(); },
     {
         {"tpch_q1_vgen",
          [](const void *gb) { return tpchw_base_1(static_cast<const tpchw_gbase *>(gb)); },

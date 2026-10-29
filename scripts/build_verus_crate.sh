@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Verify a Verus kernel crate against the verified libraries (substrate/verus/common,
 # substrate/verus/store, accelerators/prooflib) and, unless --verify-only, compile
-# it to $OUT/lib<name>_verus.a for the engines (CMake links each
+# it (with the counting allocator of substrate/verus/heap) to $OUT/lib<name>_verus.a for the engines (CMake links each
 # accelerators/<bench>/q<N>/verus_kit/<name>/ whose library exists).
 #   scripts/build_verus_crate.sh <crate_dir> <name> [--verify-only | --no-verify | --rlib | --rlib-no-verify]
 # OUT: $ACCEL_VERUS_LIB_DIR (default build-verus).  The libraries are rebuilt
@@ -17,8 +17,8 @@ mkdir -p "$OUT"
 # 1. the libraries (once per source change)
 (
   flock 9
-  for lib in common substrate prooflib; do
-    case $lib in common) src="$ROOT/substrate/verus/common/src" ;; substrate) src="$ROOT/substrate/verus/store/src" ;; prooflib) src="$ROOT/accelerators/prooflib/src" ;; esac
+  for lib in heap common substrate prooflib; do
+    case $lib in heap) src="$ROOT/substrate/verus/heap/src" ;; common) src="$ROOT/substrate/verus/common/src" ;; substrate) src="$ROOT/substrate/verus/store/src" ;; prooflib) src="$ROOT/accelerators/prooflib/src" ;; esac
     stamp="$OUT/verus_$lib.stamp"
     srcs=("$src"/*.rs)
     [ "$lib" = prooflib ] && srcs+=("$ROOT"/substrate/verus/common/src/*.rs)   # built against common
@@ -41,6 +41,7 @@ args=("$CRATE_DIR/src/lib.rs" --crate-type=staticlib --crate-name="${NAME}_verus
       --import "verus_common=$OUT/verus_common.vir" --extern "verus_common=$OUT/libverus_common.rlib"
       --import "verus_substrate=$OUT/verus_substrate.vir" --extern "verus_substrate=$OUT/libverus_substrate.rlib"
       --import "verus_prooflib=$OUT/verus_prooflib.vir" --extern "verus_prooflib=$OUT/libverus_prooflib.rlib"
+      --extern "verus_heap=$OUT/libverus_heap.rlib"
       -L "dependency=$OUT")
 if [ "$MODE" = "--verify-only" ]; then
   "$VERUS" "${args[@]}"

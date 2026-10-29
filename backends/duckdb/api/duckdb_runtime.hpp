@@ -105,6 +105,11 @@ public:
   // ---- diagnostics ----
   bool UsesVerusStore() const;
   std::size_t StateVersionCount() const;
+  // The Verus store's measured heap (bytes live, all versions; peak since ResetHeapPeak);
+  // 0 for a store that is not Verus.
+  std::size_t StateHeapBytes() const;
+  std::size_t StateHeapPeakBytes() const;
+  void ResetHeapPeak() const;
   std::size_t StaleInstallCount() const;
   core::AuxStoreDiagnosticsSnapshot StoreDiagnosticsSnapshot() const;
   void ResetStoreDiagnosticsProfiling();

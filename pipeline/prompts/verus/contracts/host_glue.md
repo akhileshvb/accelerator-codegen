@@ -97,7 +97,8 @@ it between the pairs below):
   cast-and-forward lambda to the same-named `{{ffi_prefix}}s_*` function
   (`new`, `free`, `newest_base`, `base_state`, `base_free`, `newest_head`,
   `head_free`, `stage_invalid`, `staged_free`, `begin`, `abort`, `install`,
-  `read`, `reading_free`, `invalidate_all`, `version_count`). Pass `Answer`,
+  `read`, `reading_free`, `invalidate_all`, `version_count`, `heap_bytes`,
+  `heap_peak_bytes`, `heap_reset_peak`: the last three take no store). Pass `Answer`,
   `PrepareApply`, `PrepareBuild` and the aggregate after `Execute` in `kGlue`.
 
 ## Rules

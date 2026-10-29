@@ -478,6 +478,15 @@ pub fn invalidate_{k}(store: &GStore) {{
     a("    (*st).version_count()")
     a("}")
     a("")
+    for fn, rust, ret, doc in (("heap_bytes", "live_bytes", "usize", "Bytes the library's Rust code holds live (substrate/verus/heap): every kept version, plus transients."),
+                               ("heap_peak_bytes", "peak_bytes", "usize", "The most live bytes since the start or the last reset."),
+                               ("heap_reset_peak", "reset_peak", "", "Start a new peak measurement from the current live bytes.")):
+        a(f"/// {doc}")
+        a("#[no_mangle]")
+        a(f"pub extern \"C\" fn {prefix}_{fn}()" + (f" -> {ret}" if ret else "") + " {")
+        a(f"    verus_heap::{rust}()")
+        a("}")
+        a("")
     for k, kit in zip(idx, kits):
         a(f"// ---- {kit} ----")
         a("/// Its state in the base, for the kit's stage_apply (free with the kit's base_free); NULL if invalid.")
@@ -549,7 +558,8 @@ pub fn invalidate_{k}(store: &GStore) {{
          f"void {prefix}_gbase_free({prefix}_gbase *gb);",
          f"{prefix}_batch *{prefix}_batch_new(const {prefix}_gbase *gb, uint64_t from);", f"void {prefix}_batch_free({prefix}_batch *b);",
          f"int32_t {prefix}_install(const {prefix}_store *st, {prefix}_batch *b, uint64_t floor, int32_t end_commit);",
-         f"size_t {prefix}_version_count(const {prefix}_store *st);"]
+         f"size_t {prefix}_version_count(const {prefix}_store *st);",
+         f"size_t {prefix}_heap_bytes(void);", f"size_t {prefix}_heap_peak_bytes(void);", f"void {prefix}_heap_reset_peak(void);"]
     for k in idx:
         h += [f"void *{prefix}_base_{k}(const {prefix}_gbase *gb);",
               f"void *{prefix}_head_{k}(const {prefix}_gbase *gb);",
@@ -581,6 +591,9 @@ pub fn invalidate_{k}(store: &GStore) {{
          f"      return {prefix}_install({st_t}(st), static_cast<{prefix}_batch *>(b), floor, end);",
          "    },",
          f"    [](const void *st) {{ return {prefix}_version_count({st_t}(st)); }},",
+         f"    []() -> size_t {{ return {prefix}_heap_bytes(); }},",
+         f"    []() -> size_t {{ return {prefix}_heap_peak_bytes(); }},",
+         f"    []() {{ {prefix}_heap_reset_peak(); }},",
          "    {"]
     for k, kit in zip(idx, kits):
         g += [f'        {{"{kit}",',

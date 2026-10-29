@@ -19,6 +19,9 @@ sec_edgarw_batch *sec_edgarw_batch_new(const sec_edgarw_gbase *gb, uint64_t from
 void sec_edgarw_batch_free(sec_edgarw_batch *b);
 int32_t sec_edgarw_install(const sec_edgarw_store *st, sec_edgarw_batch *b, uint64_t floor, int32_t end_commit);
 size_t sec_edgarw_version_count(const sec_edgarw_store *st);
+size_t sec_edgarw_heap_bytes(void);
+size_t sec_edgarw_heap_peak_bytes(void);
+void sec_edgarw_heap_reset_peak(void);
 void *sec_edgarw_base_1(const sec_edgarw_gbase *gb);
 void *sec_edgarw_head_1(const sec_edgarw_gbase *gb);
 int32_t sec_edgarw_put_1(sec_edgarw_batch *b, void *staged, uint64_t from);

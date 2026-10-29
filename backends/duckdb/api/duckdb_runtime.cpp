@@ -466,6 +466,22 @@ std::size_t DuckdbRuntime::StateVersionCount() const {
   return AsVersioned(*accelerator_.runtime)->TotalVersionCount();
 }
 
+std::size_t DuckdbRuntime::StateHeapBytes() const {
+  const auto *verus = AsVerus(*accelerator_.runtime);
+  return verus ? verus->HeapBytes() : 0;
+}
+
+std::size_t DuckdbRuntime::StateHeapPeakBytes() const {
+  const auto *verus = AsVerus(*accelerator_.runtime);
+  return verus ? verus->HeapPeakBytes() : 0;
+}
+
+void DuckdbRuntime::ResetHeapPeak() const {
+  if (const auto *verus = AsVerus(*accelerator_.runtime)) {
+    verus->ResetHeapPeak();
+  }
+}
+
 std::size_t DuckdbRuntime::StaleInstallCount() const {
   const auto *verus = AsVerus(*accelerator_.runtime);
   return verus ? verus->StaleInstalls() : 0;
