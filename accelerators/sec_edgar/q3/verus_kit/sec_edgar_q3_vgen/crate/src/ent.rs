@@ -13,6 +13,7 @@ use crate::gen_spec::*;
 use crate::gkey::*;
 use crate::numeric::*;
 use crate::qty::*;
+use crate::rank::*;
 
 verus! {
 
@@ -90,6 +91,8 @@ pub struct Class {
     pub omap: Index<Ent>,
     pub sr: Wide,
     pub k: Wide,
+    pub ord: Index<Ent>,
+    pub oor: Wide,
 }
 
 pub open spec fn cls_ok(c: Class, db: Db, p: Params) -> bool {
@@ -97,6 +100,8 @@ pub open spec fn cls_ok(c: Class, db: Db, p: Params) -> bool {
     &&& tmap_ok_f(false, c.omap, tf_of(db, p, false))
     &&& c.sr@ == sum(c.cmap.entries(), cvw())
     &&& c.k@ == sum(c.cmap.entries(), onew())
+    &&& ord_ok(c.omap, c.ord)
+    &&& c.oor@ == sum(c.omap.entries(), oorw())
 }
 
 pub open spec fn zero_p(db: Db, p: Params) -> bool {
@@ -175,6 +180,13 @@ pub proof fn lemma_ent_within(e: Ent, q: Q)
             None => {},
         }
     }
+}
+
+
+pub proof fn lemma_ent_finite(e: Ent, q: Q)
+    requires ent_ok(e, q),
+    ensures e.bits matches Some(b) ==> f64_finite(b),
+{
 }
 
 }

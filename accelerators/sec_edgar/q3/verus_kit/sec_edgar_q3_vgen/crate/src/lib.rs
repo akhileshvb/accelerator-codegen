@@ -20,6 +20,7 @@ pub mod fin;
 pub mod choice;
 pub mod reply;
 pub mod batch;
+pub mod rank;
 pub mod bucket;
 pub mod keys;
 pub mod rows;

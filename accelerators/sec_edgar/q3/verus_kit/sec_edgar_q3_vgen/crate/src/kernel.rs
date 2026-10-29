@@ -208,7 +208,7 @@ pub fn execute(
                 lemma_sum_empty(cm.entries(), cvw());
                 lemma_sum_empty(cm.entries(), onew());
             }
-            let c = Arc::new(Class { cmap: cm, omap: om, sr: Wide::zero(), k: Wide::zero() });
+            let c = Arc::new(Class { cmap: cm, omap: om, sr: Wide::zero(), k: Wide::zero(), ord: Index::new(), oor: Wide::zero() });
             proof { assert(cls_ok(*c, db, cp(p1, p2@))); }
             c
         },
