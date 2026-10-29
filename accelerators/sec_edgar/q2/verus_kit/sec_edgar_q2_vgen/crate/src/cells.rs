@@ -64,6 +64,7 @@ pub open spec fn vkey(v: int, d: int) -> bool {
 pub open spec fn cell_ok(c: Option<Vec<Row>>, w: Fam, id: CellId) -> bool {
     match c {
         Some(v) => {
+            &&& v@.len() > 0
             &&& forall|g: spec_fn(OutRow) -> int| #[trigger] sum(views(v@), g) == fam_w(w, id, g)
             &&& forall|k: int| 0 <= k < v@.len() ==> f64_finite((#[trigger] v@[k]).val) && f64_desc_key(v@[k].val) == id.d
         },

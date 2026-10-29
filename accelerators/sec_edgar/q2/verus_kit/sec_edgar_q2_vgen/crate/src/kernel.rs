@@ -21,6 +21,11 @@ use crate::classes::*;
 use crate::finish::*;
 use crate::walk::*;
 use crate::sortout::*;
+use crate::thr::*;
+use crate::cnt::*;
+use crate::plan::*;
+use crate::pick::*;
+use crate::step::*;
 
 verus! {
 
@@ -28,6 +33,7 @@ pub struct State {
     db: Ghost<Db>,
     cells: Cells,
     dir: Index<Vec<CK>>,
+    thr: Thr,
 }
 
 impl State {
@@ -37,8 +43,10 @@ impl State {
 
     #[verifier::type_invariant]
     closed spec fn valid(self) -> bool {
-        &&& cells_rep(self.cells, cw(self.db@))
-        &&& cover(self.dir, cw(self.db@))
+        &&& cells_rep(self.cells, sfam(cw(self.db@), th_of(self.thr)))
+        &&& cover(self.dir, sfam(cw(self.db@), th_of(self.thr)))
+        &&& self.thr.wf()
+        &&& thr_ok(self.cells, self.thr)
         &&& finite_num(self.db@)
     }
 }
@@ -47,13 +55,31 @@ pub closed spec fn history(s: State) -> nat {
     0
 }
 
-/// The filings whose rows the host rescans: those of every changed row.
-pub open spec fn rescan_num_by_filing_wanted(s: State, num_delta: Seq<NumDelta>, sub_delta: Seq<SubDelta>) -> Seq<Seq<u8>> {
-    delta_keys(num_delta, sub_delta)
+/// The filings whose rows the host rescans: the changed ones and, in a class whose stored prefix they may shorten, the next in line.
+pub closed spec fn wanted(s: State, num_delta: Seq<NumDelta>, sub_delta: Seq<SubDelta>) -> Seq<Seq<u8>> {
+    wanted_keys(s.cells, s.dir, s.thr, delta_keys(num_delta, sub_delta))
 }
 
-pub open spec fn rescan_sub_by_filing_wanted(s: State, num_delta: Seq<NumDelta>, sub_delta: Seq<SubDelta>) -> Seq<Seq<u8>> {
-    delta_keys(num_delta, sub_delta)
+pub closed spec fn rescan_num_by_filing_wanted(s: State, num_delta: Seq<NumDelta>, sub_delta: Seq<SubDelta>) -> Seq<Seq<u8>> {
+    wanted(s, num_delta, sub_delta)
+}
+
+pub closed spec fn rescan_sub_by_filing_wanted(s: State, num_delta: Seq<NumDelta>, sub_delta: Seq<SubDelta>) -> Seq<Seq<u8>> {
+    wanted(s, num_delta, sub_delta)
+}
+
+fn wanted_keys_vec(s: &State, num_delta: &Vec<NumDelta>, sub_delta: &Vec<SubDelta>) -> (r: Vec<Vec<u8>>)
+    ensures
+        seq_view_bytes(r@) == wanted(*s, num_delta@, sub_delta@),
+{
+    proof {
+        use_type_invariant(s);
+        lemma_cells_range(s.cells, sfam(cw(s.db@), th_of(s.thr)));
+    }
+    let tk = delta_key_vec(num_delta, sub_delta);
+    let (keys, _) = plan(&s.cells, &s.dir, &s.thr, &tk);
+    proof { lemma_wanted_unique(s.cells, s.dir, s.thr, delta_keys(num_delta@, sub_delta@), seq_view_bytes(keys@)); }
+    keys
 }
 
 pub fn rescan_num_by_filing_keys(
@@ -64,7 +90,7 @@ pub fn rescan_num_by_filing_keys(
     ensures
         seq_view_bytes(r@) == crate::kernel::rescan_num_by_filing_wanted(*s, num_delta@, sub_delta@),
 {
-    delta_key_vec(num_delta, sub_delta)
+    wanted_keys_vec(s, num_delta, sub_delta)
 }
 
 pub fn rescan_sub_by_filing_keys(
@@ -75,7 +101,7 @@ pub fn rescan_sub_by_filing_keys(
     ensures
         seq_view_bytes(r@) == crate::kernel::rescan_sub_by_filing_wanted(*s, num_delta@, sub_delta@),
 {
-    delta_key_vec(num_delta, sub_delta)
+    wanted_keys_vec(s, num_delta, sub_delta)
 }
 
 pub open spec fn sum_eq(rows: Seq<NumInput>, num: Seq<NumRow>, f: spec_fn(NumRow) -> int, g: spec_fn(NumRow) -> int) -> bool {
@@ -195,33 +221,66 @@ pub fn build(
     let ghost kv = seq_view_bytes(keys@);
     let ghost zero: Fam = |id: CellId, g: spec_fn(OutRow) -> int| 0int;
     let ghost dr = delivered(num_build@, sub_build@);
+    let thn = pick_thresholds(&keys, &mri, &sri, Ghost(dr));
     let mut cells: Cells = Index::new();
     let mut dir: Index<Vec<CK>> = Index::new();
+    let ghost th0 = th_of(thn);
     proof {
-        assert forall|id: CellId| cell_ok(#[trigger] cell_at(cells, id), zero, id) by {}
-        assert(cells_rep(cells, zero));
-        assert forall|id: CellId| #[trigger] zero_fam(zero, id) by {}
-        assert(cover(dir, zero));
+        assert forall|id: CellId, g: spec_fn(OutRow) -> int| #[trigger] fam_w(sfam(zero, th0), id, g) == 0 by {}
+        assert forall|id: CellId| cell_ok(#[trigger] cell_at(cells, id), sfam(zero, th0), id) by {}
+        assert(cells_rep(cells, sfam(zero, th0)));
+        assert forall|id: CellId| #[trigger] zero_fam(sfam(zero, th0), id) by {}
+        assert(cover(dir, sfam(zero, th0)));
     }
-    refresh(&mut cells, &mut dir, &keys, &mri, &sri, Ghost(zero), Ghost(dr));
+    refresh(&mut cells, &mut dir, &keys, &mri, &sri, &thn, Ghost(zero), Ghost(th0), Ghost(dr));
     proof {
-        assert forall|id: CellId, g: spec_fn(OutRow) -> int| #[trigger] fam_w(cw(db), id, g) == fam_w(fam_keys(zero, kv, dr), id, g) by {
-            lemma_scan_agree(db, num_build@, sub_build@, id.a);
+        let wk = fam_keys(zero, kv, dr);
+        let thk = th_keys(th0, kv, thn);
+        assert forall|id: CellId, g: spec_fn(OutRow) -> int| #[trigger] fam_w(sfam(cw(db), th_of(thn)), id, g) == fam_w(sfam(wk, thk), id, g) by {
             if kv.contains(id.a) {
-                lemma_cell_w_agree(dr, db, id.a, id, g);
+                assert forall|id2: CellId, g2: spec_fn(OutRow) -> int| id2.a == id.a implies #[trigger] fam_w(wk, id2, g2) == fam_w(cw(db), id2, g2) by {
+                    lemma_scan_agree(db, num_build@, sub_build@, id.a);
+                    lemma_cell_w_agree(dr, db, id.a, id2, g2);
+                }
+                assert forall|d: int, g2: spec_fn(OutRow) -> int| #[trigger] fam_w(wk, at_d(id, d), g2) == fam_w(cw(db), at_d(id, d), g2) by {}
+                lemma_sfam_unit(wk, cw(db), thk, th_of(thn), id);
             } else {
                 lemma_sub_keys(db, sub_build@, kv, id.a);
                 lemma_no_sub_no_cells(db, id, g);
+                assert(fam_w(wk, id, g) == 0);
+                assert(fam_w(sfam(wk, thk), id, g) == 0);
+                assert(fam_w(sfam(cw(db), th_of(thn)), id, g) == 0);
             }
         }
-        lemma_rep_congr(cells, fam_keys(zero, kv, dr), cw(db));
-        lemma_cover_congr(dir, fam_keys(zero, kv, dr), cw(db));
+        lemma_rep_congr(cells, sfam(wk, thk), sfam(cw(db), th_of(thn)));
+        lemma_cover_congr(dir, sfam(wk, thk), sfam(cw(db), th_of(thn)));
         assert forall|n: NumRow| db.num.contains(n) && is_qual(n) implies exists|b: u64| f64_finite(b) && f64_val(b) == n.value->0 by {
             lemma_scan_agree(db, num_build@, sub_build@, n.adsh->0);
             lemma_finite_via(dr, db, n);
         }
+        // each class with a threshold stores the witness cells
+        assert forall|fy: int, uom: Seq<u8>| #[trigger] thr_of(thn, fy, uom) == D_INF as int || exists|ks: Seq<KeyView>| witnessed(cells, fy, uom, thr_of(thn, fy, uom), ks) by {
+            if thr_of(thn, fy, uom) != D_INF as int {
+                let ks = choose|ks: Seq<KeyView>| ks.len() >= lim() && ks.no_duplicates()
+                    && forall|i: int| 0 <= i < ks.len() ==> (#[trigger] ks[i]).0 <= thr_of(thn, fy, uom)
+                        && !zero_fam(cw(dr), CellId { fy, uom, d: ks[i].0, a: ks[i].1 });
+                assert forall|i: int| 0 <= i < ks.len() implies (#[trigger] ks[i]).0 <= thr_of(thn, fy, uom) && cell_at(cells, CellId { fy, uom, d: ks[i].0, a: ks[i].1 }) is Some by {
+                    let id = CellId { fy, uom, d: ks[i].0, a: ks[i].1 };
+                    lemma_scan_agree(db, num_build@, sub_build@, id.a);
+                    let g = choose|g: spec_fn(OutRow) -> int| fam_w(cw(dr), id, g) != 0;
+                    lemma_cell_w_agree(dr, db, id.a, id, g);
+                    assert(keep(cw(db), th_of(thn), id));
+                    assert(fam_w(cw(dr), id, g) == cell_w(dr, id, g));
+                    assert(cell_w(db, id, g) != 0);
+                    assert(fam_w(sfam(cw(db), th_of(thn)), id, g) == cell_w(db, id, g));
+                    assert(!zero_fam(sfam(cw(db), th_of(thn)), id));
+                    lemma_nonzero_stored(cells, sfam(cw(db), th_of(thn)), id);
+                }
+                assert(witnessed(cells, fy, uom, thr_of(thn, fy, uom), ks));
+            }
+        }
     }
-    Some(State { db: Ghost(db), cells, dir })
+    Some(State { db: Ghost(db), cells, dir, thr: thn })
 }
 
 pub fn apply(
@@ -269,49 +328,87 @@ pub fn apply(
     let ghost db = s.db@;
     let ghost kv = seq_view_bytes(num_by_filing_keys@);
     let ghost dr = delivered(num_by_filing_rows@, sub_by_filing_rows@);
+    let ghost wold = sfam(cw(db), th_of(s.thr));
+    proof { lemma_cells_range(s.cells, wold); }
+    let tk = delta_key_vec(num_delta, sub_delta);
+    let (pk, thr_new) = plan(&s.cells, &s.dir, &s.thr, &tk);
+    let ghost tkv = delta_keys(num_delta@, sub_delta@);
+    proof {
+        lemma_wanted_unique(s.cells, s.dir, s.thr, tkv, seq_view_bytes(pk@));
+        assert(kv == seq_view_bytes(pk@));
+        assert(is_wanted(s.cells, s.dir, s.thr, tkv, kv));
+        assert(seq_view_bytes(sub_by_filing_keys@) == kv);
+    }
     let mut cells = s.cells.share();
     let mut dir = s.dir.share();
     proof {
-        assert forall|id: CellId| cell_ok(#[trigger] cell_at(cells, id), cw(db), id) by {
+        assert forall|id: CellId| cell_ok(#[trigger] cell_at(cells, id), wold, id) by {
             assert(cell_at(cells, id) == cell_at(s.cells, id));
         }
         assert forall|k: KeyView| #[trigger] cells.at(k) is Some implies cells.at(k)->0.wf() by { assert(cells.at(k) == s.cells.at(k)); }
-        assert(cells_rep(cells, cw(db)));
-        assert forall|id: CellId| !(#[trigger] zero_fam(cw(db), id)) implies listed(dir_of(dir, id.a), id) by {
+        assert(cells_rep(cells, wold));
+        assert forall|id: CellId| !(#[trigger] zero_fam(wold, id)) implies listed(dir_of(dir, id.a), id) by {
             assert(dir_of(dir, id.a) == dir_of(s.dir, id.a));
         }
-        assert(cover(dir, cw(db)));
+        assert(cover(dir, wold));
     }
-    refresh(&mut cells, &mut dir, num_by_filing_keys, &mri, &sri, Ghost(cw(db)), Ghost(dr));
+    refresh(&mut cells, &mut dir, num_by_filing_keys, &mri, &sri, &thr_new, Ghost(cw(db)), Ghost(th_of(s.thr)), Ghost(dr));
     proof {
         let nd = num_delta@;
         let sd = sub_delta@;
-        assert forall|id: CellId, g: spec_fn(OutRow) -> int| #[trigger] fam_w(cw(db2), id, g) == fam_w(fam_keys(cw(db), kv, dr), id, g) by {
+        let wk = fam_keys(cw(db), kv, dr);
+        let thk = th_keys(th_of(s.thr), kv, thr_new);
+        let wnew = sfam(cw(db2), th_of(thr_new));
+        assert forall|id: CellId, g: spec_fn(OutRow) -> int| #[trigger] fam_w(wnew, id, g) == fam_w(sfam(wk, thk), id, g) by {
             if kv.contains(id.a) {
                 lemma_rescan_agree_num(db2, num_by_filing_keys@, num_by_filing_rows@, id.a);
-                assert(seq_view_bytes(sub_by_filing_keys@).contains(id.a));
                 lemma_rescan_agree_sub(db2, sub_by_filing_keys@, sub_by_filing_rows@, id.a);
                 assert(agree(dr, db2, id.a));
-                lemma_cell_w_agree(dr, db2, id.a, id, g);
+                assert forall|id2: CellId, g2: spec_fn(OutRow) -> int| id2.a == id.a implies #[trigger] fam_w(wk, id2, g2) == fam_w(cw(db2), id2, g2) by {
+                    lemma_cell_w_agree(dr, db2, id.a, id2, g2);
+                }
+                assert forall|d: int, g2: spec_fn(OutRow) -> int| #[trigger] fam_w(wk, at_d(id, d), g2) == fam_w(cw(db2), at_d(id, d), g2) by {}
+                lemma_sfam_unit(wk, cw(db2), thk, th_of(thr_new), id);
             } else {
+                assert(!tkv.contains(id.a)) by {
+                    if tkv.contains(id.a) { assert(wanted_has(s.cells, s.dir, s.thr, tkv, id.a)); }
+                }
                 lemma_delta_agree(db, db2, nd, sd, id.a);
-                lemma_cell_w_agree(db, db2, id.a, id, g);
+                assert forall|id2: CellId, g2: spec_fn(OutRow) -> int| id2.a == id.a implies #[trigger] fam_w(wk, id2, g2) == fam_w(cw(db), id2, g2) by {}
+                assert forall|d: int, g2: spec_fn(OutRow) -> int| #[trigger] fam_w(wk, at_d(id, d), g2) == fam_w(cw(db), at_d(id, d), g2) by {}
+                lemma_sfam_unit(wk, cw(db), thk, th_of(s.thr), id);
+                // the thresholds: no cell between the old and the new
+                lemma_dnew_ge(s.cells, s.dir, s.thr, tkv, id.fy, id.uom);
+                assert forall|d: int| th_id(th_of(s.thr), id) < d <= th_id(th_of(thr_new), id) implies zero_fam(cw(db), #[trigger] at_d(id, d)) by {
+                    lemma_nohole(s.cells, s.dir, s.thr, db, tkv, kv, at_d(id, d), d);
+                }
+                lemma_keep_eq(cw(db), th_of(s.thr), th_of(thr_new), id);
+                assert forall|id2: CellId, g2: spec_fn(OutRow) -> int| id2.a == id.a implies #[trigger] fam_w(cw(db), id2, g2) == fam_w(cw(db2), id2, g2) by {
+                    lemma_cell_w_agree(db, db2, id.a, id2, g2);
+                }
+                assert forall|d: int, g2: spec_fn(OutRow) -> int| #[trigger] fam_w(cw(db), at_d(id, d), g2) == fam_w(cw(db2), at_d(id, d), g2) by {}
+                lemma_sfam_unit(cw(db), cw(db2), th_of(thr_new), th_of(thr_new), id);
             }
         }
-        lemma_rep_congr(cells, fam_keys(cw(db), kv, dr), cw(db2));
-        lemma_cover_congr(dir, fam_keys(cw(db), kv, dr), cw(db2));
+        lemma_rep_congr(cells, sfam(wk, thk), wnew);
+        lemma_cover_congr(dir, sfam(wk, thk), wnew);
+        assert forall|a: Seq<u8>| !tkv.contains(a) implies agree(db, db2, a) by { lemma_delta_agree(db, db2, nd, sd, a); }
+        lemma_thr_ok_after(s.cells, s.dir, s.thr, db, db2, tkv, thr_new, cells);
         assert forall|n: NumRow| db2.num.contains(n) && is_qual(n) implies exists|b: u64| f64_finite(b) && f64_val(b) == n.value->0 by {
             let a = n.adsh->0;
             if kv.contains(a) {
                 lemma_rescan_agree_num(db2, num_by_filing_keys@, num_by_filing_rows@, a);
                 lemma_finite_via(dr, db2, n);
             } else {
+                assert(!tkv.contains(a)) by {
+                    if tkv.contains(a) { assert(wanted_has(s.cells, s.dir, s.thr, tkv, a)); }
+                }
                 lemma_delta_agree(db, db2, nd, sd, a);
                 lemma_finite_via(db, db2, n);
             }
         }
     }
-    Ok(State { db: Ghost(db2), cells, dir })
+    Ok(State { db: Ghost(db2), cells, dir, thr: thr_new })
 }
 
 pub fn execute(
@@ -327,6 +424,12 @@ pub fn execute(
     proof { use_type_invariant(s); }
     let ghost db = s.db@;
     let uom = Arc::new(copy_vec(p2));
+    let dmax = thr_get(&s.thr, p1, &uom);
+    proof {
+        lemma_cells_range(s.cells, sfam(cw(db), th_of(s.thr)));
+        lemma_rep_good(db, s.cells, s.thr, p1 as int, p2@);
+        assert(dmax as int == thr_of(s.thr, p1 as int, p2@));
+    }
     let ghost es = class_entries(s.cells, p1 as int, p2@);
     let coll: Vec<Row> = match s.cells.get(&kkey(p1, &uom)) {
         None => {
@@ -335,7 +438,14 @@ pub fn execute(
                 assert(es.take(0) =~= es);
                 assert(views(Seq::<Row>::empty()) =~= Seq::<OutRow>::empty());
                 assert(flat_rows(es.take(0)) =~= Seq::<OutRow>::empty());
-                assert(coll_ok(Seq::<Row>::empty(), es));
+                // a class with a threshold stores cells, so this class has none beyond an unbounded threshold
+                if dmax != D_INF {
+                    let ks = choose|ks: Seq<KeyView>| witnessed(s.cells, p1 as int, p2@, dmax as int, ks);
+                    assert(cell_at(s.cells, CellId { fy: p1 as int, uom: p2@, d: ks[0].0, a: ks[0].1 }) is Some);
+                    assert(s.cells.at((p1 as int, p2@)) is Some);
+                    assert(false);
+                }
+                assert(coll_ok(Seq::<Row>::empty(), es, dmax as int));
             }
             Vec::new()
         }
@@ -345,18 +455,22 @@ pub fn execute(
                 assert(inner.wf());
                 assert(inner.entries() == es);
                 assert forall|i: int| 0 <= i < inner.entries().len() implies rows_finite((#[trigger] inner.entries()[i]).1@) by {
-                    lemma_entry_rows(db, s.cells, p1 as int, p2@, i);
+                    assert(entry_good(es[i]));
+                }
+                if dmax != D_INF {
+                    let ks = choose|ks: Seq<KeyView>| witnessed(s.cells, p1 as int, p2@, dmax as int, ks);
+                    lemma_witness_lead(s.cells, p1 as int, p2@, dmax as int, ks);
                 }
             }
-            let c = walk(&*inner);
-            proof { assert(coll_ok(c@, es)); }
+            let c = walk(&*inner, dmax);
+            proof { assert(coll_ok(c@, es, dmax as int)); }
             c
         }
     };
     let sorted = sort_rows(&coll);
     let out = emit(&coll, &sorted);
     proof {
-        lemma_collected(db, s.cells, p1 as int, p2@, coll@, sorted@);
+        lemma_collected(db, s.cells, p1 as int, p2@, dmax as int, coll@, sorted@);
         let sv = sorted_views(coll@, sorted@);
         assert forall|i: int| 0 <= i < out.len() implies out_fits(#[trigger] out_view(out@)[i]) by {
             let lim = limit_rows(sv, 100);

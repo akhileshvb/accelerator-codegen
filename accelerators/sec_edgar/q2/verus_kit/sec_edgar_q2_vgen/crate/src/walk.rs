@@ -10,24 +10,47 @@ use crate::finish::*;
 use crate::sortout::rows_finite;
 use crate::f64bits::f64_finite;
 use crate::maint::lemma_views_push;
+use crate::thr::*;
+use crate::cnt::*;
 
 verus! {
 
-pub fn walk(inner: &Index<Vec<Row>>) -> (res: Vec<Row>)
+/// An unbounded class has every entry within its lead.
+pub proof fn lemma_lower_all(es: Seq<(KeyView, Vec<Row>)>, d: int)
+    requires
+        ordered_rows(es),
+        forall|i: int| 0 <= i < es.len() ==> (#[trigger] es[i]).0.0 <= d,
+    ensures
+        lead(es, d) == es.len(),
+{
+    lemma_lead(es, d);
+    if lead(es, d) < es.len() {
+        let i = lead(es, d);
+        assert(es[i].0.0 > d);
+    }
+}
+
+pub fn walk(inner: &Index<Vec<Row>>, dmax: i64) -> (res: Vec<Row>)
     requires
         inner.wf(),
         forall|i: int| 0 <= i < inner.entries().len() ==> rows_finite((#[trigger] inner.entries()[i]).1@),
+        forall|i: int| 0 <= i < inner.entries().len() ==> (#[trigger] inner.entries()[i]).1@.len() > 0,
+        forall|i: int| 0 <= i < inner.entries().len() ==> (#[trigger] inner.entries()[i]).0.0 <= D_INF as int,
+        dmax == D_INF || lead(inner.entries(), dmax as int) >= 100,
     ensures
         rows_finite(res@),
         exists|m: int| {
             &&& 0 <= m <= inner.entries().len()
             &&& views(res@) == flat_rows(inner.entries().take(m))
-            &&& (res@.len() >= 100 || m == inner.entries().len())
+            &&& (res@.len() >= 100 || (m == inner.entries().len() && dmax == D_INF))
             &&& (m == inner.entries().len() || (m > 0 && inner.entries()[m].0.0 > inner.entries()[m - 1].0.0))
+            &&& (m == 0 || inner.entries()[m - 1].0.0 <= dmax as int)
         },
 {
     let ghost es = inner.entries();
-    proof { inner.model(); }
+    proof { inner.model(); lemma_lead(es, dmax as int); }
+    let ghost q = lead(es, dmax as int);
+    proof { if dmax == D_INF { assert forall|i: int| 0 <= i < es.len() implies es[i].0.0 <= dmax as int by {} ; lemma_lower_all(es, dmax as int); } }
     let mut cur = inner.cursor();
     let mut res: Vec<Row> = Vec::new();
     let mut have = false;
@@ -46,6 +69,15 @@ pub fn walk(inner: &Index<Vec<Row>>) -> (res: Vec<Row>)
             forall|i: int| 0 <= i < es.len() ==> rows_finite((#[trigger] es[i]).1@),
             have == (m > 0),
             m > 0 ==> last as int == es[m - 1].0.0,
+            q == lead(es, dmax as int),
+            0 <= q <= es.len(),
+            forall|i: int| 0 <= i < q ==> (#[trigger] es[i]).0.0 <= dmax as int,
+            forall|i: int| q <= i < es.len() ==> (#[trigger] es[i]).0.0 > dmax as int,
+            forall|i: int| 0 <= i < es.len() ==> (#[trigger] es[i]).1@.len() > 0,
+            dmax == D_INF || q >= 100,
+            dmax == D_INF ==> q == es.len(),
+            m <= q,
+            res@.len() >= m,
         decreases cur.work(),
     {
         let ghost before = cur.remaining();
@@ -54,6 +86,8 @@ pub fn walk(inner: &Index<Vec<Row>>) -> (res: Vec<Row>)
                 proof {
                     assert(es.skip(m).len() == 0);
                     assert(m == es.len());
+                    assert(m == q);
+                    assert(m == 0 || es[m - 1].0.0 <= dmax as int);
                 }
                 return res;
             }
@@ -72,8 +106,22 @@ pub fn walk(inner: &Index<Vec<Row>>) -> (res: Vec<Row>)
                         assert(k.number as int != es[m - 1].0.0);
                         assert(key_lt(es[m - 1].0, es[m].0));
                         assert(es[m].0.0 > es[m - 1].0.0);
+                        assert(m <= q);
+                        assert(es[m - 1].0.0 <= dmax as int);
                     }
                     return res;
+                }
+                proof {
+                    if m == q {
+                        // the first entry beyond the threshold: a hundred rows are in, so the walk stops here
+                        assert(dmax != D_INF);
+                        assert(es[m].0.0 > dmax as int);
+                        assert(res@.len() >= 100);
+                        assert(have);
+                        assert(es[m - 1].0.0 <= dmax as int);
+                        assert(k.number as int != last as int);
+                        assert(false);
+                    }
                 }
                 let ghost base = res@;
                 proof { assert(rows_finite(es[m].1@)); assert(*cell == es[m].1); }
@@ -106,6 +154,8 @@ pub fn walk(inner: &Index<Vec<Row>>) -> (res: Vec<Row>)
                     assert(cell@.take(cell@.len() as int) =~= cell@);
                     lemma_flat_rows_push(es, m);
                     assert(entry_views(es[m]) == views(cell@));
+                    assert(res@.len() == base.len() + cell@.len());
+                    assert(cell@.len() > 0);
                 }
                 last = k.number;
                 have = true;

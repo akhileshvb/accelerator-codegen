@@ -382,6 +382,7 @@ pub proof fn lemma_flush(
             let base = match cell_at(before, me) { Some(v) => v@, None => Seq::empty() };
             let cell = cell_at(after, me)->0;
             assert(cell_ok(cell_at(before, me), w_ins(w, av, pre), me));
+            assert(cell@.len() >= acc.len() && acc.len() == j - f);
             assert forall|g: spec_fn(OutRow) -> int| #[trigger] sum(views(cell@), g) == fam_w(w_ins(w, av, post), me, g) by {
                 let phi = |e: Ent| if ck_matches(e.ck, me) { g(e.row.view()) } else { 0 };
                 lemma_sum_concat(pre, run, phi);
