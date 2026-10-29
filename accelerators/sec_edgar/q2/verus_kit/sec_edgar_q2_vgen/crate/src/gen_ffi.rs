@@ -460,6 +460,13 @@ pub unsafe extern "C" fn secq2vgens_stage_build(h: *const QHead, sub_build__n: u
     Box::into_raw(Box::new(stage_build(&*h, sub_build__v, num_build__v)))
 }
 
+/// The next version's slot holding a state built by apply (HOST CONTRACT: its database
+/// is that of the version, as for stage_build); consumes the state.
+#[no_mangle]
+pub unsafe extern "C" fn secq2vgens_stage_adopt(h: *const QHead, s: *mut State) -> *mut QStaged {
+    Box::into_raw(Box::new((*h).stage(Some(*Box::from_raw(s)))))
+}
+
 /// The next version's slot, invalid.
 #[no_mangle]
 pub unsafe extern "C" fn secq2vgens_stage_invalid(h: *const QHead) -> *mut QStaged {

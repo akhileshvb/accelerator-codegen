@@ -360,6 +360,7 @@ const kit::Glue kGlue = {
         []() -> std::size_t { return tpchq9vgens_heap_bytes(); },
         []() -> std::size_t { return tpchq9vgens_heap_peak_bytes(); },
         []() { tpchq9vgens_heap_reset_peak(); },
+        [](const void *head, void *state) -> void * { return tpchq9vgens_stage_adopt(static_cast<const tpchq9vgens_head *>(head), static_cast<tpchq9vgen_state *>(state)); },
     }};
 
 const kit::Registrar kRegistrar(&kGlue);

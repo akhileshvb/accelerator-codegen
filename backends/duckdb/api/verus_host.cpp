@@ -171,6 +171,31 @@ struct DuckVerusHost final : verus_kit::Host {
     DeliverChunks(*result, row);
   }
 
+  std::optional<uint64_t> RowEnd(const std::string &table) override {
+    auto lock = LockScan(connection);
+    auto result = ScanConnection(connection).Query("SELECT coalesce(max(rowid) + 1, 0)::UBIGINT FROM " + Quote(table));
+    Require(result && !result->HasError(), result ? result->GetError() : "row end failed");
+    return result->GetValue(0, 0).GetValue<uint64_t>();
+  }
+
+  std::string RowRangeSql(const std::string &table, const std::vector<std::string> &columns, uint64_t lo,
+                          uint64_t hi) const override {
+    std::string cols;
+    for (const auto &c : columns)
+      cols += (cols.empty() ? "" : ", ") + Quote(c);
+    return "SELECT " + cols + " FROM " + Quote(table) + " WHERE rowid >= " + std::to_string(lo) +
+           " AND rowid < " + std::to_string(hi);
+  }
+
+  // A CTE named like the table reads the table (a CTE does not see itself) at positions < hi.
+  std::string RowPrefixSql(const std::vector<std::string> &tables, uint64_t hi) const override {
+    std::string out;
+    for (const auto &t : tables)
+      out += (out.empty() ? "WITH " : ", ") + Quote(t) + " AS NOT MATERIALIZED (SELECT * FROM " + Quote(t) +
+             " WHERE rowid < " + std::to_string(hi) + ")";
+    return out + " ";
+  }
+
   bool QueryBigintList(const std::string &sql, const std::vector<int64_t> &list,
                        const verus_kit::RowFn &row) override {
     auto lock = LockScan(connection);

@@ -109,6 +109,10 @@ secq4vgens_staged *secq4vgens_stage_apply(const secq4vgens_base *b, size_t num_d
    that version; invalid if the kernel cannot build it. */
 secq4vgens_staged *secq4vgens_stage_build(const secq4vgens_head *h, size_t sub__n, const uint8_t *sub__adsh, const size_t *sub__adsh__off, const int64_t *sub__cik, const uint8_t *sub__cik__null, const int64_t *sub__sic, const uint8_t *sub__sic__null, size_t tag__n, const uint8_t *tag__tag, const size_t *tag__tag__off, const uint8_t *tag__version, const size_t *tag__version__off, const int64_t *tag__abstract_, const uint8_t *tag__abstract___null, const uint8_t *tag__tlabel, const size_t *tag__tlabel__off, const uint8_t *tag__tlabel__null, size_t nums__n, const uint8_t *nums__adsh, const size_t *nums__adsh__off, const uint8_t *nums__adsh__null, const uint8_t *nums__tag, const size_t *nums__tag__off, const uint8_t *nums__tag__null, const uint8_t *nums__version, const size_t *nums__version__off, const uint8_t *nums__version__null, const uint8_t *nums__uom, const size_t *nums__uom__off, const uint8_t *nums__uom__null, const uint64_t *nums__value, const uint8_t *nums__value__null, size_t pres__n, const uint8_t *pres__adsh, const size_t *pres__adsh__off, const uint8_t *pres__adsh__null, const uint8_t *pres__stmt, const size_t *pres__stmt__off, const uint8_t *pres__stmt__null, const uint8_t *pres__tag, const size_t *pres__tag__off, const uint8_t *pres__tag__null, const uint8_t *pres__version, const size_t *pres__version__off, const uint8_t *pres__version__null);
 
+/* The next version's slot holding a state built by apply (HOST CONTRACT: its database
+   is that of the version, as for stage_build); consumes the state. */
+secq4vgens_staged *secq4vgens_stage_adopt(const secq4vgens_head *h, secq4vgen_state *s);
+
 /* The next version's slot, invalid. */
 secq4vgens_staged *secq4vgens_stage_invalid(const secq4vgens_head *h);
 

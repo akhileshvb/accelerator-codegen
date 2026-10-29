@@ -233,6 +233,7 @@ const kit::Glue kGlue = {
         []() -> std::size_t { return tpchq17vgens_heap_bytes(); },
         []() -> std::size_t { return tpchq17vgens_heap_peak_bytes(); },
         []() { tpchq17vgens_heap_reset_peak(); },
+        [](const void *head, void *state) -> void * { return tpchq17vgens_stage_adopt(static_cast<const tpchq17vgens_head *>(head), static_cast<tpchq17vgen_state *>(state)); },
     },
 };
 

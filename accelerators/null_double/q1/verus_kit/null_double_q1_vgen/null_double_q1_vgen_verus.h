@@ -94,6 +94,10 @@ nulldoubleq1vgens_staged *nulldoubleq1vgens_stage_apply(const nulldoubleq1vgens_
    that version; invalid if the kernel cannot build it. */
 nulldoubleq1vgens_staged *nulldoubleq1vgens_stage_build(const nulldoubleq1vgens_head *h, size_t num__n, const nulldoubleq1vgen_num_rt *num);
 
+/* The next version's slot holding a state built by apply (HOST CONTRACT: its database
+   is that of the version, as for stage_build); consumes the state. */
+nulldoubleq1vgens_staged *nulldoubleq1vgens_stage_adopt(const nulldoubleq1vgens_head *h, nulldoubleq1vgen_state *s);
+
 /* The next version's slot, invalid. */
 nulldoubleq1vgens_staged *nulldoubleq1vgens_stage_invalid(const nulldoubleq1vgens_head *h);
 

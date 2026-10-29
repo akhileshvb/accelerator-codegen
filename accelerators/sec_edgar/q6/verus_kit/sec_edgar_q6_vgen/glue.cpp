@@ -482,6 +482,7 @@ const kit::Glue kGlue = {
         /* heap_bytes */ []() -> size_t { return secq6vgens_heap_bytes(); },
         /* heap_peak_bytes */ []() -> size_t { return secq6vgens_heap_peak_bytes(); },
         /* heap_reset_peak */ []() { secq6vgens_heap_reset_peak(); },
+        /* stage_adopt */ [](const void *hd, void *st) -> void * { return secq6vgens_stage_adopt(static_cast<const secq6vgens_head *>(hd), static_cast<secq6vgen_state *>(st)); },
     },
 };
 

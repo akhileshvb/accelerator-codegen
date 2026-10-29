@@ -34,6 +34,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -127,6 +128,14 @@ public:
   // The engine's attribute numbers (0-based) of table.columns, by name.
   virtual std::vector<int32_t> Attnums(const std::string &table,
                                        const std::vector<std::string> &columns) = 0;
+  // Build by apply (a build whose memory does not scale with the table sizes): the rows of a
+  // table sit at positions 0 .. RowEnd(table) - 1 (some may be deleted); nullopt: the engine
+  // has no stable row positions, the build reads whole scans.
+  virtual std::optional<uint64_t> RowEnd(const std::string &) { return std::nullopt; }
+  // SQL of `columns` of `table` for the rows at positions [lo, hi).
+  virtual std::string RowRangeSql(const std::string &, const std::vector<std::string> &, uint64_t, uint64_t) const { return {}; }
+  // A prefix for a SELECT after which each of `tables` reads as its rows at positions < hi.
+  virtual std::string RowPrefixSql(const std::vector<std::string> &, uint64_t) const { return {}; }
   // A quoted identifier.
   virtual std::string Quote(const std::string &identifier) const;
   // A text literal (standard SQL: quotes doubled).
@@ -181,6 +190,7 @@ struct StoreOps {
   std::size_t (*heap_bytes)();      // the library's live Rust heap (substrate/verus/heap)
   std::size_t (*heap_peak_bytes)(); // its peak since the last reset
   void (*heap_reset_peak)();
+  void *(*stage_adopt)(const void *head, void *state); // the next slot holding a state built by apply
 };
 
 struct Glue {
