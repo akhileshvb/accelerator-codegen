@@ -1,0 +1,12 @@
+-- The LIKE pattern is the query parameter $1; scans/deltas carry the order comment.
+-- Customer multiplicities are required: the schema does not promise uniqueness.
+scan customers AS CustomerScan: SELECT c_custkey FROM customer;
+-- Keep order counts even for keys with no current customer.
+scan orders AS OrderScan:
+  SELECT o_custkey, o_comment FROM orders;
+
+delta customer AS CustomerDelta OF CustomerInput:
+  SELECT c_custkey FROM customer;
+-- Order identity is irrelevant to COUNT of this NOT NULL column.
+delta orders AS OrderDelta:
+  SELECT o_custkey, o_comment FROM orders;

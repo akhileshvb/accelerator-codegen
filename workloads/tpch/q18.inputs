@@ -1,0 +1,16 @@
+-- Build only the projections used by the spec; lineitems are aggregated away.
+scan line_quantities AS LineQuantityScan:
+  SELECT l_orderkey, l_quantity FROM lineitem;
+scan order_groups AS OrderGroupScan:
+  SELECT o_orderkey, o_custkey, o_orderdate, o_totalprice FROM orders;
+scan customer_names AS CustomerNameScan:
+  SELECT c_custkey, c_name FROM customer;
+
+-- Each projection is lossless with respect to its frozen spec row type.
+-- Fresh runtime OF names avoid collisions with the spec's types.
+delta lineitem AS LineQuantityDelta OF LineQuantityInput:
+  SELECT l_orderkey, l_quantity FROM lineitem;
+delta orders AS OrderGroupDelta OF OrderGroupInput:
+  SELECT o_orderkey, o_custkey, o_orderdate, o_totalprice FROM orders;
+delta customer AS CustomerNameDelta OF CustomerNameInput:
+  SELECT c_custkey, c_name FROM customer;

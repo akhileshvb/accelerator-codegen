@@ -1,0 +1,12 @@
+-- All dates are needed: day_offset is not fixed at build time.
+-- This is the minimal lossless projection of the frozen spec, not the full table.
+scan lineitem_build AS LineitemInput:
+    SELECT l_quantity, l_extendedprice, l_discount, l_tax,
+           l_returnflag, l_linestatus, l_shipdate
+    FROM lineitem;
+
+-- Old and new values supply every additive contribution, so no rescan is needed.
+delta lineitem AS LineitemDelta OF LineitemInput:
+    SELECT l_quantity, l_extendedprice, l_discount, l_tax,
+           l_returnflag, l_linestatus, l_shipdate
+    FROM lineitem;

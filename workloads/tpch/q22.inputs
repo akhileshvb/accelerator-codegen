@@ -1,0 +1,19 @@
+-- Build order multiplicities before folding positive customers into aggregates.
+scan order_customer_keys AS OrderInput:
+  SELECT o_custkey FROM orders;
+
+scan positive_customers AS CustomerInput:
+  SELECT c_custkey, c_phone, c_acctbal FROM customer
+  WHERE c_acctbal > 0.00;
+
+-- Needed only when a transaction changes a key's order-existence predicate.
+-- Do not filter by NOT EXISTS: old contributions must remain recoverable.
+rescan positive_customers_by_key AS CustomerInput KEYS c_custkey:
+  SELECT c_custkey, c_phone, c_acctbal FROM customer
+  WHERE c_acctbal > 0.00;
+
+delta customer AS CustomerDelta OF CustomerInput:
+  SELECT c_custkey, c_phone, c_acctbal FROM customer;
+
+delta orders AS OrdersDelta OF OrderInput:
+  SELECT o_custkey FROM orders;

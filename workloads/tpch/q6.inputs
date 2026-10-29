@@ -1,0 +1,9 @@
+-- Keep every predicate coordinate: all four parameters are unrestricted.
+-- This is lossless relative to the spec, but omits unused base-table columns.
+-- LineitemInput is a fresh runtime type shared by scan and capture.
+-- Price-only changes require both operands even when the key/count is unchanged.
+scan lineitem_cube AS LineitemInput:
+  SELECT l_quantity, l_extendedprice, l_discount, l_shipdate FROM lineitem;
+
+delta lineitem AS LineitemDelta OF LineitemInput:
+  SELECT l_quantity, l_extendedprice, l_discount, l_shipdate FROM lineitem;

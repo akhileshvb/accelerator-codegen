@@ -1,0 +1,18 @@
+-- All projections are parameter-independent. Bags and duplicate join rows matter.
+scan partsupp_profiles AS PartsuppInput:
+  SELECT ps_partkey, ps_suppkey, ps_availqty, ps_supplycost FROM partsupp;
+scan supplier_links AS SupplierInput:
+  SELECT s_suppkey, s_nationkey FROM supplier;
+scan nation_names AS NationInput:
+  SELECT n_nationkey, n_name FROM nation;
+
+-- No rescans: retain profiles and stable nation-key inventories for orphan keys.
+-- Nation names select weighted inventory views; singleton names need no rescan.
+-- These are lossless with respect to the spec, not to the complete schema.
+-- Unused comments, addresses and all other columns are deliberately omitted.
+delta partsupp AS PartsuppDelta OF PartsuppInput:
+  SELECT ps_partkey, ps_suppkey, ps_availqty, ps_supplycost FROM partsupp;
+delta supplier AS SupplierDelta OF SupplierInput:
+  SELECT s_suppkey, s_nationkey FROM supplier;
+delta nation AS NationDelta OF NationInput:
+  SELECT n_nationkey, n_name FROM nation;

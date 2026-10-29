@@ -1,0 +1,19 @@
+-- All dates and all lineitem supplier keys matter to the scalar MAX,
+-- including keys with no matching supplier row.
+scan lines AS LineInput:
+  SELECT l_suppkey, l_extendedprice, l_discount, l_shipdate FROM lineitem;
+
+scan suppliers AS SupplierInput:
+  SELECT s_suppkey, s_name, s_address, s_phone FROM supplier;
+
+-- Each coarse (256-day bucket, supplier) entry owns one bounded profile,
+-- not a persistent map of daily leaves. Exact dates are still needed to
+-- update that profile and to answer arbitrary partial-edge windows.
+-- These projections are lossless relative to the frozen query spec, not
+-- relative to the full base-table schema. No rescan is necessary; the
+-- inputs language does not offer parameter-dependent execute-time rescans.
+delta lineitem AS LineDelta OF LineInput:
+  SELECT l_suppkey, l_extendedprice, l_discount, l_shipdate FROM lineitem;
+
+delta supplier AS SupplierDelta OF SupplierInput:
+  SELECT s_suppkey, s_name, s_address, s_phone FROM supplier;

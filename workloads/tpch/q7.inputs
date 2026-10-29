@@ -1,0 +1,57 @@
+scan suppliers AS SupplierInput:
+  SELECT s_suppkey, s_nationkey FROM supplier;
+
+scan customers AS CustomerInput:
+  SELECT c_custkey, c_nationkey FROM customer;
+
+scan nations AS NationInput:
+  SELECT n_nationkey, n_name FROM nation;
+
+scan relevant_orders AS OrderInput:
+  SELECT o_orderkey, o_custkey FROM orders
+  WHERE EXISTS (
+    SELECT 1 FROM lineitem
+    WHERE l_orderkey = o_orderkey
+      AND l_shipdate BETWEEN DATE '1995-01-01' AND DATE '1996-12-31'
+  );
+
+scan window_lines AS LineInput:
+  SELECT l_orderkey, l_suppkey, l_extendedprice, l_discount, l_shipdate
+  FROM lineitem
+  WHERE l_shipdate BETWEEN DATE '1995-01-01' AND DATE '1996-12-31';
+
+rescan relevant_orders_for_keys AS OrderInput KEYS o_orderkey:
+  SELECT o_orderkey, o_custkey FROM orders
+  WHERE EXISTS (
+    SELECT 1 FROM lineitem
+    WHERE l_orderkey = o_orderkey
+      AND l_shipdate BETWEEN DATE '1995-01-01' AND DATE '1996-12-31'
+  );
+
+rescan window_lines_for_orders AS LineInput KEYS l_orderkey:
+  SELECT l_orderkey, l_suppkey, l_extendedprice, l_discount, l_shipdate
+  FROM lineitem
+  WHERE l_shipdate BETWEEN DATE '1995-01-01' AND DATE '1996-12-31';
+
+rescan window_lines_for_suppliers AS LineInput KEYS l_suppkey:
+  SELECT l_orderkey, l_suppkey, l_extendedprice, l_discount, l_shipdate
+  FROM lineitem
+  WHERE l_shipdate BETWEEN DATE '1995-01-01' AND DATE '1996-12-31';
+
+delta supplier AS SupplierDelta OF SupplierInput:
+  SELECT s_suppkey, s_nationkey FROM supplier;
+
+delta customer AS CustomerDelta OF CustomerInput:
+  SELECT c_custkey, c_nationkey FROM customer;
+
+delta nation AS NationDelta OF NationInput:
+  SELECT n_nationkey, n_name FROM nation;
+
+delta orders AS OrderDelta:
+  SELECT o_orderkey FROM orders;
+
+delta lineitem AS LineDelta:
+  SELECT l_orderkey, l_suppkey, l_extendedprice, l_discount,
+    (l_shipdate >= DATE '1995-01-01' AND l_shipdate <= DATE '1995-12-31') AS ship_1995,
+    (l_shipdate >= DATE '1996-01-01' AND l_shipdate <= DATE '1996-12-31') AS ship_1996
+  FROM lineitem;

@@ -1,0 +1,19 @@
+scan parts AS PartInput: SELECT p_partkey, p_type FROM part;
+scan suppliers AS SupplierInput: SELECT s_suppkey, s_nationkey FROM supplier;
+scan customers AS CustomerInput: SELECT c_custkey, c_nationkey FROM customer;
+scan window_orders AS OrderInput: SELECT o_orderkey, o_custkey, o_orderdate FROM orders WHERE o_orderdate >= DATE '1995-01-01' AND o_orderdate <= DATE '1996-12-31';
+scan lines AS LineInput: SELECT l_orderkey, l_partkey, l_suppkey, l_extendedprice, l_discount FROM lineitem WHERE EXISTS (SELECT 1 FROM orders WHERE o_orderkey = l_orderkey AND o_orderdate >= DATE '1995-01-01' AND o_orderdate <= DATE '1996-12-31');
+scan nations AS NationInput: SELECT n_nationkey, n_name, n_regionkey FROM nation;
+scan regions AS RegionInput: SELECT r_regionkey, r_name FROM region;
+
+rescan lines_for_orders AS LineInput KEYS l_orderkey: SELECT l_orderkey, l_partkey, l_suppkey, l_extendedprice, l_discount FROM lineitem;
+rescan lines_for_parts AS LineInput KEYS l_partkey: SELECT l_orderkey, l_partkey, l_suppkey, l_extendedprice, l_discount FROM lineitem;
+rescan lines_for_suppliers AS LineInput KEYS l_suppkey: SELECT l_orderkey, l_partkey, l_suppkey, l_extendedprice, l_discount FROM lineitem;
+
+delta part AS PartDelta OF PartInput: SELECT p_partkey, p_type FROM part;
+delta supplier AS SupplierDelta OF SupplierInput: SELECT s_suppkey, s_nationkey FROM supplier;
+delta customer AS CustomerDelta OF CustomerInput: SELECT c_custkey, c_nationkey FROM customer;
+delta orders AS OrderDelta: SELECT o_orderkey, o_custkey, o_orderdate >= DATE '1995-01-01' AND o_orderdate <= DATE '1995-12-31' AS in_1995, o_orderdate >= DATE '1996-01-01' AND o_orderdate <= DATE '1996-12-31' AS in_1996 FROM orders;
+delta lineitem AS LineDelta OF LineInput: SELECT l_orderkey, l_partkey, l_suppkey, l_extendedprice, l_discount FROM lineitem;
+delta nation AS NationDelta OF NationInput: SELECT n_nationkey, n_name, n_regionkey FROM nation;
+delta region AS RegionDelta OF RegionInput: SELECT r_regionkey, r_name FROM region;

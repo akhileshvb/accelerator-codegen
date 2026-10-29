@@ -1,0 +1,14 @@
+-- Build only the projections needed by the fact moments and dimension bags.
+scan customers AS CustomerInput: SELECT c_custkey, c_name, c_address, c_nationkey, c_phone, c_acctbal, c_comment FROM customer;
+scan nations AS NationInput: SELECT n_nationkey, n_name FROM nation;
+scan orders AS OrderInput: SELECT o_orderkey, o_custkey, o_orderdate FROM orders;
+scan returned_lines AS ReturnedLineInput: SELECT l_orderkey, l_extendedprice, l_discount FROM lineitem WHERE l_returnflag = 'R';
+
+-- Both neighborhoods are post-transaction bags. Keys are affected order keys.
+rescan orders_for_keys AS OrderInput KEYS o_orderkey: SELECT o_orderkey, o_custkey, o_orderdate FROM orders;
+rescan returned_lines_for_keys AS ReturnedLineInput KEYS l_orderkey: SELECT l_orderkey, l_extendedprice, l_discount FROM lineitem WHERE l_returnflag = 'R';
+
+delta customer AS CustomerDelta OF CustomerInput: SELECT c_custkey, c_name, c_address, c_nationkey, c_phone, c_acctbal, c_comment FROM customer;
+delta nation AS NationDelta OF NationInput: SELECT n_nationkey, n_name FROM nation;
+delta orders AS OrderDelta OF OrderInput: SELECT o_orderkey, o_custkey, o_orderdate FROM orders;
+delta lineitem AS LineDelta: SELECT l_orderkey, l_extendedprice, l_discount, l_returnflag = 'R' AS is_returned FROM lineitem;

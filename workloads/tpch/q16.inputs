@@ -1,0 +1,12 @@
+scan parts AS PartInput: SELECT p_partkey, p_brand, p_type, p_size FROM part;
+scan edges AS EdgeInput: SELECT ps_partkey, ps_suppkey FROM partsupp;
+scan blockers AS BlockerInput: SELECT s_suppkey FROM supplier WHERE s_comment LIKE '%Customer%Complaints%';
+
+rescan edges_for_parts AS EdgeInput KEYS ps_partkey: SELECT ps_partkey, ps_suppkey FROM partsupp;
+rescan edges_for_suppliers AS EdgeInput KEYS ps_suppkey: SELECT ps_partkey, ps_suppkey FROM partsupp;
+rescan parts_for_neighbors AS PartInput KEYS p_partkey: SELECT p_partkey, p_brand, p_type, p_size FROM part;
+rescan blockers_for_suppliers AS BlockerInput KEYS s_suppkey: SELECT s_suppkey FROM supplier WHERE s_comment LIKE '%Customer%Complaints%';
+
+delta part AS PartDelta OF PartInput: SELECT p_partkey, p_brand, p_type, p_size FROM part;
+delta partsupp AS EdgeDelta OF EdgeInput: SELECT ps_partkey, ps_suppkey FROM partsupp;
+delta supplier AS SupplierDelta: SELECT s_suppkey, s_comment LIKE '%Customer%Complaints%' AS is_blocker FROM supplier;

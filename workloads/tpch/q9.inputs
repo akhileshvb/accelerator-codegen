@@ -1,0 +1,59 @@
+-- LIKE pattern is a runtime parameter ($1).  The kernel keeps a rollup for the
+-- tracked patterns '%color%' (the 92 TPC-H colors) and answers those exactly; every
+-- other pattern is declined.  Scans are unfiltered; keyed rescans give the lines
+-- and orders a write touches.
+scan all_parts AS PartIn:
+  SELECT p_partkey, p_name FROM part;
+
+scan all_orders AS OrderIn:
+  SELECT o_orderkey, o_orderdate FROM orders;
+
+scan supplier_nations AS SupplierIn:
+  SELECT s_suppkey, s_nationkey FROM supplier;
+
+scan nation_names AS NationIn:
+  SELECT n_nationkey, n_name FROM nation;
+
+scan all_partsupp AS PartsuppIn:
+  SELECT ps_partkey, ps_suppkey, ps_supplycost FROM partsupp;
+
+scan all_lines AS LineIn:
+  SELECT l_orderkey, l_partkey, l_suppkey,
+         l_quantity, l_extendedprice, l_discount FROM lineitem;
+
+rescan lines_for_orders AS LineIn KEYS l_orderkey:
+  SELECT l_orderkey, l_partkey, l_suppkey,
+         l_quantity, l_extendedprice, l_discount FROM lineitem;
+
+rescan lines_for_parts AS LineIn KEYS l_partkey:
+  SELECT l_orderkey, l_partkey, l_suppkey,
+         l_quantity, l_extendedprice, l_discount FROM lineitem;
+
+rescan lines_for_suppliers AS LineIn KEYS l_suppkey:
+  SELECT l_orderkey, l_partkey, l_suppkey,
+         l_quantity, l_extendedprice, l_discount FROM lineitem;
+
+rescan partsupp_for_parts AS PartsuppIn KEYS ps_partkey:
+  SELECT ps_partkey, ps_suppkey, ps_supplycost FROM partsupp;
+
+rescan orders_for_keys AS OrderIn KEYS o_orderkey:
+  SELECT o_orderkey, o_orderdate FROM orders;
+
+delta part AS PartDelta OF PartIn:
+  SELECT p_partkey, p_name FROM part;
+
+delta orders AS OrderDelta OF OrderIn:
+  SELECT o_orderkey, o_orderdate FROM orders;
+
+delta supplier AS SupplierDelta OF SupplierIn:
+  SELECT s_suppkey, s_nationkey FROM supplier;
+
+delta nation AS NationDelta OF NationIn:
+  SELECT n_nationkey, n_name FROM nation;
+
+delta partsupp AS PartsuppDelta OF PartsuppIn:
+  SELECT ps_partkey, ps_suppkey, ps_supplycost FROM partsupp;
+
+delta lineitem AS LineDelta OF LineIn:
+  SELECT l_orderkey, l_partkey, l_suppkey,
+         l_quantity, l_extendedprice, l_discount FROM lineitem;

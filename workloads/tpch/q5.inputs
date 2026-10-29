@@ -1,0 +1,61 @@
+scan customers AS CustomerInput:
+  SELECT c_custkey, c_nationkey FROM customer;
+
+scan orders AS OrdersInput:
+  SELECT o_orderkey, o_custkey, o_orderdate FROM orders;
+
+scan suppliers AS SupplierInput:
+  SELECT s_suppkey, s_nationkey FROM supplier;
+
+scan nations AS NationInput:
+  SELECT n_nationkey, n_name, n_regionkey FROM nation;
+
+scan regions AS RegionInput:
+  SELECT r_regionkey, r_name FROM region;
+
+-- Only the domestic four-table join contributes to the nation/date profile.
+-- Do not filter by nation/region presence: their joins are deferred to execute.
+scan lines AS LineitemInput:
+  SELECT l_orderkey, l_suppkey, l_extendedprice, l_discount
+  FROM lineitem l
+  WHERE EXISTS (
+    SELECT 1 FROM orders o
+    WHERE o.o_orderkey = l.l_orderkey
+      AND EXISTS (
+        SELECT 1 FROM customer c
+        WHERE c.c_custkey = o.o_custkey
+          AND EXISTS (
+            SELECT 1 FROM supplier s
+            WHERE s.s_suppkey = l.l_suppkey
+              AND s.s_nationkey = c.c_nationkey
+          )
+      )
+  );
+
+-- Post-transaction neighborhoods must be unfiltered, even after dimension
+-- deletes or nation changes. Overlap is partitioned by order-key membership.
+rescan lines_for_orders AS LineitemInput KEYS l_orderkey:
+  SELECT l_orderkey, l_suppkey, l_extendedprice, l_discount FROM lineitem;
+
+rescan lines_for_suppliers AS LineitemInput KEYS l_suppkey:
+  SELECT l_orderkey, l_suppkey, l_extendedprice, l_discount FROM lineitem;
+
+-- Lossless relative to the spec, minimal relative to the physical tables.
+-- In particular, retain date/nation/measure/text changes at unchanged keys.
+delta customer AS CustomerDelta OF CustomerInput:
+  SELECT c_custkey, c_nationkey FROM customer;
+
+delta orders AS OrdersDelta OF OrdersInput:
+  SELECT o_orderkey, o_custkey, o_orderdate FROM orders;
+
+delta lineitem AS LineitemDelta OF LineitemInput:
+  SELECT l_orderkey, l_suppkey, l_extendedprice, l_discount FROM lineitem;
+
+delta supplier AS SupplierDelta OF SupplierInput:
+  SELECT s_suppkey, s_nationkey FROM supplier;
+
+delta nation AS NationDelta OF NationInput:
+  SELECT n_nationkey, n_name, n_regionkey FROM nation;
+
+delta region AS RegionDelta OF RegionInput:
+  SELECT r_regionkey, r_name FROM region;

@@ -1,0 +1,39 @@
+-- Parameter-independent inputs: every part (the name pattern is applied at read time),
+-- every partsupp and lineitem row (windows and pattern are applied at read time).
+scan parts AS PartInput:
+  SELECT p_partkey, p_name FROM part;
+
+scan stocks AS StockInput:
+  SELECT ps_partkey, ps_suppkey, ps_availqty FROM partsupp;
+
+scan shipments AS ShipmentInput:
+  SELECT l_partkey, l_suppkey, l_quantity, l_shipdate FROM lineitem;
+
+scan suppliers AS SupplierInput:
+  SELECT s_suppkey, s_name, s_address, s_nationkey FROM supplier;
+
+scan nations AS NationInput:
+  SELECT n_nationkey, n_name FROM nation;
+
+-- Post-transaction rows for parts whose count becomes positive.
+-- Keep these broader than the build scans; apply checks key coverage.
+rescan stocks_for_parts AS StockInput KEYS ps_partkey:
+  SELECT ps_partkey, ps_suppkey, ps_availqty FROM partsupp;
+
+rescan shipments_for_parts AS ShipmentInput KEYS l_partkey:
+  SELECT l_partkey, l_suppkey, l_quantity, l_shipdate FROM lineitem;
+
+delta part AS PartDelta OF PartInput:
+  SELECT p_partkey, p_name FROM part;
+
+delta partsupp AS PartsuppDelta OF StockInput:
+  SELECT ps_partkey, ps_suppkey, ps_availqty FROM partsupp;
+
+delta lineitem AS LineitemDelta OF ShipmentInput:
+  SELECT l_partkey, l_suppkey, l_quantity, l_shipdate FROM lineitem;
+
+delta supplier AS SupplierDelta OF SupplierInput:
+  SELECT s_suppkey, s_name, s_address, s_nationkey FROM supplier;
+
+delta nation AS NationDelta OF NationInput:
+  SELECT n_nationkey, n_name FROM nation;

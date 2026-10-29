@@ -1,0 +1,23 @@
+-- All dates, segments, duplicates, and initially unmatched rows must be retained.
+scan customers AS CustomerInput:
+  SELECT c_custkey, c_mktsegment FROM customer;
+scan orders AS OrderInput:
+  SELECT o_orderkey, o_custkey, o_orderdate, o_shippriority FROM orders;
+scan shipments AS ShipmentInput:
+  SELECT l_orderkey, l_shipdate, l_extendedprice, l_discount FROM lineitem;
+
+-- Both selectors return F: the union of keys in the two raw fact captures.
+-- These are unfiltered post-transaction neighborhoods, batched by orderkey.
+-- Customer-only changes reach their orders through the retained reverse index V(c,k),
+-- not an orders-by-custkey rescan; those transactions select no rescan keys.
+rescan orders_by_key AS OrderInput KEYS o_orderkey:
+  SELECT o_orderkey, o_custkey, o_orderdate, o_shippriority FROM orders;
+rescan shipments_by_key AS ShipmentInput KEYS l_orderkey:
+  SELECT l_orderkey, l_shipdate, l_extendedprice, l_discount FROM lineitem;
+
+delta customer AS CustomerDelta OF CustomerInput:
+  SELECT c_custkey, c_mktsegment FROM customer;
+delta orders AS OrderKeyDelta:
+  SELECT o_orderkey FROM orders;
+delta lineitem AS ShipmentKeyDelta:
+  SELECT l_orderkey FROM lineitem;

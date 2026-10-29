@@ -1,23 +1,33 @@
--- Kernel inputs for TPC-H Q21 (as declared by analysis).
-scan supplier AS SupE:
-  SELECT s_suppkey AS sk, s_name AS name, s_nationkey AS nk FROM supplier;
-scan nation AS NatE:
-  SELECT n_nationkey AS nk, n_name AS name FROM nation;
-scan forders:
-  SELECT o_orderkey FROM orders WHERE o_orderstatus = 'F';
-scan flineitem AS LiRow:
-  SELECT l_orderkey AS orderkey, l_suppkey AS suppkey, l_commitdate AS commitdate, l_receiptdate AS receiptdate
-  FROM lineitem l
-  WHERE EXISTS (SELECT 1 FROM orders o WHERE o.o_orderkey = l.l_orderkey AND o.o_orderstatus = 'F');
-rescan lineitem AS LiRow KEYS l_orderkey:
-  SELECT l_orderkey AS orderkey, l_suppkey AS suppkey, l_commitdate AS commitdate, l_receiptdate AS receiptdate
-  FROM lineitem;
-delta lineitem AS LiDelta OF LiRow:
-  SELECT l_orderkey AS orderkey, l_suppkey AS suppkey, l_commitdate AS commitdate, l_receiptdate AS receiptdate
-  FROM lineitem;
-delta nation OF NatE:
-  SELECT n_nationkey AS nk, n_name AS name FROM nation;
-delta orders AS OrdDelta:
-  SELECT o_orderkey AS orderkey, o_orderstatus = 'F' AS status_is_f FROM orders;
-delta supplier OF SupE:
-  SELECT s_suppkey AS sk, s_name AS name, s_nationkey AS nk FROM supplier;
+-- Build only potentially contributing lines; preserve their bag multiplicities.
+scan waiting_lines AS WaitingLine: SELECT l_orderkey, l_suppkey
+FROM lineitem l1
+WHERE l_receiptdate > l_commitdate
+  AND EXISTS (SELECT * FROM orders o WHERE o.o_orderkey = l1.l_orderkey AND o.o_orderstatus = 'F')
+  AND EXISTS (SELECT * FROM lineitem l2 WHERE l2.l_orderkey = l1.l_orderkey AND l2.l_suppkey <> l1.l_suppkey)
+  AND NOT EXISTS (SELECT * FROM lineitem l3 WHERE l3.l_orderkey = l1.l_orderkey AND l3.l_suppkey <> l1.l_suppkey AND l3.l_receiptdate > l3.l_commitdate);
+
+-- Count finished-order duplicates, without retaining the orders relation.
+scan finished_orders AS FinishedOrder: SELECT o_orderkey FROM orders o
+WHERE o_orderstatus = 'F'
+  AND EXISTS (SELECT * FROM lineitem l1
+              WHERE l1.l_orderkey = o.o_orderkey AND l1.l_receiptdate > l1.l_commitdate
+                AND EXISTS (SELECT * FROM lineitem l2 WHERE l2.l_orderkey = l1.l_orderkey AND l2.l_suppkey <> l1.l_suppkey)
+                AND NOT EXISTS (SELECT * FROM lineitem l3 WHERE l3.l_orderkey = l1.l_orderkey AND l3.l_suppkey <> l1.l_suppkey AND l3.l_receiptdate > l3.l_commitdate));
+scan suppliers AS SupplierScan: SELECT s_suppkey, s_name, s_nationkey FROM supplier;
+scan nations AS NationScan: SELECT n_nationkey, n_name FROM nation;
+
+-- Complete post-transaction neighborhoods, including non-late lines and orphans.
+rescan order_lines AS OrderLine KEYS l_orderkey:
+SELECT l_orderkey, l_suppkey, l_commitdate, l_receiptdate FROM lineitem;
+rescan order_finished AS OrderFinished KEYS o_orderkey:
+SELECT o_orderkey FROM orders WHERE o_orderstatus = 'F';
+
+-- Column-to-column comparisons cannot be computed in a lossy delta.
+delta lineitem AS LineitemDelta OF LineitemInput:
+SELECT l_orderkey, l_suppkey, l_commitdate, l_receiptdate FROM lineitem;
+delta orders AS OrdersDelta:
+SELECT o_orderkey, o_orderstatus = 'F' AS is_finished FROM orders;
+delta supplier AS SupplierDelta OF SupplierInput:
+SELECT s_suppkey, s_name, s_nationkey FROM supplier;
+delta nation AS NationDelta OF NationInput:
+SELECT n_nationkey, n_name FROM nation;

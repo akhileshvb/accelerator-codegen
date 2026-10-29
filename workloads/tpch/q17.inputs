@@ -1,0 +1,14 @@
+scan lines AS LineInput:
+  SELECT l_partkey, l_quantity, l_extendedprice FROM lineitem;
+
+scan parts AS PartInput:
+  SELECT p_partkey, p_brand, p_container FROM part;
+
+rescan lines_for_parts AS LineInput KEYS l_partkey:
+  SELECT l_partkey, l_quantity, l_extendedprice FROM lineitem;
+
+delta lineitem AS LineKeyDelta:
+  SELECT l_partkey FROM lineitem;
+
+delta part AS PartDelta OF PartInput:
+  SELECT p_partkey, p_brand, p_container FROM part;

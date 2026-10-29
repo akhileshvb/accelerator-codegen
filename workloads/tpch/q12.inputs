@@ -1,0 +1,32 @@
+scan high_orders AS OrderKeyInput:
+SELECT o_orderkey FROM orders
+WHERE o_orderpriority = '1-URGENT' OR o_orderpriority = '2-HIGH';
+
+scan low_orders AS OrderKeyInput:
+SELECT o_orderkey FROM orders
+WHERE o_orderpriority <> '1-URGENT' AND o_orderpriority <> '2-HIGH';
+
+scan qualifying_lines AS QualifyingLineInput:
+SELECT l_orderkey, l_receiptdate, l_shipmode FROM lineitem
+WHERE l_commitdate < l_receiptdate AND l_shipdate < l_commitdate;
+
+rescan high_orders_for_keys AS OrderKeyInput KEYS o_orderkey:
+SELECT o_orderkey FROM orders
+WHERE o_orderpriority = '1-URGENT' OR o_orderpriority = '2-HIGH';
+
+rescan low_orders_for_keys AS OrderKeyInput KEYS o_orderkey:
+SELECT o_orderkey FROM orders
+WHERE o_orderpriority <> '1-URGENT' AND o_orderpriority <> '2-HIGH';
+
+rescan qualifying_lines_for_keys AS QualifyingLineInput KEYS l_orderkey:
+SELECT l_orderkey, l_receiptdate, l_shipmode FROM lineitem
+WHERE l_commitdate < l_receiptdate AND l_shipdate < l_commitdate;
+
+delta orders AS OrderDelta:
+SELECT o_orderkey,
+       (o_orderpriority = '1-URGENT' OR o_orderpriority = '2-HIGH') AS is_high
+FROM orders;
+
+delta lineitem AS LineDelta OF LineCaptureInput:
+SELECT l_orderkey, l_shipdate, l_commitdate, l_receiptdate, l_shipmode
+FROM lineitem;

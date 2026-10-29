@@ -1,0 +1,54 @@
+-- All parts (with p_type, so the pattern is applied at read time) and the partsupp rows of existing parts are retained.
+scan brass_parts AS BrassPartScan:
+  SELECT p_partkey, p_mfgr, p_size, p_type
+  FROM part;
+
+scan brass_partsupp AS BrassPartsuppScan:
+  SELECT ps_partkey, ps_suppkey, ps_supplycost
+  FROM partsupp
+  WHERE EXISTS (
+    SELECT p_partkey FROM part
+    WHERE p_partkey = ps_partkey
+  );
+
+scan suppliers AS SupplierScan:
+  SELECT s_suppkey, s_name, s_address, s_nationkey, s_phone,
+         s_acctbal, s_comment
+  FROM supplier;
+
+scan nations AS NationScan:
+  SELECT n_nationkey, n_name, n_regionkey FROM nation;
+
+scan regions AS RegionScan:
+  SELECT r_regionkey, r_name FROM region;
+
+-- Both selectors use the union of all raw signed part-key occurrences.
+-- They do not cancel projected -key/+key updates or need another rescan's rows.
+rescan brass_parts_after AS BrassPartScan KEYS p_partkey:
+  SELECT p_partkey, p_mfgr, p_size, p_type
+  FROM part;
+
+rescan brass_partsupp_after AS BrassPartsuppScan KEYS ps_partkey:
+  SELECT ps_partkey, ps_suppkey, ps_supplycost
+  FROM partsupp
+  WHERE EXISTS (
+    SELECT p_partkey FROM part
+    WHERE p_partkey = ps_partkey
+  );
+
+delta part AS PartKeyDelta:
+  SELECT p_partkey FROM part;
+
+delta partsupp AS PartsuppDelta OF BrassPartsuppScan:
+  SELECT ps_partkey, ps_suppkey, ps_supplycost FROM partsupp;
+
+delta supplier AS SupplierDelta OF SupplierScan:
+  SELECT s_suppkey, s_name, s_address, s_nationkey, s_phone,
+         s_acctbal, s_comment
+  FROM supplier;
+
+delta nation AS NationDelta OF NationScan:
+  SELECT n_nationkey, n_name, n_regionkey FROM nation;
+
+delta region AS RegionDelta OF RegionScan:
+  SELECT r_regionkey, r_name FROM region;

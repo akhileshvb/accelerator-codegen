@@ -1,0 +1,14 @@
+-- Build only the projections used by the query. EXISTS removes orphan
+-- lines without removing any contributing join occurrence.
+scan parts AS PartInput: SELECT p_partkey, p_type FROM part;
+scan lines AS LineInput: SELECT l_partkey, l_extendedprice, l_discount, l_shipdate FROM lineitem WHERE EXISTS (SELECT 1 FROM part WHERE p_partkey = l_partkey);
+
+-- No part-key dictionary or part/date line profiles are persistent.
+-- Request parts only at captured line keys, and lines only at keys with
+-- a nonzero coalesced change in total or promotional part multiplicity.
+-- Both rescans are unfiltered and refer to the post-transaction database.
+rescan parts_for_lines AS PartInput KEYS p_partkey: SELECT p_partkey, p_type FROM part;
+rescan lines_for_parts AS LineInput KEYS l_partkey: SELECT l_partkey, l_extendedprice, l_discount, l_shipdate FROM lineitem;
+
+delta lineitem AS LineDelta OF LineInput: SELECT l_partkey, l_extendedprice, l_discount, l_shipdate FROM lineitem;
+delta part AS PartDelta: SELECT p_partkey, p_type LIKE 'PROMO%' AS is_promo FROM part;

@@ -4,7 +4,7 @@ and the C header.  gen_spec.rs and gen_obligations.rs are only compared (the spe
 a difference is an error and nothing is written for that kit.  A kit without them yet (a new
 kit) gets them written, with a kernel stub (kernel.rs) if it has no kernel, a minimal lib.rs, and the derived host glue (glue.cpp) if it has none.
 
-    python3 scripts/regen_verus_kits.py [--bench tpch] [--update q11,q21] <sql2verus binary> <schema.sql> <inputs dir> [q1 q2 ...]
+    python3 scripts/regen_verus_kits.py [--bench tpch] [--update q11,q21] <sql2verus binary> <schema.sql> [<inputs dir>] [q1 q2 ...]
 
 --bench: the benchmark (default tpch): kits accelerators/<bench>/q<N>/verus_kit/<bench>_q<N>_vgen,
 
@@ -13,7 +13,7 @@ kit) gets them written, with a kernel stub (kernel.rs) if it has no kernel, a mi
 on purpose: the kernel then has to be re-proved).  A query with workloads/<bench>/<q>.nullable-params
 (parameter numbers, comma separated) gets sql2verus --nullable-params.
 
-<inputs dir> holds the kernel inputs of each query as q<N>.inputs (the files the kits'
+<inputs dir> (default workloads/<bench>) holds the kernel inputs of each query as q<N>.inputs (the files the kits'
 gen_obligations.rs were generated from).  Host glue (glue.cpp) is written per kit, not
 generated.
 """
@@ -48,8 +48,12 @@ def main() -> int:
     if argv[:1] == ["--update"]:
         update = set(argv[1].split(","))
         argv = argv[2:]
-    binary, schema, inputs = argv[0], pathlib.Path(argv[1]), pathlib.Path(argv[2])
-    qs = argv[3:] or [f"q{n}" for n in (range(1, 23) if bench == "tpch" else (1, 2, 3, 4, 6, 24))]
+    binary, schema = argv[0], pathlib.Path(argv[1])
+    inputs = ROOT / "workloads" / bench
+    if argv[2:3] and not re.fullmatch(r"q\d+", argv[2]):
+        inputs = pathlib.Path(argv[2])
+        argv = argv[:2] + argv[3:]
+    qs = argv[2:] or [f"q{n}" for n in (range(1, 23) if bench == "tpch" else (1, 2, 3, 4, 6, 24))]
     bad = 0
     for q in qs:
         n = q[1:]
