@@ -411,7 +411,7 @@ fn complete_avg(k: &Cand, c: &Consts, Ghost(db): Ghost<Db>, Ghost(p): Ghost<Para
     requires consts_ok(*c), cand_sound(db, p, *k), !k.avg_done,
     ensures cand_sound(db, p, r), r.avg_done, same_key(*k, r),
 {
-    let q = div_round(&k.sum, &k.count);
+    let q = crate::divfast::div_round_fast(&k.sum, &k.count, c);
     let (cva, ba) = round_value(&q, c);
     Cand {
         sic: k.sic,

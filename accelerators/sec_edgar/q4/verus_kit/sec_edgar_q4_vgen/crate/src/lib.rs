@@ -7,6 +7,7 @@ pub mod kernel;
 pub mod gen_world;
 pub mod f64bits;
 pub mod numeric;
+pub mod divfast;
 pub mod bucket;
 pub mod keys;
 pub mod rows;
