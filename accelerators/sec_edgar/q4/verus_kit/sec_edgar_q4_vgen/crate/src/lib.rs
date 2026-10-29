@@ -19,6 +19,7 @@ pub mod emit;
 pub mod facts;
 pub mod walk;
 pub mod answer;
+pub mod keyset;
 pub mod join;
 pub mod groups;
 pub mod bridge;
