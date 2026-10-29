@@ -75,8 +75,8 @@ bool CommitArrivals::WaitThrough(runtime::Epoch epoch, Clock::time_point deadlin
 // ---- ShardServer ----
 
 ShardServer::ShardServer(ShardSegment &segment_p, uint32_t index_p,
-                         runtime::AcceleratorRuntime &runtime_p, CommitArrivals &arrivals_p)
-    : segment(segment_p), index(index_p), runtime(runtime_p), arrivals(arrivals_p) {
+                         std::vector<runtime::AcceleratorRuntime *> runtimes_p, CommitArrivals &arrivals_p)
+    : segment(segment_p), index(index_p), runtimes(std::move(runtimes_p)), arrivals(arrivals_p) {
   Touch();
 }
 
@@ -130,8 +130,12 @@ void ShardServer::CommitLoop() {
       if (commit.accelerator != index) {
         continue;
       }
-      runtime.OfferCommit(runtime::CommittedChange{commit.epoch, commit.epoch, std::move(commit.batches),
-                                                   commit.empty, commit.invalidates});
+      // Every member sees every epoch: the sequence is the shard's, and a commit that touched none of
+      // a member's tables is an empty change for it.
+      for (auto *runtime : runtimes) {
+        runtime->OfferCommit(runtime::CommittedChange{commit.epoch, commit.epoch, commit.batches, commit.empty,
+                                                      commit.invalidates});
+      }
       segment.stats.commits++;
       arrivals.Offered(commit.epoch);
     } catch (const std::exception &e) {
@@ -162,7 +166,7 @@ void ShardServer::ReadLoop() {
 // The runtime waits for commits, builds and catch-ups up to the request's
 // budget in one call; here in slices, so that a stopping worker is not held up
 // by a reader that waits for a build that will not finish.
-bool ShardServer::ReadWithin(const ReadRequest &request, Clock::time_point deadline,
+bool ShardServer::ReadWithin(runtime::AcceleratorRuntime &runtime, const ReadRequest &request, Clock::time_point deadline,
                              std::vector<core::AuxRow> &rows) {
   constexpr uint64_t kSliceUs = 100'000;
   const auto budget_end = Clock::now() + std::chrono::microseconds(request.max_wait_us);
@@ -170,7 +174,7 @@ bool ShardServer::ReadWithin(const ReadRequest &request, Clock::time_point deadl
     const auto now = Clock::now();
     const auto remaining_us = std::chrono::duration_cast<std::chrono::microseconds>(
                                   std::min(budget_end, deadline) - now).count();
-    if (const double sql_us = postgres::shared::SqlFallbackUs(static_cast<int>(index)); sql_us > 0) {
+    if (const double sql_us = postgres::shared::SqlFallbackUs(static_cast<int>(index), request.member); sql_us > 0) {
       runtime.SetSqlFallbackUs(sql_us);
     }
     runtime::ReadOptions options;
@@ -204,14 +208,15 @@ void ShardServer::Serve(const std::string &message) {
   segment.stats.requests++;
   const auto deadline = Clock::time_point(std::chrono::nanoseconds(request.deadline_ns));
   if (segment.SlotWaiting(request.slot) && Clock::now() < deadline) {
+    runtime::AcceleratorRuntime *runtime = request.member < runtimes.size() ? runtimes[request.member] : nullptr;
     // A read that needs a build or a catch-up reaches the main thread only
     // through its next wake-up.
-    if (!runtime.IsSynced()) {
+    if (runtime && !runtime->IsSynced()) {
       Wake();
     }
     ReadResponse response;
     try {
-      response.served = ReadWithin(request, deadline, response.rows);
+      response.served = runtime && ReadWithin(*runtime, request, deadline, response.rows);
     } catch (const std::exception &e) {
       segment.stats.errors++;
       segment.SetText(ShardSegment::kLastError, e.what());

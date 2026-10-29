@@ -13,6 +13,8 @@ struct RuntimeHost::Impl {
   explicit Impl(std::size_t budget, std::shared_ptr<TokenSource> tokens)
       : threads(budget, std::move(tokens)) {}
 
+  std::shared_ptr<CommitGroup> group = std::make_shared<CommitGroup>();
+
   struct Txn {
     // frames[d]: batches captured at subtransaction depth d (0 = top level).
     std::vector<std::vector<ColumnarBatchRef>> frames;
@@ -281,8 +283,27 @@ bool RuntimeHost::RunEngineWork() {
   }
   for (auto &item : work) {
     item();
+    EndDeferredCommits(); // a build's catch-up must not leave a commit open for the next build
   }
   return !work.empty();
+}
+
+void RuntimeHost::GroupCommitEnds() {
+  impl->group = std::make_shared<CommitGroup>();
+  for (auto *runtime : All()) {
+    runtime->SetCommitGroup(impl->group);
+  }
+}
+
+bool RuntimeHost::EndDeferredCommits() {
+  for (auto *runtime : All()) {
+    if (const Epoch epoch = runtime->TakeDeferredEnd()) {
+      runtime->EndCommit(epoch);
+    }
+  }
+  const bool blocked = impl->group->blocked;
+  *impl->group = CommitGroup{};
+  return blocked;
 }
 
 ThreadBudget &RuntimeHost::Threads() { return impl->threads; }

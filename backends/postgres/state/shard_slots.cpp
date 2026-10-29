@@ -75,8 +75,17 @@ private:
   runtime::Epoch epoch;
 };
 
-PgSlots::PgSlots(int index_p, PostgresAccelerator &accelerator_p, CommitArrivals &arrivals_p)
-    : index(index_p), accelerator(accelerator_p), arrivals(arrivals_p) {}
+PgSlots::PgSlots(int index_p, std::vector<PostgresAccelerator *> members_p, CommitArrivals &arrivals_p)
+    : index(index_p), members(std::move(members_p)), arrivals(arrivals_p) {}
+
+PostgresAccelerator &PgSlots::Member(const core::AcceleratorId &id) const {
+  for (auto *member : members) {
+    if (member->Id() == id) {
+      return *member;
+    }
+  }
+  throw std::logic_error("accelerator " + id + " is not a member of the shard");
+}
 
 void PgSlots::Begin() {
   SetCurrentStatementStartTimestamp();
@@ -162,7 +171,7 @@ runtime::Epoch PgSlots::MaintenanceLookupEpoch(runtime::Epoch) {
 
 void PgSlots::RunBuild(runtime::AcceleratorRuntime &runtime, runtime::BuildSnapshot &,
                        core::StateBuilder &builder) {
-  BuildGucScope tuning(accelerator.TuneBuild());
+  BuildGucScope tuning(Member(runtime.Id()).TuneBuild());
   try {
     runtime.Module().Build(runtime, builder);
   } catch (const std::exception &e) {
@@ -172,8 +181,8 @@ void PgSlots::RunBuild(runtime::AcceleratorRuntime &runtime, runtime::BuildSnaps
   }
 }
 
-const maintenance::CostModelParams &PgSlots::CostModel(const core::AcceleratorId &) const {
-  return accelerator.CostModel();
+const maintenance::CostModelParams &PgSlots::CostModel(const core::AcceleratorId &id) const {
+  return Member(id).CostModel();
 }
 
 // The planner's row estimate for the relation (-1 before its first VACUUM or

@@ -288,6 +288,10 @@ std::unique_ptr<aux_state::VerusAuxStore> MakeWorldStore(const Glue &glue,
                                                          aux_state::VerusAuxStore::EpochProvider epoch,
                                                          aux_state::VerusAuxStore::FloorProvider floor);
 
+// The bench of the world that names the accelerator, or null if none does.  Engines whose workers
+// host a store in a process of its own put all accelerators of a world in one (Postgres: one shard).
+const char *WorldOf(const std::string &accelerator_id);
+
 // The active fault (tests only; empty: none).
 const std::string &Fault();
 

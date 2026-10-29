@@ -177,6 +177,8 @@ void Setup() {
       << "CREATE TABLE t1(id int, a int, b numeric(15,2), c text, d date, f float8, w numeric(38,10), g int);\n"
       << "CREATE TABLE t2(x int, y text, n numeric, bo boolean, ts timestamp);\n"
       << "CREATE TABLE t3(z int);\n"
+      << "CREATE TABLE t4(p int, q int, r int);\n"
+      << "CREATE TABLE t6(u int);\n"
       << "CREATE TABLE t5(kind text);\n" // one row per stress commit
       << "CREATE TABLE t7(seen bigint);\n"
       << "CREATE PROCEDURE wt_burst(n int) LANGUAGE plpgsql AS $$ BEGIN\n"
@@ -187,7 +189,9 @@ void Setup() {
   sql << triggers.rdbuf();
   sql << "SELECT create_accel_mutation_triggers('t1', 'wt');\n"
       << "SELECT create_accel_mutation_triggers('t2', 'wt');\n"
-      << "SELECT create_accel_mutation_triggers('t3', 'wt');\n";
+      << "SELECT create_accel_mutation_triggers('t3', 'wt');\n"
+      << "SELECT create_accel_mutation_triggers('t4', 'wt');\n"
+      << "SELECT create_accel_mutation_triggers('t6', 'wt');\n";
   admin.Ok(sql.str());
 }
 
@@ -602,6 +606,41 @@ void TestTokens() {
   g_admin->Ok("SELECT pg_reload_conf()");
 }
 
+// ---- one shard, one sequence for several accelerators ----------------------------------
+// fake_c (t4) and fake_d (t6) share the shard fake_cd: one index, one gate, one epoch per commit that
+// writes either table, one shipped message carrying the batches of both.
+void TestShardGroup() {
+  const long shard = g_admin->Int("SELECT wt_activate('fake_cd')");
+  CheckEq(g_admin->Int("SELECT wt_activate('fake_cd')"), shard, "the shard activates once");
+  CheckEq(g_admin->Ok("SELECT wt_id_of(" + std::to_string(shard) + ")"), std::string("fake_cd"), "the shard is the registry entry");
+  const long base = Assigned(shard);
+  Conn w(kDb);
+  w.Ok("SELECT wt_sent_reset()");
+  w.Ok("INSERT INTO t4 VALUES (1, 2, 3)");
+  w.Ok("INSERT INTO t6 VALUES (4)");
+  CheckEq(Assigned(shard), base + 2, "a commit on either member takes the shard's next epoch");
+  w.Ok("BEGIN");
+  w.Ok("INSERT INTO t4 VALUES (5, 6, 7)");
+  w.Ok("INSERT INTO t6 VALUES (8)");
+  w.Ok("COMMIT");
+  CheckEq(Assigned(shard), base + 3, "a commit on both members takes one epoch");
+  const std::string sent = w.Ok("SELECT wt_sent()");
+  Check(Contains(sent, "commit acc=" + std::to_string(shard) + " epoch=" + std::to_string(base + 3) + " empty=0 invalidates=0 batches=2"),
+        "one message with both members' batches", sent);
+  w.Ok("INSERT INTO t3 VALUES (1)");
+  CheckEq(Assigned(shard), base + 3, "a table no member watches takes no epoch");
+  Conn rr(kDb);
+  rr.Ok("BEGIN ISOLATION LEVEL REPEATABLE READ");
+  CheckEq(Epoch(rr, static_cast<int>(shard)), base + 3, "the reader epoch is the shard's");
+  w.Ok("INSERT INTO t6 VALUES (9)");
+  CheckEq(Epoch(rr, static_cast<int>(shard)), base + 3, "a repeatable read snapshot keeps its epoch");
+  rr.Ok("COMMIT");
+  w.Ok("BEGIN");
+  w.Ok("INSERT INTO t4 VALUES (1, 1, 1)");
+  w.Ok("ROLLBACK");
+  CheckEq(Assigned(shard), base + 4, "an abort before PRE_COMMIT takes no epoch");
+}
+
 } // namespace
 
 int main() {
@@ -614,6 +653,7 @@ int main() {
   TestCapture();
   TestHorizonAndRing();
   TestTokens();
+  TestShardGroup();
   std::cout << (g_failures == 0 ? "ALL PASSED" : "FAILED") << " (" << g_failures << " failed checks)\n";
   return g_failures;
 }

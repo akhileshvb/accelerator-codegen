@@ -80,6 +80,11 @@ using TableMap = std::unordered_map<core::TableId, core::TableId>; // module -> 
 void SetForcedFallback(bool forced);
 bool ForcedFallback();
 
+struct CommitGroup {
+  Epoch open = 0;       // the epoch of the commit applied but not ended (0: none)
+  bool blocked = false; // an accelerator waited for the open commit to end
+};
+
 class AcceleratorRuntime : public core::AuxEngineServices {
 public:
   // Runs a build somewhere: a pool thread (in-process engines) or the host's
@@ -138,6 +143,13 @@ public:
 
   // ---- shipped commits (Postgres worker main thread) ----
   void OfferCommit(CommittedChange change);
+  // Accelerators whose store is shared apply a shipped commit together: with a group set, applying
+  // does not end the commit (the store installs the commit's version at its end); the host ends it
+  // once every accelerator has applied (RuntimeHost::EndDeferredCommits). A pass applies at most one
+  // combined change, and none at an epoch other than the group's open one (it waits for the next pass).
+  void SetCommitGroup(std::shared_ptr<CommitGroup> group);
+  // The epoch of the commit whose end was deferred (0: none), cleared.
+  Epoch TakeDeferredEnd();
   void AnnounceCommit(Seq seq);
   // Applies whatever is ready; requests a build when stale, or when a gap
   // has persisted for `gap_timeout_us`.
