@@ -131,9 +131,9 @@ pub fn build(
         }
         lemma_wbag_ext(subs, phi_acc(Seq::empty(), sv), phi_tab(db.sub));
     }
-    let mut dm: Index<DCls> = Index::new();
-    proof { lemma_empty_ddm(dm); }
-    let Ghost(l) = stage_n_rows(&mut dm, &nums, &subs, &consts.pows, Ghost(db.sub));
+    let mut bt = batch_new();
+    let Ghost(l) = stage_n_rows(&mut bt, &nums, &subs, &consts.pows, Ghost(db.sub));
+    let dm = batch_finish(bt);
     let mut classes: Index<Class> = Index::new();
     proof {
         // the nums are doubles

@@ -58,13 +58,15 @@ pub open spec fn num_guard(n: NumRt) -> bool {
 
 /// A changed num row (sign sgn) against the sub rows of its filing.
 #[verifier::spinoff_prover]
-pub fn emit_nd(dm: &mut Index<DCls>, n: &NumRt, sgn: i64, sv: &Vec<WRow>, pows: &Vec<Wide>, Ghost(l): Ghost<Seq<Ct>>) -> (r: Ghost<Seq<Ct>>)
+pub fn emit_nd(b: &mut Batcher, n: &NumRt, sgn: i64, sv: &Vec<WRow>, pows: &Vec<Wide>, Ghost(l): Ghost<Seq<Ct>>) -> (r: Ghost<Seq<Ct>>)
     requires
-        ddm_ok(*old(dm), l),
+        old(b).ok(),
+        old(b).ledger() == l,
         pows_ok(pows@),
         sgn == 1 || sgn == -1,
     ensures
-        ddm_ok(*final(dm), r@),
+        final(b).ok(),
+        final(b).ledger() == r@,
         forall|p: Params, h: spec_fn(JK) -> int| #[trigger] lsum(r@, p, h)
             == lsum(l, p, h) + sgn as int * wsum(sv@, fsub(p, h, num_rt_view(*n))),
 {
@@ -94,7 +96,8 @@ pub fn emit_nd(dm: &mut Index<DCls>, n: &NumRt, sgn: i64, sv: &Vec<WRow>, pows: 
     while i < sv.len()
         invariant
             i <= sv.len(),
-            ddm_ok(*dm, li),
+            b.ok(),
+            b.ledger() == li,
             pows_ok(pows@),
             sgn == 1 || sgn == -1,
             cn,
@@ -118,7 +121,7 @@ pub fn emit_nd(dm: &mut Index<DCls>, n: &NumRt, sgn: i64, sv: &Vec<WRow>, pows: 
             let cik = sub_cik(s);
             let ghost ct = Ct { fy: s.fy as int, uom: n.uom@, j: jk(nrow, srow), sign: w.m@ * sgn as int };
             proof { assert(nrow.value == Some(f64_val(n.value))); assert(ct.j.vs); assert(ct.j.v == f64_val(n.value)); }
-            acc_ct(dm, s.fy, n.uom.as_slice(), &name, cik, &sg, &v, &mag, Ghost(li), Ghost(ct));
+            batch_add(b, s.fy, n.uom.as_slice(), &name, cik, &sg, &v, &mag, Ghost(ct));
             proof {
                 li = li.push(ct);
                 assert(sg@ == w.m@ * sgn as int);
@@ -168,13 +171,15 @@ pub fn emit_nd(dm: &mut Index<DCls>, n: &NumRt, sgn: i64, sv: &Vec<WRow>, pows: 
 
 /// A changed sub row (sign sg) against the num rows of its filing.
 #[verifier::spinoff_prover]
-pub fn emit_sd(dm: &mut Index<DCls>, s: &SubRt, sg: i64, nr: &Vec<NumRt>, pows: &Vec<Wide>, Ghost(l): Ghost<Seq<Ct>>) -> (r: Ghost<Seq<Ct>>)
+pub fn emit_sd(b: &mut Batcher, s: &SubRt, sg: i64, nr: &Vec<NumRt>, pows: &Vec<Wide>, Ghost(l): Ghost<Seq<Ct>>) -> (r: Ghost<Seq<Ct>>)
     requires
-        ddm_ok(*old(dm), l),
+        old(b).ok(),
+        old(b).ledger() == l,
         pows_ok(pows@),
         sg == 1 || sg == -1,
     ensures
-        ddm_ok(*final(dm), r@),
+        final(b).ok(),
+        final(b).ledger() == r@,
         forall|p: Params, h: spec_fn(JK) -> int| #[trigger] lsum(r@, p, h)
             == lsum(l, p, h) + sg as int * sum(rows_v(nr@), fnum(p, h, sub_rt_view(*s))),
 {
@@ -191,7 +196,8 @@ pub fn emit_sd(dm: &mut Index<DCls>, s: &SubRt, sg: i64, nr: &Vec<NumRt>, pows: 
     while i < nr.len()
         invariant
             i <= nr.len(),
-            ddm_ok(*dm, li),
+            b.ok(),
+            b.ledger() == li,
             pows_ok(pows@),
             sg == 1 || sg == -1,
             srow == sub_rt_view(*s),
@@ -212,7 +218,7 @@ pub fn emit_sd(dm: &mut Index<DCls>, s: &SubRt, sg: i64, nr: &Vec<NumRt>, pows: 
             let cik = sub_cik(s);
             let ghost ct = Ct { fy: s.fy as int, uom: n.uom@, j: jk(nrow, srow), sign: sg as int };
             proof { assert(nrow.value == Some(f64_val(n.value))); assert(ct.j.vs); assert(ct.j.v == f64_val(n.value)); }
-            acc_ct(dm, s.fy, n.uom.as_slice(), &name, cik, &sgw, &v, &mag, Ghost(li), Ghost(ct));
+            batch_add(b, s.fy, n.uom.as_slice(), &name, cik, &sgw, &v, &mag, Ghost(ct));
             proof {
                 li = li.push(ct);
                 assert(ct.j.v == f64_val(n.value));
@@ -298,14 +304,16 @@ pub proof fn lemma_n_term(subs: Index<Vec<WRow>>, dbsub: Seq<SubRow>, sv: Seq<WR
 }
 
 /// The batch's changed num rows against the sub table before the commit.
-pub fn stage_n(dm: &mut Index<DCls>, nd: &Vec<NumDelta>, subs: &Index<Vec<WRow>>, pows: &Vec<Wide>, Ghost(dbsub): Ghost<Seq<SubRow>>) -> (r: Ghost<Seq<Ct>>)
+pub fn stage_n(b: &mut Batcher, nd: &Vec<NumDelta>, subs: &Index<Vec<WRow>>, pows: &Vec<Wide>, Ghost(dbsub): Ghost<Seq<SubRow>>) -> (r: Ghost<Seq<Ct>>)
     requires
-        ddm_ok(*old(dm), Seq::empty()),
+        old(b).ok(),
+        old(b).ledger() == Seq::<Ct>::empty(),
         wbag_as(*subs, phi_tab(dbsub)),
         pows_ok(pows@),
         forall|i: int| 0 <= i < nd.len() ==> (#[trigger] nd[i]).sign == 1 || nd[i].sign == -1,
     ensures
-        ddm_ok(*final(dm), r@),
+        final(b).ok(),
+        final(b).ledger() == r@,
         forall|p: Params, h: spec_fn(JK) -> int| #[trigger] lsum(r@, p, h) == left_join_delta(num_delta_seq_view(nd@), dbsub, wt(p, h)),
 {
     let ghost view = num_delta_seq_view(nd@);
@@ -321,7 +329,8 @@ pub fn stage_n(dm: &mut Index<DCls>, nd: &Vec<NumDelta>, subs: &Index<Vec<WRow>>
         invariant
             i <= nd.len(),
             view == num_delta_seq_view(nd@),
-            ddm_ok(*dm, li),
+            b.ok(),
+            b.ledger() == li,
             wbag_as(*subs, phi_tab(dbsub)),
             pows_ok(pows@),
             forall|j: int| 0 <= j < nd.len() ==> (#[trigger] nd[j]).sign == 1 || nd[j].sign == -1,
@@ -331,7 +340,7 @@ pub fn stage_n(dm: &mut Index<DCls>, nd: &Vec<NumDelta>, subs: &Index<Vec<WRow>>
         let n = &nd[i].row;
         let sv = wbucket(subs, n);
         let li0 = Ghost(li);
-        let Ghost(l2) = emit_nd(dm, n, nd[i].sign, &*sv, pows, li0);
+        let Ghost(l2) = emit_nd(b, n, nd[i].sign, &*sv, pows, li0);
         proof {
             let nrow = num_rt_view(*n);
             assert(view[i as int] == (nrow, nd[i as int].sign as int));
@@ -354,13 +363,15 @@ pub open spec fn nums_unit(rows: Seq<NumRt>) -> Seq<(NumRow, int)> {
 }
 
 /// Every num row of a table (a build) against the sub rows of its filing.
-pub fn stage_n_rows(dm: &mut Index<DCls>, nums: &Vec<NumRt>, subs: &Index<Vec<WRow>>, pows: &Vec<Wide>, Ghost(dbsub): Ghost<Seq<SubRow>>) -> (r: Ghost<Seq<Ct>>)
+pub fn stage_n_rows(b: &mut Batcher, nums: &Vec<NumRt>, subs: &Index<Vec<WRow>>, pows: &Vec<Wide>, Ghost(dbsub): Ghost<Seq<SubRow>>) -> (r: Ghost<Seq<Ct>>)
     requires
-        ddm_ok(*old(dm), Seq::empty()),
+        old(b).ok(),
+        old(b).ledger() == Seq::<Ct>::empty(),
         wbag_as(*subs, phi_tab(dbsub)),
         pows_ok(pows@),
     ensures
-        ddm_ok(*final(dm), r@),
+        final(b).ok(),
+        final(b).ledger() == r@,
         forall|p: Params, h: spec_fn(JK) -> int| #[trigger] lsum(r@, p, h) == left_join_delta(nums_unit(nums@), dbsub, wt(p, h)),
 {
     let ghost view = nums_unit(nums@);
@@ -376,7 +387,8 @@ pub fn stage_n_rows(dm: &mut Index<DCls>, nums: &Vec<NumRt>, subs: &Index<Vec<WR
         invariant
             i <= nums.len(),
             view == nums_unit(nums@),
-            ddm_ok(*dm, li),
+            b.ok(),
+            b.ledger() == li,
             wbag_as(*subs, phi_tab(dbsub)),
             pows_ok(pows@),
             forall|p: Params, h: spec_fn(JK) -> int| #[trigger] lsum(li, p, h) == left_join_delta(view.take(i as int), dbsub, wt(p, h)),
@@ -384,7 +396,7 @@ pub fn stage_n_rows(dm: &mut Index<DCls>, nums: &Vec<NumRt>, subs: &Index<Vec<WR
     {
         let n = &nums[i];
         let sv = wbucket(subs, n);
-        let Ghost(l2) = emit_nd(dm, n, 1, &*sv, pows, Ghost(li));
+        let Ghost(l2) = emit_nd(b, n, 1, &*sv, pows, Ghost(li));
         proof {
             let nrow = num_rt_view(*n);
             assert(view[i as int] == (nrow, 1int));
@@ -436,14 +448,16 @@ proof fn lemma_s_term(nr: Seq<NumRow>, tab: Seq<NumRow>, p: Params, h: spec_fn(J
 }
 
 /// The batch's changed sub rows against the num table after the commit.
-pub fn stage_s(dm: &mut Index<DCls>, sd: &Vec<SubDelta>, nb: &Index<Vec<NumRt>>, pows: &Vec<Wide>, Ghost(l0): Ghost<Seq<Ct>>, Ghost(tab): Ghost<Seq<NumRow>>) -> (r: Ghost<Seq<Ct>>)
+pub fn stage_s(b: &mut Batcher, sd: &Vec<SubDelta>, nb: &Index<Vec<NumRt>>, pows: &Vec<Wide>, Ghost(l0): Ghost<Seq<Ct>>, Ghost(tab): Ghost<Seq<NumRow>>) -> (r: Ghost<Seq<Ct>>)
     requires
-        ddm_ok(*old(dm), l0),
+        old(b).ok(),
+        old(b).ledger() == l0,
         nb_covers(*nb, tab, sd@),
         pows_ok(pows@),
         forall|i: int| 0 <= i < sd.len() ==> (#[trigger] sd[i]).sign == 1 || sd[i].sign == -1,
     ensures
-        ddm_ok(*final(dm), r@),
+        final(b).ok(),
+        final(b).ledger() == r@,
         forall|p: Params, h: spec_fn(JK) -> int| #[trigger] lsum(r@, p, h)
             == lsum(l0, p, h) + right_join_delta(tab, sub_delta_seq_view(sd@), wt(p, h)),
 {
@@ -459,7 +473,8 @@ pub fn stage_s(dm: &mut Index<DCls>, sd: &Vec<SubDelta>, nb: &Index<Vec<NumRt>>,
         invariant
             i <= sd.len(),
             view == sub_delta_seq_view(sd@),
-            ddm_ok(*dm, li),
+            b.ok(),
+            b.ledger() == li,
             nb_covers(*nb, tab, sd@),
             pows_ok(pows@),
             forall|j: int| 0 <= j < sd.len() ==> (#[trigger] sd[j]).sign == 1 || sd[j].sign == -1,
@@ -469,7 +484,7 @@ pub fn stage_s(dm: &mut Index<DCls>, sd: &Vec<SubDelta>, nb: &Index<Vec<NumRt>>,
     {
         let s = &sd[i].row;
         let nr = nbucket(nb, s);
-        let Ghost(l2) = emit_sd(dm, s, sd[i].sign, &*nr, pows, Ghost(li));
+        let Ghost(l2) = emit_sd(b, s, sd[i].sign, &*nr, pows, Ghost(li));
         proof {
             let srow = sub_rt_view(*s);
             assert(view[i as int] == (srow, sd[i as int].sign as int));
