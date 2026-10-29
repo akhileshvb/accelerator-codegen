@@ -18,7 +18,7 @@ std::map<std::string, PostgresAcceleratorGetter> &Accelerators() {
 } // namespace
 
 void RegisterPostgresAccelerator(const char *id, PostgresAcceleratorGetter get) {
-  Accelerators()[id] = get;
+  Accelerators()[id] = std::move(get);
 }
 
 PostgresAccelerator *FindPostgresAccelerator(const core::AcceleratorId &id) {

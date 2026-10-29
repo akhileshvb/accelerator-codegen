@@ -117,9 +117,11 @@ public:
     case DATEOID:
       kind_ = Kind::Date;
       break;
+    case BPCHAROID:
+      trim_ = true; // trailing spaces are not significant to bpchar
+      [[fallthrough]];
     case TEXTOID:
     case VARCHAROID:
-    case BPCHAROID:
       kind_ = Kind::Text;
       break;
     default: { // anything else as its text form
@@ -166,7 +168,11 @@ public:
     case Kind::Text:
       if (!is_null) {
         text *value = DatumGetTextPP(datum);
-        text_.bytes.append(VARDATA_ANY(value), VARSIZE_ANY_EXHDR(value));
+        std::size_t length = VARSIZE_ANY_EXHDR(value);
+        while (trim_ && length > 0 && VARDATA_ANY(value)[length - 1] == ' ') {
+          length--;
+        }
+        text_.bytes.append(VARDATA_ANY(value), length);
       }
       text_.offsets.push_back(text_.bytes.size());
       break;
@@ -252,6 +258,7 @@ private:
   }
 
   Kind kind_;
+  bool trim_ = false;
   Oid type_;
   FmgrInfo output_;
   std::size_t rows_ = 0;

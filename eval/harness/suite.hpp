@@ -267,7 +267,8 @@ inline std::size_t TopLevel(const std::string &sql, const std::string &word) {
   return found;
 }
 
-inline Ordering MakeOrdering(duckdb::Connection &c, const std::string &sql, const std::vector<std::string> &tuples) {
+// The ordering of `sql` given its output column names (empty: not known yet; `names` is then asked for).
+inline Ordering MakeOrdering(const std::string &sql, const std::function<std::vector<std::string>()> &names_of) {
   Ordering o;
   const auto ob = TopLevel(sql, "ORDER BY");
   if (ob == std::string::npos) {
@@ -277,30 +278,9 @@ inline Ordering MakeOrdering(duckdb::Connection &c, const std::string &sql, cons
   const auto lim = TopLevel(sql, "LIMIT");
   o.limited = lim != std::string::npos && lim > ob;
   o.unlimited_sql = o.limited ? sql.substr(0, lim) : sql;
-  auto stmt = c.Prepare(sql);
-  if (!stmt || stmt->HasError())
+  const auto names = names_of();
+  if (names.empty())
     return o;
-  auto names = stmt->GetNames();
-  // A parameter whose type only its value decides (e.g. `SUM(x) * $2`) leaves the statement
-  // unbound until it runs: its output names are placeholders ("unknown") until then, so take
-  // them from a run with the first tuple DuckDB can evaluate.
-  if (!stmt->GetStatementProperties().bound_all_parameters)
-    for (const auto &tuple : tuples) {
-      try {
-        duckdb::vector<duckdb::Value> values;
-        if (!tuple.empty()) {
-          auto t = Q(c, "SELECT " + tuple);
-          for (duckdb::idx_t i = 0; i < t->ColumnCount(); ++i)
-            values.push_back(t->GetValue(i, 0));
-        }
-        auto r = stmt->Execute(values, false);
-        if (!r || r->HasError())
-          continue;
-        names = r->names;
-        break;
-      } catch (const std::exception &) {
-      }
-    }
   std::stringstream items(sql.substr(ob + 8, (o.limited ? lim : sql.size()) - ob - 8));
   for (std::string item; std::getline(items, item, ',');) {
     std::stringstream words(item);
@@ -324,6 +304,36 @@ inline Ordering MakeOrdering(duckdb::Connection &c, const std::string &sql, cons
     o.keys.emplace_back(col, dir == "DESC");
   }
   return o;
+}
+
+inline Ordering MakeOrdering(duckdb::Connection &c, const std::string &sql, const std::vector<std::string> &tuples) {
+  return MakeOrdering(sql, [&]() -> std::vector<std::string> {
+    auto stmt = c.Prepare(sql);
+    if (!stmt || stmt->HasError())
+      return {};
+    auto names = stmt->GetNames();
+    // A parameter whose type only its value decides (e.g. `SUM(x) * $2`) leaves the statement
+    // unbound until it runs: its output names are placeholders ("unknown") until then, so take
+    // them from a run with the first tuple DuckDB can evaluate.
+    if (!stmt->GetStatementProperties().bound_all_parameters)
+      for (const auto &tuple : tuples) {
+        try {
+          duckdb::vector<duckdb::Value> values;
+          if (!tuple.empty()) {
+            auto t = Q(c, "SELECT " + tuple);
+            for (duckdb::idx_t i = 0; i < t->ColumnCount(); ++i)
+              values.push_back(t->GetValue(i, 0));
+          }
+          auto r = stmt->Execute(values, false);
+          if (!r || r->HasError())
+            continue;
+          names = r->names;
+          break;
+        } catch (const std::exception &) {
+        }
+      }
+    return std::vector<std::string>(names.begin(), names.end());
+  });
 }
 
 inline bool SameKeys(const Ordering &o, const std::vector<std::string> &a, const std::vector<std::string> &b) {
@@ -606,8 +616,9 @@ inline bool IsRollbackTxn(const std::string &sql) {
 // The differential every accelerator is held to: after the build and after every transaction (applied by
 // `apply`, committed), the accelerator's answer equals the query's at the same snapshot, for every tuple
 // every `every` transactions and at the end, two random ones otherwise.
-inline DifferentialRun RunDifferentialLoop(
-    Tally &tally, const Spec &spec, const std::string &query_sql, const Ordering &ordering, duckdb::Connection &qc,
+template <typename Connection> // RunQuery / RunProbe overloaded for it (duckdb::Connection, or an engine's)
+DifferentialRun RunDifferentialLoop(
+    Tally &tally, const Spec &spec, const std::string &query_sql, const Ordering &ordering, Connection &qc,
     int every, uint64_t seed, const std::function<Rows(const std::string &, const std::string &)> &accel,
     const std::function<void(const std::string &)> &apply,
     const std::function<void(const std::string &)> &abort = {},

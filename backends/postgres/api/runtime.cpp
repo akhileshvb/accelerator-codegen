@@ -5,6 +5,7 @@
 // the per-query code that registers itself here.
 #if defined(ACCELERATOR_CODEGEN_POSTGRES_EXTENSION)
 
+#include "backends/postgres/api/verus_host.hpp" // before the Postgres headers
 #include "backends/postgres/api/runtime.hpp"
 
 #include <algorithm>
@@ -83,7 +84,8 @@ Datum accel_register_queries(PG_FUNCTION_ARGS) {
     }
   }
   SPI_finish();
-  PG_RETURN_INT32(static_cast<int32>(entries.size()));
+  const int kits = RegisterVerusKitFunctions();
+  PG_RETURN_INT32(static_cast<int32>(entries.size()) + kits);
 }
 
 } // extern "C"

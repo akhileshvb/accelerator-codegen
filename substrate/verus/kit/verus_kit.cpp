@@ -1420,6 +1420,13 @@ std::string Host::QuoteText(const std::string &text) const {
   return out + "'";
 }
 
+std::string Host::ArrayLiteral(const std::vector<std::string> &items, const std::string &type) const {
+  std::string out = "[";
+  for (std::size_t i = 0; i < items.size(); ++i)
+    out += (i ? "," : "") + items[i];
+  return out + "]::" + type + "[]";
+}
+
 // the glue's statement becomes a subquery: no trailing `;` (or whitespace)
 static std::string AsSubquery(const std::string &sql_text) {
   std::string sql = sql_text;
@@ -1460,13 +1467,11 @@ void QueryKeys(Host &host, const std::string &sql_text, const std::string &key_c
   if (keys.empty())
     return;
   // one query, semi-joined like the BIGINT keys; a NULL key column never matches
-  std::string list = "[";
-  for (std::size_t i = 0; i < keys.size(); ++i) {
-    if (i)
-      list += ',';
-    list += host.QuoteText(keys[i]);
-  }
-  list += "]::VARCHAR[]";
+  std::vector<std::string> quoted;
+  quoted.reserve(keys.size());
+  for (const auto &key : keys)
+    quoted.push_back(host.QuoteText(key));
+  const std::string list = host.ArrayLiteral(quoted, "VARCHAR");
   host.Query("SELECT verus_kit_rescan.* FROM (" + AsSubquery(sql_text) + ") AS verus_kit_rescan WHERE verus_kit_rescan." +
                  host.Quote(key_column) + " IN (SELECT unnest(" + list + "))",
              row);

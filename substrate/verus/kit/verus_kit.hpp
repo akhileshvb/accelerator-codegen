@@ -140,6 +140,8 @@ public:
   virtual std::string Quote(const std::string &identifier) const;
   // A text literal (standard SQL: quotes doubled).
   virtual std::string QuoteText(const std::string &text) const;
+  // An array literal of already quoted `items`, of element type `type`.
+  virtual std::string ArrayLiteral(const std::vector<std::string> &items, const std::string &type) const;
 };
 
 // Rows of `sql` whose output column `key_column` is one of `keys`, in chunks.

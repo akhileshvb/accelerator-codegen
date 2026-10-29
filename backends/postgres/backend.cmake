@@ -106,6 +106,7 @@ set(_pg_ext_sources
   backends/postgres/api/extension_api.cpp
   backends/postgres/api/runtime.cpp
   backends/postgres/api/accelerators.cpp
+  backends/postgres/api/verus_host.cpp
   backends/postgres/state/shm_ring.cpp
   backends/postgres/state/shard_segment.cpp
   backends/postgres/state/shard_server.cpp

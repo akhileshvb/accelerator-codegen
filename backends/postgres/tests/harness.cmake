@@ -37,6 +37,11 @@ accel_add_backend_exe(postgres test_postgres_shared_state backends/postgres/test
 target_link_libraries(test_postgres_shared_state PRIVATE Threads::Threads)
 accel_add_backend_exe(postgres test_postgres_tpch_differential backends/postgres/tests/harness/test_postgres_tpch_differential.cpp)
 
+# Verus kits: validate / differential / snapshots over libpq (suite.hpp's types; no accelerator linked).
+accel_add_backend_exe(postgres test_postgres_verus_kit CLIENT backends/postgres/tests/harness/test_postgres_verus_kit.cpp
+    substrate/aux/core/aux_maintenance_decision_log.cpp substrate/aux/maintenance/maintenance_action.cpp)
+target_link_libraries(test_postgres_verus_kit PRIVATE Threads::Threads duckdb_sibling)
+
 # Aux gate harnesses (multi-connection, cross-accel).
 accel_add_backend_exe(postgres test_postgres_aux_multi_connection_stress
     backends/postgres/tests/harness/test_postgres_aux_multi_connection_stress.cpp)

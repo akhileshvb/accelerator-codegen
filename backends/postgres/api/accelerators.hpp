@@ -8,6 +8,7 @@
 
 #if defined(ACCELERATOR_CODEGEN_POSTGRES_EXTENSION)
 
+#include <functional>
 #include <memory>
 #include <vector>
 
@@ -40,7 +41,7 @@ public:
   virtual const maintenance::CostModelParams &CostModel() = 0;
 };
 
-using PostgresAcceleratorGetter = PostgresAccelerator &(*)();
+using PostgresAcceleratorGetter = std::function<PostgresAccelerator &()>;
 
 void RegisterPostgresAccelerator(const char *id, PostgresAcceleratorGetter get);
 // nullptr if no accelerator with `id` is compiled in.
