@@ -1,0 +1,15 @@
+-- Kernel inputs for SEC-EDGAR Q2: a filing's sub and num rows are re-read whole when any of them changes.
+scan sub_build AS SubInput:
+  SELECT adsh, name, fy FROM sub;
+scan num_build AS NumInput:
+  SELECT adsh, tag, uom, value FROM num;
+
+rescan num_by_filing AS NumInput KEYS adsh:
+  SELECT adsh, tag, uom, value FROM num;
+rescan sub_by_filing AS SubInput KEYS adsh:
+  SELECT adsh, name, fy FROM sub;
+
+delta num AS NumDelta OF NumInput:
+  SELECT adsh, tag, uom, value FROM num;
+delta sub AS SubDelta OF SubInput:
+  SELECT adsh, name, fy FROM sub;
