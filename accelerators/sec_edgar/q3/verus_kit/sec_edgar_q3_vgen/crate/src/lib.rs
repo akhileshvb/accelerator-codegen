@@ -8,6 +8,8 @@ pub mod gen_world;
 pub mod gen_ffi;
 pub mod f64bits;
 pub mod numeric;
+pub mod exact;
+pub mod qty;
 pub mod bucket;
 pub mod keys;
 pub mod rows;
