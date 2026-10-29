@@ -14,7 +14,8 @@ use crate::numeric::*;
 use crate::rec::*;
 use crate::walk::*;
 use std::sync::Arc;
-use verus_prooflib::ordered::{Index, Key, KeyView};
+use verus_prooflib::ordered::{Index, Key, KeyView, key_lt, lemma_key_order};
+use crate::keys::*;
 use verus_prooflib::ordered::lemma_ordered_unique;
 
 verus! {
@@ -500,6 +501,83 @@ pub fn finish(cands: &Vec<Cand>, stmt: &[u8], Ghost(db): Ghost<Db>, Ghost(p): Gh
         assert(out_view(out@) =~= limited);
     }
     Some(out)
+}
+
+
+/// The answer to the query for a parameter set, from the stored groups.
+pub fn answer(groups: &Index<Index<Cell>>, p1: i64, p2: i64, p3: &[u8], p4: &[u8], c: &Consts, Ghost(db): Ghost<Db>) -> (r: Option<Vec<Out>>)
+    requires
+        rep(*groups, tot_db(db)),
+        consts_ok(*c),
+    ensures
+        r matches Some(out) ==> query_result(db, params(p1 as int, p2 as int, p3@, p4@), out_view(out@)),
+        r matches Some(out) ==> forall|i: int| 0 <= i < out.len() ==> out_fits(#[trigger] out_view(out@)[i]),
+        r is None ==> !answer_fits(db, params(p1 as int, p2 as int, p3@, p4@)),
+{
+    let ghost p = params(p1 as int, p2 as int, p3@, p4@);
+    let ghost g = *groups;
+    let ok = make_key2(p4, p3);
+    let rows: Vec<(Key, Arc<Cell>)> = match groups.get(&ok) {
+        Some(a) => {
+            let inner = a;
+            let rows = range_rows(&*inner, p1, p2);
+            proof {
+                assert(g.at(key2(p4@, p3@)) == Some(*inner));
+                assert(inner_ok(*inner));
+                let ii = *inner;
+                ii.model();
+                let es = entries_of(rows@);
+                lemma_ordered_unique(ii.entries());
+                assert forall|j: int| 0 <= j < rows.len() implies p.p1 <= (#[trigger] rows[j]).1.sic as int <= p.p2
+                    && cell_at(g, p.p4, p.p3, rows[j].1.sic as int, opt_bytes(rows[j].1.tlabel)) == Some(*rows[j].1) by {
+                    lemma_entries_at(rows@, j);
+                    assert(ii.entries().contains(es[j]));
+                    let m = choose|m: int| 0 <= m < ii.entries().len() && ii.entries()[m] == es[j];
+                    assert(ii.at(es[j].0) == Some(es[j].1));
+                    assert(es[j] == (rows[j].0.view(), *rows[j].1));
+                    assert(es[j].0 == gkey(rows[j].1.sic as int, opt_bytes(rows[j].1.tlabel)));
+                }
+                assert forall|j: int, m: int| 0 <= j < m < rows.len() implies
+                    !(rows[j].1.sic == rows[m].1.sic && opt_bytes(rows[j].1.tlabel) == opt_bytes(rows[m].1.tlabel)) by {
+                    lemma_entries_at(rows@, j);
+                    lemma_entries_at(rows@, m);
+                    assert(key_lt(es[j].0, es[m].0));
+                    lemma_key_order(es[j].0, es[m].0);
+                    assert(es[j].0 == gkey(rows[j].1.sic as int, opt_bytes(rows[j].1.tlabel)));
+                    assert(es[m].0 == gkey(rows[m].1.sic as int, opt_bytes(rows[m].1.tlabel)));
+                }
+                assert forall|sc: int, tl: Option<Seq<u8>>| p.p1 <= sc <= p.p2 && #[trigger] cell_at(g, p.p4, p.p3, sc, tl) is Some implies
+                    exists|j: int| 0 <= j < rows.len() && rows[j].1.sic as int == sc && opt_bytes(rows[j].1.tlabel) == tl by {
+                    let cell = cell_at(g, p.p4, p.p3, sc, tl)->0;
+                    assert(ii.at(gkey(sc, tl)) == Some(cell));
+                    let m = choose|m: int| 0 <= m < ii.entries().len() && ii.entries()[m].0 == gkey(sc, tl);
+                    let e = ii.entries()[m];
+                    assert(e == (gkey(sc, tl), cell));
+                    assert(ii.entries().contains(e));
+                    assert(e.0.0 == sc);
+                    assert(exists|j: int| 0 <= j < rows.len() && es[j] == e);
+                    let j = choose|j: int| 0 <= j < rows.len() && es[j] == e;
+                    lemma_entries_at(rows@, j);
+                    assert(rows[j].1.sic as int == sc) by {
+                        assert(es[j].0 == gkey(rows[j].1.sic as int, opt_bytes(rows[j].1.tlabel)));
+                        lemma_gkey_inj(sc, tl, rows[j].1.sic as int, opt_bytes(rows[j].1.tlabel));
+                    }
+                    lemma_gkey_inj(sc, tl, rows[j].1.sic as int, opt_bytes(rows[j].1.tlabel));
+                }
+            }
+            rows
+        },
+        None => {
+            proof {
+                assert forall|sc: int, tl: Option<Seq<u8>>| #[trigger] cell_at(g, p.p4, p.p3, sc, tl) is None by {
+                    assert(g.at(key2(p4@, p3@)).is_none());
+                }
+            }
+            Vec::new()
+        },
+    };
+    let cands = make_cands(&rows, c, Ghost(db), Ghost(p), Ghost(g));
+    finish(&cands, p3, Ghost(db), Ghost(p))
 }
 
 }

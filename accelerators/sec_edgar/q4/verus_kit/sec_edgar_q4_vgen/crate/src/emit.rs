@@ -600,7 +600,6 @@ pub fn emit_num(out: &mut Vec<Rec>, c: i128, n: &NumRt, sub_bag: &Index<Vec<SubR
         bag_holds::<TagRt>(*tag_bag, tt),
         sides_ok(sides@),
         pows_ok(pows@),
-        n.value__null != 0 || f64_finite(n.value),
     ensures
         forall|p: Params, h: spec_fn(JK) -> int| #[trigger] rsum(final(out)@, p, h)
             == rsum(old(out)@, p, h) + c as int * big_psi(st, tt, sides_spec(sides@), p, h, n.rv()),
@@ -652,8 +651,7 @@ pub open spec fn nl_view(nl: Seq<(NumRt, i64)>) -> Seq<(NumRow, int)> {
 }
 
 pub open spec fn nl_ok(nl: Seq<(NumRt, i64)>) -> bool {
-    forall|i: int| 0 <= i < nl.len() ==>
-        ((#[trigger] nl[i]).1 == 1 || nl[i].1 == -1) && (nl[i].0.value__null != 0 || f64_finite(nl[i].0.value))
+    forall|i: int| 0 <= i < nl.len() ==> (#[trigger] nl[i]).1 == 1 || nl[i].1 == -1
 }
 
 /// The records of a pass of signed num rows, times mult.

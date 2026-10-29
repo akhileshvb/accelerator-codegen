@@ -11,6 +11,12 @@ pub open spec fn entries_of(rows: Seq<(Key, Arc<Cell>)>) -> Seq<(KeyView, Cell)>
     rows.map_values(|row: (Key, Arc<Cell>)| (row.0.view(), *row.1))
 }
 
+pub proof fn lemma_entries_at(rows: Seq<(Key, Arc<Cell>)>, j: int)
+    requires 0 <= j < rows.len(),
+    ensures entries_of(rows)[j] == (rows[j].0.view(), *rows[j].1),
+{
+}
+
 /// The groups whose sic is in [lo, hi], in key order.
 pub fn range_rows(idx: &Index<Cell>, lo: i64, hi: i64) -> (rows: Vec<(Key, Arc<Cell>)>)
     ensures
