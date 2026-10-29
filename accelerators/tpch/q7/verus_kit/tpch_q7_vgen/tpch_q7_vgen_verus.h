@@ -143,6 +143,10 @@ tpchq7vgens_staged *tpchq7vgens_stage_apply(const tpchq7vgens_base *b, size_t cu
    that version; invalid if the kernel cannot build it. */
 tpchq7vgens_staged *tpchq7vgens_stage_build(const tpchq7vgens_head *h, size_t suppliers__n, const tpchq7vgen_supplier_input *suppliers, size_t customers__n, const tpchq7vgen_customer_input *customers, size_t nations__n, const int64_t *nations__n_nationkey, const uint8_t *nations__n_name, const size_t *nations__n_name__off, size_t relevant_orders__n, const tpchq7vgen_order_input *relevant_orders, size_t window_lines__n, const tpchq7vgen_line_input *window_lines);
 
+/* The next version's slot holding a state built by apply (HOST CONTRACT: its database
+   is that of the version, as for stage_build); consumes the state. */
+tpchq7vgens_staged *tpchq7vgens_stage_adopt(const tpchq7vgens_head *h, tpchq7vgen_state *s);
+
 /* The next version's slot, invalid. */
 tpchq7vgens_staged *tpchq7vgens_stage_invalid(const tpchq7vgens_head *h);
 

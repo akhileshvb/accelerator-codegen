@@ -86,6 +86,10 @@ secq1vgens_staged *secq1vgens_stage_apply(const secq1vgens_base *b, size_t pre_d
    that version; invalid if the kernel cannot build it. */
 secq1vgens_staged *secq1vgens_stage_build(const secq1vgens_head *h, size_t pre_build__n, const uint8_t *pre_build__adsh, const size_t *pre_build__adsh__off, const uint8_t *pre_build__adsh__null, const uint8_t *pre_build__stmt, const size_t *pre_build__stmt__off, const uint8_t *pre_build__stmt__null, const uint8_t *pre_build__rfile, const size_t *pre_build__rfile__off, const uint8_t *pre_build__rfile__null, const int64_t *pre_build__line, const uint8_t *pre_build__line__null);
 
+/* The next version's slot holding a state built by apply (HOST CONTRACT: its database
+   is that of the version, as for stage_build); consumes the state. */
+secq1vgens_staged *secq1vgens_stage_adopt(const secq1vgens_head *h, secq1vgen_state *s);
+
 /* The next version's slot, invalid. */
 secq1vgens_staged *secq1vgens_stage_invalid(const secq1vgens_head *h);
 

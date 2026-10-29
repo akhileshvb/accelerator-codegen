@@ -119,6 +119,10 @@ tpchq2vgens_staged *tpchq2vgens_stage_apply(const tpchq2vgens_base *b, size_t na
    that version; invalid if the kernel cannot build it. */
 tpchq2vgens_staged *tpchq2vgens_stage_build(const tpchq2vgens_head *h, size_t brass_parts__n, const int64_t *brass_parts__p_partkey, const uint8_t *brass_parts__p_mfgr, const size_t *brass_parts__p_mfgr__off, const int64_t *brass_parts__p_size, const uint8_t *brass_parts__p_type, const size_t *brass_parts__p_type__off, size_t brass_partsupp__n, const tpchq2vgen_brass_partsupp_scan *brass_partsupp, size_t suppliers__n, const int64_t *suppliers__s_suppkey, const uint8_t *suppliers__s_name, const size_t *suppliers__s_name__off, const uint8_t *suppliers__s_address, const size_t *suppliers__s_address__off, const int64_t *suppliers__s_nationkey, const uint8_t *suppliers__s_phone, const size_t *suppliers__s_phone__off, const int64_t *suppliers__s_acctbal, const uint8_t *suppliers__s_comment, const size_t *suppliers__s_comment__off, size_t nations__n, const int64_t *nations__n_nationkey, const uint8_t *nations__n_name, const size_t *nations__n_name__off, const int64_t *nations__n_regionkey, size_t regions__n, const int64_t *regions__r_regionkey, const uint8_t *regions__r_name, const size_t *regions__r_name__off);
 
+/* The next version's slot holding a state built by apply (HOST CONTRACT: its database
+   is that of the version, as for stage_build); consumes the state. */
+tpchq2vgens_staged *tpchq2vgens_stage_adopt(const tpchq2vgens_head *h, tpchq2vgen_state *s);
+
 /* The next version's slot, invalid. */
 tpchq2vgens_staged *tpchq2vgens_stage_invalid(const tpchq2vgens_head *h);
 

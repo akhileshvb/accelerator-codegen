@@ -143,6 +143,7 @@ const kit::Glue kGlue = {
         [](const void *reading) { tpchq6vgens_reading_free(const_cast<tpchq6vgens_reading *>(static_cast<const tpchq6vgens_reading *>(reading))); },
         [](const void *store) { tpchq6vgens_invalidate_all(static_cast<const tpchq6vgens_store *>(store)); },
         [](const void *store) -> std::size_t { return tpchq6vgens_version_count(static_cast<const tpchq6vgens_store *>(store)); },
+        [](const void *head, void *state) -> void * { return tpchq6vgens_stage_adopt(static_cast<const tpchq6vgens_head *>(head), static_cast<tpchq6vgen_state *>(state)); },
     }};
 
 const kit::Registrar kRegistrar(&kGlue);

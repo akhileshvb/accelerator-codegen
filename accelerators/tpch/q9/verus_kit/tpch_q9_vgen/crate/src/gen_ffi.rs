@@ -792,6 +792,13 @@ pub unsafe extern "C" fn tpchq9vgens_stage_build(h: *const QHead, all_parts__n: 
     Box::into_raw(Box::new(stage_build(&*h, all_parts__v, slice(all_orders, all_orders__n), slice(supplier_nations, supplier_nations__n), nation_names__v, slice(all_partsupp, all_partsupp__n), slice(all_lines, all_lines__n))))
 }
 
+/// The next version's slot holding a state built by apply (HOST CONTRACT: its database
+/// is that of the version, as for stage_build); consumes the state.
+#[no_mangle]
+pub unsafe extern "C" fn tpchq9vgens_stage_adopt(h: *const QHead, s: *mut State) -> *mut QStaged {
+    Box::into_raw(Box::new((*h).stage(Some(*Box::from_raw(s)))))
+}
+
 /// The next version's slot, invalid.
 #[no_mangle]
 pub unsafe extern "C" fn tpchq9vgens_stage_invalid(h: *const QHead) -> *mut QStaged {

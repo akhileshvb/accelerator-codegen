@@ -120,6 +120,112 @@ public:
   virtual std::shared_ptr<const KitStaged> StageBuild(Host &) const = 0;
 };
 
+// ---- build by apply ----
+// A build whose memory does not scale with the tables: the kernel's build on empty scans, then
+// every table's rows in position chunks as insert deltas through the kernel's apply.  The chunk
+// ending at position `hi` is applied on a database in which each table holds only its rows
+// below `hi`, so the rescans (PrefixHost) agree with the apply's contract.
+using Clock = std::chrono::steady_clock;
+
+// Reads nothing: the kernel's build on empty scans.
+class EmptyHost final : public Host {
+public:
+  void Query(const std::string &, const RowFn &) override {}
+  void QueryParams(const std::string &, const std::vector<core::AuxValue> &, const RowFn &) override {}
+  std::vector<int32_t> Attnums(const std::string &, const std::vector<std::string> &) override { return {}; }
+};
+
+// Every query runs behind `prefix` (a WITH clause).
+class PrefixHost final : public Host {
+public:
+  PrefixHost(Host &inner_p, std::string prefix_p) : inner(inner_p), prefix(std::move(prefix_p)) {}
+  void Query(const std::string &sql, const RowFn &row) override {
+    const auto start = Clock::now();
+    inner.Query(prefix + sql, [&](const core::AuxRow &r) { ++rows; row(r); });
+    millis += std::chrono::duration<double, std::milli>(Clock::now() - start).count();
+  }
+  void QueryParams(const std::string &sql, const std::vector<core::AuxValue> &params, const RowFn &row) override {
+    inner.QueryParams(prefix + sql, params, row);
+  }
+  bool QueryBigintList(const std::string &sql, const std::vector<int64_t> &list, const RowFn &row) override {
+    const auto start = Clock::now();
+    const bool ok = inner.QueryBigintList(prefix + sql, list, [&](const core::AuxRow &r) { ++rows; row(r); });
+    millis += std::chrono::duration<double, std::milli>(Clock::now() - start).count();
+    return ok;
+  }
+  std::vector<int32_t> Attnums(const std::string &t, const std::vector<std::string> &c) override { return inner.Attnums(t, c); }
+  std::string Quote(const std::string &identifier) const override { return inner.Quote(identifier); }
+  std::string QuoteText(const std::string &text) const override { return inner.QuoteText(text); }
+  Host &inner;
+  std::string prefix;
+  uint64_t rows = 0;  // rescanned
+  double millis = 0;  // spent in rescans
+};
+
+// Rows per chunk of a build by apply; ACCEL_VERUS_BUILD_CHUNK_ROWS overrides, 0 turns it off.
+uint64_t BuildChunkRows() {
+  const char *env = std::getenv("ACCEL_VERUS_BUILD_CHUNK_ROWS");
+  return env ? std::strtoull(env, nullptr, 10) : 2000000;
+}
+
+struct ChunkedBuild {
+  bool used = false;      // false: the tables fit one chunk (or the engine has no positions): build from whole scans
+  void *state = nullptr;  // used and null: the kernel declined
+};
+
+ChunkedBuild BuildByApply(const Glue &glue, Host &host) {
+  const uint64_t chunk = BuildChunkRows();
+  if (chunk == 0 || !glue.apply || !glue.build || !glue.free_state)
+    return {};
+  std::vector<std::string> names;
+  std::vector<uint64_t> ends;
+  uint64_t longest = 0;
+  for (const auto &t : glue.tables) {
+    const auto end = host.RowEnd(t.name);
+    if (!end)
+      return {};
+    names.emplace_back(t.name);
+    ends.push_back(*end);
+    longest = std::max(longest, *end);
+  }
+  if (longest <= chunk)
+    return {};
+  const bool trace = std::getenv("ACCEL_VERUS_BUILD_TRACE") != nullptr;
+  EmptyHost empty;
+  void *state = glue.build(empty);
+  try {
+    for (uint64_t lo = 0; state && lo < longest; lo += chunk) {
+      const uint64_t hi = lo + chunk;
+      Changes changes(glue.tables.size());
+      const auto scanning = Clock::now();
+      for (std::size_t t = 0; t < glue.tables.size(); ++t) {
+        if (lo >= ends[t])
+          continue;
+        std::vector<std::string> columns(glue.tables[t].columns.begin(), glue.tables[t].columns.end());
+        host.Query(host.RowRangeSql(names[t], columns, lo, hi),
+                   [&](const core::AuxRow &r) { changes[t].push_back(Change{r, +1}); });
+      }
+      PrefixHost loaded(host, host.RowPrefixSql(names, hi));
+      int32_t err = 0;
+      const auto applying = Clock::now();
+      void *next = glue.apply(state, changes, loaded, &err);
+      glue.free_state(state);
+      state = next;
+      if (trace)
+        std::fprintf(stderr, "build by apply %s: rows [%llu, %llu) scan %.0f ms, apply %.0f ms of which rescan %.0f ms (%llu rows)\n", glue.id,
+                     static_cast<unsigned long long>(lo), static_cast<unsigned long long>(hi),
+                     std::chrono::duration<double, std::milli>(applying - scanning).count(),
+                     std::chrono::duration<double, std::milli>(Clock::now() - applying).count(), loaded.millis,
+                     static_cast<unsigned long long>(loaded.rows));
+    }
+  } catch (...) {
+    if (state)
+      glue.free_state(state);
+    throw;
+  }
+  return {true, state};
+}
+
 // A build staged through `glue`: `make_head` returns the newest version's head (or throws),
 // `free_head` releases it.
 template <class MakeHead, class FreeHead>
@@ -132,7 +238,18 @@ void *StageBuildOn(const Glue &glue, Host &host, MakeHead make_head, FreeHead fr
   void *next = nullptr;
   try {
     try {
-      next = glue.prepare_build(head_of, host);
+      const ChunkedBuild chunked = glue.store.stage_adopt ? BuildByApply(glue, host) : ChunkedBuild{};
+      if (!chunked.used)
+        next = glue.prepare_build(head_of, host);
+      else if (chunked.state) {
+        try {
+          next = glue.store.stage_adopt(head_of(), chunked.state);
+        } catch (...) {
+          glue.free_state(chunked.state);
+          throw;
+        }
+      } else
+        throw Declined("build by apply declined");
     } catch (const Declined &) {
       if (!head)
         head_of();
@@ -777,7 +894,8 @@ public:
     }
     void *state = nullptr;
     try {
-      state = glue.build(host);
+      const ChunkedBuild chunked = BuildByApply(glue, host);
+      state = chunked.used ? chunked.state : glue.build(host);
     } catch (const Declined &) {
       state = nullptr;
     }

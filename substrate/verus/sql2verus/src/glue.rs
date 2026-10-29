@@ -685,6 +685,9 @@ impl<'m> Ffi<'m> {
                 format!("{ps}_stage_build"), rp, cp, ("*mut QStaged", format!("{ps}_staged *")),
                 format!("{pre}    Box::into_raw(Box::new(stage_build(&*h, {})))\n", args.join(", "))));
         }
+        out.push(f(&["The next version's slot holding a state built by apply (HOST CONTRACT: its database", "is that of the version, as for stage_build); consumes the state."], format!("{ps}_stage_adopt"),
+            vec!["h: *const QHead".into(), "s: *mut State".into()], vec![format!("const {ps}_head *h"), format!("{state_c} *s")], ("*mut QStaged", format!("{ps}_staged *")),
+            "    Box::into_raw(Box::new((*h).stage(Some(*Box::from_raw(s)))))\n".into()));
         out.push(f(&["The next version's slot, invalid."], format!("{ps}_stage_invalid"), vec!["h: *const QHead".into()], vec![format!("const {ps}_head *h")],
             ("*mut QStaged", format!("{ps}_staged *")), "    Box::into_raw(Box::new(stage_invalid(&*h)))\n".into()));
         out.push(ptr_free("Free a staged slot.", "staged_free", "QStaged", "staged"));
@@ -1392,6 +1395,7 @@ pub(crate) fn kit(m: &Model, prefix: &str, header: &str, accel_id: &str, workloa
         ("reading_free", format!("[](const void *r) {{ {ps}_reading_free(const_cast<{ps}_reading *>(static_cast<const {ps}_reading *>(r))); }}")),
         ("invalidate_all", format!("[](const void *st) {{ {ps}_invalidate_all(static_cast<const {ps}_store *>(st)); }}")),
         ("version_count", format!("[](const void *st) -> size_t {{ return {ps}_version_count(static_cast<const {ps}_store *>(st)); }}")),
+        ("stage_adopt", format!("[](const void *hd, void *st) -> void * {{ return {ps}_stage_adopt(static_cast<const {ps}_head *>(hd), static_cast<{state_t} *>(st)); }}")),
     ] {
         writeln!(w, "        /* {name} */ {lam},").unwrap();
     }

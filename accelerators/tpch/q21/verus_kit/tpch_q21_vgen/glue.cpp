@@ -406,6 +406,7 @@ const kit::Glue kGlue = {
         [](const void *reading) { tpchq21vgens_reading_free(const_cast<tpchq21vgens_reading *>(static_cast<const tpchq21vgens_reading *>(reading))); },
         [](const void *store) { tpchq21vgens_invalidate_all(static_cast<const tpchq21vgens_store *>(store)); },
         [](const void *store) -> std::size_t { return tpchq21vgens_version_count(static_cast<const tpchq21vgens_store *>(store)); },
+        [](const void *head, void *state) -> void * { return tpchq21vgens_stage_adopt(static_cast<const tpchq21vgens_head *>(head), static_cast<tpchq21vgen_state *>(state)); },
     },
 };
 

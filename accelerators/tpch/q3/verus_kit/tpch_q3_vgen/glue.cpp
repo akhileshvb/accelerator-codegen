@@ -389,6 +389,7 @@ const kit::Glue kGlue = {
         [](const void *reading) { tpchq3vgens_reading_free(const_cast<tpchq3vgens_reading *>(static_cast<const tpchq3vgens_reading *>(reading))); },
         [](const void *store) { tpchq3vgens_invalidate_all(static_cast<const tpchq3vgens_store *>(store)); },
         [](const void *store) -> std::size_t { return tpchq3vgens_version_count(static_cast<const tpchq3vgens_store *>(store)); },
+        [](const void *head, void *state) -> void * { return tpchq3vgens_stage_adopt(static_cast<const tpchq3vgens_head *>(head), static_cast<tpchq3vgen_state *>(state)); },
     },
 };
 
