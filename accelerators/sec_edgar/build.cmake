@@ -97,7 +97,7 @@ file(GLOB _base_kernel_dirs CONFIGURE_DEPENDS
      "${CMAKE_CURRENT_SOURCE_DIR}/accelerators/sec_edgar/q*/${_engine}/base/single-threaded")
 set(_base_qs)
 foreach(_dir IN LISTS _base_kernel_dirs)
-    string(REGEX MATCH "/q([0-9]+)/" _m "${_dir}")
+    string(REGEX MATCH "/accelerators/sec_edgar/q([0-9]+)/" _m "${_dir}")
     list(APPEND _base_qs ${CMAKE_MATCH_1})
     accel_add_base_query(
         BENCHMARK sec_edgar
