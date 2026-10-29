@@ -18,3 +18,5 @@ pub mod absorb;
 pub mod bridge;
 pub mod answer;
 pub mod copy;
+pub mod output;
+pub mod perm;
