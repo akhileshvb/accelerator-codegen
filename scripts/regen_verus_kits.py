@@ -15,6 +15,7 @@ generated.
 """
 import os
 import pathlib
+import re
 import shutil
 import subprocess
 import sys
@@ -27,6 +28,8 @@ def same(generated: pathlib.Path, committed: pathlib.Path) -> bool:
     return generated.read_text() == committed.read_text()
 
 
+# the engine the kits run on, as the Verus pipeline's settings name it
+ENGINE = re.search(r"^engine:\s*(\S+)", (ROOT / "pipeline/config/verus.yaml").read_text(), re.M).group(1)
 UPDATE_SPEC = bool(os.environ.get("REGEN_UPDATE_SPEC"))  # approved spec change only
 
 
@@ -47,7 +50,7 @@ def main() -> int:
         with tempfile.TemporaryDirectory(dir="/dev/shm") as t:
             t = pathlib.Path(t)
             shutil.copy2(inputs / f"{q}.inputs", t / "q.inputs")  # the name gen_obligations.rs records
-            cmd = [binary, "--engine", "duckdb", "--schema", schema,
+            cmd = [binary, "--engine", ENGINE, "--schema", schema,
                    "--query", ROOT / f"workloads/tpch/{q}.sql", "--out", t / "gen_spec.rs",
                    "--obligations", t / "gen_obligations.rs", "--inputs", t / "q.inputs",
                    "--kernel-stub", t / "kernel_stub.rs", "--world", t / "gen_world.rs",

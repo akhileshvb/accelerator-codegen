@@ -105,12 +105,13 @@ def _sql2verus(ctx: VerusContext, out_dir: Path, *, inputs: Path | None) -> subp
     cmd = [str(sql2verus_bin(ctx)), "--engine", str(ctx.setting("engine", "duckdb")),
            "--schema", ctx.schema_sql, "--query", ctx.query_sql,
            "--out", str(out_dir / "gen_spec.rs")]
-    # a zero divisor follows the engine's profile unless the workload says otherwise (ieee | error);
-    # parameters are non-NULL unless the workload lists the NULL-able ones (numbers, `$n`)
+    # a zero divisor follows the engine's profile unless the settings say otherwise (ieee | error);
+    # parameters are non-NULL unless the query's `<query>.nullable-params` lists the NULL-able ones
     if div_zero := ctx.setting("div_zero"):
         cmd += ["--div-zero", str(div_zero)]
-    if nullable := ctx.setting("nullable_params"):
-        cmd += ["--nullable-params", ",".join(str(n) for n in nullable) if isinstance(nullable, list) else str(nullable)]
+    nullable = Path(ctx.query_sql).with_suffix(".nullable-params") if ctx.query_sql else None
+    if nullable and nullable.exists():
+        cmd += ["--nullable-params", nullable.read_text().strip()]
     if inputs is not None:
         cmd += ["--obligations", str(out_dir / "gen_obligations.rs"), "--inputs", str(inputs),
                 "--kernel-stub", str(out_dir / "kernel_stub.rs"), "--world", str(out_dir / "gen_world.rs"),

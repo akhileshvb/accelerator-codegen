@@ -37,6 +37,7 @@ keep:
   - eval/tests/test_float_order_ties.cpp
   - eval/tests/test_scratch_dir.cpp
   - eval/tests/test_versioned_aux_store_caps.cpp
+  - eval/tests/test_verus_world_commits.cpp
   - eval/tests/make_sec_edgar_test_db.cpp
   - eval/tests/make_tpch_test_db.cpp
   - eval/tests/make_test_db.cpp

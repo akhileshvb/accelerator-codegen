@@ -64,7 +64,7 @@
 //     formatting.  Division by a non-literal is allowed only in the SELECT
 //     list.  A zero divisor leaves the query without an answer where the
 //     engine raises an error; where it computes in IEEE doubles (--div-zero
-//     ieee, the DuckDB default) the answer holds a Rat with den == 0.
+//     ieee, the default of an engine that does) the answer holds a Rat with den == 0.
 //   * DOUBLE / REAL -> int (the exact value * 2^1074; finite by host
 //     contract).  Comparisons, GROUP BY, MIN / MAX on float values are exact.
 //     SUM / AVG of float expressions are rounded in an engine-chosen order:
@@ -3836,26 +3836,25 @@ async fn run() -> Res<()> {
     let ctx = SessionContext::new_with_config(cfg);
     // CHAR(n) semantics of the target engine (the spec models the engine the accelerator runs on)
     let engine = opt0(&args, "--engine").unwrap_or_else(|| "duckdb".to_string());
+    // the engine's defaults: CHAR(n) semantics, and whether a zero divisor gives IEEE inf / NaN
+    // (DECIMAL / DECIMAL is a DOUBLE division) or an error
+    let (char_default, ieee_default): ((&'static str, &'static str), bool) = match engine.as_str() {
+        "duckdb" => (("bytes", "DuckDB: CHAR(n) is an alias of VARCHAR"), true),
+        "postgres" => (("padded", "Postgres bpchar; a parameter compared with it must bind as bpchar, not text"), false),
+        "mysql" => (("padded", "MySQL CHAR under a PAD SPACE collation"), false),
+        e => return Err(format!("--engine: duckdb, postgres or mysql, not {e}")),
+    };
     let char_semantics: (&'static str, &'static str) = match opt0(&args, "--char-semantics").as_deref() {
         Some("bytes") => ("bytes", "set by --char-semantics"),
         Some("padded") => ("padded", "set by --char-semantics"),
         Some(o) => return Err(format!("--char-semantics: bytes or padded, not {o}")),
-        None => match engine.as_str() {
-            "duckdb" => ("bytes", "DuckDB: CHAR(n) is an alias of VARCHAR"),
-            "postgres" => ("padded", "Postgres bpchar; a parameter compared with it must bind as bpchar, not text"),
-            "mysql" => ("padded", "MySQL CHAR under a PAD SPACE collation"),
-            e => return Err(format!("--engine: duckdb, postgres or mysql, not {e}")),
-        },
+        None => char_default,
     };
-    // division by zero of the target engine: IEEE (DECIMAL / DECIMAL is a DOUBLE division) or an error
     let div_ieee = match opt0(&args, "--div-zero").as_deref() {
         Some("ieee") => true,
         Some("error") => false,
         Some(o) => return Err(format!("--div-zero: ieee or error, not {o}")),
-        None => match engine.as_str() {
-            "duckdb" => true,
-            _ => false,
-        },
+        None => ieee_default,
     };
     let mut sch = load_schema(&ctx, &ddl, char_semantics, engine.clone()).await?;
     sch.div_ieee = div_ieee;

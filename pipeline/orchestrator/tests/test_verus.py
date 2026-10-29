@@ -397,7 +397,9 @@ def test_sql2verus_gets_the_engine_division_and_nullable_parameters(tmp_path, mo
     ctx = _ctx(tmp_path)
     actions._sql2verus(ctx, tmp_path / "o", inputs=None)
     assert "--div-zero" not in seen[-1] and "--nullable-params" not in seen[-1]  # engine profile, non-NULL parameters
-    ctx.settings.update(div_zero="error", nullable_params=[1, 3])
+    ctx.settings.update(div_zero="error")
+    ctx.query_sql = str(tmp_path / "q21.sql")
+    (tmp_path / "q21.nullable-params").write_text("1,3\n")
     actions._sql2verus(ctx, tmp_path / "o", inputs=None)
     cmd = seen[-1]
     assert cmd[cmd.index("--div-zero") + 1] == "error" and cmd[cmd.index("--nullable-params") + 1] == "1,3"
