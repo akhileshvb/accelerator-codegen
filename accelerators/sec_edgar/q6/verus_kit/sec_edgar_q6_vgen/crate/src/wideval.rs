@@ -14,7 +14,7 @@ pub struct Pow2Tab {
 
 impl Pow2Tab {
     pub open spec fn ok(self) -> bool {
-        self.t.len() == 2046 && forall|i: int| 0 <= i < 2046 ==> (#[trigger] self.t@[i])@ == pow2(i as nat)
+        self.t.len() == 2099 && forall|i: int| 0 <= i < 2099 ==> (#[trigger] self.t@[i])@ == pow2(i as nat)
     }
 }
 
@@ -25,12 +25,12 @@ pub fn pow2_tab() -> (r: Pow2Tab)
     t.push(Wide::from_i128(1));
     proof { reveal(pow2); }
     let mut i = 1usize;
-    while i < 2046
+    while i < 2099
         invariant
-            1 <= i <= 2046,
+            1 <= i <= 2099,
             t.len() == i,
             forall|j: int| 0 <= j < i ==> (#[trigger] t@[j])@ == pow2(j as nat),
-        decreases 2046 - i,
+        decreases 2099 - i,
     {
         let next = t[i - 1].add(&t[i - 1]);
         proof {
@@ -46,7 +46,6 @@ pub fn pow2_tab() -> (r: Pow2Tab)
 pub fn wide_of_bits(tab: &Pow2Tab, bits: u64) -> (r: Wide)
     requires
         tab.ok(),
-        f64_finite(bits),
     ensures
         r@ == f64_val(bits),
 {
@@ -58,6 +57,9 @@ pub fn wide_of_bits(tab: &Pow2Tab, bits: u64) -> (r: Wide)
         assert(e as int == f64_exp(bits));
         assert(frac as int == f64_frac(bits));
         assert(bits as int / pow2(63) == (bits / 9223372036854775808) as int);
+    }
+    if e == 2047 {
+        return tab.t[2098].dup();
     }
     let mag: Wide = if e == 0 {
         Wide::from_i128(frac as i128)

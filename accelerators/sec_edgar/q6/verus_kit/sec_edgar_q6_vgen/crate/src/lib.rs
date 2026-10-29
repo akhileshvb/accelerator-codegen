@@ -10,3 +10,8 @@ pub mod f64bits;
 pub mod wideval;
 pub mod esc;
 pub mod model;
+pub mod algebra;
+pub mod accmap;
+pub mod gmap;
+pub mod buckets;
+pub mod join;
