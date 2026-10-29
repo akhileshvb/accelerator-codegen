@@ -17,6 +17,10 @@ use crate::filing::*;
 use crate::agree::*;
 use crate::rescan::*;
 use crate::delta::*;
+use crate::classes::*;
+use crate::finish::*;
+use crate::walk::*;
+use crate::sortout::*;
 
 verus! {
 
@@ -35,6 +39,7 @@ impl State {
     closed spec fn valid(self) -> bool {
         &&& cells_rep(self.cells, cw(self.db@))
         &&& cover(self.dir, cw(self.db@))
+        &&& finite_num(self.db@)
     }
 }
 
@@ -104,6 +109,19 @@ proof fn lemma_nonfinite_row(db: Db, rows: Seq<NumInput>, i: int, pred: spec_fn(
         }
         lemma_sum_zero(db.num, g);
     }
+}
+
+/// Rows of a database that agrees with a finite one on their filing are finite too.
+proof fn lemma_finite_via(dx: Db, dy: Db, n: NumRow)
+    requires
+        finite_num(dx),
+        is_qual(n),
+        dy.num.contains(n),
+        agree_num(dx.num, dy.num, n.adsh->0),
+    ensures
+        exists|b: u64| f64_finite(b) && f64_val(b) == n.value->0,
+{
+    lemma_agree_contains(dx.num, dy.num, n.adsh->0, n);
 }
 
 /// A sub row of the database has its adsh among the scanned rows'.
@@ -198,6 +216,10 @@ pub fn build(
         }
         lemma_rep_congr(cells, fam_keys(zero, kv, dr), cw(db));
         lemma_cover_congr(dir, fam_keys(zero, kv, dr), cw(db));
+        assert forall|n: NumRow| db.num.contains(n) && is_qual(n) implies exists|b: u64| f64_finite(b) && f64_val(b) == n.value->0 by {
+            lemma_scan_agree(db, num_build@, sub_build@, n.adsh->0);
+            lemma_finite_via(dr, db, n);
+        }
     }
     Some(State { db: Ghost(db), cells, dir })
 }
@@ -278,6 +300,16 @@ pub fn apply(
         }
         lemma_rep_congr(cells, fam_keys(cw(db), kv, dr), cw(db2));
         lemma_cover_congr(dir, fam_keys(cw(db), kv, dr), cw(db2));
+        assert forall|n: NumRow| db2.num.contains(n) && is_qual(n) implies exists|b: u64| f64_finite(b) && f64_val(b) == n.value->0 by {
+            let a = n.adsh->0;
+            if kv.contains(a) {
+                lemma_rescan_agree_num(db2, num_by_filing_keys@, num_by_filing_rows@, a);
+                lemma_finite_via(dr, db2, n);
+            } else {
+                lemma_delta_agree(db, db2, nd, sd, a);
+                lemma_finite_via(db, db2, n);
+            }
+        }
     }
     Ok(State { db: Ghost(db2), cells, dir })
 }
@@ -292,8 +324,53 @@ pub fn execute(
         envelope(s.db()) && answer_fits(s.db(), params(p1 as int, p2@)) ==> r is Some,
         r matches Some(out) ==> forall|i: int| 0 <= i < out.len() ==> out_fits(#[trigger] out_view(out@)[i]),
 {
-    proof { admit(); }
-    None
+    proof { use_type_invariant(s); }
+    let ghost db = s.db@;
+    let uom = Arc::new(copy_vec(p2));
+    let ghost es = class_entries(s.cells, p1 as int, p2@);
+    let coll: Vec<Row> = match s.cells.get(&kkey(p1, &uom)) {
+        None => {
+            proof {
+                assert(es =~= Seq::<(KeyView, Vec<Row>)>::empty());
+                assert(es.take(0) =~= es);
+                assert(views(Seq::<Row>::empty()) =~= Seq::<OutRow>::empty());
+                assert(flat_rows(es.take(0)) =~= Seq::<OutRow>::empty());
+                assert(coll_ok(Seq::<Row>::empty(), es));
+            }
+            Vec::new()
+        }
+        Some(inner) => {
+            proof {
+                assert(s.cells.at((p1 as int, p2@)) == Some(*inner));
+                assert(inner.wf());
+                assert(inner.entries() == es);
+                assert forall|i: int| 0 <= i < inner.entries().len() implies rows_finite((#[trigger] inner.entries()[i]).1@) by {
+                    lemma_entry_rows(db, s.cells, p1 as int, p2@, i);
+                }
+            }
+            let c = walk(&*inner);
+            proof { assert(coll_ok(c@, es)); }
+            c
+        }
+    };
+    let sorted = sort_rows(&coll);
+    let out = emit(&coll, &sorted);
+    proof {
+        lemma_collected(db, s.cells, p1 as int, p2@, coll@, sorted@);
+        let sv = sorted_views(coll@, sorted@);
+        assert forall|i: int| 0 <= i < out.len() implies out_fits(#[trigger] out_view(out@)[i]) by {
+            let lim = limit_rows(sv, 100);
+            assert(out_view(out@) == lim);
+            assert(out_view(out@).len() == out.len());
+            if sv.len() <= 100 { assert(lim == sv); } else { assert(lim == sv.take(100)); assert(lim[i] == sv[i]); }
+            assert(i < sv.len());
+            assert(sv.len() == sorted@.len());
+            let row = coll@[sorted@[i] as int];
+            assert(sv[i] == row.view());
+            lemma_f64_in_range(row.val);
+        }
+    }
+    Some(out)
 }
 
 } // verus!

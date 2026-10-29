@@ -57,6 +57,7 @@ pub fn sorted_qual(rows: &Vec<NumInput>) -> (r: Option<Vec<usize>>)
             &&& sorted4(keys_of(pick_rows(rows@, s@)))
             &&& forall|f: spec_fn(NumRow) -> int| #[trigger] sum(num_input_seq_view(pick_rows(rows@, s@)), f)
                 == sum(num_input_seq_view(rows@), |n: NumRow| if is_qual(n) { f(n) } else { 0 })
+            &&& forall|i: int| 0 <= i < rows@.len() && qual_in(rows@[i]) ==> f64_finite(#[trigger] rows@[i].value)
         },
         r is None ==> exists|i: int| 0 <= i < rows@.len() && qual_in(rows@[i]) && !f64_finite(rows@[i].value),
 {
@@ -65,6 +66,7 @@ pub fn sorted_qual(rows: &Vec<NumInput>) -> (r: Option<Vec<usize>>)
     while i < rows.len()
         invariant
             i <= rows@.len(),
+            forall|j: int| 0 <= j < i && qual_in(rows@[j]) ==> f64_finite(#[trigger] rows@[j].value),
             forall|k: int| 0 <= k < qs@.len() ==> (#[trigger] qs@[k]) < i && qual_in(rows@[qs@[k] as int]) && f64_finite(rows@[qs@[k] as int].value),
             forall|f: spec_fn(NumRow) -> int| #[trigger] sum(num_input_seq_view(pick_rows(rows@, qs@)), f)
                 == sum(num_input_seq_view(rows@.take(i as int)), |n: NumRow| if is_qual(n) { f(n) } else { 0 }),
@@ -100,6 +102,11 @@ pub fn sorted_qual(rows: &Vec<NumInput>) -> (r: Option<Vec<usize>>)
             }
             assert forall|k: int| 0 <= k < qs@.len() implies qual_in(rows@[qs@[k] as int]) && f64_finite(rows@[qs@[k] as int].value) by {
                 if k < qs0.len() { assert(qs@[k] == qs0[k]); }
+            }
+        }
+        proof {
+            assert forall|j: int| 0 <= j < i + 1 && qual_in(rows@[j]) implies f64_finite(#[trigger] rows@[j].value) by {
+                if j == i { assert(q); }
             }
         }
         i += 1;

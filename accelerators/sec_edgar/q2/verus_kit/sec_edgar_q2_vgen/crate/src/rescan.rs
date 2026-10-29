@@ -11,6 +11,8 @@ use crate::f64bits::*;
 use crate::group::*;
 use crate::filing::*;
 use crate::agree::*;
+use verus_common::rel::*;
+use crate::classes::finite_num;
 
 verus! {
 
@@ -95,6 +97,7 @@ pub fn compute(rows_n: &Vec<NumInput>, rows_s: &Vec<SubInput>) -> (r: Option<(In
                 &&& sr_sem(sr_at(s, a), a, delivered(rows_n@, rows_s@))
                 &&& forall|k: int| 0 <= k < mr_at(m, a).len() ==> f64_finite((#[trigger] mr_at(m, a)[k]).val)
             }
+            &&& finite_num(delivered(rows_n@, rows_s@))
         },
         r is None ==> exists|i: int| 0 <= i < rows_n@.len() && qual_in(rows_n@[i]) && !f64_finite(rows_n@[i].value),
 {
@@ -118,6 +121,16 @@ pub fn compute(rows_n: &Vec<NumInput>, rows_s: &Vec<SubInput>) -> (r: Option<(In
                 == sum(d.sub, |x: SubRow| if x.adsh == a && x.fy is Some { k(x) } else { 0 }) by {
                 assert(sr_w(s, a, k) == sub_prefix_w(rows_s@, a, k));
             }
+        }
+    }
+    proof {
+        let d = delivered(rows_n@, rows_s@);
+        assert forall|n: NumRow| d.num.contains(n) && is_qual(n) implies exists|b: u64| f64_finite(b) && f64_val(b) == n.value->0 by {
+            let i = choose|i: int| 0 <= i < d.num.len() && d.num[i] == n;
+            assert(d.num[i] == num_input_view(rows_n@[i]));
+            assert(qual_in(rows_n@[i]));
+            assert(f64_finite(rows_n@[i].value));
+            assert(f64_val(rows_n@[i].value) == n.value->0);
         }
     }
     Some((m, s))

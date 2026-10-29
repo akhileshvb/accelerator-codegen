@@ -23,3 +23,7 @@ pub mod filing;
 pub mod agree;
 pub mod rescan;
 pub mod delta;
+pub mod classes;
+pub mod finish;
+pub mod walk;
+pub mod sortout;
