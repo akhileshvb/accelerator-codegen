@@ -10,6 +10,7 @@ banner); per stage it writes known-good artifacts instead of calling a model:
                   (a fork of its session answers with a fixed line)
     optimization  declares saturation
     audit         a passing audit
+    host_bootstrap the engine's fixture harnesses
     critique      a passing critique
 
 With ACCEL_SMOKE_CASE set it misbehaves in one named way (the adversarial smoke cases, see fixtures/cases.json and
@@ -368,6 +369,13 @@ def analysis_critic() -> str:
     return "critique written"
 
 
+def host_bootstrap() -> str:
+    """The engine's workload harnesses, as a known-good bootstrap wrote them (fixtures/engines/<engine>/harness)."""
+    harness = Path(ENV["ACCEL_SMOKE_KIT"]) / "fixtures" / "engines" / ENGINE / "harness"
+    copy_tree(harness, ROOT)
+    return "harnesses installed"
+
+
 def critique() -> str:
     art = ROOT / "pipeline" / "artifacts" / "engines" / ENGINE / "host_bootstrap"
     art.mkdir(parents=True, exist_ok=True)
@@ -379,7 +387,7 @@ def critique() -> str:
 
 
 SCRIPTS = {"analysis": analysis, "analysis_critic": analysis_critic, "test_suite": test_suite, "implementation": implementation, "audit": audit,
-           "critique_host_bootstrap": critique}
+           "host_bootstrap": host_bootstrap, "critique_host_bootstrap": critique}
 PREFIX_SCRIPTS = {"optimization": optimization}
 
 
