@@ -1,7 +1,6 @@
 // Stage C of an update: each recomputed group takes its place in its class.
 #![allow(unused_imports)]
 use vstd::prelude::*;
-use vstd::set::*;
 use std::sync::Arc;
 use verus_common::rel::*;
 use verus_prooflib::ordered::{Index, Key, KeyView, key_lt, lemma_key_order, lemma_key_trans, compare};
@@ -38,21 +37,21 @@ pub open spec fn full_all(t: Index<ClassRec>) -> bool {
 }
 
 /// What is left of a recomputed unit in the table is a group placed already (or, for a unit that only refills, a kept group).
-pub open spec fn purge_ok(t: Index<ClassRec>, kept: GMap, u: Index<UnitRef>, w: Index<UnitRef>, done: Set<GK>) -> bool {
+pub open spec fn purge_ok(t: Index<ClassRec>, kept: GMap, u: Index<UnitRef>, w: Index<UnitRef>, done: spec_fn(GK) -> bool) -> bool {
     forall|ok: KeyView| #![trigger t.at(ok)] t.at(ok) is Some ==> {
         let c = t.at(ok)->0;
-        &&& forall|q: KeyView| #![trigger c.f.at(q)] c.f.at(q) is Some && wn(w, c.fy as int, nkey_v(ov(c.f.at(q)->0.name))) ==> done.contains(cls_gk(c, c.f.at(q)->0))
-        &&& forall|q: KeyView| #![trigger c.r.at(q)] c.r.at(q) is Some && wn(u, c.fy as int, nkey_v(ov(c.r.at(q)->0.name))) ==> done.contains(cls_gk(c, c.r.at(q)->0))
+        &&& forall|q: KeyView| #![trigger c.f.at(q)] c.f.at(q) is Some && wn(w, c.fy as int, nkey_v(ov(c.f.at(q)->0.name))) ==> done(cls_gk(c, c.f.at(q)->0))
+        &&& forall|q: KeyView| #![trigger c.r.at(q)] c.r.at(q) is Some && wn(u, c.fy as int, nkey_v(ov(c.r.at(q)->0.name))) ==> done(cls_gk(c, c.r.at(q)->0))
         &&& forall|q: KeyView| #![trigger c.r.at(q)] c.r.at(q) is Some && wn(w, c.fy as int, nkey_v(ov(c.r.at(q)->0.name))) && !wn(u, c.fy as int, nkey_v(ov(c.r.at(q)->0.name))) ==>
-            done.contains(cls_gk(c, c.r.at(q)->0)) || gm_at(kept, ok, c.r.at(q)->0.ik()) == c.r.at(q)
+            done(cls_gk(c, c.r.at(q)->0)) || gm_at(kept, ok, c.r.at(q)->0.ik()) == c.r.at(q)
     }
 }
 
-pub open spec fn mid_cov(w: Index<UnitRef>, done: Set<GK>) -> spec_fn(GK) -> bool {
-    |k: GK| !u_has(w, k.fy, k.name) || done.contains(k)
+pub open spec fn mid_cov(w: Index<UnitRef>, done: spec_fn(GK) -> bool) -> spec_fn(GK) -> bool {
+    |k: GK| !u_has(w, k.fy, k.name) || done(k)
 }
 
-pub open spec fn mid_ok(db2: Db, t: Index<ClassRec>, kept: GMap, u: Index<UnitRef>, w: Index<UnitRef>, done: Set<GK>) -> bool {
+pub open spec fn mid_ok(db2: Db, t: Index<ClassRec>, kept: GMap, u: Index<UnitRef>, w: Index<UnitRef>, done: spec_fn(GK) -> bool) -> bool {
     &&& tbl_wf(db2, t)
     &&& cov_where(db2, t, mid_cov(w, done))
     &&& ks_ok(kept, t)
@@ -71,7 +70,7 @@ pub open spec fn step_ok(db2: Db, c: ClassRec, n: ClassRec, k: GK, s: int, m: in
 
 /// A step on a class record gives a step on the table.
 pub proof fn lemma_place_mid(db2: Db, t: Index<ClassRec>, t2: Index<ClassRec>, c: ClassRec, n: ClassRec, kept: GMap,
-    u: Index<UnitRef>, w: Index<UnitRef>, done: Set<GK>, k: GK)
+    u: Index<UnitRef>, w: Index<UnitRef>, done: spec_fn(GK) -> bool, k: GK)
     requires
         mid_ok(db2, t, kept, u, w, done),
         cntk(db2, k) > 0, k.fy == c.fy as int && k.stmt == c.stmt@ && k.uom == c.uom@,
@@ -81,7 +80,7 @@ pub proof fn lemma_place_mid(db2: Db, t: Index<ClassRec>, t2: Index<ClassRec>, c
         t2.wf(), forall|q: KeyView| #![trigger t2.at(q)] t2.at(q) == if q == cls_key(c) { Some(n) } else { t.at(q) },
         cls_key(n) == cls_key(c),
         wn(w, c.fy as int, nkey_v(k.name)),
-    ensures mid_ok(db2, t2, kept, u, w, done.insert(k)),
+    ensures mid_ok(db2, t2, kept, u, w, ins(done, k)),
 {
     let ok = cls_key(c);
     if t.at(ok) is None { lemma_empty_ok(db2, c); }
@@ -91,7 +90,7 @@ pub proof fn lemma_place_mid(db2: Db, t: Index<ClassRec>, t2: Index<ClassRec>, c
     }) by { if o != ok { assert(t.at(o) is Some); } }
     assert(tbl_wf(db2, t2));
     // coverage
-    assert forall|k2: GK| cntk(db2, k2) > 0 && mid_cov(w, done.insert(k))(k2) implies #[trigger] covered(db2, t2, k2) by {
+    assert forall|k2: GK| cntk(db2, k2) > 0 && mid_cov(w, ins(done, k))(k2) implies #[trigger] covered(db2, t2, k2) by {
         let ok2 = okey(k2.fy, k2.stmt, k2.uom);
         if ok2 == ok {
             lemma_okey_inj(k2.fy, k2.stmt, k2.uom, c.fy as int, c.stmt@, c.uom@);
@@ -121,25 +120,25 @@ pub proof fn lemma_place_mid(db2: Db, t: Index<ClassRec>, t2: Index<ClassRec>, c
     // what is left of recomputed units
     assert forall|o: KeyView| t2.at(o) is Some implies ({
         let cc = t2.at(o)->0;
-        &&& forall|q: KeyView| #![trigger cc.f.at(q)] cc.f.at(q) is Some && wn(w, cc.fy as int, nkey_v(ov(cc.f.at(q)->0.name))) ==> done.insert(k).contains(cls_gk(cc, cc.f.at(q)->0))
-        &&& forall|q: KeyView| #![trigger cc.r.at(q)] cc.r.at(q) is Some && wn(u, cc.fy as int, nkey_v(ov(cc.r.at(q)->0.name))) ==> done.insert(k).contains(cls_gk(cc, cc.r.at(q)->0))
+        &&& forall|q: KeyView| #![trigger cc.f.at(q)] cc.f.at(q) is Some && wn(w, cc.fy as int, nkey_v(ov(cc.f.at(q)->0.name))) ==> ins(done, k)(cls_gk(cc, cc.f.at(q)->0))
+        &&& forall|q: KeyView| #![trigger cc.r.at(q)] cc.r.at(q) is Some && wn(u, cc.fy as int, nkey_v(ov(cc.r.at(q)->0.name))) ==> ins(done, k)(cls_gk(cc, cc.r.at(q)->0))
         &&& forall|q: KeyView| #![trigger cc.r.at(q)] cc.r.at(q) is Some && wn(w, cc.fy as int, nkey_v(ov(cc.r.at(q)->0.name))) && !wn(u, cc.fy as int, nkey_v(ov(cc.r.at(q)->0.name))) ==>
-            done.insert(k).contains(cls_gk(cc, cc.r.at(q)->0)) || gm_at(kept, o, cc.r.at(q)->0.ik()) == cc.r.at(q)
+            ins(done, k)(cls_gk(cc, cc.r.at(q)->0)) || gm_at(kept, o, cc.r.at(q)->0.ik()) == cc.r.at(q)
     }) by {
         if o != ok {
             assert(t2.at(o) == t.at(o));
         } else {
             assert(cls_key(c) == o);
-            assert forall|q: KeyView| n.f.at(q) is Some && wn(w, n.fy as int, nkey_v(ov(n.f.at(q)->0.name))) implies done.insert(k).contains(cls_gk(n, n.f.at(q)->0)) by {
+            assert forall|q: KeyView| n.f.at(q) is Some && wn(w, n.fy as int, nkey_v(ov(n.f.at(q)->0.name))) implies ins(done, k)(cls_gk(n, n.f.at(q)->0)) by {
                 if c.f.at(q) == n.f.at(q) { assert(t.at(ok) is Some); assert(cls_gk(n, n.f.at(q)->0) == cls_gk(c, c.f.at(q)->0)); }
                 else { assert(cls_gk(c, n.f.at(q)->0) == k); assert(cls_gk(n, n.f.at(q)->0) == k); }
             }
-            assert forall|q: KeyView| n.r.at(q) is Some && wn(u, n.fy as int, nkey_v(ov(n.r.at(q)->0.name))) implies done.insert(k).contains(cls_gk(n, n.r.at(q)->0)) by {
+            assert forall|q: KeyView| n.r.at(q) is Some && wn(u, n.fy as int, nkey_v(ov(n.r.at(q)->0.name))) implies ins(done, k)(cls_gk(n, n.r.at(q)->0)) by {
                 if c.r.at(q) == n.r.at(q) { assert(t.at(ok) is Some); assert(cls_gk(n, n.r.at(q)->0) == cls_gk(c, c.r.at(q)->0)); }
                 else { assert(cls_gk(c, n.r.at(q)->0) == k); assert(cls_gk(n, n.r.at(q)->0) == k); }
             }
             assert forall|q: KeyView| n.r.at(q) is Some && wn(w, n.fy as int, nkey_v(ov(n.r.at(q)->0.name))) && !wn(u, n.fy as int, nkey_v(ov(n.r.at(q)->0.name))) implies
-                (done.insert(k).contains(cls_gk(n, n.r.at(q)->0)) || gm_at(kept, o, n.r.at(q)->0.ik()) == n.r.at(q)) by {
+                (ins(done, k)(cls_gk(n, n.r.at(q)->0)) || gm_at(kept, o, n.r.at(q)->0.ik()) == n.r.at(q)) by {
                 if c.r.at(q) == n.r.at(q) { assert(t.at(ok) is Some); assert(cls_gk(n, n.r.at(q)->0) == cls_gk(c, c.r.at(q)->0)); }
                 else { assert(cls_gk(n, n.r.at(q)->0) == k); }
             }
@@ -294,10 +293,10 @@ pub proof fn lemma_first_min(f: Index<Grp>)
 }
 
 /// A group not placed yet and not kept has no stored group with its key in its class.
-pub proof fn lemma_fresh(db2: Db, t: Index<ClassRec>, c: ClassRec, kept: GMap, u: Index<UnitRef>, w: Index<UnitRef>, done: Set<GK>, k: GK, x: Grp)
+pub proof fn lemma_fresh(db2: Db, t: Index<ClassRec>, c: ClassRec, kept: GMap, u: Index<UnitRef>, w: Index<UnitRef>, done: spec_fn(GK) -> bool, k: GK, x: Grp)
     requires
         mid_ok(db2, t, kept, u, w, done), t.at(cls_key(c)) == Some(c), in_class(c, k), cls_gk(c, x) == k,
-        wn(w, c.fy as int, nkey_v(k.name)), !done.contains(k), gm_at(kept, cls_key(c), x.ik()) is None, subset_u(u, w),
+        wn(w, c.fy as int, nkey_v(k.name)), !done(k), gm_at(kept, cls_key(c), x.ik()) is None, subset_u(u, w),
     ensures
         forall|q: KeyView| #![trigger c.f.at(q)] c.f.at(q) is Some ==> c.f.at(q)->0.ik() != x.ik(),
         forall|q: KeyView| #![trigger c.r.at(q)] c.r.at(q) is Some ==> c.r.at(q)->0.ik() != x.ik(),
@@ -308,7 +307,7 @@ pub proof fn lemma_fresh(db2: Db, t: Index<ClassRec>, c: ClassRec, kept: GMap, u
             lemma_ikey_inj(ov(h.name), h.tag@, ov(h.plabel), ov(x.name), x.tag@, ov(x.plabel));
             assert(cls_gk(c, h) == k);
             assert(wn(w, c.fy as int, nkey_v(ov(h.name))));
-            assert(done.contains(cls_gk(c, h)));
+            assert(done(cls_gk(c, h)));
         }
     }
     assert forall|q: KeyView| c.r.at(q) is Some implies c.r.at(q)->0.ik() != x.ik() by {
@@ -317,8 +316,8 @@ pub proof fn lemma_fresh(db2: Db, t: Index<ClassRec>, c: ClassRec, kept: GMap, u
             lemma_ikey_inj(ov(g.name), g.tag@, ov(g.plabel), ov(x.name), x.tag@, ov(x.plabel));
             assert(cls_gk(c, g) == k);
             assert(wn(w, c.fy as int, nkey_v(ov(g.name))));
-            if wn(u, c.fy as int, nkey_v(ov(g.name))) { assert(done.contains(cls_gk(c, g))); }
-            else { assert(done.contains(cls_gk(c, g)) || gm_at(kept, cls_key(c), g.ik()) == c.r.at(q)); }
+            if wn(u, c.fy as int, nkey_v(ov(g.name))) { assert(done(cls_gk(c, g))); }
+            else { assert(done(cls_gk(c, g)) || gm_at(kept, cls_key(c), g.ik()) == c.r.at(q)); }
         }
     }
 }
@@ -338,13 +337,13 @@ verus! {
 #[verifier::rlimit(300)]
 #[verifier::spinoff_prover]
 pub fn place(t: &mut Index<ClassRec>, e: &AccEnt, kept: &GMap, u: &Index<UnitRef>, w: &Index<UnitRef>,
-    tab: &Pow2Tab, maxv: &Wide, minv: &Wide, Ghost(db2): Ghost<Db>, Ghost(done): Ghost<Set<GK>>)
+    tab: &Pow2Tab, maxv: &Wide, minv: &Wide, Ghost(db2): Ghost<Db>, Ghost(done): Ghost<spec_fn(GK) -> bool>)
     requires
         mid_ok(db2, *old(t), *kept, *u, *w, done), uset_ok(*u), uset_ok(*w), subset_u(*u, *w), nm_ok(*kept),
         tab.ok(), maxv@ == max_val(), minv@ == -max_val(), rep_db(db2),
         e.cnt@ == cntk(db2, e.gk()), e.sum@ == sumk(db2, e.gk()), e.cnt@ > 0,
-        wn(*w, e.fy as int, nkey_v(ov(e.name))), !done.contains(e.gk()),
-    ensures mid_ok(db2, *final(t), *kept, *u, *w, done.insert(e.gk())),
+        wn(*w, e.fy as int, nkey_v(ov(e.name))), !done(e.gk()),
+    ensures mid_ok(db2, *final(t), *kept, *u, *w, ins(done, e.gk())),
 {
     let ghost k = e.gk();
     let ghost t0 = *t;
@@ -363,11 +362,11 @@ pub fn place(t: &mut Index<ClassRec>, e: &AccEnt, kept: &GMap, u: &Index<UnitRef
             assert(exact_g(db2, c, g));
             assert(r_has(c, k));
             assert(covered_in(c, k, sumk(db2, k), cntk(db2, k)));
-            assert forall|k2: GK| cntk(db2, k2) > 0 && mid_cov(*w, done.insert(k))(k2) implies #[trigger] covered(db2, t0, k2) by {
+            assert forall|k2: GK| cntk(db2, k2) > 0 && mid_cov(*w, ins(done, k))(k2) implies #[trigger] covered(db2, t0, k2) by {
                 if k2 == k { assert(covered(db2, t0, k)) by { assert(okey(k.fy, k.stmt, k.uom) == ok_key.view()); } }
                 else { assert(mid_cov(*w, done)(k2)); }
             }
-            assert(purge_ok(t0, *kept, *u, *w, done.insert(k)));
+            assert(purge_ok(t0, *kept, *u, *w, ins(done, k)));
         }
         return;
     }
@@ -474,6 +473,123 @@ pub fn place(t: &mut Index<ClassRec>, e: &AccEnt, kept: &GMap, u: &Index<UnitRef
     let ghost n0 = n;
     cls_store(t, n);
     proof { lemma_place_mid(db2, t0, *t, cv, n0, *kept, *u, *w, done, k); }
+}
+
+} // verus!
+
+verus! {
+
+/// The groups of the first i entries of the contributions that belong to recomputed units, with a positive count.
+pub open spec fn done_of(es: Seq<(KeyView, AccEnt)>, i: int, w: Index<UnitRef>) -> spec_fn(GK) -> bool {
+    (|k: GK| exists|j: int| 0 <= j < i && j < es.len() && (#[trigger] es[j]).0 == fkey(k) && u_has(w, k.fy, k.name) && es[j].1.cnt@ > 0)
+}
+
+pub open spec fn ins(done: spec_fn(GK) -> bool, k: GK) -> spec_fn(GK) -> bool {
+    |x: GK| done(x) || x == k
+}
+
+pub open spec fn no_done() -> spec_fn(GK) -> bool {
+    |x: GK| false
+}
+
+/// Stage C: places every recomputed group of the contributions.
+#[verifier::rlimit(300)]
+#[verifier::spinoff_prover]
+pub fn place_all(t: &mut Index<ClassRec>, acc: &Index<AccEnt>, kept: &GMap, u: &Index<UnitRef>, w: &Index<UnitRef>,
+    tab: &Pow2Tab, Ghost(db2): Ghost<Db>)
+    requires
+        mid_ok(db2, *old(t), *kept, *u, *w, no_done()), uset_ok(*u), uset_ok(*w), subset_u(*u, *w), nm_ok(*kept),
+        tab.ok(), rep_db(db2), acc_ok(*acc),
+        forall|k: GK| #![trigger acc_c(*acc, k)] u_has(*w, k.fy, k.name) ==> acc_c(*acc, k) == cntk(db2, k) && acc_s(*acc, k) == sumk(db2, k),
+    ensures
+        ({ let es = acc.entries(); mid_ok(db2, *final(t), *kept, *u, *w, done_of(es, es.len() as int, *w)) }),
+        forall|k: GK| u_has(*w, k.fy, k.name) && cntk(db2, k) > 0 ==> done_of(acc.entries(), acc.entries().len() as int, *w)(k),
+{
+    proof { lemma_pow2_consts(); }
+    let m53 = Wide::from_i128(9007199254740991);
+    let maxv = m53.mul(&tab.t[2045]);
+    let minv = maxv.neg();
+    let ents = acc.rows();
+    let ghost es = acc.entries();
+    proof {
+        acc.model();
+        verus_prooflib::ordered::lemma_ordered_unique(es);
+        assert(done_of(es, 0, *w) =~= no_done());
+    }
+    let mut i = 0;
+    while i < ents.len()
+        invariant
+            i <= ents.len(), uset_ok(*u), uset_ok(*w), subset_u(*u, *w), nm_ok(*kept), tab.ok(), rep_db(db2), acc_ok(*acc), acc.wf(),
+            maxv@ == max_val(), minv@ == -max_val(),
+            ents@.map_values(|row: (Key, Arc<AccEnt>)| (row.0.view(), *row.1)) == es, es == acc.entries(),
+            forall|pos: int| #![trigger es[pos]] 0 <= pos < es.len() ==> acc.at(es[pos].0) == Some(es[pos].1),
+            forall|a: int, b: int| 0 <= a < b < es.len() ==> (#[trigger] es[a]).0 != (#[trigger] es[b]).0,
+            forall|k: GK| #![trigger acc_c(*acc, k)] u_has(*w, k.fy, k.name) ==> acc_c(*acc, k) == cntk(db2, k) && acc_s(*acc, k) == sumk(db2, k),
+            mid_ok(db2, *t, *kept, *u, *w, done_of(es, i as int, *w)),
+        decreases ents.len() - i,
+    {
+        let ent = &ents[i].1;
+        let ghost e = arc_val(ent);
+        proof {
+            assert(es[i as int] == (ents@[i as int].0.view(), e));
+            assert(acc.at(es[i as int].0) == Some(e));
+            assert(es[i as int].0 == fkey(e.gk()));
+        }
+        let nm = ukey_of(ent.fy, &ent.name);
+        let in_w = w.get(&nm).is_some();
+        let pos_cnt = ent.cnt.is_pos();
+        proof { assert(nm.view() == ukey(e.fy as int, ov(e.name))); }
+        if in_w && pos_cnt {
+            let ghost done = done_of(es, i as int, *w);
+            proof {
+                let k = e.gk();
+                assert(acc_c(*acc, k) == e.cnt@);
+                assert(!done(k)) by {
+                    if done(k) {
+                        let j = choose|j: int| 0 <= j < i && j < es.len() && es[j].0 == fkey(k) && u_has(*w, k.fy, k.name) && es[j].1.cnt@ > 0;
+                        assert(es[j].0 == es[i as int].0);
+                    }
+                }
+                assert(u_has(*w, k.fy, k.name));
+                assert(wn(*w, e.fy as int, nkey_v(ov(e.name))));
+            }
+            place(t, ent, kept, u, w, tab, &maxv, &minv, Ghost(db2), Ghost(done));
+            proof {
+                let k = e.gk();
+                assert(ins(done, k) =~= done_of(es, i as int + 1, *w)) by {
+                    assert forall|k2: GK| #![trigger done_of(es, i as int + 1, *w)(k2)] ins(done, k)(k2) == done_of(es, i as int + 1, *w)(k2) by {
+                        if done_of(es, i as int + 1, *w)(k2) {
+                            let j = choose|j: int| 0 <= j < i + 1 && j < es.len() && es[j].0 == fkey(k2) && u_has(*w, k2.fy, k2.name) && es[j].1.cnt@ > 0;
+                            if j == i as int { lemma_fkey_inj(k2, k); }
+                        }
+                        if k2 == k { assert(es[i as int].0 == fkey(k2)); }
+                        if done(k2) { let j = choose|j: int| 0 <= j < i && j < es.len() && es[j].0 == fkey(k2) && u_has(*w, k2.fy, k2.name) && es[j].1.cnt@ > 0; }
+                    }
+                }
+            }
+        } else {
+            proof {
+                assert(done_of(es, i as int + 1, *w) =~= done_of(es, i as int, *w)) by {
+                    assert forall|k2: GK| #![trigger done_of(es, i as int + 1, *w)(k2)] done_of(es, i as int + 1, *w)(k2) == done_of(es, i as int, *w)(k2) by {
+                        if done_of(es, i as int + 1, *w)(k2) {
+                            let j = choose|j: int| 0 <= j < i + 1 && j < es.len() && es[j].0 == fkey(k2) && u_has(*w, k2.fy, k2.name) && es[j].1.cnt@ > 0;
+                            if j == i as int { lemma_fkey_inj(k2, e.gk()); assert(u_has(*w, e.fy as int, ov(e.name))); assert(false); }
+                        }
+                        if done_of(es, i as int, *w)(k2) { let j = choose|j: int| 0 <= j < i && j < es.len() && es[j].0 == fkey(k2) && u_has(*w, k2.fy, k2.name) && es[j].1.cnt@ > 0; }
+                    }
+                }
+            }
+        }
+        i += 1;
+    }
+    proof {
+        assert forall|k: GK| u_has(*w, k.fy, k.name) && cntk(db2, k) > 0 implies done_of(es, es.len() as int, *w)(k) by {
+            assert(acc_c(*acc, k) == cntk(db2, k));
+            assert(acc.at(fkey(k)) is Some);
+            let pos = choose|pos: int| #![auto] 0 <= pos < es.len() && es[pos].0 == fkey(k);
+            assert(es[pos].1 == acc.at(fkey(k))->0);
+        }
+    }
 }
 
 } // verus!
