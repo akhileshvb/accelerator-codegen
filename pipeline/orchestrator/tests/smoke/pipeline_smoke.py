@@ -206,6 +206,11 @@ def make_kit(work: Path, reference_rev: str, workload: str, fixture: dict, query
     return kit
 
 
+# A scripted agent cannot try the eight profile-guided optimization ideas a saturation claim asks of a real one (each
+# costs a profile and a rebuild); it makes the fewest that satisfy the claim's rules (one structural, one low-level).
+SCRIPTED_AGENT_CONFIG = {"optimization": {"early_stop": {"saturation_required_attempts": 2}}}
+
+
 def merged(base: dict, overrides: dict) -> dict:
     return {k: merged(base[k], v) if isinstance(v, dict) and isinstance(base.get(k), dict) else v for k, v in {**base, **overrides}.items()}
 
@@ -220,8 +225,8 @@ def write_configs(tree: Path, kit: Path, overrides: dict | None = None) -> tuple
     pipeline, m = re.subn(r"^sandbox_extra_ro:.*$", f"sandbox_extra_ro: [{kit}]", pipeline, flags=re.M)
     if n != 1 or m != 1 or k != 1:
         raise SmokeError("pipeline/config no longer has the api_key_env / codex_bin / sandbox_extra_ro lines the smoke test overrides")
-    if overrides:
-        pipeline = yaml.safe_dump(merged(yaml.safe_load(pipeline), overrides), sort_keys=False)
+    overrides = merged(SCRIPTED_AGENT_CONFIG, overrides or {})
+    pipeline = yaml.safe_dump(merged(yaml.safe_load(pipeline), overrides), sort_keys=False)
     (kit / "models.yaml").write_text(models)
     (kit / "pipeline.yaml").write_text(pipeline)
     return kit / "models.yaml", kit / "pipeline.yaml"

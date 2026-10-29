@@ -348,8 +348,8 @@ BEHAVIOURS = {
 }
 
 
-SATURATION_TRIALS = 8  # config/default.yaml optimization.early_stop.saturation_required_attempts
-TRIAL_STRATEGIES = ("structural", "low_level", "other")
+SATURATION_TRIALS = 2  # SCRIPTED_AGENT_CONFIG of pipeline_smoke.py
+TRIAL_STRATEGIES = ("structural", "low_level")
 
 
 def optimization() -> str:
@@ -359,7 +359,7 @@ def optimization() -> str:
         profile = call_tool("run_profile", {"scale": "full"})
         assert profile.get("status") == "pass" and profile.get("scale") == "full", profile
         trial = {"trial_id": f"scripted-{n}", "hypothesis": "scripted agent: the reference kernel is final",
-                 "hot_spot": f"scripted hot spot {n}", "expected_gain": "none", "strategy": TRIAL_STRATEGIES[n % 3]}
+                 "hot_spot": f"scripted hot spot {n}", "expected_gain": "none", "strategy": TRIAL_STRATEGIES[n % len(TRIAL_STRATEGIES)]}
         began = call_tool("begin_ab_trial", trial)
         assert "ERROR" not in json.dumps(began), began
         ended = call_tool("end_ab_trial", {"trial_id": trial["trial_id"], "keep": False})
