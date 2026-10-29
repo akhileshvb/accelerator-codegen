@@ -233,6 +233,16 @@ pub open spec fn float_within(v: int, e: int, a: int, m: int) -> bool {
     v == e || m >= pow2(53) || (pow2(53) - m) * abs(v - e) <= m * a
 }
 
+/// float_within for a result whose last operation is a division, v being the
+/// engine's result times k (the divisor, at the spec's scale).  A division can
+/// underflow: below the smallest normal double its result is off by up to half
+/// the smallest subnormal besides the relative error (the standard model with
+/// underflow), which is k / 2 at v's scale.  Additions never underflow, so
+/// float_within needs no such term.
+pub open spec fn float_within_div(v: int, e: int, a: int, m: int, k: int) -> bool {
+    v == e || m >= pow2(53) || 2 * (pow2(53) - m) * abs(v - e) <= 2 * m * a + (pow2(53) - m) * abs(k)
+}
+
 /// The exact value of IEEE binary64 bits, times 2^1074 (the spec's float scale),
 /// so every finite double is an integer.  NaN and infinity (exponent 2047) decode
 /// to 2^2098, which no finite double reaches: `f64_in_range` excludes it.

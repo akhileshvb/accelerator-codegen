@@ -830,6 +830,19 @@ Implement the state in analysis/analysis.json as plainly as possible, so that it
   execute). Never stub out build / apply / execute."""
 
 
+def _spec_counterexample(r: Run, gates: dict[str, Any]) -> str:
+    """The kernel agent's report (analysis/spec_counterexample.md) that the frozen obligations admit no correct
+    answer for some input, if a crate file it names verifies (the counterexample lemma); else ''."""
+    report = r.ctx.ws / "analysis" / "spec_counterexample.md"
+    if not report.is_file():
+        return ""
+    text = report.read_text(encoding="utf-8")
+    failing = {m.group(1) for e in gates.get("error_list") or [] if (m := re.match(r"- ([\w.]+\.rs):", str(e)))}
+    src = r.ctx.ws / "crate" / "src"
+    proved = [f for f in set(re.findall(r"[\w]+\.rs", text)) if (src / f).is_file() and f not in failing]
+    return text if proved else ""
+
+
 def _restart_kernel_simpler(r: Run, gates: dict[str, Any]) -> None:
     """Archive the kernel, reset crate/src to the frozen skeleton, and start over with a note asking for
     the plainest provable implementation of the analysis's state (code first, then proofs)."""
@@ -902,6 +915,9 @@ def kernel(r: Run) -> None:
     # -- and neither is one that verifies and fails a later gate (tests, snapshots, cost)
     near = (gates.get("stage") == "verify" and 0 <= int(gates.get("errors", -1)) <= int(
         r.ctx.setting("stages.keep_kernel_within_errors", 3))) or gates.get("stage") in ("tests", "snapshots", "cost")
+    if not gates["ok"] and (counterexample := _spec_counterexample(r, gates)):
+        raise PipelineStop("the frozen obligations admit no correct answer for some input: the kernel agent proved "
+                           "a counterexample (sql2verus must be fixed, not the kernel):\n" + counterexample[:3000])
     if not gates["ok"] and not near and \
             r.state.kernel_restarts < int(r.ctx.setting("stages.kernel_simplify_restarts", 1)):
         _restart_kernel_simpler(r, gates)

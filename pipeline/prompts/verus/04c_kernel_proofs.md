@@ -31,6 +31,8 @@ added or published, and what was hard.
 
 **Never stub out the kernel to make verification pass.** The obligations forbid declining inside the envelope (`contracts/verus_kernel.md`), so a kernel that declines to avoid a proof does not verify. Prove the real code; if a part is too hard, simplify that part's design instead.
 
+If you find that the frozen obligations themselves cannot be met (for some database inside the envelope, no answer satisfies the spec), prove it: a lemma in a module of your crate exhibiting that input. Then write `analysis/spec_counterexample.md` naming the lemma and its file and saying why, and stop. The pipeline stops too, because the spec generator must be fixed, not your kernel.
+
 ## Proven code in this tree
 
 These kernels of other queries verified fully (read them freely; they are proved against their own specs):

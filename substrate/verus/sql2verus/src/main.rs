@@ -69,8 +69,9 @@
 //     contract).  Comparisons, GROUP BY, MIN / MAX on float values are exact.
 //     SUM / AVG of float expressions are rounded in an engine-chosen order:
 //     the spec bounds the result (verus_common::rel::float_within, gamma_m
-//     with u = 2^-53) instead of fixing it.  Float arithmetic elsewhere is
-//     refused.
+//     with u = 2^-53) instead of fixing it; AVG's division may underflow, so
+//     its bound (float_within_div) also admits half the smallest subnormal.
+//     Float arithmetic elsewhere is refused.
 //   * A rounded float aggregate that is consumed (compared, or a column of a
 //     derived table or subquery) is a number `ch(keys)` per group that the
 //     spec bounds by float_within against the exact value computed from the
@@ -2759,10 +2760,12 @@ fn row_expr(c: &OutCol) -> String {
 fn within(x: &str, v: &Val) -> String {
     let (abs, m) = v.approx.as_ref().unwrap();
     let pp = flt_p(v.ty);
-    let lhs = if pp > 1 { format!("{x} * pow2({})", 1074 * (pp - 1)) } else { x.to_string() };
-    let lhs = match &v.den { Some(d) => format!("{lhs} * ({d})"), None => lhs };
-    let m = if v.den.is_some() { simplify_k(&format!("{m} + 1")) } else { m.clone() };
-    format!("float_within({lhs}, {}, {abs}, {m})", v.code)
+    let scale = if pp > 1 { format!(" * pow2({})", 1074 * (pp - 1)) } else { String::new() };
+    match &v.den {
+        // AVG: the division is the last, possibly underflowing, rounding
+        Some(d) => format!("float_within_div({x}{scale} * ({d}), {}, {abs}, {}, ({d}){scale})", v.code, simplify_k(&format!("{m} + 1"))),
+        None => format!("float_within({x}{scale}, {}, {abs}, {m})", v.code),
+    }
 }
 
 /// The tuples extending the first `i` FROM items (level `i` of the nest):
