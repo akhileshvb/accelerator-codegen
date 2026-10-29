@@ -567,12 +567,13 @@ int Bench(const std::string &path, const std::string &id, const Spec &spec, int 
 }
 
 // state <db> <accel_id> <spec_dir> [writes]: the measured heap of the Verus store after the build and
-// after the first `writes` transactions of the spec (bench_txns, else txns), one by one.
+// after the first `writes` transactions of the spec (bench_txns, else txns; default and at most all), one by one,
+// on the database with the spec's setup.sql applied (none: the data as it is).
 int StateBytes(const std::string &path, const std::string &id, const Spec &spec, std::size_t writes) {
-  Require(spec.bench_txns.size() >= writes, "state: the spec has fewer transactions than writes");
+  writes = std::min(writes, spec.bench_txns.size());
   duckdb::DuckDB db(path);
   duckdb::Connection wc(db), qc(db);
-  const auto s = Prepare(qc, id, spec, /*with_setup=*/false);
+  const auto s = Prepare(qc, id, spec, /*with_setup=*/true);
   DuckdbRuntime rt(wc, *s.entry, 10.0);
   const auto build_start = Clock::now();
   rt.Build();
@@ -713,7 +714,7 @@ int main(int argc, char **argv) {
     if (argc >= 4 && std::string(argv[1]) == "bench_writes")
       return BenchWrites(argv[2], LoadKitSpec(argv[3]), argc > 4 ? std::stoi(argv[4]) : 3);
     if (argc >= 5 && std::string(argv[1]) == "state")
-      return StateBytes(argv[2], argv[3], LoadKitSpec(argv[4]), argc > 5 ? std::stoul(argv[5]) : 0);
+      return StateBytes(argv[2], argv[3], LoadKitSpec(argv[4]), argc > 5 ? std::stoul(argv[5]) : SIZE_MAX);
     Require(argc >= 5, "usage: verus_kit_runner differential|snapshots|bench|state <db> <accel_id> <spec_dir> [...]");
     const std::string mode = argv[1], db = argv[2], id = argv[3];
     const Spec spec = LoadKitSpec(argv[4]);
