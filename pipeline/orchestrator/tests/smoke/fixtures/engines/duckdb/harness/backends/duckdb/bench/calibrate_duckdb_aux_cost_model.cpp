@@ -95,7 +95,7 @@ int main(int argc, char **argv) {
     std::this_thread::sleep_for(std::chrono::seconds(duration));
     stop.store(true, std::memory_order_relaxed);
     for (auto &worker : workers) worker.join();
-    const double query_delta = std::max(0.0, concurrent_us - isolated_us);
+    const double query_delta = std::max(1e-3, concurrent_us - isolated_us);  // the cost model needs a positive interference, noise included
     const double baseline_query_us = baseline_query_samples.empty()
                                          ? concurrent_us
                                          : driver::Median(baseline_query_samples);
