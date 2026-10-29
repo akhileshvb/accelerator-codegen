@@ -34,6 +34,7 @@ keep:
   - eval/tests/test_aux_runtime_units.cpp
   - eval/tests/test_aux_wire.cpp
   - eval/tests/test_core_helpers.cpp
+  - eval/tests/test_float_bounds.cpp
   - eval/tests/test_float_order_ties.cpp
   - eval/tests/test_scratch_dir.cpp
   - eval/tests/test_versioned_aux_store_caps.cpp
@@ -47,6 +48,7 @@ keep:
   - eval/tests/test_support/benchmark_paired_timing.hpp
   - eval/tests/test_support/interference_calibration.hpp
   - eval/tests/test_support/toy_build_state.hpp
+  - eval/harness/float_bounds.hpp
   - eval/harness/float_order_ties.hpp
   - eval/harness/slot_gates.*
   - eval/harness/param_source.*

@@ -166,7 +166,7 @@ inline Layout MakeLayout(const std::string &query_sql, const Probe &p) {
   return l;
 }
 
-// NULLs sort last, either direction (DuckDB's default).  <0: a comes first.
+// NULLs sort last, either direction (the default order of the engine the kits run on).  <0: a comes first.
 inline int Order(const Column &c, const std::string &a, const std::string &b, bool desc) {
   if (a == "NULL" || b == "NULL")
     return a == b ? 0 : a == "NULL" ? 1 : -1;
