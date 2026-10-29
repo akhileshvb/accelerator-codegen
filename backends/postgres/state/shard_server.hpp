@@ -50,7 +50,11 @@ public:
   void Stop();
 
   // The main thread's idle wait: returns when woken or after `timeout`.
-  void WaitWork(std::chrono::milliseconds timeout);
+  // True if woken (work arrived), false on timeout.
+  bool WaitWork(std::chrono::milliseconds timeout);
+  // Reads of `member` wait for its state however long its SQL fallback would take (verified
+  // accelerators never answer from SQL).
+  void SetPatient(std::size_t member);
   void Wake();
   // A ring was closed under the worker (a producer died mid-message) or a
   // message was malformed: the worker must restart.
@@ -68,6 +72,7 @@ private:
   ShardSegment &segment;
   const uint32_t index;
   std::vector<runtime::AcceleratorRuntime *> runtimes;
+  std::vector<bool> patient;
   CommitArrivals &arrivals;
   std::atomic<bool> stopping{false};
   std::atomic<bool> failed{false};

@@ -281,6 +281,11 @@ void ApplyPhaseLimits(runtime::ThreadBudget &threads) {
   slots.NotePreRegistrationWriters();
   ShardServer server(*segment, index, runtimes, arrivals);
   g_server = &server;
+  for (std::size_t i = 0; i < members.size(); i++) {
+    if (members[i]->Stores()) { // a verified store: its readers wait for the state, never for SQL
+      server.SetPatient(i);
+    }
+  }
   server.Start(ReadThreads());
   // From here on, writers ship their commits (those visible before were
   // dropped, and are in the first build: its snapshot comes after this).
@@ -307,35 +312,39 @@ void ApplyPhaseLimits(runtime::ThreadBudget &threads) {
       ProcessConfigFile(PGC_SIGHUP);
       ApplyPhaseLimits(host.Threads());
     }
-    server.WaitWork(milliseconds(all_synced() ? 50 : 5));
+    const bool woken = server.WaitWork(milliseconds(all_synced() ? 50 : 5));
     if (server.Failed()) {
       elog(LOG, "accel shard worker %s: transport failed (%s); restarting on demand", id.c_str(),
            segment->GetText(ShardSegment::kLastError).c_str());
       proc_exit(1);
     }
-    const bool built = host.RunEngineWork(); // builds, on this thread
-    slots.EndMaintenance();                  // the catch-up of a build
 
     const uint64_t commits = segment->stats.commits.load();
     const auto now = Clock::now();
-    if (built || commits != commits_seen || now - last_pump >= kIdlePump) {
+    if (woken || commits != commits_seen || now - last_pump >= kIdlePump) {
       commits_seen = commits;
       last_pump = now;
       for (auto *runtime : runtimes) {
         runtime->AnnounceCommit(shared::AssignedEpoch(index));
       }
-      // Lookups see what the snapshot sees: apply once every commit up to its
-      // epoch has arrived.
+      // One maintenance pass under one snapshot S (epoch s): once every commit through s has arrived,
+      // each synced member applies them (one version at s); then the builds the pass asked for read
+      // S too, so a rebuilt member joins the others at s and the commits after s apply on top.
       diagnostics.TakeForced();
       const auto epoch = slots.BeginMaintenance();
-      if (epoch && all_synced()) {
-        arrivals.WaitThrough(*epoch, now + kArrivalWait);
+      const bool arrived = !epoch || arrivals.WaitThrough(*epoch, now + kArrivalWait);
+      if (arrived) {
+        for (auto *runtime : runtimes) {
+          runtime->Pump();
+        }
       }
-      for (auto *runtime : runtimes) {
-        runtime->Pump();
+      bool again = host.EndDeferredCommits(); // a member waited for the commit that just ended
+      if (arrived && epoch && !again) {
+        again = host.RunEngineWork(); // builds, on this thread
+        host.EndDeferredCommits();
       }
-      if (host.EndDeferredCommits()) {
-        last_pump = Clock::time_point(); // an accelerator waited for the commit that just ended
+      if (again || !arrived) {
+        last_pump = Clock::time_point();
         server.Wake();
       }
       if (now - last_horizon >= kHorizonEvery) {
