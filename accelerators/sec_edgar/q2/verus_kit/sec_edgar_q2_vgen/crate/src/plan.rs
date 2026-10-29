@@ -31,8 +31,17 @@ pub open spec fn hit_by(dir: Index<Vec<CK>>, thr: Thr, a: Seq<u8>, fy: int, uom:
 }
 
 /// Some changed filing has a stored cell of the class within its threshold.
-pub open spec fn cls_hit(dir: Index<Vec<CK>>, thr: Thr, tk: Seq<Seq<u8>>, fy: int, uom: Seq<u8>) -> bool {
+pub open spec fn touched(dir: Index<Vec<CK>>, thr: Thr, tk: Seq<Seq<u8>>, fy: int, uom: Seq<u8>) -> bool {
     exists|i: int| 0 <= i < tk.len() && hit_by(dir, thr, #[trigger] tk[i], fy, uom)
+}
+
+pub open spec fn survivors_in(es: Seq<(KeyView, Vec<Row>)>, d: int, tk: Seq<Seq<u8>>) -> Seq<(KeyView, Vec<Row>)> {
+    es.filter(|e: (KeyView, Vec<Row>)| e.0.0 <= d && !tk.contains(e.0.1))
+}
+
+/// The batch leaves the class fewer than a hundred stored cells within its threshold: it is refilled.
+pub open spec fn cls_hit(cells: Cells, dir: Index<Vec<CK>>, thr: Thr, tk: Seq<Seq<u8>>, fy: int, uom: Seq<u8>) -> bool {
+    touched(dir, thr, tk, fy, uom) && survivors_in(class_entries(cells, fy, uom), thr_of(thr, fy, uom), tk).len() < lim()
 }
 
 /// The class's entries beyond its threshold, except those of changed filings.
@@ -54,11 +63,11 @@ pub open spec fn picked_of(tail: Seq<(KeyView, Vec<Row>)>) -> Seq<Seq<u8>> {
 
 /// The class's threshold after the batch.
 pub open spec fn dnew(cells: Cells, dir: Index<Vec<CK>>, thr: Thr, tk: Seq<Seq<u8>>, fy: int, uom: Seq<u8>) -> int {
-    if cls_hit(dir, thr, tk, fy, uom) { pivot_of(tail_of(cells, thr, tk, fy, uom)) } else { thr_of(thr, fy, uom) }
+    if cls_hit(cells, dir, thr, tk, fy, uom) { pivot_of(tail_of(cells, thr, tk, fy, uom)) } else { thr_of(thr, fy, uom) }
 }
 
 pub open spec fn wanted_has(cells: Cells, dir: Index<Vec<CK>>, thr: Thr, tk: Seq<Seq<u8>>, a: Seq<u8>) -> bool {
-    tk.contains(a) || exists|fy: int, uom: Seq<u8>| cls_hit(dir, thr, tk, fy, uom) && picked_of(#[trigger] tail_of(cells, thr, tk, fy, uom)).contains(a)
+    tk.contains(a) || exists|fy: int, uom: Seq<u8>| cls_hit(cells, dir, thr, tk, fy, uom) && picked_of(#[trigger] tail_of(cells, thr, tk, fy, uom)).contains(a)
 }
 
 pub open spec fn bytes_order() -> spec_fn(Seq<u8>, Seq<u8>) -> bool {
@@ -140,7 +149,7 @@ pub fn hit_classes(dir: &Index<Vec<CK>>, thr: &Thr, tk: &Vec<Vec<u8>>) -> (hits:
         thr.wf(),
     ensures
         hits.wf(),
-        forall|fy: int, uom: Seq<u8>| #[trigger] hits.at((fy, uom)) is Some <==> cls_hit(*dir, *thr, seq_view_bytes(tk@), fy, uom),
+        forall|fy: int, uom: Seq<u8>| #[trigger] hits.at((fy, uom)) is Some <==> touched(*dir, *thr, seq_view_bytes(tk@), fy, uom),
 {
     let mut hits: Index<bool> = Index::new();
     let tv = Ghost(seq_view_bytes(tk@));
@@ -152,7 +161,7 @@ pub fn hit_classes(dir: &Index<Vec<CK>>, thr: &Thr, tk: &Vec<Vec<u8>>) -> (hits:
             hits.wf(),
             dir.wf(),
             thr.wf(),
-            forall|fy: int, uom: Seq<u8>| #[trigger] hits.at((fy, uom)) is Some <==> cls_hit(*dir, *thr, tv@.take(i as int), fy, uom),
+            forall|fy: int, uom: Seq<u8>| #[trigger] hits.at((fy, uom)) is Some <==> touched(*dir, *thr, tv@.take(i as int), fy, uom),
         decreases tk.len() - i,
     {
         let key = Key::composite(0, copy_vec(tk[i].as_slice()));
@@ -162,14 +171,14 @@ pub fn hit_classes(dir: &Index<Vec<CK>>, thr: &Thr, tk: &Vec<Vec<u8>>) -> (hits:
             None => {
                 proof {
                     assert(dir_of(*dir, a) == Seq::<CK>::empty());
-                    assert forall|fy: int, uom: Seq<u8>| #[trigger] hits.at((fy, uom)) is Some <==> cls_hit(*dir, *thr, tv@.take(i as int + 1), fy, uom) by {
+                    assert forall|fy: int, uom: Seq<u8>| #[trigger] hits.at((fy, uom)) is Some <==> touched(*dir, *thr, tv@.take(i as int + 1), fy, uom) by {
                         assert(!hit_by(*dir, *thr, a, fy, uom));
                         assert(tv@.take(i as int + 1) =~= tv@.take(i as int).push(tv@[i as int]));
-                        if cls_hit(*dir, *thr, tv@.take(i as int + 1), fy, uom) {
+                        if touched(*dir, *thr, tv@.take(i as int + 1), fy, uom) {
                             let q = choose|q: int| 0 <= q < tv@.take(i as int + 1).len() && hit_by(*dir, *thr, #[trigger] tv@.take(i as int + 1)[q], fy, uom);
                             if q < i as int { assert(tv@.take(i as int)[q] == tv@.take(i as int + 1)[q]); }
                         }
-                        if cls_hit(*dir, *thr, tv@.take(i as int), fy, uom) {
+                        if touched(*dir, *thr, tv@.take(i as int), fy, uom) {
                             let q = choose|q: int| 0 <= q < tv@.take(i as int).len() && hit_by(*dir, *thr, #[trigger] tv@.take(i as int)[q], fy, uom);
                             assert(tv@.take(i as int + 1)[q] == tv@.take(i as int)[q]);
                         }
@@ -187,7 +196,7 @@ pub fn hit_classes(dir: &Index<Vec<CK>>, thr: &Thr, tk: &Vec<Vec<u8>>) -> (hits:
                         i < tv@.len(),
                         hits.wf(),
                         thr.wf(),
-                        forall|fy: int, uom: Seq<u8>| #[trigger] hits.at((fy, uom)) is Some <==> (cls_hit(*dir, *thr, tv@.take(i as int), fy, uom)
+                        forall|fy: int, uom: Seq<u8>| #[trigger] hits.at((fy, uom)) is Some <==> (touched(*dir, *thr, tv@.take(i as int), fy, uom)
                             || (thr_of(*thr, fy, uom) < D_INF as int && exists|q: int| 0 <= q < j && (#[trigger] l@[q]).fy as int == fy && (*l@[q].uom)@ == uom && l@[q].d as int <= thr_of(*thr, fy, uom))),
                     decreases l.len() - j,
                 {
@@ -196,7 +205,7 @@ pub fn hit_classes(dir: &Index<Vec<CK>>, thr: &Thr, tk: &Vec<Vec<u8>>) -> (hits:
                         hits.put(kkey(l[j].fy, &l[j].uom), Arc::new(true));
                     }
                     proof {
-                        assert forall|fy: int, uom: Seq<u8>| #[trigger] hits.at((fy, uom)) is Some <==> (cls_hit(*dir, *thr, tv@.take(i as int), fy, uom)
+                        assert forall|fy: int, uom: Seq<u8>| #[trigger] hits.at((fy, uom)) is Some <==> (touched(*dir, *thr, tv@.take(i as int), fy, uom)
                             || (thr_of(*thr, fy, uom) < D_INF as int && exists|q: int| 0 <= q < j + 1 && (#[trigger] l@[q]).fy as int == fy && (*l@[q].uom)@ == uom && l@[q].d as int <= thr_of(*thr, fy, uom))) by {
                             if (fy, uom) == (l[j as int].fy as int, (*l[j as int].uom)@) {
                                 if dt < D_INF && l[j as int].d <= dt {
@@ -215,14 +224,14 @@ pub fn hit_classes(dir: &Index<Vec<CK>>, thr: &Thr, tk: &Vec<Vec<u8>>) -> (hits:
                 }
                 proof {
                     assert(tv@.take(i as int + 1) =~= tv@.take(i as int).push(tv@[i as int]));
-                    assert forall|fy: int, uom: Seq<u8>| #[trigger] hits.at((fy, uom)) is Some <==> cls_hit(*dir, *thr, tv@.take(i as int + 1), fy, uom) by {
+                    assert forall|fy: int, uom: Seq<u8>| #[trigger] hits.at((fy, uom)) is Some <==> touched(*dir, *thr, tv@.take(i as int + 1), fy, uom) by {
                         let t1 = tv@.take(i as int + 1);
-                        if cls_hit(*dir, *thr, t1, fy, uom) {
+                        if touched(*dir, *thr, t1, fy, uom) {
                             let q = choose|q: int| 0 <= q < t1.len() && hit_by(*dir, *thr, #[trigger] t1[q], fy, uom);
                             if q < i as int { assert(tv@.take(i as int)[q] == t1[q]); }
                             else { assert(t1[q] == a); }
                         }
-                        if cls_hit(*dir, *thr, tv@.take(i as int), fy, uom) {
+                        if touched(*dir, *thr, tv@.take(i as int), fy, uom) {
                             let q = choose|q: int| 0 <= q < tv@.take(i as int).len() && hit_by(*dir, *thr, #[trigger] tv@.take(i as int)[q], fy, uom);
                             assert(t1[q] == tv@.take(i as int)[q]);
                         }
@@ -377,6 +386,7 @@ pub proof fn lemma_member_pos<A>(s: Seq<A>, j: int, p: spec_fn(A) -> bool, i: in
 }
 
 /// The first non-changed filings of a class beyond its threshold d, closed at the last one's value key.
+#[verifier::rlimit(100)]
 pub fn scan_class(inner: &Index<Vec<Row>>, d: i64, tset: &Index<bool>, Ghost(tk): Ghost<Seq<Seq<u8>>>) -> (res: (Vec<Arc<Vec<u8>>>, i64))
     requires
         inner.wf(),
@@ -563,6 +573,200 @@ pub fn scan_class(inner: &Index<Vec<Row>>, d: i64, tset: &Index<bool>, Ghost(tk)
     (picks, res_piv)
 }
 
+/// A class keeps a hundred stored cells within its threshold that are not of changed filings.
+pub fn survivors_ge(inner: &Index<Vec<Row>>, d: i64, tset: &Index<bool>, Ghost(tk): Ghost<Seq<Seq<u8>>>) -> (r: bool)
+    requires
+        inner.wf(),
+        forall|a: Seq<u8>| #[trigger] tset.at((0int, a)) is Some <==> tk.contains(a),
+    ensures
+        r == (survivors_in(inner.entries(), d as int, tk).len() >= lim()),
+{
+    let ghost es = inner.entries();
+    proof { inner.model(); }
+    let ghost sp = |e: (KeyView, Vec<Row>)| e.0.0 <= d as int && !tk.contains(e.0.1);
+    let mut cur = inner.cursor();
+    let mut cnt: usize = 0;
+    let ghost mut j: int = 0;
+    proof { assert(es.take(0) =~= Seq::<(KeyView, Vec<Row>)>::empty()); assert(es.skip(0) =~= es); }
+    loop
+        invariant_except_break
+            cur.remaining() == es.skip(j),
+        invariant
+            inner.wf(),
+            es == inner.entries(),
+            forall|a: Seq<u8>| #[trigger] tset.at((0int, a)) is Some <==> tk.contains(a),
+            ordered_rows(es),
+            0 <= j <= es.len(),
+            cur.work() >= 0,
+            sp == (|e: (KeyView, Vec<Row>)| e.0.0 <= d as int && !tk.contains(e.0.1)),
+            cnt as int == es.take(j).filter(sp).len(),
+            cnt < 100,
+        ensures
+            0 <= j <= es.len(),
+            cnt < 100,
+            survivors_in(es, d as int, tk).len() == cnt,
+        decreases cur.work(),
+    {
+        let ghost before = cur.remaining();
+        match cur.next() {
+            None => {
+                proof {
+                    assert(j == es.len());
+                    assert(es.take(j) =~= es);
+                }
+                break;
+            }
+            Some((k, cell)) => {
+                proof {
+                    assert(before.len() > 0);
+                    assert(before[0] == es[j]);
+                    assert(cur.remaining() == es.skip(j).skip(1));
+                    assert(es.skip(j).skip(1) =~= es.skip(j + 1));
+                    assert((k.view(), *cell) == es[j]);
+                }
+                if k.number > d {
+                    proof {
+                        // every entry from here on has a value key beyond d
+                        assert forall|i: int| 0 <= i < es.skip(j).len() implies !sp(#[trigger] es.skip(j)[i]) by {
+                            assert(es.skip(j)[i] == es[j + i]);
+                            if i > 0 { assert(key_lt(es[j].0, es[j + i].0)); }
+                        }
+                        lemma_filter_none(es.skip(j), sp);
+                        assert(es =~= es.take(j) + es.skip(j));
+                        lemma_filter_concat(es.take(j), es.skip(j), sp);
+                        assert(es.filter(sp) =~= es.take(j).filter(sp));
+                    }
+                    break;
+                }
+                let fresh = tset.get(&Key::shared(0, k.text.clone())).is_none();
+                proof {
+                    assert(k.view().1 == es[j].0.1);
+                    assert(tset.at((0int, es[j].0.1)) is Some <==> tk.contains(es[j].0.1));
+                    assert(fresh == !tk.contains(es[j].0.1));
+                    lemma_filter_step(es, j, sp);
+                    assert(sp(es[j]) == fresh);
+                }
+                if fresh {
+                    cnt += 1;
+                    if cnt >= 100 {
+                        proof {
+                            assert(es.take(j + 1).filter(sp).len() == cnt);
+                            assert(es =~= es.take(j + 1) + es.skip(j + 1));
+                            lemma_filter_concat(es.take(j + 1), es.skip(j + 1), sp);
+                            assert(es.filter(sp).len() >= es.take(j + 1).filter(sp).len());
+                            assert(survivors_in(es, d as int, tk) == es.filter(sp));
+                        }
+                        return true;
+                    }
+                }
+                proof { j = j + 1; }
+            }
+        }
+    }
+    false
+}
+
+/// Of the classes a batch touches, those it leaves with fewer than a hundred stored cells of unchanged filings within the threshold.
+pub fn refine_hits(cells: &Cells, dir: &Index<Vec<CK>>, thr: &Thr, tk: &Vec<Vec<u8>>, touched_ix: &Index<bool>, tset: &Index<bool>) -> (hits: Index<bool>)
+    requires
+        cells_wf(*cells),
+        dir.wf(),
+        thr.wf(),
+        touched_ix.wf(),
+        tset.wf(),
+        forall|a: Seq<u8>| #[trigger] tset.at((0int, a)) is Some <==> seq_view_bytes(tk@).contains(a),
+        forall|fy: int, uom: Seq<u8>| #[trigger] touched_ix.at((fy, uom)) is Some <==> touched(*dir, *thr, seq_view_bytes(tk@), fy, uom),
+    ensures
+        hits.wf(),
+        forall|fy: int, uom: Seq<u8>| #[trigger] hits.at((fy, uom)) is Some <==> cls_hit(*cells, *dir, *thr, seq_view_bytes(tk@), fy, uom),
+{
+    let ghost tkv = seq_view_bytes(tk@);
+    let rows = touched_ix.rows();
+    proof { touched_ix.map_model(); }
+    let ghost hk = rows@.map_values(|row: (Key, Arc<bool>)| row.0.view());
+    let mut hits: Index<bool> = Index::new();
+    let mut i: usize = 0;
+    proof {
+        assert(rows@.map_values(|row: (Key, Arc<bool>)| (row.0.view(), *row.1)) == touched_ix.entries());
+        assert(hk.take(0) =~= Seq::<KeyView>::empty());
+    }
+    while i < rows.len()
+        invariant
+            i <= rows@.len(),
+            cells_wf(*cells),
+            thr.wf(),
+            tset.wf(),
+            touched_ix.wf(),
+            hits.wf(),
+            rows@.map_values(|row: (Key, Arc<bool>)| (row.0.view(), *row.1)) == touched_ix.entries(),
+            hk == rows@.map_values(|row: (Key, Arc<bool>)| row.0.view()),
+            forall|a: Seq<u8>| #[trigger] tset.at((0int, a)) is Some <==> tkv.contains(a),
+            forall|fy: int, uom: Seq<u8>| #[trigger] touched_ix.at((fy, uom)) is Some <==> touched(*dir, *thr, tkv, fy, uom),
+            forall|fy: int, uom: Seq<u8>| #[trigger] hits.at((fy, uom)) is Some <==> (hk.take(i as int).contains((fy, uom)) && cls_hit(*cells, *dir, *thr, tkv, fy, uom)),
+        decreases rows.len() - i,
+    {
+        let ckey = rows[i].0.share();
+        let fy = ckey.number;
+        let uom = ckey.text.clone();
+        let ghost c = (fy as int, (*uom)@);
+        proof {
+            assert(touched_ix.entries()[i as int] == (rows@[i as int].0.view(), *rows@[i as int].1));
+            assert(hk[i as int] == ckey.view());
+            assert(ckey.view() == c);
+            touched_ix.map_model();
+            assert(touched_ix.entries().contains(touched_ix.entries()[i as int]));
+            assert(touched_ix.at(c) is Some);
+            assert(touched(*dir, *thr, tkv, fy as int, (*uom)@));
+        }
+        let dcur = thr_get(thr, fy, &uom);
+        let needs = match cells.get(&ckey) {
+            None => {
+                proof {
+                    assert(class_entries(*cells, fy as int, (*uom)@) =~= Seq::<(KeyView, Vec<Row>)>::empty());
+                    assert(survivors_in(Seq::<(KeyView, Vec<Row>)>::empty(), dcur as int, tkv) =~= Seq::<(KeyView, Vec<Row>)>::empty());
+                }
+                true
+            }
+            Some(inner) => {
+                proof { assert(cells.at(ckey.view())->0 == *inner); assert(class_entries(*cells, fy as int, (*uom)@) == inner.entries()); }
+                !survivors_ge(&*inner, dcur, tset, Ghost(tkv))
+            }
+        };
+        let ghost before = hits;
+        if needs {
+            hits.put(ckey.share(), Arc::new(true));
+        }
+        proof {
+            assert(hk.take(i as int + 1) =~= hk.take(i as int).push(hk[i as int]));
+            assert(dcur as int == thr_of(*thr, fy as int, (*uom)@));
+            assert forall|fy2: int, uom2: Seq<u8>| #[trigger] hits.at((fy2, uom2)) is Some <==> (hk.take(i as int + 1).contains((fy2, uom2)) && cls_hit(*cells, *dir, *thr, tkv, fy2, uom2)) by {
+                crate::filing::lemma_push_contains2(hk.take(i as int), hk[i as int], (fy2, uom2));
+                if (fy2, uom2) == c {
+                    assert(cls_hit(*cells, *dir, *thr, tkv, fy2, uom2) == needs);
+                } else {
+                    assert(hits.at((fy2, uom2)) == before.at((fy2, uom2)));
+                }
+            }
+        }
+        i += 1;
+    }
+    proof {
+        assert(hk.take(hk.len() as int) =~= hk);
+        assert forall|fy: int, uom: Seq<u8>| #[trigger] hits.at((fy, uom)) is Some <==> cls_hit(*cells, *dir, *thr, tkv, fy, uom) by {
+            if cls_hit(*cells, *dir, *thr, tkv, fy, uom) {
+                assert(touched_ix.at((fy, uom)) is Some);
+                touched_ix.map_model();
+                assert(touched_ix.view().dom().contains((fy, uom)));
+                let row = ((fy, uom), touched_ix.view()[(fy, uom)]);
+                assert(touched_ix.entries().contains(row));
+                let q = choose|q: int| 0 <= q < touched_ix.entries().len() && touched_ix.entries()[q] == row;
+                assert(hk[q] == (fy, uom));
+            }
+        }
+    }
+    hits
+}
+
 /// Every cell key's value key fits a 64-bit integer.
 pub open spec fn keys_in_range(cells: Cells) -> bool {
     forall|fy: int, uom: Seq<u8>, i: int| 0 <= i < class_entries(cells, fy, uom).len() ==> (#[trigger] class_entries(cells, fy, uom)[i]).0.0 <= D_INF as int
@@ -574,6 +778,7 @@ pub open spec fn cells_wf(cells: Cells) -> bool {
 }
 
 /// The keys to rescan and the thresholds after the batch.
+#[verifier::rlimit(200)]
 pub fn plan(cells: &Cells, dir: &Index<Vec<CK>>, thr: &Thr, tk: &Vec<Vec<u8>>) -> (r: (Vec<Vec<u8>>, Thr))
     requires
         cells_wf(*cells),
@@ -587,7 +792,8 @@ pub fn plan(cells: &Cells, dir: &Index<Vec<CK>>, thr: &Thr, tk: &Vec<Vec<u8>>) -
 {
     let ghost tkv = seq_view_bytes(tk@);
     let tset = units_index(tk);
-    let hits = hit_classes(dir, thr, tk);
+    let touched_ix = hit_classes(dir, thr, tk);
+    let hits = refine_hits(cells, dir, thr, tk, &touched_ix, &tset);
     let mut out = tset.share();
     let mut thr_new = thr.share();
     let hrows = hits.rows();
@@ -619,7 +825,7 @@ pub fn plan(cells: &Cells, dir: &Index<Vec<CK>>, thr: &Thr, tk: &Vec<Vec<u8>>) -
             hrows@.map_values(|row: (Key, Arc<bool>)| (row.0.view(), *row.1)) == hits.entries(),
             hk == hrows@.map_values(|row: (Key, Arc<bool>)| row.0.view()),
             forall|a: Seq<u8>| #[trigger] tset.at((0int, a)) is Some <==> tkv.contains(a),
-            forall|fy: int, uom: Seq<u8>| #[trigger] hits.at((fy, uom)) is Some <==> cls_hit(*dir, *thr, tkv, fy, uom),
+            forall|fy: int, uom: Seq<u8>| #[trigger] hits.at((fy, uom)) is Some <==> cls_hit(*cells, *dir, *thr, tkv, fy, uom),
             forall|k: KeyView| #[trigger] out.at(k) is Some ==> k.0 == 0,
             forall|fy: int, uom: Seq<u8>| #[trigger] thr_of(thr_new, fy, uom) == if hk.take(i as int).contains((fy, uom)) { dnew(*cells, *dir, *thr, tkv, fy, uom) } else { thr_of(*thr, fy, uom) },
             forall|a: Seq<u8>| #[trigger] out.at((0int, a)) is Some <==> (tkv.contains(a)
@@ -638,7 +844,7 @@ pub fn plan(cells: &Cells, dir: &Index<Vec<CK>>, thr: &Thr, tk: &Vec<Vec<u8>>) -
             assert(hits.entries().contains(hits.entries()[i as int]));
             assert(hits.view().dom().contains(ckey.view()));
             assert(hits.at(ckey.view()) is Some);
-            assert(cls_hit(*dir, *thr, tkv, fy as int, (*uom)@));
+            assert(cls_hit(*cells, *dir, *thr, tkv, fy as int, (*uom)@));
             assert(hk[i as int] == ckey.view());
             assert(ckey.view() == (fy as int, (*uom)@));
         }
@@ -720,7 +926,7 @@ pub fn plan(cells: &Cells, dir: &Index<Vec<CK>>, thr: &Thr, tk: &Vec<Vec<u8>>) -
                 crate::filing::lemma_push_contains2(hk.take(i as int), hk[i as int], (fy2, uom2));
                 if (fy2, uom2) == c {
                     assert(fy2 == fy as int && uom2 == (*uom)@);
-                    assert(cls_hit(*dir, *thr, tkv, fy2, uom2));
+                    assert(cls_hit(*cells, *dir, *thr, tkv, fy2, uom2));
                     assert(dnew(*cells, *dir, *thr, tkv, fy2, uom2) == pivot_of(tail_of(*cells, *thr, tkv, fy2, uom2)));
                     assert(tail_of(*cells, *thr, tkv, fy2, uom2) == tl0);
                     assert(thr_of(thr_new, fy2, uom2) == pivot_of(tl0));
@@ -758,14 +964,14 @@ pub fn plan(cells: &Cells, dir: &Index<Vec<CK>>, thr: &Thr, tk: &Vec<Vec<u8>>) -
     proof {
         assert(hk.take(hk.len() as int) =~= hk);
         // every hit class is among hk, and every class of hk is a hit class
-        assert forall|fy: int, uom: Seq<u8>| hk.contains((fy, uom)) <==> cls_hit(*dir, *thr, tkv, fy, uom) by {
+        assert forall|fy: int, uom: Seq<u8>| hk.contains((fy, uom)) <==> cls_hit(*cells, *dir, *thr, tkv, fy, uom) by {
             if hk.contains((fy, uom)) {
                 let q = choose|q: int| 0 <= q < hk.len() && hk[q] == (fy, uom);
                 assert(hits.entries()[q].0 == (fy, uom));
                 assert(hits.entries().contains(hits.entries()[q]));
                 assert(hits.at((fy, uom)) is Some);
             }
-            if cls_hit(*dir, *thr, tkv, fy, uom) {
+            if cls_hit(*cells, *dir, *thr, tkv, fy, uom) {
                 assert(hits.at((fy, uom)) is Some);
                 assert(hits.view().dom().contains((fy, uom)));
                 let row = (( fy, uom), hits.view()[(fy, uom)]);
@@ -831,14 +1037,14 @@ pub fn plan(cells: &Cells, dir: &Index<Vec<CK>>, thr: &Thr, tk: &Vec<Vec<u8>>) -
             }
             if wanted_has(*cells, *dir, *thr, tkv, a) {
                 if !tkv.contains(a) {
-                    let (fy2, uom2) = choose|fy2: int, uom2: Seq<u8>| cls_hit(*dir, *thr, tkv, fy2, uom2) && picked_of(#[trigger] tail_of(*cells, *thr, tkv, fy2, uom2)).contains(a);
+                    let (fy2, uom2) = choose|fy2: int, uom2: Seq<u8>| cls_hit(*cells, *dir, *thr, tkv, fy2, uom2) && picked_of(#[trigger] tail_of(*cells, *thr, tkv, fy2, uom2)).contains(a);
                     assert(hk.take(hk.len() as int).contains((fy2, uom2)));
                 }
             }
         }
         assert forall|fy: int, uom: Seq<u8>| thr_of(thr_new, fy, uom) == dnew(*cells, *dir, *thr, tkv, fy, uom) by {
             if !hk.contains((fy, uom)) {
-                assert(!cls_hit(*dir, *thr, tkv, fy, uom));
+                assert(!cls_hit(*cells, *dir, *thr, tkv, fy, uom));
             }
         }
     }

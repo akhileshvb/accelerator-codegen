@@ -206,7 +206,7 @@ pub proof fn lemma_nohole(
 {
     let (fy, uom) = (id.fy, id.uom);
     let dd = thr_of(thr, fy, uom);
-    assert(cls_hit(dir, thr, tk, fy, uom));
+    assert(cls_hit(cells, dir, thr, tk, fy, uom));
     if !zero_fam(cw(db), at_d(id, d)) {
         let m = lemma_first_nonzero(cw(db), id, dd, d);
         let id1 = at_d(id, m);
@@ -274,7 +274,7 @@ pub proof fn lemma_thr_ok_after(
         || exists|ks: Seq<KeyView>| witnessed(cells2, fy, uom, thr_of(thr_new, fy, uom), ks) by {
         let dn = thr_of(thr_new, fy, uom);
         if dn != D_INF as int {
-            if cls_hit(dir, thr, tk, fy, uom) {
+            if cls_hit(cells, dir, thr, tk, fy, uom) {
                 let tail = tail_of(cells, thr, tk, fy, uom);
                 assert(dn == pivot_of(tail));
                 assert(tail.len() > npick());
@@ -306,25 +306,58 @@ pub proof fn lemma_thr_ok_after(
                 assert(witnessed(cells2, fy, uom, dn, ks));
             } else {
                 assert(dn == thr_of(thr, fy, uom));
-                let ks = choose|ks: Seq<KeyView>| witnessed(cells, fy, uom, dn, ks);
-                assert forall|i: int| 0 <= i < ks.len() implies cell_at(cells2, CellId { fy, uom, d: ks[i].0, a: ks[i].1 }) is Some by {
-                    let id = CellId { fy, uom, d: ks[i].0, a: ks[i].1 };
-                    assert(cell_at(cells, id) is Some);
-                    lemma_stored_nonzero(cells, sfam(cw(db), th_of(thr)), id);
-                    if tk.contains(id.a) {
-                        // a stored cell of a changed filing within the threshold: the class is a hit
-                        assert(listed(dir_of(dir, id.a), id)) by {
-                            assert(!zero_fam(sfam(cw(db), th_of(thr)), id));
-                        }
-                        let j = choose|j: int| 0 <= j < dir_of(dir, id.a).len() && ck_matches(#[trigger] dir_of(dir, id.a)[j], id);
-                        let ti = choose|ti: int| 0 <= ti < tk.len() && tk[ti] == id.a;
-                        assert(hit_by(dir, thr, id.a, fy, uom));
-                        assert(cls_hit(dir, thr, tk, fy, uom));
+                let es = class_entries(cells, fy, uom);
+                let sv = survivors_in(es, dn, tk);
+                if sv.len() >= lim() {
+                    if cells.at((fy, uom)) is Some { cells.at((fy, uom))->0.model(); }
+                    let pe = |e: (KeyView, Vec<Row>)| e.0.0 <= dn && !tk.contains(e.0.1);
+                    lemma_filter_ordered(es, pe);
+                    assert(sv == es.filter(pe));
+                    let ks = sv.take(lim()).map_values(|e: (KeyView, Vec<Row>)| e.0);
+                    assert(ks.len() == lim());
+                    assert forall|i: int, j: int| 0 <= i < j < ks.len() implies ks[i] != ks[j] by {
+                        assert(key_lt(sv[i].0, sv[j].0));
+                        lemma_key_order(sv[i].0, sv[j].0);
                     }
-                    assert(!tk.contains(id.a));
-                    lemma_stay(cells, cells2, db, db2, th_of(thr), th_of(thr_new), id);
+                    assert(ks.no_duplicates());
+                    assert forall|i: int| 0 <= i < ks.len() implies (#[trigger] ks[i]).0 <= dn && cell_at(cells2, CellId { fy, uom, d: ks[i].0, a: ks[i].1 }) is Some by {
+                        let e = sv[i];
+                        assert(ks[i] == e.0);
+                        es.lemma_filter_contains_rev(pe, e);
+                        assert(es.contains(e));
+                        assert(cells.at((fy, uom)) is Some);
+                        let inner = cells.at((fy, uom))->0;
+                        inner.map_model();
+                        let id = CellId { fy, uom, d: e.0.0, a: e.0.1 };
+                        assert(inner.at(e.0) == Some(e.1));
+                        assert(cell_at(cells, id) is Some);
+                        assert(!tk.contains(id.a)) by {
+                            es.lemma_filter_pred(pe, i);
+                        }
+                        lemma_stay(cells, cells2, db, db2, th_of(thr), th_of(thr_new), id);
+                    }
+                    assert(witnessed(cells2, fy, uom, dn, ks));
+                } else {
+                    assert(!touched(dir, thr, tk, fy, uom));
+                    let ks = choose|ks: Seq<KeyView>| witnessed(cells, fy, uom, dn, ks);
+                    assert forall|i: int| 0 <= i < ks.len() implies cell_at(cells2, CellId { fy, uom, d: ks[i].0, a: ks[i].1 }) is Some by {
+                        let id = CellId { fy, uom, d: ks[i].0, a: ks[i].1 };
+                        assert(cell_at(cells, id) is Some);
+                        lemma_stored_nonzero(cells, sfam(cw(db), th_of(thr)), id);
+                        if tk.contains(id.a) {
+                            assert(listed(dir_of(dir, id.a), id)) by {
+                                assert(!zero_fam(sfam(cw(db), th_of(thr)), id));
+                            }
+                            let j = choose|j: int| 0 <= j < dir_of(dir, id.a).len() && ck_matches(#[trigger] dir_of(dir, id.a)[j], id);
+                            let ti = choose|ti: int| 0 <= ti < tk.len() && tk[ti] == id.a;
+                            assert(hit_by(dir, thr, id.a, fy, uom));
+                            assert(touched(dir, thr, tk, fy, uom));
+                        }
+                        assert(!tk.contains(id.a));
+                        lemma_stay(cells, cells2, db, db2, th_of(thr), th_of(thr_new), id);
+                    }
+                    assert(witnessed(cells2, fy, uom, dn, ks));
                 }
-                assert(witnessed(cells2, fy, uom, dn, ks));
             }
         }
     }
@@ -386,7 +419,7 @@ pub proof fn lemma_dnew_ge(cells: Cells, dir: Index<Vec<CK>>, thr: Thr, tk: Seq<
         dnew(cells, dir, thr, tk, fy, uom) <= D_INF as int,
 {
     let tail = tail_of(cells, thr, tk, fy, uom);
-    if cls_hit(dir, thr, tk, fy, uom) {
+    if cls_hit(cells, dir, thr, tk, fy, uom) {
         if tail.len() > npick() {
             let pe = |e: (KeyView, Vec<Row>)| e.0.0 > thr_of(thr, fy, uom) && !tk.contains(e.0.1);
             let es = class_entries(cells, fy, uom);
