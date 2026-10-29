@@ -333,4 +333,23 @@ pub proof fn lemma_group_facts(db: Db, p: Params, inner: bool, gn: Option<Seq<u8
     }
 }
 
+
+pub proof fn lemma_gh_ext(inner: bool, gn: Option<Seq<u8>>, gn2: Option<Seq<u8>>, gc: Option<int>, f: spec_fn(JK) -> int)
+    requires inner || gn == gn2,
+    ensures gh(inner, gn, gc, f) == gh(inner, gn2, gc, f),
+{
+    assert(gh(inner, gn, gc, f) =~= gh(inner, gn2, gc, f));
+}
+
+
+/// Groups that are the same group have the same quantities.
+pub proof fn lemma_qj_norm(db: Db, p: Params, inner: bool, gn: Option<Seq<u8>>, gc: Option<int>, gn2: Option<Seq<u8>>)
+    requires inner || gn == gn2,
+    ensures qj(db, p, inner, gn, gc) == qj(db, p, inner, gn2, gc),
+{
+    lemma_gh_ext(inner, gn, gn2, gc, fvs());
+    lemma_gh_ext(inner, gn, gn2, gc, fv());
+    lemma_gh_ext(inner, gn, gn2, gc, fm());
+}
+
 }

@@ -15,6 +15,7 @@ pub mod ent;
 pub mod wbag;
 pub mod dmap;
 pub mod stagea;
+pub mod merge;
 pub mod bucket;
 pub mod keys;
 pub mod rows;

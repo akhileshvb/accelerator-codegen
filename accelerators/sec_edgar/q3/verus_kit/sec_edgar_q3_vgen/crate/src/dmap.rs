@@ -47,13 +47,6 @@ pub open spec fn ddm_ok(dm: Index<DCls>, l: Seq<Ct>) -> bool {
         forall|i: int| 0 <= i < l.len() ==> !ct_in(#[trigger] l[i], cp(fy, uom))
 }
 
-proof fn lemma_gh_ext(inner: bool, gn: Option<Seq<u8>>, gn2: Option<Seq<u8>>, gc: Option<int>, f: spec_fn(JK) -> int)
-    requires inner || gn == gn2,
-    ensures gh(inner, gn, gc, f) == gh(inner, gn2, gc, f),
-{
-    assert(gh(inner, gn, gc, f) =~= gh(inner, gn2, gc, f));
-}
-
 /// A contribution adds its sign times the weight to the sums of the group it belongs to, and nothing elsewhere.
 proof fn lemma_dq_push(l: Seq<Ct>, c: Ct, p: Params, inner: bool, gn: Option<Seq<u8>>, gc: Option<int>)
     requires c.j.vs,
@@ -80,7 +73,7 @@ proof fn lemma_dq_push(l: Seq<Ct>, c: Ct, p: Params, inner: bool, gn: Option<Seq
     }
 }
 
-proof fn lemma_dq_zero(l: Seq<Ct>, p: Params, inner: bool, gn: Option<Seq<u8>>, gc: Option<int>)
+pub proof fn lemma_dq_zero(l: Seq<Ct>, p: Params, inner: bool, gn: Option<Seq<u8>>, gc: Option<int>)
     requires forall|i: int| 0 <= i < l.len() ==> !contrib_to(inner, #[trigger] l[i], p, gn, gc),
     ensures dq(l, p, inner, gn, gc) == (Q { n: 0, s: 0, a: 0 }),
 {
