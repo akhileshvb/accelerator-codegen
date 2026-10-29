@@ -251,7 +251,10 @@ inline std::string AcceleratorSql(const Entry &entry, const std::vector<std::str
   Require(aux != nullptr, "registered accelerator has no DuckDB SQL function");
   std::ostringstream sql;
   sql << "SELECT * FROM " << aux->table_function << '(';
-  for (std::size_t i = 0; i < arguments.size(); ++i) {  // an expression's own type (a date plus an interval) is cast to the parameter's
+  // The tuple's leading values are the function's arguments; the rest are derived by the reference SQL.
+  const std::size_t arity = aux->argument_types.empty() ? arguments.size()
+                                                         : std::min(arguments.size(), aux->argument_types.size());
+  for (std::size_t i = 0; i < arity; ++i) {  // an expression's own type (a date plus an interval) is cast to the parameter's
     sql << (i ? ", " : "");
     if (i < aux->argument_types.size())
       sql << "CAST(" << arguments[i] << " AS " << aux->argument_types[i].ToString() << ')';
