@@ -759,4 +759,121 @@ pub proof fn lemma_vsel_prefix(es: Seq<(KeyView, Grp)>, fy: int, u: Index<UnitRe
     }
 }
 
+/// The fys some unit of the set has.
+pub fn fy_set(u: &Index<UnitRef>) -> (f: Index<()>)
+    requires uset_ok(*u),
+    ensures
+        f.wf(),
+        forall|fy: int| #![trigger f.at((fy, Seq::<u8>::empty()))] f.at((fy, Seq::<u8>::empty())) is Some <==> exists|k: KeyView| #![trigger u.at(k)] u.at(k) is Some && k.0 == fy,
+{
+    let ents = u.rows();
+    let ghost es = u.entries();
+    proof { u.model(); }
+    let mut f: Index<()> = Index::new();
+    let mut i = 0;
+    while i < ents.len()
+        invariant
+            i <= ents.len(), f.wf(), u.wf(), uset_ok(*u),
+            forall|pos: int| #![trigger es[pos]] 0 <= pos < es.len() ==> u.at(es[pos].0) == Some(es[pos].1),
+            ents@.map_values(|row: (Key, Arc<UnitRef>)| (row.0.view(), *row.1)) == es, es == u.entries(),
+            forall|fy: int| #![trigger f.at((fy, Seq::<u8>::empty()))] f.at((fy, Seq::<u8>::empty())) is Some <==> exists|j: int| 0 <= j < i && (#[trigger] es[j]).0.0 == fy,
+        decreases ents.len() - i,
+    {
+        proof { assert(es[i as int].0 == ents@[i as int].0.view()); }
+        let fy = ents[i].1.fy;
+        proof { assert(u.at(es[i as int].0) == Some(es[i as int].1)); assert(es[i as int].0 == ukey(es[i as int].1.fy as int, ov(es[i as int].1.name))); assert(es[i as int].1 == arc_val(&ents[i as int].1)); }
+        f.put(Key::composite(fy, Vec::new()), Arc::new(()));
+        i += 1;
+        proof {
+            assert forall|fy2: int| f.at((fy2, Seq::<u8>::empty())) is Some <==> exists|j: int| 0 <= j < i && (#[trigger] es[j]).0.0 == fy2 by {
+                if exists|j: int| 0 <= j < i && es[j].0.0 == fy2 { let j = choose|j: int| 0 <= j < i && es[j].0.0 == fy2; if j == i - 1 { assert(fy as int == fy2); } }
+            }
+        }
+    }
+    proof {
+        assert forall|fy: int| f.at((fy, Seq::<u8>::empty())) is Some <==> exists|k: KeyView| #![trigger u.at(k)] u.at(k) is Some && k.0 == fy by {
+            if exists|j: int| 0 <= j < es.len() && es[j].0.0 == fy { let j = choose|j: int| 0 <= j < es.len() && es[j].0.0 == fy; assert(u.at(es[j].0) == Some(es[j].1)); }
+            if exists|k: KeyView| u.at(k) is Some && k.0 == fy {
+                let k = choose|k: KeyView| #![trigger u.at(k)] u.at(k) is Some && k.0 == fy;
+                let pos = choose|pos: int| #![auto] 0 <= pos < es.len() && es[pos].0 == k;
+            }
+        }
+    }
+    f
+}
+
+/// The classes whose fy some unit of the set has.
+pub fn plan_classes(cls: &Index<ClassRec>, u: &Index<UnitRef>) -> (ct: Index<ClassRef>)
+    requires tbl_str(*cls), uset_ok(*u),
+    ensures
+        cset_ok(ct),
+        forall|ok: KeyView, k: KeyView| #![trigger cls.at(ok), u.at(k)] cls.at(ok) is Some && u.at(k) is Some && k.0 == cls.at(ok)->0.fy as int ==> ct.at(ok) is Some,
+        forall|ok: KeyView| #![trigger ct.at(ok)] ct.at(ok) is Some ==> cls.at(ok) is Some && exists|k: KeyView| #![trigger u.at(k)] u.at(k) is Some && k.0 == cls.at(ok)->0.fy as int,
+{
+    let fys = fy_set(u);
+    let ents = cls.rows();
+    let ghost es = cls.entries();
+    proof { cls.model(); }
+    let mut ct: Index<ClassRef> = Index::new();
+    let mut i = 0;
+    while i < ents.len()
+        invariant
+            i <= ents.len(), cls.wf(), cset_ok(ct), tbl_str(*cls), uset_ok(*u),
+            forall|x: int, y: int| 0 <= x < y < es.len() ==> key_lt((#[trigger] es[x]).0, (#[trigger] es[y]).0),
+            ents@.map_values(|row: (Key, Arc<ClassRec>)| (row.0.view(), *row.1)) == es, es == cls.entries(),
+            forall|pos: int| #![trigger es[pos]] 0 <= pos < es.len() ==> cls.at(es[pos].0) == Some(es[pos].1),
+            forall|fy: int| #![trigger fys.at((fy, Seq::<u8>::empty()))] fys.at((fy, Seq::<u8>::empty())) is Some <==> exists|k: KeyView| #![trigger u.at(k)] u.at(k) is Some && k.0 == fy,
+            fys.wf(),
+            forall|ok: KeyView| #![trigger ct.at(ok)] ct.at(ok) is Some ==> (exists|j: int| 0 <= j < i && (#[trigger] es[j]).0 == ok) && exists|k: KeyView| #![trigger u.at(k)] u.at(k) is Some && k.0 == cls.at(ok)->0.fy as int,
+            forall|j: int| 0 <= j < i && (exists|k: KeyView| #![trigger u.at(k)] u.at(k) is Some && k.0 == (#[trigger] es[j]).1.fy as int) ==> ct.at(es[j].0) is Some,
+        decreases ents.len() - i,
+    {
+        let c = &ents[i].1;
+        let key = &ents[i].0;
+        proof { assert(es[i as int] == (key.view(), arc_val(c))); assert(cls.at(key.view()) == Some(arc_val(c))); }
+        if fys.get(&Key::composite(c.fy, Vec::new())).is_some() {
+            let ghost ct0 = ct;
+            ct.put(key.share(), Arc::new(ClassRef { fy: c.fy, stmt: copy_bytes(c.stmt.as_slice()), uom: copy_bytes(c.uom.as_slice()) }));
+            proof {
+                assert(key.view() == cls_key(arc_val(c)));
+                assert forall|q: KeyView| ct.at(q) is Some implies q == okey(ct.at(q)->0.fy as int, ct.at(q)->0.stmt@, ct.at(q)->0.uom@) by {
+                    if q != key.view() { assert(ct0.at(q) is Some); }
+                }
+                assert forall|ok: KeyView| ct.at(ok) is Some implies (exists|j: int| 0 <= j < i + 1 && (#[trigger] es[j]).0 == ok) && exists|k: KeyView| #![trigger u.at(k)] u.at(k) is Some && k.0 == cls.at(ok)->0.fy as int by {
+                    if ok == key.view() { assert(es[i as int].0 == ok); assert(fys.at((arc_val(c).fy as int, Seq::<u8>::empty())) is Some); }
+                    else { assert(ct0.at(ok) is Some); }
+                }
+                assert forall|j: int| 0 <= j < i + 1 && (exists|k: KeyView| u.at(k) is Some && k.0 == (#[trigger] es[j]).1.fy as int) implies ct.at(es[j].0) is Some by {
+                    if j == i as int { assert(es[j].0 == key.view()); }
+                    else { assert(es[j].0 != key.view()) by { if es[j].0 == key.view() { lemma_ordered_neq(es, j, i as int); } } }
+                }
+            }
+        } else {
+            proof {
+                assert forall|j: int| 0 <= j < i + 1 && (exists|k: KeyView| u.at(k) is Some && k.0 == (#[trigger] es[j]).1.fy as int) implies ct.at(es[j].0) is Some by {
+                    if j == i as int { assert(fys.at((arc_val(c).fy as int, Seq::<u8>::empty())) is Some); assert(false); }
+                }
+                assert forall|ok: KeyView| ct.at(ok) is Some implies (exists|j: int| 0 <= j < i + 1 && (#[trigger] es[j]).0 == ok) by {
+                    let j = choose|j: int| 0 <= j < i && es[j].0 == ok;
+                }
+            }
+        }
+        i += 1;
+    }
+    proof {
+        assert forall|ok: KeyView, k: KeyView| cls.at(ok) is Some && u.at(k) is Some && k.0 == cls.at(ok)->0.fy as int implies ct.at(ok) is Some by {
+            let pos = choose|pos: int| #![auto] 0 <= pos < es.len() && es[pos].0 == ok;
+            assert(es[pos].1 == cls.at(ok)->0);
+        }
+    }
+    ct
+}
+
+proof fn lemma_ordered_neq(es: Seq<(KeyView, ClassRec)>, a: int, b: int)
+    requires 0 <= a < es.len(), 0 <= b < es.len(), a != b, forall|x: int, y: int| 0 <= x < y < es.len() ==> key_lt((#[trigger] es[x]).0, (#[trigger] es[y]).0),
+    ensures es[a].0 != es[b].0,
+{
+    if a < b { verus_prooflib::ordered::lemma_key_order(es[a].0, es[b].0); } else { verus_prooflib::ordered::lemma_key_order(es[b].0, es[a].0); }
+}
+
 } // verus!

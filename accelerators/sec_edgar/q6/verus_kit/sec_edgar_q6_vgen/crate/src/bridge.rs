@@ -68,45 +68,22 @@ pub proof fn lemma_sem_switch(db: Db, db2: Db, c: ClassRec, u: Index<UnitRef>)
     }
 }
 
-/// Every class a unit of the set is listed in is in the class set.
-pub open spec fn class_cover(um: Index<UnitRec>, w: Index<UnitRef>, cw: Index<ClassRef>) -> bool {
-    forall|fy: int, nk: KeyView, stmt: Seq<u8>, uom: Seq<u8>| #![trigger cw.at(okey(fy, stmt, uom)), w.at((fy, nk.1))]
-        w.at((fy, nk.1)) is Some && (match um.at((fy, nk.1)) { Some(r) => cref_has(r.classes@, fy, stmt, uom), None => false }) ==> cw.at(okey(fy, stmt, uom)) is Some
+/// Every class whose fy some unit of the set has is in the class set.
+pub open spec fn class_cover(cls: Index<ClassRec>, w: Index<UnitRef>, cw: Index<ClassRef>) -> bool {
+    forall|ok: KeyView, k: KeyView| #![trigger cls.at(ok), w.at(k)] cls.at(ok) is Some && w.at(k) is Some && k.0 == cls.at(ok)->0.fy as int ==> cw.at(ok) is Some
 }
 
 /// The stored groups of a class outside the class set are of units outside the set.
-pub proof fn lemma_non_cw(cls0: Index<ClassRec>, um0: Index<UnitRec>, w: Index<UnitRef>, cw: Index<ClassRef>, ok: KeyView)
-    requires
-        tbl_str(cls0), ucl_ok(um0, cls0), class_cover(um0, w, cw), cls0.at(ok) is Some, cw.at(ok) is None,
+pub proof fn lemma_non_cw(cls0: Index<ClassRec>, w: Index<UnitRef>, cw: Index<ClassRef>, ok: KeyView)
+    requires class_cover(cls0, w, cw), cls0.at(ok) is Some, cw.at(ok) is None,
     ensures ({
         let c = cls0.at(ok)->0;
-        &&& forall|q: KeyView| #![trigger c.r.at(q)] c.r.at(q) is Some ==> !wn(w, c.fy as int, nkey_v(ov(c.r.at(q)->0.name)))
-        &&& forall|q: KeyView| #![trigger c.f.at(q)] c.f.at(q) is Some ==> !wn(w, c.fy as int, nkey_v(ov(c.f.at(q)->0.name)))
-        &&& forall|q: KeyView| #![trigger c.hp.at(q)] c.hp.at(q) is Some ==> !wn(w, c.fy as int, q)
-        &&& forall|q: KeyView| #![trigger c.hn.at(q)] c.hn.at(q) is Some ==> !wn(w, c.fy as int, q)
+        &&& forall|nk: KeyView| !wn(w, c.fy as int, nk)
     }),
 {
     let c = cls0.at(ok)->0;
-    assert(ok == cls_key(c));
-    assert forall|q: KeyView| c.r.at(q) is Some implies !wn(w, c.fy as int, nkey_v(ov(c.r.at(q)->0.name))) by {
-        let nk = nkey_v(ov(c.r.at(q)->0.name));
-        assert(exists|q2: KeyView| #![trigger c.r.at(q2)] c.r.at(q2) is Some && nkey_v(ov(c.r.at(q2)->0.name)) == nk);
-        assert(listed(um0, c, nk));
-        if wn(w, c.fy as int, nk) { assert(cw.at(okey(c.fy as int, c.stmt@, c.uom@)) is Some); }
-    }
-    assert forall|q: KeyView| c.f.at(q) is Some implies !wn(w, c.fy as int, nkey_v(ov(c.f.at(q)->0.name))) by {
-        let nk = nkey_v(ov(c.f.at(q)->0.name));
-        assert(c.fb.at(nk) == c.f.at(q));
-        assert(listed(um0, c, nk));
-        if wn(w, c.fy as int, nk) { assert(cw.at(okey(c.fy as int, c.stmt@, c.uom@)) is Some); }
-    }
-    assert forall|q: KeyView| c.hp.at(q) is Some implies !wn(w, c.fy as int, q) by {
-        assert(listed(um0, c, q));
-        if wn(w, c.fy as int, q) { assert(cw.at(okey(c.fy as int, c.stmt@, c.uom@)) is Some); }
-    }
-    assert forall|q: KeyView| c.hn.at(q) is Some implies !wn(w, c.fy as int, q) by {
-        assert(listed(um0, c, q));
-        if wn(w, c.fy as int, q) { assert(cw.at(okey(c.fy as int, c.stmt@, c.uom@)) is Some); }
+    assert forall|nk: KeyView| !wn(w, c.fy as int, nk) by {
+        if wn(w, c.fy as int, nk) { assert(w.at((c.fy as int, nk.1)) is Some); }
     }
 }
 
@@ -243,11 +220,11 @@ proof fn lemma_pick_facts_ok(c: ClassRec, u: Index<UnitRef>, w: Index<UnitRef>, 
 /// The records of a class set after the eviction.
 #[verifier::rlimit(400)]
 #[verifier::spinoff_prover]
-pub proof fn lemma_bridge(db: Db, db2: Db, cls0: Index<ClassRec>, um0: Index<UnitRec>, t: Index<ClassRec>, kept: GMap,
+pub proof fn lemma_bridge(db: Db, db2: Db, cls0: Index<ClassRec>, t: Index<ClassRec>, kept: GMap,
     u: Index<UnitRef>, w: Index<UnitRef>, ct: Index<ClassRef>, cw: Index<ClassRef>)
     requires
-        cls_ok(db, cls0), ucl_ok(um0, cls0), uset_ok(u), uset_ok(w), subset_u(u, w), frame_ok(db, db2, u),
-        class_cover(um0, w, cw), class_cover(um0, u, ct), refill_ok(cls0, ct, u, w),
+        cls_ok(db, cls0), uset_ok(u), uset_ok(w), subset_u(u, w), frame_ok(db, db2, u),
+        class_cover(cls0, w, cw), class_cover(cls0, u, ct), refill_ok(cls0, ct, u, w),
         forall|ok: KeyView| #![trigger ct.at(ok)] ct.at(ok) is Some ==> cw.at(ok) is Some,
         evict_tbl(cls0, t, cw, ct, u, w), kept_tbl(cls0, t, cw, u, w, kept),
     ensures mid_ok(db2, t, kept, u, w, no_done()),
@@ -312,7 +289,8 @@ pub proof fn lemma_bridge(db: Db, db2: Db, cls0: Index<ClassRec>, um0: Index<Uni
             }
         } else {
             assert(t.at(ok) == cls0.at(ok));
-            lemma_non_cw(cls0, um0, w, cw, ok);
+            lemma_non_cw(cls0, w, cw, ok);
+            assert(forall|q: KeyView| c0.r.at(q) is Some ==> !wn(w, c0.fy as int, nkey_v(ov(c0.r.at(q)->0.name))));
             assert(notu_rec(c0, u)) by {
                 assert forall|q: KeyView| c0.hp.at(q) is Some implies !wn(u, c0.fy as int, q) by { if wn(u, c0.fy as int, q) { lemma_subset_key(u, w, (c0.fy as int, q.1)); } }
                 assert forall|q: KeyView| c0.r.at(q) is Some implies !wn(u, c0.fy as int, nkey_v(ov(c0.r.at(q)->0.name))) by {

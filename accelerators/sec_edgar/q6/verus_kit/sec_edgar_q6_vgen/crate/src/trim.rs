@@ -13,6 +13,10 @@ use crate::inv::*;
 use crate::crops::*;
 use crate::crlem::*;
 use crate::cnt::*;
+use crate::tbl::*;
+use crate::place::*;
+use crate::plan::*;
+use crate::units::*;
 
 verus! {
 
@@ -229,6 +233,59 @@ pub fn trim_class(c: &ClassRec, Ghost(db): Ghost<Db>) -> (r: Option<ClassRec>)
         assert(crec_full(n));
     }
     Some(n)
+}
+
+/// Trims every class of the set.
+#[verifier::rlimit(200)]
+#[verifier::spinoff_prover]
+pub fn trim_all(t: &mut Index<ClassRec>, tcls: &Index<ClassRef>, Ghost(db2): Ghost<Db>, Ghost(p): Ghost<spec_fn(GK) -> bool>)
+    requires tbl_wf(db2, *old(t)), full_all(*old(t)), cov_where(db2, *old(t), p), cset_ok(*tcls),
+    ensures tbl_wf(db2, *final(t)), full_all(*final(t)), cov_where(db2, *final(t), p),
+{
+    let ents = tcls.rows();
+    let ghost es = tcls.entries();
+    proof { tcls.model(); }
+    let mut i = 0;
+    while i < ents.len()
+        invariant
+            i <= ents.len(), cset_ok(*tcls), tcls.wf(),
+            ents@.map_values(|row: (Key, Arc<ClassRef>)| (row.0.view(), *row.1)) == es, es == tcls.entries(),
+            tbl_wf(db2, *t), full_all(*t), cov_where(db2, *t, p),
+        decreases ents.len() - i,
+    {
+        let key = &ents[i].0;
+        match t.get(key) {
+            None => {}
+            Some(c) => {
+                let ghost t0 = *t;
+                let ghost cv = arc_val(&c);
+                proof { assert(t0.at(key.view()) == Some(cv)); assert(cls_key(cv) == key.view()); }
+                match trim_class(&c, Ghost(db2)) {
+                    None => {}
+                    Some(n) => {
+                        let ghost nv = n;
+                        cls_store(t, n);
+                        proof {
+                            assert(cls_key(nv) == cls_key(cv));
+                            assert forall|ok: KeyView| t.at(ok) is Some implies ({ let c2 = t.at(ok)->0; ok == cls_key(c2) && crec_struct(c2) && crec_sem(db2, c2) && crec_full(c2) }) by {
+                                if ok != key.view() { assert(t0.at(ok) is Some); }
+                            }
+                            assert forall|k: GK| cntk(db2, k) > 0 && p(k) implies #[trigger] covered(db2, *t, k) by {
+                                let ok2 = okey(k.fy, k.stmt, k.uom);
+                                assert(covered(db2, t0, k));
+                                if ok2 == key.view() {
+                                    lemma_okey_inj(k.fy, k.stmt, k.uom, cv.fy as int, cv.stmt@, cv.uom@);
+                                    assert(in_class(cv, k));
+                                    assert(covered_in(cv, k, sumk(db2, k), cntk(db2, k)));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        i += 1;
+    }
 }
 
 } // verus!
