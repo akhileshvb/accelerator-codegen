@@ -18,14 +18,21 @@ use crate::join::*;
 use crate::wideval::*;
 use crate::glue_proofs::*;
 use crate::lists::*;
+use crate::rep::*;
 
 verus! {
+
+pub open spec fn state_vals(groups: GMap, db: Db) -> bool {
+    &&& forall|k: GK| #![trigger gv_c(groups, k)] gv_c(groups, k) == cntk(db, k)
+    &&& forall|k: GK| #![trigger gv_s(groups, k)] gv_s(groups, k) == sumk(db, k)
+}
 
 pub open spec fn state_ok(groups: GMap, tab: Pow2Tab, db: Db) -> bool {
     &&& gm_ok(groups)
     &&& pos_ok(groups)
     &&& tab.ok()
-    &&& forall|k: GK| #![trigger gv_c(groups, k)] gv_c(groups, k) == cntk(db, k) && gv_s(groups, k) == sumk(db, k)
+    &&& rep_db(db)
+    &&& state_vals(groups, db)
 }
 
 pub struct State {
@@ -84,6 +91,68 @@ pub fn rescan_pres_by_filing_keys(s: &State, num_delta: &Vec<NumDelta>, pre_delt
 
 #[verifier::rlimit(200)]
 #[verifier::spinoff_prover]
+
+/// The exec-side predicates of the old-row lists agree with the algebra's on the changed rows.
+proof fn lemma_negf_preds(dn: Seq<NumDelta>, dp: Seq<PreDelta>, ds: Seq<SubDelta>, kall: Seq<Seq<u8>>)
+    requires kall == all_keys(dn, dp, ds),
+    ensures
+        negf(num_delta_seq_view(dn), pn()) == negf(num_delta_seq_view(dn), is_one(cnum(kall))),
+        negf(pre_delta_seq_view(dp), pp()) == negf(pre_delta_seq_view(dp), is_one(cpre(kall))),
+        negf(sub_delta_seq_view(ds), ps()) == negf(sub_delta_seq_view(ds), is_one(csub(kall))),
+{
+    lemma_keys_cover(dn, dp, ds);
+    let (vn, vp, vs) = (num_delta_seq_view(dn), pre_delta_seq_view(dp), sub_delta_seq_view(ds));
+    assert forall|i: int| 0 <= i < vn.len() implies pn()(vn[i].0) == is_one(cnum(kall))(vn[i].0) by {
+        if dn[i].row.adsh__null == 0 { assert(kall.contains(dn[i].row.adsh@)); }
+    }
+    assert forall|i: int| 0 <= i < vp.len() implies pp()(vp[i].0) == is_one(cpre(kall))(vp[i].0) by {
+        if dp[i].row.adsh__null == 0 { assert(kall.contains(dp[i].row.adsh@)); }
+    }
+    assert forall|i: int| 0 <= i < vs.len() implies ps()(vs[i].0) == is_one(csub(kall))(vs[i].0) by {
+        assert(kall.contains(ds[i].row.adsh@));
+    }
+    lemma_negf_ext(vn, pn(), is_one(cnum(kall)));
+    lemma_negf_ext(vp, pp(), is_one(cpre(kall)));
+    lemma_negf_ext(vs, ps(), is_one(csub(kall)));
+}
+
+/// The contributions of the two joins are the change in every group.
+proof fn lemma_apply_acc(db: Db, db2: Db, dn: Seq<(NumRow, int)>, ds: Seq<(SubRow, int)>, dp: Seq<(PreRow, int)>,
+    kall: Seq<Seq<u8>>, rn: Seq<NumRow>, rs: Seq<SubRow>, rp: Seq<PreRow>,
+    vn2: Seq<(NumRow, int)>, vs2: Seq<(SubRow, int)>, vp2: Seq<(PreRow, int)>,
+    vn1: Seq<(NumRow, int)>, vs1: Seq<(SubRow, int)>, vp1: Seq<(PreRow, int)>,
+    vn10: Seq<(NumRow, int)>, vs10: Seq<(SubRow, int)>, vp10: Seq<(PreRow, int)>,
+    acc0: Index<AccEnt>, acc1: Index<AccEnt>, acc2: Index<AccEnt>)
+    requires
+        bag_step(db.num, db2.num, dn), bag_step(db.sub, db2.sub, ds), bag_step(db.pre, db2.pre, dp),
+        restr(unit_l(rn), db2.num, cnum(kall)), restr(unit_l(rs), db2.sub, csub(kall)), restr(unit_l(rp), db2.pre, cpre(kall)),
+        forall|i: int| 0 <= i < dn.len() && (#[trigger] dn[i]).0.adsh is Some ==> kall.contains(dn[i].0.adsh->0),
+        forall|i: int| 0 <= i < ds.len() ==> kall.contains((#[trigger] ds[i]).0.adsh),
+        forall|i: int| 0 <= i < dp.len() && (#[trigger] dp[i]).0.adsh is Some ==> kall.contains(dp[i].0.adsh->0),
+        vn2 == unit_l(rn), vs2 == unit_l(rs), vp2 == unit_l(rp),
+        vn10 == unit_l(rn), vs10 == unit_l(rs), vp10 == unit_l(rp),
+        vn1 == vn10 + negf(dn, is_one(cnum(kall))), vs1 == vs10 + negf(ds, is_one(csub(kall))), vp1 == vp10 + negf(dp, is_one(cpre(kall))),
+        acc_ok(acc0), forall|k: GK| #[trigger] acc_c(acc0, k) == 0, forall|k: GK| #[trigger] acc_s(acc0, k) == 0,
+        acc_delta(acc0, acc1, nn_c(vn2, vs2, vp2, 1), nn_s(vn2, vs2, vp2, 1)),
+        acc_delta(acc1, acc2, nn_c(vn1, vs1, vp1, -1), nn_s(vn1, vs1, vp1, -1)),
+    ensures
+        forall|k: GK| #![trigger acc_c(acc2, k)] acc_c(acc2, k) == cntk(db2, k) - cntk(db, k),
+        forall|k: GK| #![trigger acc_s(acc2, k)] acc_s(acc2, k) == sumk(db2, k) - sumk(db, k),
+{
+    assert forall|k: GK| #![trigger acc_c(acc2, k)] acc_c(acc2, k) == cntk(db2, k) - cntk(db, k) by {
+        lemma_diag_k(k);
+        lemma_apply_identity(db, db2, dn, ds, dp, kall, rn, rs, rp, icnt(k));
+        assert(acc_c(acc1, k) == 0 + nn_c(vn2, vs2, vp2, 1)(k));
+        assert(acc_c(acc2, k) == acc_c(acc1, k) + nn_c(vn1, vs1, vp1, -1)(k));
+    }
+    assert forall|k: GK| #![trigger acc_s(acc2, k)] acc_s(acc2, k) == sumk(db2, k) - sumk(db, k) by {
+        lemma_diag_k(k);
+        lemma_apply_identity(db, db2, dn, ds, dp, kall, rn, rs, rp, ival(k));
+        assert(acc_s(acc1, k) == 0 + nn_s(vn2, vs2, vp2, 1)(k));
+        assert(acc_s(acc2, k) == acc_s(acc1, k) + nn_s(vn1, vs1, vp1, -1)(k));
+    }
+}
+
 pub fn apply(
     s: &State,
     num_delta: &Vec<NumDelta>,
@@ -114,7 +183,9 @@ pub fn apply(
     let ghost db = s.db();
     proof {
         assert(state_ok(s.groups, *s.tab, s.db@));
-        assert forall|k: GK| #![trigger gv_c(s.groups, k)] gv_c(s.groups, k) == cntk(db, k) && gv_s(s.groups, k) == sumk(db, k) by {}
+        assert(state_vals(s.groups, db));
+        assert forall|k: GK| #![trigger gv_c(s.groups, k)] gv_c(s.groups, k) == cntk(db, k) by {}
+        assert forall|k: GK| #![trigger gv_s(s.groups, k)] gv_s(s.groups, k) == sumk(db, k) by {}
     }
     let ghost kall = all_keys(num_delta@, pre_delta@, sub_delta@);
     let ghost (dn, dp, ds) = (num_delta_seq_view(num_delta@), pre_delta_seq_view(pre_delta@), sub_delta_seq_view(sub_delta@));
@@ -124,6 +195,11 @@ pub fn apply(
         lemma_rescan_sub(db2, subs_by_filing_keys@, subs_by_filing_rows@);
         lemma_rescan_pre(db2, pres_by_filing_keys@, pres_by_filing_rows@);
         assert(unit_weights(dn) && unit_weights(dp) && unit_weights(ds));
+        assert forall|i: int| 0 <= i < dn.len() implies is_rep((#[trigger] dn[i]).0) by {
+            let r = num_delta_seq_view(num_delta@)[i].0;
+            if r.value is Some { assert(f64_val(num_delta@[i].row.value) == r.value->0); }
+        }
+        lemma_rep_step(db, db2, dn);
     }
     let l2n = wrap_num(nums_by_filing_rows);
     let l2s = wrap_sub(subs_by_filing_rows);
@@ -167,43 +243,25 @@ pub fn apply(
         }
         let (rn, rs, rp) = (num_rt_seq_view(nums_by_filing_rows@), sub_rt_seq_view(subs_by_filing_rows@), pre_rt_seq_view(pres_by_filing_rows@));
         assert(seq_view_bytes(nums_by_filing_keys@) == kall && seq_view_bytes(subs_by_filing_keys@) == kall && seq_view_bytes(pres_by_filing_keys@) == kall);
-        // the exec lists against the spec lists
-        let (vn2, vs2, vp2) = (num_delta_seq_view(l2n@), sub_delta_seq_view(l2s@), pre_delta_seq_view(l2p@));
-        let (vn1, vs1, vp1) = (num_delta_seq_view(l1n@), sub_delta_seq_view(l1s@), pre_delta_seq_view(l1p@));
-        assert(vn2 == unit_l(rn) && vs2 == unit_l(rs) && vp2 == unit_l(rp));
         assert(num_delta_seq_view(l1n0) == unit_l(rn) && sub_delta_seq_view(l1s0) == unit_l(rs) && pre_delta_seq_view(l1p0) == unit_l(rp));
-                assert forall|i: int| 0 <= i < dn.len() implies pn()(dn[i].0) == is_one(cnum(kall))(dn[i].0) by {
-            if num_delta@[i].row.adsh__null == 0 { assert(kall.contains(num_delta@[i].row.adsh@)); }
-        }
-        assert forall|i: int| 0 <= i < dp.len() implies pp()(dp[i].0) == is_one(cpre(kall))(dp[i].0) by {
-            if pre_delta@[i].row.adsh__null == 0 { assert(kall.contains(pre_delta@[i].row.adsh@)); }
-        }
-        assert forall|i: int| 0 <= i < ds.len() implies ps()(ds[i].0) == is_one(csub(kall))(ds[i].0) by {
-            assert(kall.contains(sub_delta@[i].row.adsh@));
-        }
-        lemma_negf_ext(dn, pn(), is_one(cnum(kall)));
-        lemma_negf_ext(dp, pp(), is_one(cpre(kall)));
-        lemma_negf_ext(ds, ps(), is_one(csub(kall)));
-        assert(vn1 == unit_l(rn) + negf(dn, is_one(cnum(kall))));
-        assert(vs1 == unit_l(rs) + negf(ds, is_one(csub(kall))));
-        assert(vp1 == unit_l(rp) + negf(dp, is_one(cpre(kall))));
-        assert forall|k: GK| #![trigger acc_c(acc, k)] acc_c(acc, k) == cntk(db2, k) - cntk(db, k) && acc_s(acc, k) == sumk(db2, k) - sumk(db, k) by {
-            lemma_diag_k(k);
-            lemma_apply_identity(db, db2, dn, ds, dp, kall, rn, rs, rp, icnt(k));
-            lemma_apply_identity(db, db2, dn, ds, dp, kall, rn, rs, rp, ival(k));
-            assert(acc_c(acc0, k) == 0 && acc_s(acc0, k) == 0);
-        }
+        lemma_negf_preds(num_delta@, pre_delta@, sub_delta@, kall);
+        lemma_apply_acc(db, db2, dn, ds, dp, kall, rn, rs, rp,
+            num_delta_seq_view(l2n@), sub_delta_seq_view(l2s@), pre_delta_seq_view(l2p@),
+            num_delta_seq_view(l1n@), sub_delta_seq_view(l1s@), pre_delta_seq_view(l1p@),
+            num_delta_seq_view(l1n0), sub_delta_seq_view(l1s0), pre_delta_seq_view(l1p0), acc0, acc1, acc);
         assert forall|k: GK| #![trigger gv_c(g0, k)] gv_c(g0, k) + acc_c(acc, k) >= 0 by { lemma_cnt_facts(db2, k); }
         assert forall|k: GK| #![trigger gv_c(g0, k)] gv_c(g0, k) + acc_c(acc, k) == 0 ==> gv_s(g0, k) + acc_s(acc, k) == 0 by { lemma_cnt_facts(db2, k); }
     }
     merge_acc(&mut groups, &acc);
     let tab = s.tab.clone();
     proof {
-        assert(forall|k: GK| #![trigger gv_c(groups, k)] gv_c(groups, k) == cntk(db2, k) && gv_s(groups, k) == sumk(db2, k)) by {
-            assert forall|k: GK| #![trigger gv_c(groups, k)] gv_c(groups, k) == cntk(db2, k) && gv_s(groups, k) == sumk(db2, k) by {
-                assert(gv_c(g0, k) == gv_c(s.groups, k) && gv_s(g0, k) == gv_s(s.groups, k));
-            }
+        assert forall|k: GK| #![trigger gv_c(groups, k)] gv_c(groups, k) == cntk(db2, k) by {
+            assert(gv_c(g0, k) == gv_c(s.groups, k));
         }
+        assert forall|k: GK| #![trigger gv_s(groups, k)] gv_s(groups, k) == sumk(db2, k) by {
+            assert(gv_s(g0, k) == gv_s(s.groups, k));
+        }
+        assert(state_vals(groups, db2));
     }
     Ok(State { groups, tab, db: Ghost(db2) })
 }
@@ -235,11 +293,16 @@ pub fn build(
     let mut groups: GMap = Index::new();
     let ghost g0 = groups;
     proof {
-        assert forall|k: GK| #![trigger acc_c(acc, k)] acc_c(acc, k) == cntk(db, k) && acc_s(acc, k) == sumk(db, k) by {
+        lemma_rep_scan(db, nums@);
+        assert forall|k: GK| #![trigger acc_c(acc, k)] acc_c(acc, k) == cntk(db, k) by {
             lemma_diag_k(k);
             lemma_build_identity(db, nums@, subs@, pres@, icnt(k));
+            assert(acc_c(acc0, k) == 0);
+        }
+        assert forall|k: GK| #![trigger acc_s(acc, k)] acc_s(acc, k) == sumk(db, k) by {
+            lemma_diag_k(k);
             lemma_build_identity(db, nums@, subs@, pres@, ival(k));
-            assert(acc_c(acc0, k) == 0 && acc_s(acc0, k) == 0);
+            assert(acc_s(acc0, k) == 0);
         }
         assert forall|k: GK| #![trigger gv_c(g0, k)] gv_c(g0, k) == 0 && gv_s(g0, k) == 0 by {}
         assert forall|k: GK| #![trigger gv_c(g0, k)] gv_c(g0, k) + acc_c(acc, k) >= 0 by { lemma_cnt_facts(db, k); }
@@ -247,6 +310,11 @@ pub fn build(
         assert(gm_ok(g0) && pos_ok(g0));
     }
     merge_acc(&mut groups, &acc);
+    proof {
+        assert forall|k: GK| #![trigger gv_c(groups, k)] gv_c(groups, k) == cntk(db, k) by {}
+        assert forall|k: GK| #![trigger gv_s(groups, k)] gv_s(groups, k) == sumk(db, k) by {}
+        assert(state_vals(groups, db));
+    }
     Some(State { groups, tab, db: Ghost(db) })
 }
 
