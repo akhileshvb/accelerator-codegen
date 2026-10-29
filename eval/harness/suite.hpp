@@ -29,6 +29,7 @@
 
 #include "duckdb.hpp"
 #include "duckdb/main/materialized_query_result.hpp"
+#include "eval/harness/float_bounds.hpp"
 #include "substrate/aux/core/aux_maintenance_decision_log.hpp"
 
 namespace accelerator_codegen::suite {
@@ -162,6 +163,22 @@ inline Rows RunQuery(duckdb::Connection &c, const std::string &query_sql, const 
   return Collect(*r);
 }
 
+// The bounds query's candidates (float_bounds.hpp), at the connection's snapshot.
+inline float_bounds::Probe RunProbe(duckdb::Connection &c, const std::string &bounds_sql, const std::string &tuple) {
+  Q(c, float_bounds::kPrelude);
+  duckdb::vector<duckdb::Value> values;
+  if (!tuple.empty()) {
+    auto t = Q(c, "SELECT " + tuple);
+    for (duckdb::idx_t i = 0; i < t->ColumnCount(); ++i)
+      values.push_back(t->GetValue(i, 0));
+  }
+  auto stmt = c.Prepare(bounds_sql);
+  Require(stmt && !stmt->HasError(), stmt ? stmt->GetError() : "prepare failed");
+  auto r = stmt->Execute(values, false);
+  Require(r && !r->HasError(), r ? r->GetError() : "bounds query failed");
+  return {r->names, Collect(*r)};
+}
+
 inline Rows RunAccel(duckdb::Connection &c, const std::string &function, const std::string &tuple) {
   auto r = Q(c, "SELECT * FROM " + function + "(" + tuple + ")");
   return Collect(*r);
@@ -214,6 +231,9 @@ struct Ordering {
   std::vector<std::pair<std::size_t, bool>> keys; // column, descending
   bool limited = false;
   std::string unlimited_sql;                      // the query without its LIMIT
+  // Rounded DOUBLE aggregates (float_bounds.hpp): the bounds query, and the query it bounds.  Set,
+  // an answer is judged admissible instead of compared with the reference.
+  std::string bounds_sql, query_sql;
 };
 
 inline int CellOrder(const std::string &a, const std::string &b) {
@@ -327,7 +347,14 @@ inline bool SortedBy(const Ordering &o, const Rows &rows) {
 
 // Compare, allowing the order (and LIMIT cut) that ties leave open.  `full`
 // yields the query's rows without its LIMIT (only asked for when needed).
-inline int CompareOrdered(const Ordering &o, const Rows &accel, const Rows &query, const std::function<Rows()> &full) {
+inline int CompareOrdered(const Ordering &o, const Rows &accel, const Rows &query, const std::function<Rows()> &full,
+                          const std::function<float_bounds::Probe()> &probe = {}, std::string *why = nullptr) {
+  if (!o.bounds_sql.empty() && probe) {
+    const std::string reason = float_bounds::Judge(o.query_sql, probe(), accel);
+    if (why)
+      *why = reason;
+    return reason.empty() ? 0 : 2;
+  }
   const int c = Compare(accel, query);
   if (o.bag && c == 1)
     return 0;
@@ -377,7 +404,8 @@ struct Tally {
   // overflow on extreme test values, the check is skipped and counted); an accelerator
   // call that fails where the reference succeeds is a wrong answer.
   void CheckCall(const std::string &where, const std::string &tuple, const std::function<Rows()> &accel,
-                 const std::function<Rows()> &query, const Ordering &o, const std::function<Rows()> &full) {
+                 const std::function<Rows()> &query, const Ordering &o, const std::function<Rows()> &full,
+                 const std::function<float_bounds::Probe()> &probe = {}) {
     Rows q;
     try {
       q = query();
@@ -399,18 +427,21 @@ struct Tally {
                            ",\"kind\":\"accel_error\",\"error\":" + Json(e.what()) + "}");
       return;
     }
-    Check(where, tuple, a, q, o, full);
+    Check(where, tuple, a, q, o, full, probe);
   }
   void Check(const std::string &where, const std::string &tuple, const Rows &a, const Rows &q,
-             const Ordering &o = {}, const std::function<Rows()> &full = {}) {
+             const Ordering &o = {}, const std::function<Rows()> &full = {},
+             const std::function<float_bounds::Probe()> &probe = {}) {
     ++checks;
-    const int c = CompareOrdered(o, a, q, full);
+    std::string why;
+    const int c = CompareOrdered(o, a, q, full, probe, &why);
     if (c == 0)
       return;
     (c == 1 ? order_mismatches : mismatches)++;
     if (examples.size() < 8)
       examples.push_back("{\"at\":" + Json(where) + ",\"params\":" + Json(tuple) + ",\"kind\":" +
-                         Json(c == 1 ? "order" : "rows") + ",\"accel_rows\":" + std::to_string(a.size()) +
+                         Json(c == 1 ? "order" : "rows") + (why.empty() ? "" : ",\"inadmissible\":" + Json(why)) +
+                         ",\"accel_rows\":" + std::to_string(a.size()) +
                          ",\"query_rows\":" + std::to_string(q.size()) + ",\"accel\":" + RowsJson(a) +
                          ",\"query\":" + RowsJson(q) + "}");
   }
@@ -602,7 +633,8 @@ inline DifferentialRun RunDifferentialLoop(
   };
   auto check = [&](const std::string &where, const std::string &t) {
     tally.CheckCall(where, t, [&] { return timed_accel(where, t); }, [&] { return RunQuery(qc, query_sql, t); }, ordering,
-                    [&] { return RunQuery(qc, ordering.unlimited_sql, t); });
+                    [&] { return RunQuery(qc, ordering.unlimited_sql, t); },
+                    [&] { return RunProbe(qc, ordering.bounds_sql, t); });
   };
   auto check_all = [&](const std::string &where) {
     for (const auto &t : spec.params)
@@ -683,9 +715,15 @@ inline int Validate(const std::string &path, const Spec &spec, const std::string
   int nonempty = 0;
   std::string tuple_rows = "[";
   std::vector<Rows> before;
+  // the bounds query (VERUS_KIT_BOUNDS_SQL) must admit the reference's own answer
+  const char *bounds_file = std::getenv("VERUS_KIT_BOUNDS_SQL");
+  const std::string bounds_sql = bounds_file && *bounds_file ? ReadFile(bounds_file) : std::string();
   for (const auto &t : spec.params) {
     try {
       const auto rows = RunQuery(c, query_sql, t);
+      if (!bounds_sql.empty())
+        if (const auto why = float_bounds::Judge(query_sql, RunProbe(c, bounds_sql, t), rows); !why.empty())
+          errors.push_back("params " + t + ": the reference answer is not admissible by the bounds query: " + why);
       nonempty += !rows.empty();
       tuple_rows += std::string(before.empty() ? "" : ",") + std::to_string(rows.size());
       before.push_back(rows);

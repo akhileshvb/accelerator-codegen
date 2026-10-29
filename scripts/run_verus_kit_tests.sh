@@ -22,6 +22,8 @@
 #   KIT_JOBS     kits run in parallel (default 1; each run has its own database copy)
 #   TIMEOUT      per run, seconds (default 900)
 #   ACCEL_VERUS_SCHEMA_SQL  overrides the schema constraints
+# A query with workloads/<bench>/qN.bounds.sql (eval/harness/float_bounds.hpp) rounds DOUBLE SUM / AVG in an
+# engine-chosen order: its answers are accepted iff admissible, not only if equal to the reference.
 # The kits must be built into <build_dir> (ACCEL_VERUS_LIB_DIR at configure time, then the
 # verus_kit_runner target); see scripts/build_verus_crate.sh and scripts/build_verus_world.sh.
 set -uo pipefail
@@ -54,7 +56,8 @@ run_one() {  # q mode
     *) echo "unknown mode ${mode}" >&2; return ;;
   esac
   rm -f "${db}" "${db}.wal"; cp "${TEST_DB}" "${db}"
-  ACCEL_AUX_STORE="${STORE:-verus_global}" ACCEL_VERUS_SCHEMA_SQL="${SCHEMA}" \
+  local bounds="${ROOT}/workloads/${BENCH}/q${q}.bounds.sql"; [[ -f "${bounds}" ]] || bounds=  # rounded DOUBLE aggregates
+  VERUS_KIT_BOUNDS_SQL="${bounds}" ACCEL_AUX_STORE="${STORE:-verus_global}" ACCEL_VERUS_SCHEMA_SQL="${SCHEMA}" \
     timeout "${TIMEOUT}" "${RUNNER}" "${mode}" "${args[@]}" \
     > "${OUT}/q${q}_${mode}.json" 2> "${OUT}/q${q}_${mode}.err"
   echo $? > "${OUT}/q${q}_${mode}.rc"
