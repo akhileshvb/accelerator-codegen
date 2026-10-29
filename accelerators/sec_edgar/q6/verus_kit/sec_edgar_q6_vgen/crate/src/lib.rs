@@ -17,3 +17,4 @@ pub mod buckets;
 pub mod join;
 pub mod merge;
 pub mod glue_proofs;
+pub mod lists;
