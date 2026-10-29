@@ -245,11 +245,15 @@ pub fn build(
 
 /// The answer rows as the host gets them.
 pub fn out_tuple(r: &OutR) -> (o: (Option<Vec<u8>>, Option<Vec<u8>>, i64, Option<u64>))
-    requires bits_ok(*r), r.bits is Some, 0 < r.ci <= 9223372036854775807,
+    requires bits_ok(*r), r.bits is Some, 0 < r.ci <= 9223372036854775807, r.ci as int == r.cnt@,
     ensures out_view(seq![o])[0] == rview(*r),
 {
     let ci64 = r.ci as i64;
-    (copy_opt(&r.tag), copy_opt(&r.ver), ci64, r.bits)
+    let o = (copy_opt(&r.tag), copy_opt(&r.ver), ci64, r.bits);
+    proof {
+        assert(out_view(seq![o])[0] =~= rview(*r));
+    }
+    o
 }
 
 pub fn execute(
@@ -289,6 +293,7 @@ pub fn execute(
             tmp_ok(db, p, t),
             out.len() == i,
             forall|j: int| 0 <= j < i ==> (#[trigger] out_view(out@)[j]) == full[j],
+            forall|j: int| 0 <= j < i ==> out_fits(#[trigger] out_view(out@)[j]),
         decreases n - i,
     {
         let r = &*rows[i].1;
@@ -314,7 +319,13 @@ pub fn execute(
             assert(full[i as int].cnt > 10);
         }
         let tup = out_tuple(r);
+        let ghost prev = out@;
         out.push(tup);
+        proof {
+            assert(out_view(out@) =~= out_view(prev).push(out_view(seq![tup])[0]));
+            assert(out_view(out@)[i as int] == full[i as int]);
+            assert(out_fits(full[i as int]));
+        }
         i += 1;
     }
     proof {
