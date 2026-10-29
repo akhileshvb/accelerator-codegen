@@ -34,9 +34,13 @@ pub open spec fn psum(sides: Sides, p: Params, h: spec_fn(JK) -> int, n: NumRow,
     sum(sides, |sd: (Seq<PreRow>, int)| sd.1 * pre_sum(sd.0, p, h, n, s, t))
 }
 
+pub open spec fn tsum(tag: Seq<TagRow>, sides: Sides, p: Params, h: spec_fn(JK) -> int, n: NumRow, s: SubRow) -> int {
+    sum(tag, |t: TagRow| psum(sides, p, h, n, s, t))
+}
+
 /// What one num row joins to, over the sub and tag tables and the signed pre rows.
 pub open spec fn big_psi(sub: Seq<SubRow>, tag: Seq<TagRow>, sides: Sides, p: Params, h: spec_fn(JK) -> int, n: NumRow) -> int {
-    sum(sub, |s: SubRow| sum(tag, |t: TagRow| psum(sides, p, h, n, s, t)))
+    sum(sub, |s: SubRow| tsum(tag, sides, p, h, n, s))
 }
 
 /// A pass of signed num rows through the join.
@@ -254,12 +258,11 @@ proof fn lemma_old_join(db: Db, db2: Db, dp: Seq<(PreRow, int)>, a: Seq<Seq<u8>>
     assert forall|s: SubRow, t: TagRow| #[trigger] pre_sum(db.pre, p, h, n, s, t) == psum(old_s, p, h, n, s, t) by {
         lemma_pre_old(a, g, db.pre, db2.pre, dp, rtab, p, h, n, s, t);
     }
-    assert forall|s: SubRow| #[trigger] tag_sum4(db.tag, db.pre, p, h, n, s)
-        == sum(db.tag, |t: TagRow| psum(old_s, p, h, n, s, t)) by {
+    assert forall|s: SubRow| #[trigger] tag_sum4(db.tag, db.pre, p, h, n, s) == tsum(db.tag, old_s, p, h, n, s) by {
         lemma_sum_ext_all(db.tag, |t: TagRow| pre_sum(db.pre, p, h, n, s, t), |t: TagRow| psum(old_s, p, h, n, s, t));
     }
     lemma_sum_ext_all(db.sub, |s: SubRow| tag_sum4(db.tag, db.pre, p, h, n, s),
-        |s: SubRow| sum(db.tag, |t: TagRow| psum(old_s, p, h, n, s, t)));
+        |s: SubRow| tsum(db.tag, old_s, p, h, n, s));
 }
 
 proof fn lemma_new_join(db2: Db, a: Seq<Seq<u8>>, g: Seq<Seq<u8>>, rtab: Seq<PreRow>,
@@ -274,12 +277,11 @@ proof fn lemma_new_join(db2: Db, a: Seq<Seq<u8>>, g: Seq<Seq<u8>>, rtab: Seq<Pre
     assert forall|s: SubRow, t: TagRow| #[trigger] pre_sum(db2.pre, p, h, n, s, t) == psum(new_s, p, h, n, s, t) by {
         lemma_pre_new(a, g, db2.pre, rtab, p, h, n, s, t);
     }
-    assert forall|s: SubRow| #[trigger] tag_sum4(db2.tag, db2.pre, p, h, n, s)
-        == sum(db2.tag, |t: TagRow| psum(new_s, p, h, n, s, t)) by {
+    assert forall|s: SubRow| #[trigger] tag_sum4(db2.tag, db2.pre, p, h, n, s) == tsum(db2.tag, new_s, p, h, n, s) by {
         lemma_sum_ext_all(db2.tag, |t: TagRow| pre_sum(db2.pre, p, h, n, s, t), |t: TagRow| psum(new_s, p, h, n, s, t));
     }
     lemma_sum_ext_all(db2.sub, |s: SubRow| tag_sum4(db2.tag, db2.pre, p, h, n, s),
-        |s: SubRow| sum(db2.tag, |t: TagRow| psum(new_s, p, h, n, s, t)));
+        |s: SubRow| tsum(db2.tag, new_s, p, h, n, s));
 }
 
 proof fn lemma_delta_num(
