@@ -103,8 +103,17 @@ public:
     core::RecordAuxExecute(core::AuxExecutePath::Fallback);
   }
 
+  // Puts the accelerator in a shard with others (they share one worker, one commit sequence and
+  // the store `stores` makes), instead of alone with the default store.
+  void JoinShard(core::AcceleratorId shard_p, runtime::StoreFactory stores_p) {
+    shard = std::move(shard_p);
+    stores = std::move(stores_p);
+  }
+
   // ---- PostgresAccelerator ----
   const core::AcceleratorId &Id() const override { return accelerator; }
+  const core::AcceleratorId &Shard() const override { return shard.empty() ? accelerator : shard; }
+  runtime::StoreFactory Stores() override { return stores; }
   std::vector<core::TableDependency> Dependencies() const override {
     return module.Dependencies();
   }
@@ -173,6 +182,8 @@ private:
   core::AuxCostModelLocation cost_model_location;
   std::optional<maintenance::CostModelParams> cost_model;
   core::AcceleratorId accelerator;
+  core::AcceleratorId shard;
+  runtime::StoreFactory stores;
   std::vector<CollationKey> c_collation_keys;
   bool tune_build;
   std::vector<AcceleratorTable> tables;
