@@ -125,6 +125,7 @@ cmd_build() { # [target...]
     -e ACCEL_BUILD_JOBS="${ACCEL_BUILD_JOBS:-}" \
     -e ACCEL_HOST_UID="$(id -u)" -e ACCEL_HOST_GID="$(id -g)" \
     -e ACCEL_DUCKDB_SEED="${DUCKDB_SEED}" \
+    -e ACCEL_VERUS_LIB_DIR="${ACCEL_VERUS_LIB_DIR:-}" \
     "${NAME}" bash /accel-src/backends/postgres/host/container_build.sh
   # A fresh LOAD of the new .so needs fresh backends; register against the loaded schema.
   psql_in -d "${DB}" -f - <"${HOST_DIR}/register.sql" >/dev/null
