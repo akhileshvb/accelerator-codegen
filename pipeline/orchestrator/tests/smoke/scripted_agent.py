@@ -348,7 +348,22 @@ BEHAVIOURS = {
 }
 
 
+SATURATION_TRIALS = 8  # config/default.yaml optimization.early_stop.saturation_required_attempts
+TRIAL_STRATEGIES = ("structural", "low_level", "other")
+
+
 def optimization() -> str:
+    """Declares saturation after the profile-guided trials a claim needs: each starts from a fresh profile, targets a
+    distinct hot spot and is discarded unedited."""
+    for n in range(SATURATION_TRIALS):
+        profile = call_tool("run_profile", {"scale": "full"})
+        assert profile.get("status") == "pass" and profile.get("scale") == "full", profile
+        trial = {"trial_id": f"scripted-{n}", "hypothesis": "scripted agent: the reference kernel is final",
+                 "hot_spot": f"scripted hot spot {n}", "expected_gain": "none", "strategy": TRIAL_STRATEGIES[n % 3]}
+        began = call_tool("begin_ab_trial", trial)
+        assert "ERROR" not in json.dumps(began), began
+        ended = call_tool("end_ab_trial", {"trial_id": trial["trial_id"], "keep": False})
+        assert "ERROR" not in json.dumps(ended), ended
     profile = call_tool("run_profile", {"scale": "full"})
     assert profile.get("status") == "pass" and profile.get("scale") == "full", profile
     return 'OPTIMIZATION_SATURATED\n```json\n{"reason": "scripted agent: the reference kernel is final"}\n```'
