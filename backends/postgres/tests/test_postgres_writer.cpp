@@ -639,6 +639,24 @@ void TestShardGroup() {
   w.Ok("INSERT INTO t4 VALUES (1, 1, 1)");
   w.Ok("ROLLBACK");
   CheckEq(Assigned(shard), base + 4, "an abort before PRE_COMMIT takes no epoch");
+
+  // A backend killed between its epoch and its commit: the epoch is an empty one, the gate is free again.
+  Conn stalled(kDb), reader(kDb);
+  const long n = Assigned(shard);
+  const std::string pid = stalled.Ok("SELECT pg_backend_pid()");
+  g_admin->Ok("SELECT wt_lock(1, 0)");
+  stalled.Ok("BEGIN");
+  stalled.Ok("SET LOCAL wt.block_precommit = on");
+  stalled.Ok("INSERT INTO t4 VALUES (1, 1, 1)");
+  stalled.Send("COMMIT");
+  WaitBlocked(1);
+  CheckEq(Assigned(shard), n + 1, "the stalled commit has the shard's epoch");
+  g_admin->Ok("SELECT pg_terminate_backend(" + pid + ")");
+  stalled.Finish();
+  g_admin->Ok("SELECT wt_unlock(1, 0)");
+  w.Ok("INSERT INTO t6 VALUES (10)");
+  CheckEq(Assigned(shard), n + 2, "the next commit takes the next epoch: the gate was released");
+  CheckEq(Epoch(reader, static_cast<int>(shard)), n + 2, "the killed commit's epoch is passed over");
 }
 
 } // namespace
