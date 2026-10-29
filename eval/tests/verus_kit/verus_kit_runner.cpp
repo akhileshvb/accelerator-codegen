@@ -48,6 +48,9 @@
 //   VERUS_KIT_PARAMS_FILE=<file>        these tuples replace the spec's (bench, profiles)
 //   VERUS_KIT_EXTRA_PARAMS_FILE=<file>  these are checked besides the spec's (differential, snapshots)
 // (one tuple per line, as in params.sql; the spec format is eval/harness/suite.hpp)
+// VERUS_KIT_BOUNDS_SQL=<file>: the query's bounds query (eval/harness/float_bounds.hpp): its DOUBLE
+//   SUM / AVG are rounded by the engine, so the accelerator's answer is accepted iff it is admissible
+//   (within the spec's rounding bound of the exact values), not only if it equals the reference.
 // The store is the C++ one unless ACCEL_AUX_STORE=verus.  Output: one JSON
 // object on stdout.  The database file is modified; pass a copy.
 #include "backends/duckdb/api/duckdb_runtime.hpp"
@@ -146,6 +149,10 @@ Setup Prepare(duckdb::Connection &setup, const std::string &id, const Spec &spec
     Q(setup, spec.setup);
   accelerator_codegen::RegisterAcceleratorFunctions(setup);
   s.ordering = MakeOrdering(setup, s.glue->query_sql, spec.params);
+  if (const char *bounds = std::getenv("VERUS_KIT_BOUNDS_SQL"); bounds && *bounds) {
+    s.ordering.bounds_sql = ReadFile(bounds); // rounded DOUBLE aggregates: any admissible answer
+    s.ordering.query_sql = s.glue->query_sql;
+  }
   return s;
 }
 
@@ -231,7 +238,8 @@ int Snapshots(const std::string &path, const std::string &id, const Spec &spec, 
           std::this_thread::sleep_for(std::chrono::microseconds(rng() % 3000));
           const auto c = RunAccel(rc, "accel_" + id, p);
           const auto full = [&] { return RunQuery(rc, s.ordering.unlimited_sql, p); }; // same snapshot
-          const bool wrong = CompareOrdered(s.ordering, a, b, full) != 0 || CompareOrdered(s.ordering, c, b, full) != 0;
+          const auto probe = [&] { return RunProbe(rc, s.ordering.bounds_sql, p); };
+          const bool wrong = CompareOrdered(s.ordering, a, b, full, probe) != 0 || CompareOrdered(s.ordering, c, b, full, probe) != 0;
           Q(rc, "COMMIT");
           ++checks;
           if (wrong) {
