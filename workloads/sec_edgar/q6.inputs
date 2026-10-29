@@ -1,0 +1,19 @@
+-- Kernel inputs for SEC-EDGAR Q6: the join rows by filing (adsh), rescanned per filing batch.
+scan subs AS SubRt:
+  SELECT adsh AS adsh, name AS name, fy AS fy FROM sub;
+scan nums AS NumRt:
+  SELECT adsh AS adsh, tag AS tag, version AS version, uom AS uom, value AS value FROM num WHERE value IS NOT NULL;
+scan pres AS PreRt:
+  SELECT adsh AS adsh, stmt AS stmt, tag AS tag, version AS version, plabel AS plabel FROM pre;
+rescan subs_by_filing AS SubRt KEYS adsh:
+  SELECT adsh AS adsh, name AS name, fy AS fy FROM sub;
+rescan nums_by_filing AS NumRt KEYS adsh:
+  SELECT adsh AS adsh, tag AS tag, version AS version, uom AS uom, value AS value FROM num WHERE value IS NOT NULL;
+rescan pres_by_filing AS PreRt KEYS adsh:
+  SELECT adsh AS adsh, stmt AS stmt, tag AS tag, version AS version, plabel AS plabel FROM pre;
+delta sub AS SubDelta OF SubRt:
+  SELECT adsh AS adsh, name AS name, fy AS fy FROM sub;
+delta num AS NumDelta OF NumRt:
+  SELECT adsh AS adsh, tag AS tag, version AS version, uom AS uom, value AS value FROM num;
+delta pre AS PreDelta OF PreRt:
+  SELECT adsh AS adsh, stmt AS stmt, tag AS tag, version AS version, plabel AS plabel FROM pre;

@@ -1,0 +1,26 @@
+// Verus kernel crate.  gen_* are generated and frozen; the rest is the kernel.
+#![allow(unused_imports)]
+
+pub mod gen_spec;
+pub mod gen_obligations;
+pub mod kernel;
+pub mod gen_world;
+pub mod gen_ffi;
+pub mod f64bits;
+pub mod wideval;
+pub mod esc;
+pub mod model;
+pub mod algebra;
+pub mod accmap;
+pub mod gmap;
+pub mod buckets;
+pub mod join;
+pub mod merge;
+pub mod glue_proofs;
+pub mod lists;
+pub mod rep;
+pub mod ordering;
+pub mod answer;
+pub mod emit;
+pub mod rank;
+pub mod fast;
