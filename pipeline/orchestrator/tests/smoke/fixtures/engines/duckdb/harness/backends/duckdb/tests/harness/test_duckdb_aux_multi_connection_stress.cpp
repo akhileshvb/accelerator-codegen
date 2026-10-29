@@ -33,7 +33,9 @@ int main(int argc, char **argv) {
       workers.emplace_back([&] {
         auto connection = h::Connect(*database);
         while (!stop.load(std::memory_order_relaxed)) {
+          connection->BeginTransaction();  // one snapshot for the reference and the accelerated read, beside the writer
           h::Compare(*connection, entry, {}, "concurrent reader");
+          connection->Commit();
           completed.fetch_add(1, std::memory_order_relaxed);
         }
       });

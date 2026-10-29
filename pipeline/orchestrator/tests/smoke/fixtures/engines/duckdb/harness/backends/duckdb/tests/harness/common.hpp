@@ -348,7 +348,7 @@ inline std::vector<std::vector<std::string>> WorkloadSuiteTuples(
           "no workload parameter tuples found for " + benchmark + " query " +
               std::to_string(query));
   for (const auto &tuple : tuples) {
-    Require(tuple.size() == argument_count,
+    Require(tuple.size() >= argument_count,  // a tuple may carry values the accelerator derives
             "workload parameter tuple has " + std::to_string(tuple.size()) +
                 " values; query expects " + std::to_string(argument_count));
   }
