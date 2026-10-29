@@ -3,6 +3,8 @@
 # substrate/verus/store, accelerators/prooflib) and, unless --verify-only, compile
 # it (with the counting allocator of substrate/verus/heap) to $OUT/lib<name>_verus.a for the engines (CMake links each
 # accelerators/<bench>/q<N>/verus_kit/<name>/ whose library exists).
+# VERUS_CRATE_ROOT: the crate root file under src/ (default lib.rs; lib_<engine>.rs for another
+# engine's spec, scripts/regen_verus_kits.py --engine), with ACCEL_VERUS_LIB_DIR apart per engine.
 #   scripts/build_verus_crate.sh <crate_dir> <name> [--verify-only | --no-verify | --rlib | --rlib-no-verify]
 # OUT: $ACCEL_VERUS_LIB_DIR (default build-verus).  The libraries are rebuilt
 # only when their sources change, under a lock (parallel pipeline runs).
@@ -37,7 +39,7 @@ mkdir -p "$OUT"
 ) 9>"$OUT/.libs.lock"
 
 # 2. the crate
-args=("$CRATE_DIR/src/lib.rs" --crate-type=staticlib --crate-name="${NAME}_verus"
+args=("$CRATE_DIR/src/${VERUS_CRATE_ROOT:-lib.rs}" --crate-type=staticlib --crate-name="${NAME}_verus"
       --import "verus_common=$OUT/verus_common.vir" --extern "verus_common=$OUT/libverus_common.rlib"
       --import "verus_substrate=$OUT/verus_substrate.vir" --extern "verus_substrate=$OUT/libverus_substrate.rlib"
       --import "verus_prooflib=$OUT/verus_prooflib.vir" --extern "verus_prooflib=$OUT/libverus_prooflib.rlib"
