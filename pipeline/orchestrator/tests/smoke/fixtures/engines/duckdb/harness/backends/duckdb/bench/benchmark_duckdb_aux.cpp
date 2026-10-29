@@ -2,6 +2,7 @@
 
 #include "backends/duckdb/api/duckdb_runtime.hpp"
 #include "eval/bench/driver/bench_cli.hpp"
+#include "eval/bench/driver/measured_cpus.hpp"
 #include "eval/bench/driver/profile_window.hpp"
 
 #include <iomanip>
@@ -82,7 +83,8 @@ int main(int argc, char **argv) {
           for (duckdb::idx_t row = 0; row < result->RowCount(); ++row)
             probes.push_back(entry.build_probe(*result, row));
         }
-      for (int i = 0; i < warmup; ++i) {
+        driver::PinToMeasuredCpus(1);
+        for (int i = 0; i < warmup; ++i) {
           if ((i & 1) == 0) { Consume(*reference_connection, ref); Consume(*connection, accel); }
           else { Consume(*connection, accel); Consume(*reference_connection, ref); }
         }
