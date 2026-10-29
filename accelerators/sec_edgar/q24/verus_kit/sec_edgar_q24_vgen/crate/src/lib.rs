@@ -8,3 +8,7 @@ pub mod gen_world;
 pub mod gen_ffi;
 pub mod model;
 pub mod algebra;
+pub mod esc;
+pub mod accmap;
+pub mod gmap;
+pub mod merge;
