@@ -14,6 +14,7 @@ pub mod join_spec;
 pub mod jspec;
 pub mod rec;
 pub mod cells;
+pub mod algebra;
 pub mod join;
 pub mod groups;
 pub mod bridge;
