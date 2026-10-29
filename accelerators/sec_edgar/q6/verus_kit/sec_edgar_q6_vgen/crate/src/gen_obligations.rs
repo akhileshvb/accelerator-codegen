@@ -345,7 +345,7 @@ pub fn ob_rescan_subs_by_filing_keys(
     sub_delta: &Vec<SubDelta>,
 ) -> (r: Vec<Vec<u8>>)
     ensures
-        r@ == crate::kernel::rescan_subs_by_filing_wanted(*s, num_delta@, pre_delta@, sub_delta@),
+        seq_view_bytes(r@) == crate::kernel::rescan_subs_by_filing_wanted(*s, num_delta@, pre_delta@, sub_delta@),
 {
     kernel::rescan_subs_by_filing_keys(s, num_delta, pre_delta, sub_delta)
 }
@@ -359,7 +359,7 @@ pub fn ob_rescan_nums_by_filing_keys(
     sub_delta: &Vec<SubDelta>,
 ) -> (r: Vec<Vec<u8>>)
     ensures
-        r@ == crate::kernel::rescan_nums_by_filing_wanted(*s, num_delta@, pre_delta@, sub_delta@),
+        seq_view_bytes(r@) == crate::kernel::rescan_nums_by_filing_wanted(*s, num_delta@, pre_delta@, sub_delta@),
 {
     kernel::rescan_nums_by_filing_keys(s, num_delta, pre_delta, sub_delta)
 }
@@ -373,7 +373,7 @@ pub fn ob_rescan_pres_by_filing_keys(
     sub_delta: &Vec<SubDelta>,
 ) -> (r: Vec<Vec<u8>>)
     ensures
-        r@ == crate::kernel::rescan_pres_by_filing_wanted(*s, num_delta@, pre_delta@, sub_delta@),
+        seq_view_bytes(r@) == crate::kernel::rescan_pres_by_filing_wanted(*s, num_delta@, pre_delta@, sub_delta@),
 {
     kernel::rescan_pres_by_filing_keys(s, num_delta, pre_delta, sub_delta)
 }
@@ -395,11 +395,11 @@ pub fn ob_apply(
 ) -> (r: Result<State, u32>)
     requires
         capture_ok(s.db(), db2, num_delta_seq_view(num_delta@), pre_delta_seq_view(pre_delta@), sub_delta_seq_view(sub_delta@)),
-        subs_by_filing_keys@ == crate::kernel::rescan_subs_by_filing_wanted(*s, num_delta@, pre_delta@, sub_delta@),
+        seq_view_bytes(subs_by_filing_keys@) == crate::kernel::rescan_subs_by_filing_wanted(*s, num_delta@, pre_delta@, sub_delta@),
         rescan_subs_by_filing_ok(db2, subs_by_filing_keys@, subs_by_filing_rows@),
-        nums_by_filing_keys@ == crate::kernel::rescan_nums_by_filing_wanted(*s, num_delta@, pre_delta@, sub_delta@),
+        seq_view_bytes(nums_by_filing_keys@) == crate::kernel::rescan_nums_by_filing_wanted(*s, num_delta@, pre_delta@, sub_delta@),
         rescan_nums_by_filing_ok(db2, nums_by_filing_keys@, nums_by_filing_rows@),
-        pres_by_filing_keys@ == crate::kernel::rescan_pres_by_filing_wanted(*s, num_delta@, pre_delta@, sub_delta@),
+        seq_view_bytes(pres_by_filing_keys@) == crate::kernel::rescan_pres_by_filing_wanted(*s, num_delta@, pre_delta@, sub_delta@),
         rescan_pres_by_filing_ok(db2, pres_by_filing_keys@, pres_by_filing_rows@),
     ensures
         r matches Ok(s2) ==> s2.db() == db2,

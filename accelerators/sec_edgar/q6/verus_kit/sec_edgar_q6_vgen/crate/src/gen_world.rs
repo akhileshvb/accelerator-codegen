@@ -55,11 +55,11 @@ pub fn stage_apply(
 ) -> (r: Result<QStaged, u32>)
     requires
         capture_ok((base.timeline())(base.epoch() as nat), (base.timeline())((base.epoch() + 1) as nat), num_delta_seq_view(num_delta@), pre_delta_seq_view(pre_delta@), sub_delta_seq_view(sub_delta@)),
-        subs_by_filing_keys@ == crate::kernel::rescan_subs_by_filing_wanted(base.state_spec(), num_delta@, pre_delta@, sub_delta@),
+        seq_view_bytes(subs_by_filing_keys@) == crate::kernel::rescan_subs_by_filing_wanted(base.state_spec(), num_delta@, pre_delta@, sub_delta@),
         rescan_subs_by_filing_ok((base.timeline())((base.epoch() + 1) as nat), subs_by_filing_keys@, subs_by_filing_rows@),
-        nums_by_filing_keys@ == crate::kernel::rescan_nums_by_filing_wanted(base.state_spec(), num_delta@, pre_delta@, sub_delta@),
+        seq_view_bytes(nums_by_filing_keys@) == crate::kernel::rescan_nums_by_filing_wanted(base.state_spec(), num_delta@, pre_delta@, sub_delta@),
         rescan_nums_by_filing_ok((base.timeline())((base.epoch() + 1) as nat), nums_by_filing_keys@, nums_by_filing_rows@),
-        pres_by_filing_keys@ == crate::kernel::rescan_pres_by_filing_wanted(base.state_spec(), num_delta@, pre_delta@, sub_delta@),
+        seq_view_bytes(pres_by_filing_keys@) == crate::kernel::rescan_pres_by_filing_wanted(base.state_spec(), num_delta@, pre_delta@, sub_delta@),
         rescan_pres_by_filing_ok((base.timeline())((base.epoch() + 1) as nat), pres_by_filing_keys@, pres_by_filing_rows@),
     ensures
         r matches Ok(p) ==> p.epoch() == base.epoch() && p.timeline() == base.timeline(),

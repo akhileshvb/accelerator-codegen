@@ -1094,7 +1094,7 @@ pub(crate) async fn obligations(
     let mut wanted_decls: Vec<String> = vec!["/// What the state has absorbed since its build, in changed rows at most (e.g. ids it\n/// never frees).\npub open spec fn history(s: State) -> nat {\n    0\n}\n".to_string()];
     for s in scans.iter().filter(|s| s.rescan) {
         let tys: Vec<String> = deltas.values().map(|d| format!("{}_delta: Seq<{}>", table_field(&d.table), d.elem)).collect();
-        wanted_decls.push(format!("/// The keys the kernel asks the host to rescan ({}); the host passes back exactly these.\npub open spec fn rescan_{}_wanted(s: State, {}) -> Seq<{}> {{\n    Seq::empty()\n}}\n", s.name, s.name, tys.join(", "), s.key_rt.unwrap()));
+        wanted_decls.push(format!("/// The keys the kernel asks the host to rescan ({}); the host passes back exactly these.\npub open spec fn rescan_{}_wanted(s: State, {}) -> Seq<{}> {{\n    Seq::empty()\n}}\n", s.name, s.name, tys.join(", "), if s.key_rt == Some("Vec<u8>") { "Seq<u8>" } else { s.key_rt.unwrap() }));
         let mut ps = vec![P { name: "s".into(), ty: "&State".into(), ghost: false, arg: Arg::State }];
         ps.extend(delta_params(&deltas));
         fns.push(ObFn {
@@ -1103,7 +1103,7 @@ pub(crate) async fn obligations(
             params: ps,
             ret: format!("(r: Vec<{}>)", s.key_rt.unwrap()),
             requires: vec![],
-            ensures: vec![format!("r@ == {}", wanted(s))],
+            ensures: vec![if s.key_rt == Some("Vec<u8>") { format!("seq_view_bytes(r@) == {}", wanted(s)) } else { format!("r@ == {}", wanted(s)) }],
         });
     }
     {
@@ -1128,7 +1128,7 @@ pub(crate) async fn obligations(
         }
         req.push(format!("capture_ok({SDB}, {DB2}, {})", cap.join(", ")));
         for s in scans.iter().filter(|s| s.rescan) {
-            req.push(format!("{n}_keys@ == {}", wanted(s), n = s.name));
+            req.push(if s.key_rt == Some("Vec<u8>") { format!("seq_view_bytes({n}_keys@) == {}", wanted(s), n = s.name) } else { format!("{n}_keys@ == {}", wanted(s), n = s.name) });
             req.push(format!("{}({DB2}, {n}_keys@, {n}_rows@)", s.contract, n = s.name));
         }
         ps.push(P { name: "db2".into(), ty: "Db".into(), ghost: true, arg: Arg::Ghost });

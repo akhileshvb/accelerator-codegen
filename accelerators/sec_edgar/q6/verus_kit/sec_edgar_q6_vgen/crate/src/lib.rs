@@ -15,3 +15,5 @@ pub mod accmap;
 pub mod gmap;
 pub mod buckets;
 pub mod join;
+pub mod merge;
+pub mod glue_proofs;
