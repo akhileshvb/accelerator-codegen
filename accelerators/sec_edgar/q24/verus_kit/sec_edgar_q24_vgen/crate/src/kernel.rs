@@ -19,6 +19,9 @@ use crate::merge::*;
 use crate::cmap::*;
 use crate::keys::*;
 use crate::loops::*;
+use crate::emit::*;
+use crate::answer::*;
+use crate::rank::*;
 use crate::wideval::*;
 
 verus! {
@@ -240,7 +243,15 @@ pub fn build(
     Some(State { groups, tab, db: Ghost(db) })
 }
 
-#[verifier::external_body]
+/// The answer rows as the host gets them.
+pub fn out_tuple(r: &OutR) -> (o: (Option<Vec<u8>>, Option<Vec<u8>>, i64, Option<u64>))
+    requires bits_ok(*r), r.bits is Some, 0 < r.ci <= 9223372036854775807,
+    ensures out_view(seq![o])[0] == rview(*r),
+{
+    let ci64 = r.ci as i64;
+    (copy_opt(&r.tag), copy_opt(&r.ver), ci64, r.bits)
+}
+
 pub fn execute(
     s: &State,
     p1: i64,
@@ -251,7 +262,66 @@ pub fn execute(
         envelope(s.db()) && answer_fits(s.db(), params(p1 as int, p2@)) ==> r is Some,
         r matches Some(out) ==> forall|i: int| 0 <= i < out.len() ==> out_fits(#[trigger] out_view(out@)[i]),
 {
-    unimplemented!()
+    proof { use_type_invariant(s); }
+    let ghost db = s.db();
+    let ghost p = params(p1 as int, p2@);
+    let t = match gather(&s.groups, &s.tab, Ghost(db), p1, p2) {
+        Some(t) => t,
+        None => return None,
+    };
+    let rows = t.rows();
+    let ghost es = t.entries();
+    let ghost full = es.map_values(|e: (KeyView, OutR)| e.1).map_values(|r: OutR| rview(r));
+    proof {
+        t.model();
+        assert(rows@.map_values(|row: (Key, Arc<OutR>)| (row.0.view(), *row.1)) == es);
+        assert(full_result(db, p, full));
+    }
+    let n = if rows.len() < 100 { rows.len() } else { 100 };
+    let mut out: Vec<(Option<Vec<u8>>, Option<Vec<u8>>, i64, Option<u64>)> = Vec::new();
+    let mut i = 0;
+    while i < n
+        invariant
+            i <= n, n <= rows.len(), n <= 100, n == if rows.len() < 100 { rows.len() } else { 100 },
+            rows@.map_values(|row: (Key, Arc<OutR>)| (row.0.view(), *row.1)) == es,
+            full == es.map_values(|e: (KeyView, OutR)| e.1).map_values(|r: OutR| rview(r)),
+            full_result(db, p, full),
+            tmp_ok(db, p, t),
+            out.len() == i,
+            forall|j: int| 0 <= j < i ==> (#[trigger] out_view(out@)[j]) == full[j],
+        decreases n - i,
+    {
+        let r = &*rows[i].1;
+        proof {
+            assert(es[i as int].1 == *rows@[i as int].1);
+            assert(full[i as int] == rview(*r));
+        }
+        if r.bits.is_none() || r.ci > 9223372036854775807 {
+            proof {
+                let o = limit_rows(full, 100);
+                assert(query_result(db, p, o));
+                assert(o[i as int] == full[i as int]);
+                assert(!out_fits(o[i as int]));
+                if envelope(db) && answer_fits(db, p) { assert(out_fits(o[i as int])); }
+            }
+            return None;
+        }
+        proof {
+            let rs = es.map_values(|e: (KeyView, OutR)| e.1);
+            assert(rs[i as int] == *r);
+            assert(rs[i as int].ci as int == rs[i as int].cnt@);
+            assert(row_ok(db, p, full[i as int]));
+            assert(full[i as int].cnt > 10);
+        }
+        let tup = out_tuple(r);
+        out.push(tup);
+        i += 1;
+    }
+    proof {
+        assert(out_view(out@) =~= limit_rows(full, 100));
+        assert(query_result(db, p, out_view(out@)));
+    }
+    Some(out)
 }
 
 } // verus!

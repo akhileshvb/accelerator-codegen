@@ -18,3 +18,6 @@ pub mod rows;
 pub mod f64bits;
 pub mod wideval;
 pub mod loops;
+pub mod rank;
+pub mod emit;
+pub mod answer;
