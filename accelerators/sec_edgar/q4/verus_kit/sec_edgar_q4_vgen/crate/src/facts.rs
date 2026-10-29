@@ -232,7 +232,7 @@ pub open spec fn cell_facts(db: Db, p: Params, sigma: int, tl: Option<Seq<u8>>, 
     &&& abs(sm) <= ab
 }
 
-proof fn lemma_count_as_group_sum(db: Db, p: Params, gs: Option<int>, gt: Option<Seq<u8>>, gst: Option<Seq<u8>>)
+pub proof fn lemma_count_as_group_sum(db: Db, p: Params, gs: Option<int>, gt: Option<Seq<u8>>, gst: Option<Seq<u8>>)
     ensures group_count(db, p, gs, gt, gst) == group_sum(db, p, gs, gt, gst, |t: Tuple| 1int),
 {
     let tup_ = tuples(db, p);

@@ -18,6 +18,7 @@ pub mod algebra;
 pub mod emit;
 pub mod facts;
 pub mod walk;
+pub mod answer;
 pub mod join;
 pub mod groups;
 pub mod bridge;
