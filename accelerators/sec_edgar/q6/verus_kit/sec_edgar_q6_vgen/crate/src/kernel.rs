@@ -307,13 +307,13 @@ pub fn build(
         envelope(db) ==> r is Some,
 {
     let tab = Arc::new(pow2_tab());
-    let ln = wrap_num(&nums);
-    let ls = wrap_sub(&subs);
-    let lp = wrap_pre(&pres);
+    let ghost (subs_v, pres_v) = (subs@, pres@);
+    let ls = wrap_sub_owned(subs);
+    let lp = wrap_pre_owned(pres);
     let mut acc: Index<AccEnt> = Index::new();
     let ghost acc0 = acc;
     proof { assert(acc_ok(acc)); }
-    join_lists(&tab, &mut acc, &ln, &ls, &lp, 1);
+    join_scan(&tab, &mut acc, &nums, &ls, &lp);
     let mut groups: GMap = Index::new();
     let mut rank: GMap = Index::new();
     let mut ranked = true;
@@ -322,12 +322,12 @@ pub fn build(
         lemma_rep_scan(db, nums@);
         assert forall|k: GK| #![trigger acc_c(acc, k)] acc_c(acc, k) == cntk(db, k) by {
             lemma_diag_k(k);
-            lemma_build_identity(db, nums@, subs@, pres@, icnt(k));
+            lemma_build_identity(db, nums@, subs_v, pres_v, icnt(k));
             assert(acc_c(acc0, k) == 0);
         }
         assert forall|k: GK| #![trigger acc_s(acc, k)] acc_s(acc, k) == sumk(db, k) by {
             lemma_diag_k(k);
-            lemma_build_identity(db, nums@, subs@, pres@, ival(k));
+            lemma_build_identity(db, nums@, subs_v, pres_v, ival(k));
             assert(acc_s(acc0, k) == 0);
         }
         assert forall|k: GK| #![trigger gv_c(g0, k)] gv_c(g0, k) == 0 && gv_s(g0, k) == 0 by {}

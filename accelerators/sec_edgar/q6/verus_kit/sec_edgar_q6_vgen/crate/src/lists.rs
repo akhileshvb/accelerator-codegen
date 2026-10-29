@@ -487,4 +487,42 @@ pub proof fn lemma_negf_ext<A>(d: Seq<(A, int)>, c1: spec_fn(A) -> bool, c2: spe
 }
 
 
+/// The rows as a list with weight 1, consuming them.
+pub fn wrap_pre_owned(rows: Vec<PreRt>) -> (out: Vec<PreDelta>)
+    ensures pre_delta_seq_view(out@) == unit_l(pre_rt_seq_view(rows@)), forall|i: int| 0 <= i < out.len() ==> (#[trigger] out@[i]).sign == 1,
+{
+    let mut out: Vec<PreDelta> = Vec::with_capacity(rows.len());
+    for r in it: rows.into_iter()
+        invariant
+            out.len() == it.index(), it.seq() == rows@,
+            forall|i: int| 0 <= i < out.len() ==> (#[trigger] out@[i]) == (PreDelta { row: rows@[i], sign: 1 }),
+    {
+        out.push(PreDelta { row: r, sign: 1 });
+        proof { assert(out@[out.len() - 1].row == rows@[it.index() as int]); }
+    }
+    proof {
+        assert(pre_delta_seq_view(out@) =~= unit_l(pre_rt_seq_view(rows@)));
+    }
+    out
+}
+
+/// The rows as a list with weight 1, consuming them.
+pub fn wrap_sub_owned(rows: Vec<SubRt>) -> (out: Vec<SubDelta>)
+    ensures sub_delta_seq_view(out@) == unit_l(sub_rt_seq_view(rows@)), forall|i: int| 0 <= i < out.len() ==> (#[trigger] out@[i]).sign == 1,
+{
+    let mut out: Vec<SubDelta> = Vec::with_capacity(rows.len());
+    for r in it: rows.into_iter()
+        invariant
+            out.len() == it.index(), it.seq() == rows@,
+            forall|i: int| 0 <= i < out.len() ==> (#[trigger] out@[i]) == (SubDelta { row: rows@[i], sign: 1 }),
+    {
+        out.push(SubDelta { row: r, sign: 1 });
+        proof { assert(out@[out.len() - 1].row == rows@[it.index() as int]); }
+    }
+    proof {
+        assert(sub_delta_seq_view(out@) =~= unit_l(sub_rt_seq_view(rows@)));
+    }
+    out
+}
+
 } // verus!

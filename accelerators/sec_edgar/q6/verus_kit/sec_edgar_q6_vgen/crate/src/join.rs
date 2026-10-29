@@ -313,7 +313,7 @@ pub open spec fn jbase_h(k: GK, cnt: bool) -> H3 {
 }
 
 /// One num row of the list against the indexed sub and pre lists.
-pub fn process_num(tab: &Pow2Tab, acc: &mut Index<AccEnt>, n: &NumDelta, ls: &Vec<SubDelta>, lp: &Vec<PreDelta>,
+pub fn process_num(tab: &Pow2Tab, acc: &mut Index<AccEnt>, row: &NumRt, ls: &Vec<SubDelta>, lp: &Vec<PreDelta>,
     sidx: &Index<Bucket>, pidx: &Index<Bucket>, m: i64)
     requires
         tab.ok(),
@@ -325,13 +325,13 @@ pub fn process_num(tab: &Pow2Tab, acc: &mut Index<AccEnt>, n: &NumDelta, ls: &Ve
         buckets_ok(*pidx, pre_delta_seq_view(lp@), |kv: KeyView| m_pre(kv)),
     ensures
         acc_delta(*old(acc), *final(acc),
-            ls_c(sub_delta_seq_view(ls@), pre_delta_seq_view(lp@), num_rt_view(n.row), m as int),
-            ls_s(sub_delta_seq_view(ls@), pre_delta_seq_view(lp@), num_rt_view(n.row), m as int)),
+            ls_c(sub_delta_seq_view(ls@), pre_delta_seq_view(lp@), num_rt_view(*row), m as int),
+            ls_s(sub_delta_seq_view(ls@), pre_delta_seq_view(lp@), num_rt_view(*row), m as int)),
 {
     let ghost vs = sub_delta_seq_view(ls@);
     let ghost vp = pre_delta_seq_view(lp@);
-    let ghost nr = num_rt_view(n.row);
-    let r = &n.row;
+    let ghost nr = num_rt_view(*row);
+    let r = row;
     proof { assert(nr == num_rt_view(*r)); }
     if r.adsh__null != 0 || r.tag__null != 0 || r.version__null != 0 || r.value__null != 0 || r.uom__null != 0 {
         proof {
@@ -400,7 +400,7 @@ pub fn process_num(tab: &Pow2Tab, acc: &mut Index<AccEnt>, n: &NumDelta, ls: &Ve
             jj <= bsl.len(),
             tab.ok(),
             m == 1 || m == -1,
-            vs == sub_delta_seq_view(ls@), vp == pre_delta_seq_view(lp@), nr == num_rt_view(n.row), *r == n.row,
+            vs == sub_delta_seq_view(ls@), vp == pre_delta_seq_view(lp@), nr == num_rt_view(*row), *r == *row,
             bs == bsl@.map_values(|x: usize| x as int), bp == bpl@.map_values(|x: usize| x as int),
             bs == pos_where(vs, m_sub(sub_key(a))), bp == pos_where(vp, m_pre(pre_key3(a, t, v))),
             a == r.adsh@, t == r.tag@, v == r.version@,
@@ -555,7 +555,7 @@ pub fn join_lists(tab: &Pow2Tab, acc: &mut Index<AccEnt>, ln: &Vec<NumDelta>, ls
         proof { assert(ln@[i as int].sign == 1 || ln@[i as int].sign == -1); }
         let m = mult * ln[i].sign;
         let ghost before = *acc;
-        process_num(tab, acc, &ln[i], ls, lp, &sidx, &pidx, m);
+        process_num(tab, acc, &ln[i].row, ls, lp, &sidx, &pidx, m);
         proof {
             let nr = num_rt_view(ln@[i as int].row);
             let sg = ln@[i as int].sign as int;
@@ -583,5 +583,64 @@ pub fn join_lists(tab: &Pow2Tab, acc: &mut Index<AccEnt>, ln: &Vec<NumDelta>, ls
     proof { assert(vn.take(i as int) =~= vn); }
 }
 
+
+/// The join of the scanned num rows (weight 1) with the sub and pre lists, added to the contributions.
+pub fn join_scan(tab: &Pow2Tab, acc: &mut Index<AccEnt>, nums: &Vec<NumRt>, ls: &Vec<SubDelta>, lp: &Vec<PreDelta>)
+    requires
+        tab.ok(),
+        acc_ok(*old(acc)),
+        forall|i: int| 0 <= i < ls.len() ==> (#[trigger] ls@[i]).sign == 1 || ls@[i].sign == -1,
+        forall|i: int| 0 <= i < lp.len() ==> (#[trigger] lp@[i]).sign == 1 || lp@[i].sign == -1,
+    ensures
+        acc_delta(*old(acc), *final(acc),
+            nn_c(unit_l(num_rt_seq_view(nums@)), sub_delta_seq_view(ls@), pre_delta_seq_view(lp@), 1),
+            nn_s(unit_l(num_rt_seq_view(nums@)), sub_delta_seq_view(ls@), pre_delta_seq_view(lp@), 1)),
+{
+    let ghost vn = unit_l(num_rt_seq_view(nums@));
+    let ghost vs = sub_delta_seq_view(ls@);
+    let ghost vp = pre_delta_seq_view(lp@);
+    let sidx = build_sub(ls);
+    let pidx = build_pre(lp);
+    let ghost acc0 = *acc;
+    let mut i = 0;
+    proof {
+        assert(vn.take(0) =~= Seq::<(NumRow, int)>::empty());
+        lemma_acc_delta_zero(*acc, nn_c(vn.take(0), vs, vp, 1), nn_s(vn.take(0), vs, vp, 1));
+    }
+    while i < nums.len()
+        invariant
+            i <= nums.len(),
+            tab.ok(),
+            vn == unit_l(num_rt_seq_view(nums@)), vs == sub_delta_seq_view(ls@), vp == pre_delta_seq_view(lp@),
+            forall|i: int| 0 <= i < ls.len() ==> (#[trigger] ls@[i]).sign == 1 || ls@[i].sign == -1,
+            forall|i: int| 0 <= i < lp.len() ==> (#[trigger] lp@[i]).sign == 1 || lp@[i].sign == -1,
+            buckets_ok(sidx, vs, |kv: KeyView| m_sub(kv)),
+            buckets_ok(pidx, vp, |kv: KeyView| m_pre(kv)),
+            acc_delta(acc0, *acc, nn_c(vn.take(i as int), vs, vp, 1), nn_s(vn.take(i as int), vs, vp, 1)),
+        decreases nums.len() - i,
+    {
+        process_num(tab, acc, &nums[i], ls, lp, &sidx, &pidx, 1);
+        proof {
+            let nr = num_rt_view(nums@[i as int]);
+            assert(vn[i as int] == (nr, 1int));
+            assert forall|k: GK| #![trigger acc_c(*acc, k)]
+                acc_c(*acc, k) == acc_c(acc0, k) + nn_c(vn.take(i as int + 1), vs, vp, 1)(k) by {
+                lemma_wsum_push(vn, i as int, fs(vs, vp, icnt(k)));
+                let a0 = wsum(vn.take(i as int), fs(vs, vp, icnt(k)));
+                let x = lvl_s(vs, vp, icnt(k), nr);
+                assert(fs(vs, vp, icnt(k))(nr) == x);
+            }
+            assert forall|k: GK| #![trigger acc_s(*acc, k)]
+                acc_s(*acc, k) == acc_s(acc0, k) + nn_s(vn.take(i as int + 1), vs, vp, 1)(k) by {
+                lemma_wsum_push(vn, i as int, fs(vs, vp, ival(k)));
+                let a0 = wsum(vn.take(i as int), fs(vs, vp, ival(k)));
+                let x = lvl_s(vs, vp, ival(k), nr);
+                assert(fs(vs, vp, ival(k))(nr) == x);
+            }
+        }
+        i += 1;
+    }
+    proof { assert(vn.take(i as int) =~= vn); }
+}
 
 } // verus!
