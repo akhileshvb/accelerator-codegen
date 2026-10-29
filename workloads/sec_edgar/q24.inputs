@@ -1,0 +1,13 @@
+-- Kernel inputs for SEC-EDGAR Q24: num and pre rows by filing (adsh), rescanned per filing batch.
+scan nums AS NumRt:
+  SELECT adsh AS adsh, tag AS tag, version AS version, ddate AS ddate, uom AS uom, value AS value FROM num WHERE value IS NOT NULL;
+scan pres AS PreRt:
+  SELECT adsh AS adsh, tag AS tag, version AS version FROM pre;
+rescan nums_by_filing AS NumRt KEYS adsh:
+  SELECT adsh AS adsh, tag AS tag, version AS version, ddate AS ddate, uom AS uom, value AS value FROM num WHERE value IS NOT NULL;
+rescan pres_by_filing AS PreRt KEYS adsh:
+  SELECT adsh AS adsh, tag AS tag, version AS version FROM pre;
+delta num AS NumDelta OF NumRt:
+  SELECT adsh AS adsh, tag AS tag, version AS version, ddate AS ddate, uom AS uom, value AS value FROM num;
+delta pre AS PreDelta OF PreRt:
+  SELECT adsh AS adsh, tag AS tag, version AS version FROM pre;
