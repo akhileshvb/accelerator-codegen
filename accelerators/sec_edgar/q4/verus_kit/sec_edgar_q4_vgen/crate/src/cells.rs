@@ -528,4 +528,54 @@ pub proof fn lemma_rep_ext(g: Index<Index<Cell>>, t1: Tot, t2: Tot)
     assert(t1 =~= t2);
 }
 
+
+/// The total with the sums of records added.
+pub open spec fn tot_recs(tot: Tot, l: Seq<Rec>) -> Tot {
+    |p: Params, h: spec_fn(JK) -> int| tot(p, h) + rsum(l, p, h)
+}
+
+/// The groups with every record applied.
+pub fn apply_recs(g0: Index<Index<Cell>>, recs: &Vec<Rec>, Ghost(tot0): Ghost<Tot>) -> (g: Index<Index<Cell>>)
+    requires rep(g0, tot0),
+    ensures rep(g, tot_recs(tot0, recs@)),
+{
+    let mut g = g0;
+    let mut i: usize = 0;
+    proof {
+        assert(recs@.take(0) =~= Seq::<Rec>::empty());
+        lemma_rep_ext(g, tot0, tot_recs(tot0, recs@.take(0)));
+    }
+    while i < recs.len()
+        invariant i <= recs.len(), rep(g, tot_recs(tot0, recs@.take(i as int))),
+        decreases recs.len() - i,
+    {
+        let ghost cur = tot_recs(tot0, recs@.take(i as int));
+        apply_rec(&mut g, &recs[i], Ghost(cur));
+        proof {
+            assert(recs@.take(i as int + 1) =~= recs@.take(i as int).push(recs@[i as int]));
+            assert forall|p: Params, h: spec_fn(JK) -> int| #[trigger] tot_plus(cur, recs@[i as int])(p, h)
+                == tot_recs(tot0, recs@.take(i as int + 1))(p, h) by {
+                lemma_rsum_push(recs@.take(i as int), recs@[i as int], p, h);
+            }
+            lemma_rep_ext(g, tot_plus(cur, recs@[i as int]), tot_recs(tot0, recs@.take(i as int + 1)));
+        }
+        i += 1;
+    }
+    proof { assert(recs@.take(recs.len() as int) =~= recs@); }
+    g
+}
+
+
+/// A shared version of the groups represents what the groups represent.
+pub proof fn lemma_rep_share(g: Index<Index<Cell>>, g2: Index<Index<Cell>>, tot: Tot)
+    requires
+        rep(g, tot),
+        g2.wf(),
+        forall|k: KeyView| #[trigger] g2.at(k) == g.at(k),
+    ensures
+        rep(g2, tot),
+{
+    assert forall|u: Seq<u8>, st: Seq<u8>, sc: int, tl: Option<Seq<u8>>| #[trigger] cell_at(g2, u, st, sc, tl) == cell_at(g, u, st, sc, tl) by {}
+}
+
 }

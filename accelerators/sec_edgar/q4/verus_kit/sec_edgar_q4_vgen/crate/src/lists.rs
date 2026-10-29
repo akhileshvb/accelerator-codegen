@@ -53,10 +53,15 @@ pub fn merge_rows<R: AdshRow>(r1: &Vec<R>, r2: &Vec<R>, aset: &Index<()>, Ghost(
     ensures
         forall|f: spec_fn(R::V) -> int| #[trigger] sum(rows_v(out@), f)
             == sum(rows_v(r1@), f) + sum(rows_v(r2@), |x: R::V| if !kin(a, R::adsh_of(x)) { f(x) } else { 0 }),
+        forall|i: int| 0 <= i < out.len() ==> rows_v(r1@).contains((#[trigger] out@[i]).rv())
+            || (rows_v(r2@).contains(out@[i].rv()) && !kin(a, R::adsh_of(out@[i].rv()))),
 {
     let mut out = dup_rows_of(r1);
     let mut i: usize = 0;
     proof {
+        assert forall|q: int| 0 <= q < out.len() implies rows_v(r1@).contains((#[trigger] out@[q]).rv()) by {
+            assert(rows_v(out@)[q] == out@[q].rv());
+        }
         assert forall|f: spec_fn(R::V) -> int| #[trigger] sum(rows_v(out@), f)
             == sum(rows_v(r1@), f) + sum(rows_v(r2@.take(0)), |x: R::V| if !kin(a, R::adsh_of(x)) { f(x) } else { 0 }) by {
             assert(rows_v(r2@.take(0)) =~= Seq::<R::V>::empty());
@@ -68,6 +73,8 @@ pub fn merge_rows<R: AdshRow>(r1: &Vec<R>, r2: &Vec<R>, aset: &Index<()>, Ghost(
             set_holds(*aset, a),
             forall|f: spec_fn(R::V) -> int| #[trigger] sum(rows_v(out@), f)
                 == sum(rows_v(r1@), f) + sum(rows_v(r2@.take(i as int)), |x: R::V| if !kin(a, R::adsh_of(x)) { f(x) } else { 0 }),
+            forall|q: int| 0 <= q < out.len() ==> rows_v(r1@).contains((#[trigger] out@[q]).rv())
+                || (rows_v(r2@).contains(out@[q].rv()) && !kin(a, R::adsh_of(out@[q].rv()))),
         decreases r2.len() - i,
     {
         let ghost before = out@;
@@ -85,6 +92,13 @@ pub fn merge_rows<R: AdshRow>(r1: &Vec<R>, r2: &Vec<R>, aset: &Index<()>, Ghost(
             out.push(y);
             proof {
                 assert(rows_v(out@) =~= rows_v(before).push(y.rv()));
+                assert(rows_v(r2@)[i as int] == r2@[i as int].rv());
+                assert(rows_v(r2@).contains(r2@[i as int].rv()));
+                assert forall|q: int| 0 <= q < out.len() implies rows_v(r1@).contains((#[trigger] out@[q]).rv())
+                    || (rows_v(r2@).contains(out@[q].rv()) && !kin(a, R::adsh_of(out@[q].rv()))) by {
+                    if q < before.len() { assert(out@[q] == before[q]); }
+                    else { assert(out@[q] == y); }
+                }
                 assert forall|f: spec_fn(R::V) -> int| #[trigger] sum(rows_v(out@), f)
                     == sum(rows_v(r1@), f) + sum(rows_v(r2@.take(i as int + 1)), |x: R::V| if !kin(a, R::adsh_of(x)) { f(x) } else { 0 }) by {
                     lemma_sum_push(rows_v(before), y.rv(), f);
@@ -127,14 +141,18 @@ fn dup_rows_of<R: BagRow>(v: &Vec<R>) -> (out: Vec<R>)
     out
 }
 
+pub open spec fn ones(rows: Seq<NumRow>) -> Seq<(NumRow, int)> {
+    rows.map_values(|x: NumRow| (x, 1int))
+}
+
 /// The rows with sign +1 on each, as a signed list.
 pub fn with_ones(rows: &Vec<NumRt>) -> (nl: Vec<(NumRt, i64)>)
-    ensures nl_view(nl@) == rows_v(rows@).map_values(|x: NumRow| (x, 1int)),
+    ensures nl_view(nl@) == ones(rows_v(rows@)), nl_ok(nl@),
 {
     let mut nl: Vec<(NumRt, i64)> = Vec::new();
     let mut i: usize = 0;
     while i < rows.len()
-        invariant i <= rows.len(), nl_view(nl@) == rows_v(rows@.take(i as int)).map_values(|x: NumRow| (x, 1int)),
+        invariant i <= rows.len(), nl_view(nl@) == ones(rows_v(rows@.take(i as int))), nl_ok(nl@),
         decreases rows.len() - i,
     {
         let r = rows[i].dup();
@@ -147,8 +165,7 @@ pub fn with_ones(rows: &Vec<NumRt>) -> (nl: Vec<(NumRt, i64)>)
         nl.push((r, 1));
         proof {
             assert(nl_view(nl@) =~= before.push((rv_, 1int)));
-            assert(rows_v(rows@.take(i as int + 1)).map_values(|x: NumRow| (x, 1int))
-                =~= rows_v(rows@.take(i as int)).map_values(|x: NumRow| (x, 1int)).push((rv_, 1int)));
+            assert(ones(rows_v(rows@.take(i as int + 1))) =~= ones(rows_v(rows@.take(i as int))).push((rv_, 1int)));
         }
         i += 1;
     }
@@ -158,13 +175,13 @@ pub fn with_ones(rows: &Vec<NumRt>) -> (nl: Vec<(NumRt, i64)>)
 
 /// Σ of a weight-1 list is the sum over the rows.
 pub proof fn lemma_ones_wsum(rows: Seq<NumRow>, f: spec_fn(NumRow) -> int)
-    ensures wsum(rows.map_values(|x: NumRow| (x, 1int)), f) == sum(rows, f),
+    ensures wsum(ones(rows), f) == sum(rows, f),
     decreases rows.len(),
 {
     if rows.len() > 0 {
         let r0 = rows.drop_last();
         lemma_ones_wsum(r0, f);
-        assert(rows.map_values(|x: NumRow| (x, 1int)).drop_last() =~= r0.map_values(|x: NumRow| (x, 1int)));
+        assert(ones(rows).drop_last() =~= ones(r0));
     }
 }
 

@@ -420,4 +420,19 @@ pub proof fn lemma_delta(
     lemma_delta_dn(db, db2, dn, dp, a, g, rtab, p, h);
 }
 
+
+/// The join of a num row over tables with the pre table as the only side.
+pub proof fn lemma_big_psi_single(sub: Seq<SubRow>, tag: Seq<TagRow>, pre: Seq<PreRow>, p: Params, h: spec_fn(JK) -> int, n: NumRow)
+    ensures big_psi(sub, tag, new_sides(pre), p, h, n) == sub_sum4(sub, tag, pre, p, h, n),
+{
+    assert forall|s: SubRow, t: TagRow| #[trigger] pre_sum(pre, p, h, n, s, t) == psum(new_sides(pre), p, h, n, s, t) by {
+        let sd = |x: (Seq<PreRow>, int)| x.1 * pre_sum(x.0, p, h, n, s, t);
+        lemma_sum_singleton((pre, 1int), sd);
+    }
+    assert forall|s: SubRow| #[trigger] tag_sum4(tag, pre, p, h, n, s) == tsum(tag, new_sides(pre), p, h, n, s) by {
+        lemma_sum_ext_all(tag, |t: TagRow| pre_sum(pre, p, h, n, s, t), |t: TagRow| psum(new_sides(pre), p, h, n, s, t));
+    }
+    lemma_sum_ext_all(sub, |s: SubRow| tag_sum4(tag, pre, p, h, n, s), |s: SubRow| tsum(tag, new_sides(pre), p, h, n, s));
+}
+
 }
