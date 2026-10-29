@@ -156,11 +156,11 @@ pub proof fn lemma_nums_aff(db2: Db, keys_a: Seq<Vec<u8>>, rows_a: Seq<NumRt>, k
 }
 
 
-/// The new total is the old total plus the records of the three passes.
+/// The new total is the old total plus the three passes.
 pub proof fn lemma_apply_total(
     db: Db, db2: Db,
     dn: Seq<(NumRow, int)>, dp: Seq<(PreRow, int)>, ds: Seq<(SubRow, int)>, dt: Seq<(TagRow, int)>,
-    a: Seq<Seq<u8>>, g: Seq<Seq<u8>>, nl: Seq<(NumRow, int)>, rtab: Seq<PreRow>, recs: Seq<Rec>,
+    a: Seq<Seq<u8>>, g: Seq<Seq<u8>>, nl: Seq<(NumRow, int)>, rtab: Seq<PreRow>,
 )
     requires
         bag_step(db.num, db2.num, dn),
@@ -176,14 +176,18 @@ pub proof fn lemma_apply_total(
             == sum(db2.num, |n: NumRow| if aff_n(a, g, n) { f(n) } else { 0 }),
         forall|i: int| 0 <= i < nl.len() ==> (#[trigger] nl[i]).1 == 0 || aff_n(a, g, nl[i].0),
         rtab_ok(a, g, db2.pre, rtab),
-        forall|p: Params, h: spec_fn(JK) -> int| #[trigger] rsum(recs, p, h)
-            == passv(nl, db2.sub, db2.tag, new_sides(rtab), p, h)
-                - passv(nl, db.sub, db.tag, old_sides(rtab, dp), p, h)
-                + passv(dn, db.sub, db.tag, old_sides(rtab, dp), p, h),
     ensures
-        forall|p: Params, h: spec_fn(JK) -> int| #[trigger] tot_recs(tot_db(db), recs)(p, h) == tot_db(db2)(p, h),
+        forall|p: Params, h: spec_fn(JK) -> int| #[trigger] tot_db(db)(p, h)
+            + 1int * passv(nl, db2.sub, db2.tag, new_sides(rtab), p, h)
+            + (-1int) * passv(nl, db.sub, db.tag, old_sides(rtab, dp), p, h)
+            + 1int * passv(dn, db.sub, db.tag, old_sides(rtab, dp), p, h)
+            == tot_db(db2)(p, h),
 {
-    assert forall|p: Params, h: spec_fn(JK) -> int| #[trigger] tot_recs(tot_db(db), recs)(p, h) == tot_db(db2)(p, h) by {
+    assert forall|p: Params, h: spec_fn(JK) -> int| #[trigger] tot_db(db)(p, h)
+            + 1int * passv(nl, db2.sub, db2.tag, new_sides(rtab), p, h)
+            + (-1int) * passv(nl, db.sub, db.tag, old_sides(rtab, dp), p, h)
+            + 1int * passv(dn, db.sub, db.tag, old_sides(rtab, dp), p, h)
+            == tot_db(db2)(p, h) by {
         lemma_delta(db, db2, dn, dp, ds, dt, a, g, nl, rtab, p, h);
         lemma_tuple_jsum(db, p, h);
         lemma_tuple_jsum(db2, p, h);

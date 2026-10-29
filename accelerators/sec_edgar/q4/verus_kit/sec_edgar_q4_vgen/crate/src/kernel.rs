@@ -10,6 +10,7 @@ use std::sync::Arc;
 use verus_common::bag::*;
 use verus_common::sums::*;
 use verus_prooflib::ordered::{Index, KeyView};
+use verus_prooflib::wide::Wide;
 use crate::algebra::*;
 use crate::answer::*;
 use crate::applylem::*;
@@ -76,25 +77,135 @@ pub open spec fn tot_zero() -> Tot {
     |p: Params, h: spec_fn(JK) -> int| 0int
 }
 
-/// The total of the records of a pass over the whole database is the tuples' total.
-proof fn lemma_build_total(db: Db, nums: Seq<NumRt>, recs: Seq<Rec>, nl: Seq<(NumRt, i64)>, sides: Seq<Side>)
+/// How many signed rows a batch of records is built from at a time (bounds the records held at once).
+pub const CHUNK: usize = 65536;
+
+pub open spec fn pass_tot(tot0: Tot, nl: Seq<(NumRow, int)>, mult: int, st: Seq<SubRow>, tt: Seq<TagRow>, sides: Sides) -> Tot {
+    |p: Params, h: spec_fn(JK) -> int| tot0(p, h) + mult * passv(nl, st, tt, sides, p, h)
+}
+
+/// The groups with a pass of signed num rows applied, a chunk of rows at a time.
+pub fn run_pass(g0: Index<Index<Cell>>, nl: &Vec<(NumRt, i64)>, mult: i64, sub_bag: &Index<Vec<SubRt>>, tag_bag: &Index<Vec<TagRt>>,
+    sides: &Vec<Side>, pows: &Vec<Wide>, Ghost(st): Ghost<Seq<SubRow>>, Ghost(tt): Ghost<Seq<TagRow>>, Ghost(tot0): Ghost<Tot>)
+    -> (g: Index<Index<Cell>>)
     requires
-        scan_nums_ok(db, nums),
-        nl_view(nl) == ones(rows_v(nums)),
-        sides_spec(sides) == new_sides(db.pre),
-        forall|p: Params, h: spec_fn(JK) -> int| #[trigger] rsum(recs, p, h)
-            == 0 + 1int * passv(nl_view(nl), db.sub, db.tag, sides_spec(sides), p, h),
+        rep(g0, tot0),
+        -1 <= mult <= 1,
+        bag_holds::<SubRt>(*sub_bag, st),
+        bag_holds::<TagRt>(*tag_bag, tt),
+        sides_ok(sides@),
+        pows_ok(pows@),
+        nl_ok(nl@),
     ensures
-        forall|p: Params, h: spec_fn(JK) -> int| #[trigger] tot_recs(tot_zero(), recs)(p, h) == tot_db(db)(p, h),
+        rep(g, pass_tot(tot0, nl_view(nl@), mult as int, st, tt, sides_spec(sides@))),
+{
+    let mut g = g0;
+    let mut i: usize = 0;
+    proof {
+        assert(nl_view(nl@.take(0)) =~= Seq::<(NumRow, int)>::empty());
+        lemma_rep_ext(g, tot0, pass_tot(tot0, nl_view(nl@.take(0)), mult as int, st, tt, sides_spec(sides@)));
+    }
+    while i < nl.len()
+        invariant
+            i <= nl.len(),
+            -1 <= mult <= 1,
+            bag_holds::<SubRt>(*sub_bag, st),
+            bag_holds::<TagRt>(*tag_bag, tt),
+            sides_ok(sides@),
+            pows_ok(pows@),
+            nl_ok(nl@),
+            rep(g, pass_tot(tot0, nl_view(nl@.take(i as int)), mult as int, st, tt, sides_spec(sides@))),
+        decreases nl.len() - i,
+    {
+        let end = if nl.len() - i > CHUNK { i + CHUNK } else { nl.len() };
+        let mut recs: Vec<Rec> = Vec::new();
+        emit_pass(&mut recs, nl, i, end, mult, sub_bag, tag_bag, sides, pows, Ghost(st), Ghost(tt));
+        let ghost cur = pass_tot(tot0, nl_view(nl@.take(i as int)), mult as int, st, tt, sides_spec(sides@));
+        let g1 = apply_recs(g, &recs, Ghost(cur));
+        proof {
+            assert(nl_view(nl@.take(end as int)) =~= nl_view(nl@.take(i as int)) + nl_view(nl@.subrange(i as int, end as int)));
+            assert forall|p: Params, h: spec_fn(JK) -> int| #[trigger] tot_recs(cur, recs@)(p, h)
+                == pass_tot(tot0, nl_view(nl@.take(end as int)), mult as int, st, tt, sides_spec(sides@))(p, h) by {
+                let f = |x: (NumRow, int)| x.1 * big_psi(st, tt, sides_spec(sides@), p, h, x.0);
+                lemma_sum_concat(nl_view(nl@.take(i as int)), nl_view(nl@.subrange(i as int, end as int)), f);
+                assert(mult as int * (passv(nl_view(nl@.take(i as int)), st, tt, sides_spec(sides@), p, h)
+                    + passv(nl_view(nl@.subrange(i as int, end as int)), st, tt, sides_spec(sides@), p, h))
+                    == mult as int * passv(nl_view(nl@.take(i as int)), st, tt, sides_spec(sides@), p, h)
+                        + mult as int * passv(nl_view(nl@.subrange(i as int, end as int)), st, tt, sides_spec(sides@), p, h)) by (nonlinear_arith);
+            }
+            lemma_rep_ext(g1, tot_recs(cur, recs@), pass_tot(tot0, nl_view(nl@.take(end as int)), mult as int, st, tt, sides_spec(sides@)));
+        }
+        g = g1;
+        i = end;
+    }
+    proof { assert(nl@.take(nl.len() as int) =~= nl@); }
+    g
+}
+
+pub open spec fn build_tot(rows: Seq<NumRow>, st: Seq<SubRow>, tt: Seq<TagRow>, sides: Sides) -> Tot {
+    |p: Params, h: spec_fn(JK) -> int| sum(rows, |n: NumRow| big_psi(st, tt, sides, p, h, n))
+}
+
+/// The groups of a whole database: its num rows passed through the join a chunk at a time.
+fn build_groups(nums: &Vec<NumRt>, sub_bag: &Index<Vec<SubRt>>, tag_bag: &Index<Vec<TagRt>>,
+    sides: &Vec<Side>, pows: &Vec<Wide>, Ghost(st): Ghost<Seq<SubRow>>, Ghost(tt): Ghost<Seq<TagRow>>) -> (g: Index<Index<Cell>>)
+    requires
+        bag_holds::<SubRt>(*sub_bag, st),
+        bag_holds::<TagRt>(*tag_bag, tt),
+        sides_ok(sides@),
+        pows_ok(pows@),
+    ensures
+        rep(g, build_tot(rows_v(nums@), st, tt, sides_spec(sides@))),
+{
+    let mut g: Index<Index<Cell>> = Index::new();
+    let mut i: usize = 0;
+    proof {
+        assert(rows_v(nums@.take(0)) =~= Seq::<NumRow>::empty());
+        assert forall|u: Seq<u8>, stm: Seq<u8>, sc: int, tl: Option<Seq<u8>>| #[trigger] cell_at(g, u, stm, sc, tl) is None implies
+            zero_rep(tot_zero(), u, stm, sc, tl) by {}
+        assert forall|p: Params, h: spec_fn(JK) -> int| #[trigger] build_tot(rows_v(nums@.take(0)), st, tt, sides_spec(sides@))(p, h) == tot_zero()(p, h) by {}
+        lemma_rep_ext(g, tot_zero(), build_tot(rows_v(nums@.take(0)), st, tt, sides_spec(sides@)));
+    }
+    while i < nums.len()
+        invariant
+            i <= nums.len(),
+            bag_holds::<SubRt>(*sub_bag, st),
+            bag_holds::<TagRt>(*tag_bag, tt),
+            sides_ok(sides@),
+            pows_ok(pows@),
+            rep(g, build_tot(rows_v(nums@.take(i as int)), st, tt, sides_spec(sides@))),
+        decreases nums.len() - i,
+    {
+        let end = if nums.len() - i > CHUNK { i + CHUNK } else { nums.len() };
+        let mut recs: Vec<Rec> = Vec::new();
+        emit_rows(&mut recs, nums, i, end, sub_bag, tag_bag, sides, pows, Ghost(st), Ghost(tt));
+        let ghost cur = build_tot(rows_v(nums@.take(i as int)), st, tt, sides_spec(sides@));
+        let g1 = apply_recs(g, &recs, Ghost(cur));
+        proof {
+            assert(rows_v(nums@.take(end as int)) =~= rows_v(nums@.take(i as int)) + rows_v(nums@.subrange(i as int, end as int)));
+            assert forall|p: Params, h: spec_fn(JK) -> int| #[trigger] tot_recs(cur, recs@)(p, h)
+                == build_tot(rows_v(nums@.take(end as int)), st, tt, sides_spec(sides@))(p, h) by {
+                lemma_sum_concat(rows_v(nums@.take(i as int)), rows_v(nums@.subrange(i as int, end as int)),
+                    |n: NumRow| big_psi(st, tt, sides_spec(sides@), p, h, n));
+            }
+            lemma_rep_ext(g1, tot_recs(cur, recs@), build_tot(rows_v(nums@.take(end as int)), st, tt, sides_spec(sides@)));
+        }
+        g = g1;
+        i = end;
+    }
+    proof { assert(nums@.take(nums.len() as int) =~= nums@); }
+    g
+}
+
+/// The build's total is the tuples' total.
+proof fn lemma_build_total(db: Db, nums: Seq<NumRt>)
+    requires scan_nums_ok(db, nums),
+    ensures
+        forall|p: Params, h: spec_fn(JK) -> int| #[trigger] build_tot(rows_v(nums), db.sub, db.tag, new_sides(db.pre))(p, h) == tot_db(db)(p, h),
 {
     assert(rows_v(nums) =~= num_rt_seq_view(nums));
-    assert forall|p: Params, h: spec_fn(JK) -> int| #[trigger] tot_recs(tot_zero(), recs)(p, h) == tot_db(db)(p, h) by {
+    assert forall|p: Params, h: spec_fn(JK) -> int| #[trigger] build_tot(rows_v(nums), db.sub, db.tag, new_sides(db.pre))(p, h) == tot_db(db)(p, h) by {
         let f = |n: NumRow| big_psi(db.sub, db.tag, new_sides(db.pre), p, h, n);
-        lemma_ones_wsum(rows_v(nums), f);
-        assert(passv(nl_view(nl), db.sub, db.tag, sides_spec(sides), p, h) == wsum(ones(rows_v(nums)), f)) by {
-            lemma_sum_ext_all(ones(rows_v(nums)), |x: (NumRow, int)| x.1 * big_psi(db.sub, db.tag, new_sides(db.pre), p, h, x.0),
-                |x: (NumRow, int)| x.1 * f(x.0));
-        }
         assert(sum(num_rt_seq_view(nums), f) == sum(db.num, f));
         assert forall|n: NumRow| #[trigger] f(n) == sub_sum4(db.sub, db.tag, db.pre, p, h, n) by {
             lemma_big_psi_single(db.sub, db.tag, db.pre, p, h, n);
@@ -136,23 +247,13 @@ pub fn build(
         lemma_bag_holds_transfer::<PreRt>(pre_bag, rows_v(pres@), db.pre);
     }
     let consts = Arc::new(consts_new());
-    let nl = with_ones(&nums);
     let mut sides: Vec<Side> = Vec::new();
     sides.push(Side { idx: pre_bag, b: 1, tab: Ghost(db.pre) });
-    let mut recs: Vec<Rec> = Vec::new();
-    emit_pass(&mut recs, &nl, 1, &sub_bag, &tag_bag, &sides, &consts.pows, Ghost(db.sub), Ghost(db.tag));
+    proof { assert(sides_spec(sides@) =~= new_sides(db.pre)); }
+    let groups = build_groups(&nums, &sub_bag, &tag_bag, &sides, &consts.pows, Ghost(db.sub), Ghost(db.tag));
     proof {
-        assert(sides_spec(sides@) =~= new_sides(db.pre));
-        lemma_build_total(db, nums@, recs@, nl@, sides@);
-    }
-    let g0: Index<Index<Cell>> = Index::new();
-    proof {
-        assert forall|u: Seq<u8>, st: Seq<u8>, sc: int, tl: Option<Seq<u8>>| #[trigger] cell_at(g0, u, st, sc, tl) is None implies
-            zero_rep(tot_zero(), u, st, sc, tl) by {}
-    }
-    let groups = apply_recs(g0, &recs, Ghost(tot_zero()));
-    proof {
-        lemma_rep_ext(groups, tot_recs(tot_zero(), recs@), tot_db(db));
+        lemma_build_total(db, nums@);
+        lemma_rep_ext(groups, build_tot(rows_v(nums@), db.sub, db.tag, sides_spec(sides@)), tot_db(db));
     }
     Some(State { subs: sub_bag, tags: tag_bag, groups, consts, db: Ghost(db) })
 }
@@ -309,22 +410,27 @@ pub fn apply(
             }
         }
     }
-    let mut recs: Vec<Rec> = Vec::new();
-    emit_pass(&mut recs, &nl, 1, &subs2, &tags2, &sides_new, &s.consts.pows, Ghost(db2.sub), Ghost(db2.tag));
-    emit_pass(&mut recs, &nl, -1, &s.subs, &s.tags, &sides_old, &s.consts.pows, Ghost(db.sub), Ghost(db.tag));
-    emit_pass(&mut recs, &dn, 1, &s.subs, &s.tags, &sides_old, &s.consts.pows, Ghost(db.sub), Ghost(db.tag));
+    let shared = s.groups.share();
+    proof { lemma_rep_share(s.groups, shared, tot_db(db)); }
+    let ghost nlv = nl_view(nl@);
+    let ghost dnv = nl_view(dn@);
+    let ghost ssn = sides_spec(sides_new@);
+    let ghost sso = sides_spec(sides_old@);
+    let g1 = run_pass(shared, &nl, 1, &subs2, &tags2, &sides_new, &s.consts.pows, Ghost(db2.sub), Ghost(db2.tag), Ghost(tot_db(db)));
+    let ghost t1 = pass_tot(tot_db(db), nlv, 1, db2.sub, db2.tag, ssn);
+    let g2 = run_pass(g1, &nl, -1, &s.subs, &s.tags, &sides_old, &s.consts.pows, Ghost(db.sub), Ghost(db.tag), Ghost(t1));
+    let ghost t2 = pass_tot(t1, nlv, -1, db.sub, db.tag, sso);
+    let groups = run_pass(g2, &dn, 1, &s.subs, &s.tags, &sides_old, &s.consts.pows, Ghost(db.sub), Ghost(db.tag), Ghost(t2));
     proof {
         lemma_wanted_covers(num_delta@, pre_delta@, sub_delta@, tag_delta@);
         lemma_nums_cover(db2, nums_by_adsh_keys@, nums_by_adsh_rows@, nums_by_tag_keys@, nums_by_tag_rows@, nums_all@);
         lemma_pres_cover(db2, pres_by_adsh_keys@, pres_by_adsh_rows@, pres_by_tag_keys@, pres_by_tag_rows@, pres_all@);
         lemma_nums_aff(db2, nums_by_adsh_keys@, nums_by_adsh_rows@, nums_by_tag_keys@, nums_by_tag_rows@, nums_all@);
-        assert(num_delta_seq_view(num_delta@) == dview(dn@));
-        lemma_apply_total(db, db2, dview(dn@), dview(dp@), dview(ds@), dview(dt@), a, g, nl_view(nl@), rtab, recs@);
+        lemma_apply_total(db, db2, dview(dn@), dview(dp@), dview(ds@), dview(dt@), a, g, nlv, rtab);
+        let t3 = pass_tot(t2, dnv, 1, db.sub, db.tag, sso);
+        assert forall|p: Params, h: spec_fn(JK) -> int| #[trigger] t3(p, h) == tot_db(db2)(p, h) by {}
+        lemma_rep_ext(groups, t3, tot_db(db2));
     }
-    let shared = s.groups.share();
-    proof { lemma_rep_share(s.groups, shared, tot_db(db)); }
-    let groups = apply_recs(shared, &recs, Ghost(tot_db(db)));
-    proof { lemma_rep_ext(groups, tot_recs(tot_db(db), recs@), tot_db(db2)); }
     Ok(State { subs: subs2, tags: tags2, groups, consts: s.consts.clone(), db: Ghost(db2) })
 }
 

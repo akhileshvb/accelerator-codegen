@@ -654,10 +654,12 @@ pub open spec fn nl_ok(nl: Seq<(NumRt, i64)>) -> bool {
     forall|i: int| 0 <= i < nl.len() ==> (#[trigger] nl[i]).1 == 1 || nl[i].1 == -1
 }
 
-/// The records of a pass of signed num rows, times mult.
-pub fn emit_pass(out: &mut Vec<Rec>, nl: &Vec<(NumRt, i64)>, mult: i64, sub_bag: &Index<Vec<SubRt>>, tag_bag: &Index<Vec<TagRt>>,
+/// The records of the signed num rows from..to, times mult.
+pub fn emit_pass(out: &mut Vec<Rec>, nl: &Vec<(NumRt, i64)>, from: usize, to: usize, mult: i64,
+    sub_bag: &Index<Vec<SubRt>>, tag_bag: &Index<Vec<TagRt>>,
     sides: &Vec<Side>, pows: &Vec<Wide>, Ghost(st): Ghost<Seq<SubRow>>, Ghost(tt): Ghost<Seq<TagRow>>)
     requires
+        from <= to <= nl.len(),
         -1 <= mult <= 1,
         bag_holds::<SubRt>(*sub_bag, st),
         bag_holds::<TagRt>(*tag_bag, tt),
@@ -666,19 +668,19 @@ pub fn emit_pass(out: &mut Vec<Rec>, nl: &Vec<(NumRt, i64)>, mult: i64, sub_bag:
         nl_ok(nl@),
     ensures
         forall|p: Params, h: spec_fn(JK) -> int| #[trigger] rsum(final(out)@, p, h)
-            == rsum(old(out)@, p, h) + mult as int * passv(nl_view(nl@), st, tt, sides_spec(sides@), p, h),
+            == rsum(old(out)@, p, h) + mult as int * passv(nl_view(nl@.subrange(from as int, to as int)), st, tt, sides_spec(sides@), p, h),
 {
     let ghost start = out@;
-    let mut i: usize = 0;
+    let mut i: usize = from;
     proof {
         assert forall|p: Params, h: spec_fn(JK) -> int| #[trigger] rsum(out@, p, h)
-            == rsum(start, p, h) + mult as int * passv(nl_view(nl@.take(0)), st, tt, sides_spec(sides@), p, h) by {
-            assert(nl_view(nl@.take(0)) =~= Seq::<(NumRow, int)>::empty());
+            == rsum(start, p, h) + mult as int * passv(nl_view(nl@.subrange(from as int, from as int)), st, tt, sides_spec(sides@), p, h) by {
+            assert(nl_view(nl@.subrange(from as int, from as int)) =~= Seq::<(NumRow, int)>::empty());
         }
     }
-    while i < nl.len()
+    while i < to
         invariant
-            i <= nl.len(),
+            from <= i <= to <= nl.len(),
             -1 <= mult <= 1,
             bag_holds::<SubRt>(*sub_bag, st),
             bag_holds::<TagRt>(*tag_bag, tt),
@@ -686,20 +688,21 @@ pub fn emit_pass(out: &mut Vec<Rec>, nl: &Vec<(NumRt, i64)>, mult: i64, sub_bag:
             pows_ok(pows@),
             nl_ok(nl@),
             forall|p: Params, h: spec_fn(JK) -> int| #[trigger] rsum(out@, p, h)
-                == rsum(start, p, h) + mult as int * passv(nl_view(nl@.take(i as int)), st, tt, sides_spec(sides@), p, h),
-        decreases nl.len() - i,
+                == rsum(start, p, h) + mult as int * passv(nl_view(nl@.subrange(from as int, i as int)), st, tt, sides_spec(sides@), p, h),
+        decreases to - i,
     {
         proof { assert(nl@[i as int].1 == 1 || nl@[i as int].1 == -1); }
         let a = nl[i].1;
         let c: i128 = if a == 1 { mult as i128 } else { -(mult as i128) };
         emit_num(out, c, &nl[i].0, sub_bag, tag_bag, sides, pows, Ghost(st), Ghost(tt));
         proof {
-            assert(nl@.take(i as int + 1) =~= nl@.take(i as int).push(nl@[i as int]));
-            assert(nl_view(nl@.take(i as int + 1)) =~= nl_view(nl@.take(i as int)).push((nl@[i as int].0.rv(), a as int)));
+            assert(nl@.subrange(from as int, i as int + 1) =~= nl@.subrange(from as int, i as int).push(nl@[i as int]));
+            assert(nl_view(nl@.subrange(from as int, i as int + 1))
+                =~= nl_view(nl@.subrange(from as int, i as int)).push((nl@[i as int].0.rv(), a as int)));
             assert forall|p: Params, h: spec_fn(JK) -> int| #[trigger] rsum(out@, p, h)
-                == rsum(start, p, h) + mult as int * passv(nl_view(nl@.take(i as int + 1)), st, tt, sides_spec(sides@), p, h) by {
+                == rsum(start, p, h) + mult as int * passv(nl_view(nl@.subrange(from as int, i as int + 1)), st, tt, sides_spec(sides@), p, h) by {
                 let g = |x: (NumRow, int)| x.1 * big_psi(st, tt, sides_spec(sides@), p, h, x.0);
-                let prefix = nl_view(nl@.take(i as int));
+                let prefix = nl_view(nl@.subrange(from as int, i as int));
                 lemma_sum_push(prefix, (nl@[i as int].0.rv(), a as int), g);
                 let bp = big_psi(st, tt, sides_spec(sides@), p, h, nl@[i as int].0.rv());
                 assert(c as int == mult as int * a as int);
@@ -710,7 +713,57 @@ pub fn emit_pass(out: &mut Vec<Rec>, nl: &Vec<(NumRt, i64)>, mult: i64, sub_bag:
         }
         i += 1;
     }
-    proof { assert(nl@.take(nl.len() as int) =~= nl@); }
+}
+
+/// The records of the num rows from..to (sign +1), against the sub and tag tables and the sides.
+pub fn emit_rows(out: &mut Vec<Rec>, rows: &Vec<NumRt>, from: usize, to: usize,
+    sub_bag: &Index<Vec<SubRt>>, tag_bag: &Index<Vec<TagRt>>,
+    sides: &Vec<Side>, pows: &Vec<Wide>, Ghost(st): Ghost<Seq<SubRow>>, Ghost(tt): Ghost<Seq<TagRow>>)
+    requires
+        from <= to <= rows.len(),
+        bag_holds::<SubRt>(*sub_bag, st),
+        bag_holds::<TagRt>(*tag_bag, tt),
+        sides_ok(sides@),
+        pows_ok(pows@),
+    ensures
+        forall|p: Params, h: spec_fn(JK) -> int| #[trigger] rsum(final(out)@, p, h)
+            == rsum(old(out)@, p, h) + sum(rows_v(rows@.subrange(from as int, to as int)),
+                |n: NumRow| big_psi(st, tt, sides_spec(sides@), p, h, n)),
+{
+    let ghost start = out@;
+    let mut i: usize = from;
+    proof {
+        assert forall|p: Params, h: spec_fn(JK) -> int| #[trigger] rsum(out@, p, h)
+            == rsum(start, p, h) + sum(rows_v(rows@.subrange(from as int, from as int)),
+                |n: NumRow| big_psi(st, tt, sides_spec(sides@), p, h, n)) by {
+            assert(rows_v(rows@.subrange(from as int, from as int)) =~= Seq::<NumRow>::empty());
+        }
+    }
+    while i < to
+        invariant
+            from <= i <= to <= rows.len(),
+            bag_holds::<SubRt>(*sub_bag, st),
+            bag_holds::<TagRt>(*tag_bag, tt),
+            sides_ok(sides@),
+            pows_ok(pows@),
+            forall|p: Params, h: spec_fn(JK) -> int| #[trigger] rsum(out@, p, h)
+                == rsum(start, p, h) + sum(rows_v(rows@.subrange(from as int, i as int)),
+                    |n: NumRow| big_psi(st, tt, sides_spec(sides@), p, h, n)),
+        decreases to - i,
+    {
+        emit_num(out, 1, &rows[i], sub_bag, tag_bag, sides, pows, Ghost(st), Ghost(tt));
+        proof {
+            assert(rows@.subrange(from as int, i as int + 1) =~= rows@.subrange(from as int, i as int).push(rows@[i as int]));
+            assert(rows_v(rows@.subrange(from as int, i as int + 1)) =~= rows_v(rows@.subrange(from as int, i as int)).push(rows@[i as int].rv()));
+            assert forall|p: Params, h: spec_fn(JK) -> int| #[trigger] rsum(out@, p, h)
+                == rsum(start, p, h) + sum(rows_v(rows@.subrange(from as int, i as int + 1)),
+                    |n: NumRow| big_psi(st, tt, sides_spec(sides@), p, h, n)) by {
+                lemma_sum_push(rows_v(rows@.subrange(from as int, i as int)), rows@[i as int].rv(),
+                    |n: NumRow| big_psi(st, tt, sides_spec(sides@), p, h, n));
+            }
+        }
+        i += 1;
+    }
 }
 
 }
