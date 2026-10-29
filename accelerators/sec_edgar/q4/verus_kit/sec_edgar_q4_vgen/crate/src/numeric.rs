@@ -35,11 +35,10 @@ pub fn pows_new() -> (t: Vec<Wide>)
     t
 }
 
-/// The exact value of finite bits.
+/// The exact value of bits (the spec's value, for NaN and infinity too).
 pub fn wide_of_bits(bits: u64, t: &Vec<Wide>) -> (w: Wide)
     requires
         pows_ok(t@),
-        f64_finite(bits),
     ensures
         w@ == f64_val(bits),
 {
@@ -52,6 +51,9 @@ pub fn wide_of_bits(bits: u64, t: &Vec<Wide>) -> (w: Wide)
         assert(e as int == (bits as int / pow2(52)) % 2048);
         assert(sign as int == bits as int / pow2(63));
         assert(f64_exp(bits) == e as int);
+    }
+    if e == 2047 {
+        return t[2098].dup();
     }
     let mant: u64 = if e == 0 { frac } else { frac + 0x10_0000_0000_0000u64 };
     let shift: usize = if e == 0 { 0 } else { (e - 1) as usize };
