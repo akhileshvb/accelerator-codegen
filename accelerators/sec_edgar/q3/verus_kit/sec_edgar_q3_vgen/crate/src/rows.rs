@@ -124,4 +124,17 @@ impl BagRow for NumRt {
     }
 }
 
+impl Keyed for NumRt {
+    open spec fn vkey(v: NumRow) -> Option<KeyView> {
+        match v.adsh {
+            Some(a) => Some(key1(a)),
+            None => None,
+        }
+    }
+
+    fn key(&self) -> (k: Option<Key>) {
+        if self.adsh__null != 0 { None } else { Some(make_key1(self.adsh.as_slice())) }
+    }
+}
+
 }
