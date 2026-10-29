@@ -79,6 +79,12 @@ pub fn sub_bag_apply(sb: &mut Index<Vec<WRow>>, sd: &Vec<SubDelta>, Ghost(tab): 
     proof { assert(view.take(sd.len() as int) =~= view); }
 }
 
+pub proof fn lemma_empty_ddm(dm: Index<DCls>)
+    requires dm.wf(), forall|k: KeyView| #[trigger] dm.at(k) is None,
+    ensures ddm_ok(dm, Seq::empty()),
+{
+}
+
 proof fn lemma_key1_inj(a: Seq<u8>, b: Seq<u8>)
     requires key1(a) == key1(b),
     ensures a == b,
@@ -135,10 +141,10 @@ pub fn apply_core(classes: &Index<Class>, subs: &Index<Vec<WRow>>, c: &Consts, n
         agg_ok(r.0, db2),
         wbag_as(r.1, phi_tab(db2.sub)),
 {
-    let mut bt = batch_new();
-    let Ghost(l1) = stage_n(&mut bt, nd, subs, &c.pows, Ghost(db.sub));
-    let Ghost(l) = stage_s(&mut bt, sd, nb, &c.pows, Ghost(l1), Ghost(db2.num));
-    let dm = batch_finish(bt);
+    let mut dm: Index<DCls> = Index::new();
+    proof { lemma_empty_ddm(dm); }
+    let Ghost(l1) = stage_n(&mut dm, nd, subs, &c.pows, Ghost(db.sub));
+    let Ghost(l) = stage_s(&mut dm, sd, nb, &c.pows, Ghost(l1), Ghost(db2.num));
     proof {
         assert forall|p: Params, h: spec_fn(JK) -> int| #[trigger] lsum(l, p, h)
             == left_join_delta(num_delta_seq_view(nd@), db.sub, wt(p, h)) + right_join_delta(db2.num, sub_delta_seq_view(sd@), wt(p, h)) by {
