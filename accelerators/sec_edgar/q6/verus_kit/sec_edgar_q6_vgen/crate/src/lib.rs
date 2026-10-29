@@ -41,3 +41,4 @@ pub mod kept;
 pub mod evict;
 pub mod cnt;
 pub mod place;
+pub mod trim;
