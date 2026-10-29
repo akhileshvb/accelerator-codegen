@@ -1,0 +1,6 @@
+-- Kernel inputs for SEC-EDGAR Q1: per-row old/new values give every additive contribution, so no rescan is needed.
+scan pre_build AS PreInput:
+  SELECT adsh, stmt, rfile, line FROM pre;
+
+delta pre AS PreDelta OF PreInput:
+  SELECT adsh, stmt, rfile, line FROM pre;
