@@ -352,4 +352,73 @@ pub proof fn lemma_qj_norm(db: Db, p: Params, inner: bool, gn: Option<Seq<u8>>, 
     lemma_gh_ext(inner, gn, gn2, gc, fm());
 }
 
+
+proof fn lemma_tuple_where(db: Db, p: Params, t: Tuple)
+    requires tuples(db, p).contains(t),
+    ensures where_clause(db, p, t.n, t.s_),
+{
+    let ms = db.num.map_values(|n: NumRow| tuples_1(db, p, n));
+    lemma_flat_contains(ms, t);
+    let i = choose|i: int| 0 <= i < ms.len() && (#[trigger] ms[i]).contains(t);
+    let n = db.num[i];
+    assert(ms[i] == tuples_1(db, p, n));
+    let ss = db.sub.map_values(|s: SubRow| tuples_2(db, p, n, s));
+    lemma_flat_contains(ss, t);
+    let j = choose|j: int| 0 <= j < ss.len() && (#[trigger] ss[j]).contains(t);
+    assert(ss[j] == tuples_2(db, p, n, db.sub[j]));
+}
+
+proof fn lemma_avg_tuple_where(db: Db, p: Params, t: AvgSubTuple)
+    requires avg_sub_tuples(db, p).contains(t),
+    ensures avg_sub_where_clause(db, p, t.n2, t.s2),
+{
+    let ms = db.num.map_values(|n: NumRow| avg_sub_tuples_1(db, p, n));
+    lemma_flat_contains(ms, t);
+    let i = choose|i: int| 0 <= i < ms.len() && (#[trigger] ms[i]).contains(t);
+    let n = db.num[i];
+    assert(ms[i] == avg_sub_tuples_1(db, p, n));
+    let ss = db.sub.map_values(|s: SubRow| avg_sub_tuples_2(db, p, n, s));
+    lemma_flat_contains(ss, t);
+    let j = choose|j: int| 0 <= j < ss.len() && (#[trigger] ss[j]).contains(t);
+    assert(ss[j] == avg_sub_tuples_2(db, p, n, db.sub[j]));
+}
+
+/// Every tuple has a value, so counting tuples counts values.
+pub proof fn lemma_count_vs(db: Db, p: Params, gn: Option<Seq<u8>>, gc: Option<int>)
+    ensures
+        group_count(db, p, gn, gc) == group_sum(db, p, gn, gc, tup_vs()),
+        avg_sub_group_count(db, p, gc) == avg_sub_group_sum(db, p, gc, avg_vs()),
+{
+    let tup = tuples(db, p);
+    assert forall|i: int| 0 <= i < tup.len() implies
+        (|t: Tuple| if t.s_.name == gn && t.s_.cik == gc { 1int } else { 0int })(#[trigger] tup[i])
+        == (|t: Tuple| if t.s_.name == gn && t.s_.cik == gc { tup_vs()(t) } else { 0int })(tup[i]) by {
+        assert(tup.contains(tup[i]));
+        lemma_tuple_where(db, p, tup[i]);
+    }
+    lemma_sum_ext(tup, |t: Tuple| if t.s_.name == gn && t.s_.cik == gc { 1int } else { 0int },
+        |t: Tuple| if t.s_.name == gn && t.s_.cik == gc { tup_vs()(t) } else { 0int });
+    let av = avg_sub_tuples(db, p);
+    assert forall|i: int| 0 <= i < av.len() implies
+        (|t: AvgSubTuple| if t.s2.cik == gc { 1int } else { 0int })(#[trigger] av[i])
+        == (|t: AvgSubTuple| if t.s2.cik == gc { avg_vs()(t) } else { 0int })(av[i]) by {
+        assert(av.contains(av[i]));
+        lemma_avg_tuple_where(db, p, av[i]);
+    }
+    lemma_sum_ext(av, |t: AvgSubTuple| if t.s2.cik == gc { 1int } else { 0int },
+        |t: AvgSubTuple| if t.s2.cik == gc { avg_vs()(t) } else { 0int });
+}
+
+/// A group's count is within its company's.
+pub proof fn lemma_group_le_company(db: Db, p: Params, gn: Option<Seq<u8>>, gc: Option<int>)
+    ensures qj(db, p, false, gn, gc).n <= qj(db, p, true, None, gc).n,
+{
+    let hout = gh(false, gn, gc, fvs());
+    let hin = gh(true, None, gc, fvs());
+    lemma_jq_tuples(db, p, hout);
+    lemma_jq_tuples(db, p, hin);
+    assert forall|t: Tuple| #[trigger] hout(pj(t)) <= hin(pj(t)) by {}
+    lemma_sum_le(tuples(db, p), |tp: Tuple| hout(pj(tp)), |tp: Tuple| hin(pj(tp)));
+}
+
 }

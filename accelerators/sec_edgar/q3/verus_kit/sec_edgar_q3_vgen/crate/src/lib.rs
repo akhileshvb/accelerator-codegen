@@ -16,6 +16,8 @@ pub mod wbag;
 pub mod dmap;
 pub mod stagea;
 pub mod merge;
+pub mod fin;
+pub mod choice;
 pub mod bucket;
 pub mod keys;
 pub mod rows;
