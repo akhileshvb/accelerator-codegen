@@ -19,6 +19,7 @@ use crate::wideval::*;
 use crate::glue_proofs::*;
 use crate::lists::*;
 use crate::rep::*;
+use crate::rank::*;
 
 verus! {
 
@@ -35,8 +36,16 @@ pub open spec fn state_ok(groups: GMap, tab: Pow2Tab, db: Db) -> bool {
     &&& state_vals(groups, db)
 }
 
+/// The rank index, when kept, lists every group by the answer's order.
+pub open spec fn rank_state_ok(groups: GMap, rank: GMap, ranked: bool) -> bool {
+    &&& nm_ok(rank)
+    &&& ranked ==> rank_ok(groups, rank)
+}
+
 pub struct State {
     groups: GMap,
+    rank: GMap,
+    ranked: bool,
     tab: Arc<Pow2Tab>,
     db: Ghost<Db>,
 }
@@ -48,7 +57,8 @@ impl State {
 
     #[verifier::type_invariant]
     closed spec fn valid(self) -> bool {
-        state_ok(self.groups, *self.tab, self.db@)
+        &&& state_ok(self.groups, *self.tab, self.db@)
+        &&& rank_state_ok(self.groups, self.rank, self.ranked)
     }
 }
 
@@ -153,6 +163,8 @@ proof fn lemma_apply_acc(db: Db, db2: Db, dn: Seq<(NumRow, int)>, ds: Seq<(SubRo
     }
 }
 
+#[verifier::spinoff_prover]
+#[verifier::rlimit(300)]
 pub fn apply(
     s: &State,
     num_delta: &Vec<NumDelta>,
@@ -234,8 +246,13 @@ pub fn apply(
     let ghost acc1 = acc;
     join_lists(&s.tab, &mut acc, &l1n, &l1s, &l1p, -1);
     let mut groups = s.groups.share();
+    let mut rank = s.rank.share();
+    let mut ranked = s.ranked;
     let ghost g0 = groups;
+    let ghost r0 = rank;
     proof {
+        assert forall|ok: KeyView| #![trigger r0.at(ok)] r0.at(ok) == s.rank.at(ok) by {}
+        assert forall|ok: KeyView, rk: KeyView| #![trigger gm_at(r0, ok, rk)] gm_at(r0, ok, rk) == gm_at(s.rank, ok, rk) by {}
         assert forall|ok: KeyView| #![trigger g0.at(ok)] g0.at(ok) == s.groups.at(ok) by {}
         assert forall|k: GK| #![trigger gv_c(g0, k)] gv_c(g0, k) == gv_c(s.groups, k) && gv_s(g0, k) == gv_s(s.groups, k) by {}
         assert(gm_ok(g0) && pos_ok(g0)) by {
@@ -249,10 +266,17 @@ pub fn apply(
             num_delta_seq_view(l2n@), sub_delta_seq_view(l2s@), pre_delta_seq_view(l2p@),
             num_delta_seq_view(l1n@), sub_delta_seq_view(l1s@), pre_delta_seq_view(l1p@),
             num_delta_seq_view(l1n0), sub_delta_seq_view(l1s0), pre_delta_seq_view(l1p0), acc0, acc1, acc);
-        assert forall|k: GK| #![trigger gv_c(g0, k)] gv_c(g0, k) + acc_c(acc, k) >= 0 by { lemma_cnt_facts(db2, k); }
-        assert forall|k: GK| #![trigger gv_c(g0, k)] gv_c(g0, k) + acc_c(acc, k) == 0 ==> gv_s(g0, k) + acc_s(acc, k) == 0 by { lemma_cnt_facts(db2, k); }
+        assert forall|ok: KeyView, ik: KeyView| #![trigger gm_at(g0, ok, ik)] gm_at(g0, ok, ik) == gm_at(s.groups, ok, ik) by {}
+        assert(rank_state_ok(g0, r0, s.ranked)) by {
+            if s.ranked { lemma_rank_ok_ext(s.groups, g0, s.rank, r0); }
+        }
+        assert forall|k: GK| #![trigger gv_c(g0, k)] gv_c(g0, k) + acc_c(acc, k) == cntk(db2, k) by {}
+        assert forall|k: GK| #![trigger gv_s(g0, k)] gv_s(g0, k) + acc_s(acc, k) == sumk(db2, k) by {
+            assert(gv_s(g0, k) == gv_s(s.groups, k));
+            assert(gv_s(s.groups, k) == sumk(db, k));
+        }
     }
-    merge_acc(&mut groups, &acc);
+    merge_acc(&mut groups, &mut rank, &mut ranked, &acc, &s.tab, Ghost(db2));
     let tab = s.tab.clone();
     proof {
         assert forall|k: GK| #![trigger gv_c(groups, k)] gv_c(groups, k) == cntk(db2, k) by {
@@ -263,7 +287,7 @@ pub fn apply(
         }
         assert(state_vals(groups, db2));
     }
-    Ok(State { groups, tab, db: Ghost(db2) })
+    Ok(State { groups, rank, ranked, tab, db: Ghost(db2) })
 }
 
 
@@ -291,6 +315,8 @@ pub fn build(
     proof { assert(acc_ok(acc)); }
     join_lists(&tab, &mut acc, &ln, &ls, &lp, 1);
     let mut groups: GMap = Index::new();
+    let mut rank: GMap = Index::new();
+    let mut ranked = true;
     let ghost g0 = groups;
     proof {
         lemma_rep_scan(db, nums@);
@@ -305,17 +331,18 @@ pub fn build(
             assert(acc_s(acc0, k) == 0);
         }
         assert forall|k: GK| #![trigger gv_c(g0, k)] gv_c(g0, k) == 0 && gv_s(g0, k) == 0 by {}
-        assert forall|k: GK| #![trigger gv_c(g0, k)] gv_c(g0, k) + acc_c(acc, k) >= 0 by { lemma_cnt_facts(db, k); }
-        assert forall|k: GK| #![trigger gv_c(g0, k)] gv_c(g0, k) + acc_c(acc, k) == 0 ==> gv_s(g0, k) + acc_s(acc, k) == 0 by { lemma_cnt_facts(db, k); }
+        assert forall|k: GK| #![trigger gv_c(g0, k)] gv_c(g0, k) + acc_c(acc, k) == cntk(db, k) by {}
+        assert forall|k: GK| #![trigger gv_s(g0, k)] gv_s(g0, k) + acc_s(acc, k) == sumk(db, k) by {}
         assert(gm_ok(g0) && pos_ok(g0));
+        assert(nm_ok(rank) && rank_ok(g0, rank));
     }
-    merge_acc(&mut groups, &acc);
+    merge_acc(&mut groups, &mut rank, &mut ranked, &acc, &tab, Ghost(db));
     proof {
         assert forall|k: GK| #![trigger gv_c(groups, k)] gv_c(groups, k) == cntk(db, k) by {}
         assert forall|k: GK| #![trigger gv_s(groups, k)] gv_s(groups, k) == sumk(db, k) by {}
         assert(state_vals(groups, db));
     }
-    Some(State { groups, tab, db: Ghost(db) })
+    Some(State { groups, rank, ranked, tab, db: Ghost(db) })
 }
 
 pub fn execute(

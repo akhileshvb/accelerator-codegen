@@ -333,4 +333,131 @@ pub proof fn lemma_clear_sign(x: u64)
     }
 }
 
+
+/// The fields of a double are determined by its magnitude bits.
+proof fn lemma_fields_unique(a: u64, b: u64)
+    requires
+        f64_mag_bits(a) == f64_mag_bits(b),
+    ensures
+        f64_exp(a) == f64_exp(b),
+        f64_frac(a) == f64_frac(b),
+{
+    lemma_pow2_consts();
+    lemma_decompose(a);
+    lemma_decompose(b);
+    let p = pow2(52);
+    let (ea, eb, fa, fb) = (f64_exp(a), f64_exp(b), f64_frac(a), f64_frac(b));
+    assert(ea == eb && fa == fb) by (nonlinear_arith)
+        requires ea * p + fa == eb * p + fb, 0 <= fa < p, 0 <= fb < p, p > 0;
+}
+
+/// A larger magnitude-bit pattern is a larger magnitude.
+pub proof fn lemma_mag_lt(a: u64, b: u64)
+    requires
+        f64_finite(a),
+        f64_finite(b),
+        f64_mag_bits(a) < f64_mag_bits(b),
+    ensures
+        f64_mag(a) < f64_mag(b),
+{
+    lemma_pow2_consts();
+    lemma_decompose(a);
+    lemma_decompose(b);
+    let p = pow2(52);
+    let (ea, eb, fa, fb) = (f64_exp(a), f64_exp(b), f64_frac(a), f64_frac(b));
+    assert(ea <= eb) by (nonlinear_arith)
+        requires ea * p + fa < eb * p + fb, 0 <= fa < p, 0 <= fb < p, p > 0;
+    if ea == eb {
+        assert(fa < fb);
+        if ea != 0 {
+            lemma_pow2_pos((ea - 1) as nat);
+            let w = pow2((ea - 1) as nat);
+            assert((fa + p) * w < (fb + p) * w) by (nonlinear_arith) requires fa < fb, w > 0;
+        }
+    } else {
+        assert(eb >= 1);
+        lemma_pow2_pos((eb - 1) as nat);
+        let wb = pow2((eb - 1) as nat);
+        assert((fb + p) * wb >= p * wb) by (nonlinear_arith) requires fb >= 0, wb > 0;
+        if ea == 0 {
+            lemma_pow2_mono(0, (eb - 1) as nat);
+            reveal_with_fuel(pow2, 1);
+            assert(p * wb >= p) by (nonlinear_arith) requires wb >= 1, p > 0;
+        } else {
+            lemma_pow2_pos((ea - 1) as nat);
+            let wa = pow2((ea - 1) as nat);
+            lemma_pow2_mono(ea as nat, (eb - 1) as nat);
+            reveal_with_fuel(pow2, 2);
+            assert(pow2(ea as nat) == 2 * wa);
+            assert((fa + p) * wa < 2 * p * wa) by (nonlinear_arith) requires fa < p, wa > 0, p > 0;
+            assert(p * pow2(ea as nat) <= p * wb) by (nonlinear_arith) requires pow2(ea as nat) <= wb, p > 0;
+            assert(p * (2 * wa) == 2 * p * wa) by (nonlinear_arith);
+        }
+    }
+}
+
+/// Signed magnitude bits: increasing in the double's value.
+pub open spec fn f64_sv(b: u64) -> int {
+    if b as int / pow2(63) == 1 { -f64_mag_bits(b) } else { f64_mag_bits(b) }
+}
+
+/// The index number of a double: larger values get smaller numbers (zeros of both signs agree).
+pub open spec fn f64_desc_key(b: u64) -> int { -f64_sv(b) }
+
+pub proof fn lemma_desc_key(a: u64, b: u64)
+    requires
+        f64_finite(a),
+        f64_finite(b),
+    ensures
+        f64_val(a) < f64_val(b) <==> f64_desc_key(b) < f64_desc_key(a),
+        f64_val(a) == f64_val(b) <==> f64_desc_key(a) == f64_desc_key(b),
+{
+    lemma_decompose(a);
+    lemma_decompose(b);
+    lemma_mag_zero(a);
+    lemma_mag_zero(b);
+    let (ma, mb) = (f64_mag_bits(a), f64_mag_bits(b));
+    if ma < mb { lemma_mag_lt(a, b); }
+    if mb < ma { lemma_mag_lt(b, a); }
+    if ma == mb {
+        lemma_fields_unique(a, b);
+        assert(f64_mag(a) == f64_mag(b));
+    }
+    let (sa, sb) = (a as int / pow2(63), b as int / pow2(63));
+    assert(f64_val(a) == if sa == 1 { -f64_mag(a) } else { f64_mag(a) });
+    assert(f64_val(b) == if sb == 1 { -f64_mag(b) } else { f64_mag(b) });
+    assert(ma == 0 <==> f64_mag(a) == 0);
+    assert(mb == 0 <==> f64_mag(b) == 0);
+    assert(ma < mb ==> f64_mag(a) < f64_mag(b));
+    assert(mb < ma ==> f64_mag(b) < f64_mag(a));
+    assert(ma == mb ==> f64_mag(a) == f64_mag(b));
+    assert(f64_mag(a) >= 0 && f64_mag(b) >= 0) by { lemma_mag_bound(a); lemma_mag_bound(b); }
+}
+
+pub fn desc_key(bits: u64) -> (r: i64)
+    ensures
+        r as int == f64_desc_key(bits),
+{
+    proof { lemma_pow2_consts(); }
+    let m = bits & 0x7FFF_FFFF_FFFF_FFFFu64;
+    let neg = (bits >> 63) == 1;
+    proof {
+        assert(m == bits % 0x8000_0000_0000_0000u64) by (bit_vector)
+            requires m == bits & 0x7FFF_FFFF_FFFF_FFFFu64;
+        assert((bits >> 63) == bits / 0x8000_0000_0000_0000u64) by (bit_vector);
+    }
+    if neg { m as i64 } else { -(m as i64) }
+}
+
+pub proof fn lemma_key_range(b: u64)
+    ensures
+        -9223372036854775808 <= f64_desc_key(b) <= 9223372036854775807,
+        (f64_desc_key(b) as i64) as int == f64_desc_key(b),
+{
+    lemma_pow2_consts();
+    assert(0 <= b as int % pow2(63) < pow2(63)) by {
+        assert(pow2(63) > 0);
+    }
+}
+
 }

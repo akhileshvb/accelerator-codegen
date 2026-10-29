@@ -22,3 +22,4 @@ pub mod rep;
 pub mod ordering;
 pub mod answer;
 pub mod emit;
+pub mod rank;

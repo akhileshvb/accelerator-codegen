@@ -29,7 +29,7 @@ pub open spec fn ikey(name: Option<Seq<u8>>, tag: Seq<u8>, plabel: Option<Seq<u8
     (0int, esc_opt(name) + esc(tag) + esc_opt(plabel))
 }
 
-proof fn lemma_body_head(b: Seq<u8>)
+pub proof fn lemma_body_head(b: Seq<u8>)
     requires b.len() > 0,
     ensures body(b) == seq![1u8, b[0]] + body(b.skip(1)),
     decreases b.len(),

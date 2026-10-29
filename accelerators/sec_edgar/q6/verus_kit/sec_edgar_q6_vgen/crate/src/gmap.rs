@@ -16,6 +16,8 @@ pub struct Grp {
     pub plabel: Option<Vec<u8>>,
     pub cnt: Wide,
     pub sum: Wide,
+    /// the double the answer reports for this group; meaningful when the state is ranked
+    pub bits: u64,
 }
 
 impl Grp {
@@ -140,6 +142,87 @@ pub fn gm_del(m: &mut GMap, fy: i64, stmt: &[u8], uom: &[u8], name: &Option<Vec<
         }) by {
             if ok2 != ov_ { assert(m.at(ok2) == old_m.at(ok2)); }
             else { assert(m.at(ok2) == Some(inner1)); }
+        }
+    }
+}
+
+
+/// A nested map whose inner maps are well formed (the keys are not tied to the values).
+pub open spec fn nm_ok(m: GMap) -> bool {
+    &&& m.wf()
+    &&& forall|ok: KeyView| #![trigger m.at(ok)] m.at(ok) is Some ==> m.at(ok)->0.wf()
+}
+
+pub proof fn lemma_gm_ik(m: GMap, ok: KeyView, ik: KeyView)
+    requires gm_ok(m), gm_at(m, ok, ik) is Some,
+    ensures ik == gm_at(m, ok, ik)->0.ik(),
+{
+    assert(m.at(ok) is Some);
+}
+
+/// Stores g under (ok, ik).
+pub fn nm_put(m: &mut GMap, ok: &Key, ik: Key, g: Arc<Grp>)
+    requires nm_ok(*old(m)),
+    ensures
+        nm_ok(*final(m)),
+        forall|o: KeyView, i: KeyView| #![trigger gm_at(*final(m), o, i)]
+            gm_at(*final(m), o, i) == if o == ok.view() && i == ik.view() { Some(*g) } else { gm_at(*old(m), o, i) },
+{
+    let ghost old_m = *m;
+    let mut inner = match m.get(ok) {
+        Some(i) => { proof { assert(m.at(ok.view()) == Some(*i)); } i.share() }
+        None => Index::new(),
+    };
+    let ghost inner0 = inner;
+    proof {
+        assert forall|q: KeyView| #![trigger inner0.at(q)] inner0.at(q) == gm_at(old_m, ok.view(), q) by {}
+    }
+    let ghost ikv = ik.view();
+    inner.put(ik, g);
+    let ghost inner1 = inner;
+    m.put(ok.share(), Arc::new(inner));
+    proof {
+        assert forall|o: KeyView| #![trigger m.at(o)] m.at(o) is Some implies m.at(o)->0.wf() by {
+            if o != ok.view() { assert(m.at(o) == old_m.at(o)); }
+            else { assert(m.at(o) == Some(inner1)); }
+        }
+        assert forall|o: KeyView, i: KeyView| #![trigger gm_at(*m, o, i)]
+            gm_at(*m, o, i) == if o == ok.view() && i == ikv { Some(*g) } else { gm_at(old_m, o, i) } by {
+            if o == ok.view() { assert(m.at(o) == Some(inner1)); }
+            else { assert(m.at(o) == old_m.at(o)); }
+        }
+    }
+}
+
+/// Removes the entry under (ok, ik).
+pub fn nm_del(m: &mut GMap, ok: &Key, ik: &Key)
+    requires nm_ok(*old(m)),
+    ensures
+        nm_ok(*final(m)),
+        forall|o: KeyView, i: KeyView| #![trigger gm_at(*final(m), o, i)]
+            gm_at(*final(m), o, i) == if o == ok.view() && i == ik.view() { None } else { gm_at(*old(m), o, i) },
+{
+    let ghost old_m = *m;
+    let mut inner = match m.get(ok) {
+        Some(i) => { proof { assert(m.at(ok.view()) == Some(*i)); } i.share() }
+        None => return,
+    };
+    let ghost inner0 = inner;
+    proof {
+        assert forall|q: KeyView| #![trigger inner0.at(q)] inner0.at(q) == gm_at(old_m, ok.view(), q) by {}
+    }
+    inner.remove(ik);
+    let ghost inner1 = inner;
+    m.put(ok.share(), Arc::new(inner));
+    proof {
+        assert forall|o: KeyView| #![trigger m.at(o)] m.at(o) is Some implies m.at(o)->0.wf() by {
+            if o != ok.view() { assert(m.at(o) == old_m.at(o)); }
+            else { assert(m.at(o) == Some(inner1)); }
+        }
+        assert forall|o: KeyView, i: KeyView| #![trigger gm_at(*m, o, i)]
+            gm_at(*m, o, i) == if o == ok.view() && i == ik.view() { None } else { gm_at(old_m, o, i) } by {
+            if o == ok.view() { assert(m.at(o) == Some(inner1)); }
+            else { assert(m.at(o) == old_m.at(o)); }
         }
     }
 }
