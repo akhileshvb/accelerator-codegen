@@ -30,12 +30,15 @@ use crate::tbl::*;
 use crate::subs::*;
 use crate::kbuild::*;
 use crate::evict::*;
+use crate::ucls::*;
+use crate::esc::*;
 use crate::wideval::*;
 
 verus! {
 
 pub struct State {
     cls: Index<ClassRec>,
+    uc: Index<ClsSet>,
     fm: Index<Vec<UnitRef>>,
     um: Index<UnitRec>,
     tab: Arc<Pow2Tab>,
@@ -50,6 +53,7 @@ impl State {
     #[verifier::type_invariant]
     closed spec fn valid(self) -> bool {
         &&& cls_ok(self.db@, self.cls)
+        &&& uc_ok(self.uc, self.db@)
         &&& fm_ok(self.fm, self.db@)
         &&& um_ok(self.um, self.db@)
         &&& rep_db(self.db@)
@@ -79,7 +83,8 @@ fn wanted_keys(s: &State, num_delta: &Vec<NumDelta>, pre_delta: &Vec<PreDelta>, 
 {
     proof { use_type_invariant(s); }
     proof { assert(tbl_str(s.cls)) by { assert forall|ok: KeyView| s.cls.at(ok) is Some implies ok == cls_key(s.cls.at(ok)->0) && crec_struct(s.cls.at(ok)->0) by {} } }
-    let p = plan_full(&s.cls, &s.fm, &s.um, num_delta, pre_delta, sub_delta);
+    proof { lemma_unit_cls(s.db(), s.cls, s.uc); }
+    let p = plan_full(&s.cls, &s.uc, &s.fm, &s.um, num_delta, pre_delta, sub_delta);
     proof {
         let pred = wanted_pred(s.cls, s.fm, s.um, all_keys(num_delta@, pre_delta@, sub_delta@), sub_delta@);
         let chosen = wanted_def(s.cls, s.fm, s.um, num_delta@, pre_delta@, sub_delta@);
@@ -153,7 +158,8 @@ pub fn apply(
     proof { use_type_invariant(s); }
     let ghost db = s.db();
     proof { assert(tbl_str(s.cls)) by { assert forall|ok: KeyView| s.cls.at(ok) is Some implies ok == cls_key(s.cls.at(ok)->0) && crec_struct(s.cls.at(ok)->0) by {} } }
-    let plan = plan_full(&s.cls, &s.fm, &s.um, num_delta, pre_delta, sub_delta);
+    proof { lemma_unit_cls(db, s.cls, s.uc); }
+    let plan = plan_full(&s.cls, &s.uc, &s.fm, &s.um, num_delta, pre_delta, sub_delta);
     let ghost ka = all_keys(num_delta@, pre_delta@, sub_delta@);
     let ghost keys = seq_view_bytes(subs_by_filing_keys@);
     let ghost (dn, dp, ds) = (num_delta_seq_view(num_delta@), pre_delta_seq_view(pre_delta@), sub_delta_seq_view(sub_delta@));
@@ -207,9 +213,24 @@ pub fn apply(
         }
     }
     let cls2 = core_update(&s.cls, &plan.u, &plan.ct, &plan.w, &plan.cw, &acc, &s.tab, Ghost(db), Ghost(db2));
+    let uc2 = uc_update(&s.uc, &plan.u, &acc);
     let fm2 = fm_update(&s.fm, &plan.keys, subs_by_filing_rows);
     let um2 = um_update(&s.um, &plan.u, subs_by_filing_rows);
     proof {
+        assert(uc_ok(uc2, db2)) by {
+            assert forall|k: GK| cntk(db2, k) > 0 implies ucs_has(uc2, ukey(k.fy, k.name), okey(k.fy, k.stmt, k.uom)) by {
+                if u_has(plan.u, k.fy, k.name) {
+                    assert(u_has(plan.w, k.fy, k.name));
+                    assert(acc_c(acc, k) == cntk(db2, k));
+                    let e = acc.at(fkey(k))->0;
+                    assert(acc.at(fkey(k)) is Some);
+                    assert(fkey(e.gk()) == fkey(k));
+                    lemma_fkey_inj(e.gk(), k);
+                } else {
+                    assert(cntk(db, k) == cntk(db2, k));
+                }
+            }
+        }
         let rs = sub_rt_seq_view(subs_by_filing_rows@);
         lemma_fm_ok2(db, db2, ds, keys, subs_by_filing_rows@, s.fm, fm2, plan.keys@);
         assert forall|fy: int, name: Option<Seq<u8>>, a: Seq<u8>| u_has(plan.u, fy, name) && sub_has(db2, a, fy, name) implies keys.contains(a) by {
@@ -221,7 +242,7 @@ pub fn apply(
         lemma_um_ok2(db, db2, ds, ka, keys, subs_by_filing_rows@, s.um, um2, plan.u);
         assert forall|i: int| 0 <= i < ds.len() implies ka.contains((#[trigger] ds[i]).0.adsh) by { assert(ds[i].0 == sub_rt_view(sub_delta@[i].row)); }
     }
-    Ok(State { cls: cls2, fm: fm2, um: um2, tab: s.tab.clone(), db: Ghost(db2) })
+    Ok(State { cls: cls2, uc: uc2, fm: fm2, um: um2, tab: s.tab.clone(), db: Ghost(db2) })
 }
 
 #[verifier::rlimit(500)]
@@ -291,7 +312,23 @@ pub fn build(
         }
     }
     let cls = core_update(&cls0, &u, &ct, &u, &cw, &acc, &tab, Ghost(db0), Ghost(db));
+    let uc0: Index<ClsSet> = Index::new();
+    let uc = uc_update(&uc0, &u, &acc);
     proof {
+        assert(uc_ok(uc, db)) by {
+            assert forall|k: GK| cntk(db, k) > 0 implies ucs_has(uc, ukey(k.fy, k.name), okey(k.fy, k.stmt, k.uom)) by {
+                if u_has(u, k.fy, k.name) {
+                    assert(acc_c(acc, k) == cntk(db, k));
+                    let e = acc.at(fkey(k))->0;
+                    assert(acc.at(fkey(k)) is Some);
+                    assert(fkey(e.gk()) == fkey(k));
+                    lemma_fkey_inj(e.gk(), k);
+                } else {
+                    assert(cntk(db, k) == cntk(db0, k));
+                    lemma_empty_groups(k);
+                }
+            }
+        }
         assert(fm_ok(fm0, db0) && um_ok(um0, db0)) by {
             assert forall|a: Seq<u8>, fy: int, name: Option<Seq<u8>>| fm_has(fm0, a, fy, name) <==> sub_has(db0, a, fy, name) by {}
             assert forall|a: Seq<u8>, fy: int, name: Option<Seq<u8>>| um_has(um0, fy, name, a) <==> sub_has(db0, a, fy, name) by {}
@@ -308,7 +345,7 @@ pub fn build(
             }
         }
     }
-    Some(State { cls, fm, um, tab, db: Ghost(db) })
+    Some(State { cls, uc, fm, um, tab, db: Ghost(db) })
 }
 
 } // verus!

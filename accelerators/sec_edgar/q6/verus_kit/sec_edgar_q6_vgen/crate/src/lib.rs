@@ -31,6 +31,7 @@ pub mod crops;
 pub mod crlem;
 pub mod tbl;
 pub mod units;
+pub mod ucls;
 pub mod plan;
 pub mod kept;
 pub mod evict;

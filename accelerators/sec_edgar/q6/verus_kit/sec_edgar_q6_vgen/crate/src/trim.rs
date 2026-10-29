@@ -144,19 +144,19 @@ proof fn lemma_ikey_name_eq2(a: Grp, b: Grp)
     lemma_esc_opt_split(ov(a.name), Seq::empty(), ov(b.name), Seq::empty());
 }
 
-/// A class keeps at most 1024 groups: the rest go back to the frontier.
+/// A class keeps at most K_MAX groups: the rest go back to the frontier.
 #[verifier::rlimit(300)]
 #[verifier::spinoff_prover]
 pub fn trim_class(c: &ClassRec, Ghost(db): Ghost<Db>) -> (r: Option<ClassRec>)
     requires crec_struct(*c), crec_sem(db, *c), crec_full(*c),
     ensures
         r matches Some(n) ==> crec_struct(n) && crec_sem(db, n) && crec_full(n) && crec_head(*c, n) && cov_db(db, *c, n),
-        r is None ==> c.r.entries().len() <= 1024,
+        r is None ==> c.r.entries().len() <= K_MAX,
 {
     let ents = c.r.rows();
     let ghost es = c.r.entries();
     proof { c.r.model(); }
-    if ents.len() <= 1024 {
+    if ents.len() <= K_MAX {
         return None;
     }
     let ghost len = ents.len() as int;
@@ -174,9 +174,9 @@ pub fn trim_class(c: &ClassRec, Ghost(db): Ghost<Db>) -> (r: Option<ClassRec>)
     }
     let mut n = trim_step(c, &ents[last].0, &ents[last].1, Ghost(db));
     let mut i = last;
-    while i > 1024
+    while i > K_MAX
         invariant
-            1024 <= i < ents.len(), crec_struct(*c), crec_sem(db, *c), crec_struct(n), crec_sem(db, n), crec_head(*c, n),
+            K_MAX <= i < ents.len(), crec_struct(*c), crec_sem(db, *c), crec_struct(n), crec_sem(db, n), crec_head(*c, n),
             ents@.map_values(|row: (Key, Arc<Grp>)| (row.0.view(), *row.1)) == es, es == c.r.entries(), len == ents.len() as int,
             forall|pos: int| #![trigger es[pos]] 0 <= pos < es.len() ==> c.r.at(es[pos].0) == Some(es[pos].1),
             forall|a: int, b: int| 0 <= a < b < es.len() ==> key_lt((#[trigger] es[a]).0, (#[trigger] es[b]).0),
@@ -218,15 +218,15 @@ pub fn trim_class(c: &ClassRec, Ghost(db): Ghost<Db>) -> (r: Option<ClassRec>)
         i = k;
     }
     proof {
-        // exactly the first 1024 groups remain
-        let keys = Seq::new(1024nat, |j: int| es[j].0);
+        // exactly the first K_MAX groups remain
+        let keys = Seq::new(K_MAX as nat, |j: int| es[j].0);
         assert(keys.no_duplicates()) by {
             assert forall|a: int, b: int| 0 <= a < b < keys.len() implies keys[a] != keys[b] by { assert(key_lt(es[a].0, es[b].0)); lemma_key_order(es[a].0, es[b].0); }
         }
         assert forall|j: int| 0 <= j < keys.len() implies n.r.at(#[trigger] keys[j]) is Some by {
             assert(c.r.at(es[j].0) is Some);
-            assert(!(exists|jj: int| 1024 <= jj < len && es[jj].0 == es[j].0)) by {
-                if exists|jj: int| 1024 <= jj < len && es[jj].0 == es[j].0 { let jj = choose|jj: int| 1024 <= jj < len && es[jj].0 == es[j].0; assert(key_lt(es[j].0, es[jj].0)); lemma_key_order(es[j].0, es[jj].0); }
+            assert(!(exists|jj: int| K_MAX <= jj < len && es[jj].0 == es[j].0)) by {
+                if exists|jj: int| K_MAX <= jj < len && es[jj].0 == es[j].0 { let jj = choose|jj: int| K_MAX <= jj < len && es[jj].0 == es[j].0; assert(key_lt(es[j].0, es[jj].0)); lemma_key_order(es[j].0, es[jj].0); }
             }
         }
         lemma_len_ge(keys, n.r);

@@ -17,9 +17,15 @@ use crate::grp::*;
 verus! {
 
 /// Answer entries kept per class at most; below LIMIT a class is refilled to REFILL units.
-pub open spec fn k_max() -> int { 1024 }
-pub open spec fn k_limit() -> int { 200 }
-pub open spec fn k_refill() -> int { 512 }
+/// K_LIMIT is the query's LIMIT.  K_MAX and K_REFILL are tuning constants; the proofs hold for any K_MAX >= K_LIMIT and
+/// K_REFILL >= K_LIMIT (a refill must bring a class back to K_LIMIT groups).  The kit tests also run a build with the smallest
+/// values (K_MAX 203, K_REFILL 200) so that trim and refill happen on most classes.
+pub const K_MAX: usize = 1024;
+pub const K_LIMIT: usize = 200;
+pub const K_REFILL: usize = 512;
+pub open spec fn k_max() -> int { K_MAX as int }
+pub open spec fn k_limit() -> int { K_LIMIT as int }
+pub open spec fn k_refill() -> int { K_REFILL as int }
 
 pub struct ClassRec {
     pub fy: i64,

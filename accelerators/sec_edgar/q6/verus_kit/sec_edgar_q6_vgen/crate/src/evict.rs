@@ -426,7 +426,7 @@ pub fn evict_class(c: &ClassRec, u: &Index<UnitRef>, w: &Index<UnitRef>, kept: &
     let n2 = evict_rside(&n1, u, w, kept);
     let ghost kept1 = *kept;
     let cnt = count_notu(c, u);
-    if refill && cnt < 200 {
+    if refill && cnt < K_LIMIT {
         let picked = select_f(c, u);
         proof {
             lemma_picked_distinct(*c, *u, picked@);
@@ -534,7 +534,7 @@ pub proof fn lemma_pick_facts(c: ClassRec, u: Index<UnitRef>, w: Index<UnitRef>,
         assert(pk.len() == vs.len());
         assert forall|i: int| 0 <= i < pk.len() implies c.f.at(rkey(#[trigger] pk[i])) == Some(pk[i]) by {
             let k = vs[i];
-            assert(nk.contains(k)) by { assert(nk.take(if nk.len() < 512 { nk.len() as int } else { 512int })[i] == nk[i]); }
+            assert(nk.contains(k)) by { assert(nk.take(if nk.len() < k_refill() { nk.len() as int } else { k_refill() })[i] == nk[i]); }
             let j = choose|j: int| 0 <= j < es.len() && es[j].0 == k && !u_has(u, c.fy as int, ov(es[j].1.name));
             assert(c.f.at(es[j].0) == Some(es[j].1));
             assert(pk[i] == c.f.at(k)->0);
@@ -542,7 +542,7 @@ pub proof fn lemma_pick_facts(c: ClassRec, u: Index<UnitRef>, w: Index<UnitRef>,
         }
         assert forall|i: int| 0 <= i < pk.len() implies i < vs.len() && rkey(#[trigger] pk[i]) == vs[i] by {
             let k = vs[i];
-            assert(nk.contains(k)) by { assert(nk.take(if nk.len() < 512 { nk.len() as int } else { 512int })[i] == nk[i]); }
+            assert(nk.contains(k)) by { assert(nk.take(if nk.len() < k_refill() { nk.len() as int } else { k_refill() })[i] == nk[i]); }
             let j = choose|j: int| 0 <= j < es.len() && es[j].0 == k && !u_has(u, c.fy as int, ov(es[j].1.name));
             assert(c.f.at(es[j].0) == Some(es[j].1));
             assert(pk[i] == c.f.at(k)->0);
@@ -714,7 +714,6 @@ pub open spec fn kept_tbl(cls: Index<ClassRec>, t: Index<ClassRec>, cw: Index<Cl
 pub fn evict_all(cls: &Index<ClassRec>, cw: &Index<ClassRef>, ct: &Index<ClassRef>, u: &Index<UnitRef>, w: &Index<UnitRef>) -> (r: (Index<ClassRec>, GMap))
     requires
         tbl_str(*cls), cset_ok(*cw), cset_ok(*ct), uset_ok(*u), uset_ok(*w), subset_u(*u, *w), refill_ok(*cls, *ct, *u, *w),
-        forall|ok: KeyView| #![trigger ct.at(ok)] ct.at(ok) is Some ==> cw.at(ok) is Some,
     ensures
         evict_tbl(*cls, r.0, *cw, *ct, *u, *w),
         kept_tbl(*cls, r.0, *cw, *u, *w, r.1),

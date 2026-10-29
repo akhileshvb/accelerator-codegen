@@ -20,6 +20,7 @@ use crate::canon::*;
 use crate::core::*;
 use crate::evict::*;
 use crate::bridge::*;
+use crate::ucls::*;
 
 verus! {
 
@@ -264,8 +265,8 @@ pub fn filing_keys(um: &Index<UnitRec>, w: &Index<UnitRef>, keys0: &Vec<Vec<u8>>
 /// The plan of a transaction.
 #[verifier::rlimit(300)]
 #[verifier::spinoff_prover]
-pub fn plan_full(cls: &Index<ClassRec>, fm: &Index<Vec<UnitRef>>, um: &Index<UnitRec>, dn: &Vec<NumDelta>, dp: &Vec<PreDelta>, ds: &Vec<SubDelta>) -> (p: Plan)
-    requires tbl_str(*cls), fm.wf(), um.wf(),
+pub fn plan_full(cls: &Index<ClassRec>, uc: &Index<ClsSet>, fm: &Index<Vec<UnitRef>>, um: &Index<UnitRec>, dn: &Vec<NumDelta>, dp: &Vec<PreDelta>, ds: &Vec<SubDelta>) -> (p: Plan)
+    requires tbl_str(*cls), uc_str(*uc), unit_cls_ok(*cls, *uc), fm.wf(), um.wf(),
     ensures
         plan_ok(*cls, p.u, p.ct, p.w, p.cw),
         ({ let ka = all_keys(dn@, dp@, ds@); 
@@ -298,7 +299,7 @@ pub fn plan_full(cls: &Index<ClassRec>, fm: &Index<Vec<UnitRef>>, um: &Index<Uni
     let ct = plan_classes(cls, &u);
     let mvs = plan_mv(cls, &ct, &u);
     let w = plan_w(&u, &mvs);
-    let cw = plan_classes(cls, &w);
+    let cw = uc_classes(uc, &w);
     proof {
         let us = u_spec(*fm, ka, ds@);
         assert(uset_ok(us) && forall|fy: int, name: Option<Seq<u8>>| u_has(us, fy, name) <==> u_pred_s(*fm, ka, ds@, fy, name));
@@ -326,9 +327,8 @@ pub fn plan_full(cls: &Index<ClassRec>, fm: &Index<Vec<UnitRef>>, um: &Index<Uni
         }
         // plan facts
         assert(subset_u(u, w));
-        assert forall|ok: KeyView| ct.at(ok) is Some implies cw.at(ok) is Some by {
-            let kk = choose|kk: KeyView| #![trigger u.at(kk)] u.at(kk) is Some && kk.0 == cls.at(ok)->0.fy as int;
-            lemma_subset_key(u, w, kk);
+        assert forall|ok: KeyView, nk: KeyView| cls.at(ok) is Some && unit_in(cls.at(ok)->0, nk) && wn(w, cls.at(ok)->0.fy as int, nk) implies cw.at(ok) is Some by {
+            assert(ucs_has(*uc, (cls.at(ok)->0.fy as int, nk.1), ok));
         }
         assert(refill_ok(*cls, ct, u, w)) by {
             assert forall|ok: KeyView, k: KeyView| ct.at(ok) is Some && cls.at(ok) is Some && notu_keys(cls.at(ok)->0.r.entries(), cls.at(ok)->0.fy as int, u).len() < k_limit()

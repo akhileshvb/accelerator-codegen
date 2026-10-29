@@ -216,7 +216,7 @@ pub open spec fn take_up<A>(s: Seq<A>, n: int) -> Seq<A> {
 }
 
 pub open spec fn vsel(es: Seq<(KeyView, Grp)>, fy: int, u: Index<UnitRef>) -> Seq<KeyView> {
-    take_up(notu_keys(es, fy, u), 512)
+    take_up(notu_keys(es, fy, u), k_refill())
 }
 
 pub proof fn lemma_notu_prefix(es: Seq<(KeyView, Grp)>, fy: int, u: Index<UnitRef>, t: int)
@@ -263,17 +263,17 @@ pub fn select_f(c: &ClassRec, u: &Index<UnitRef>) -> (picked: Vec<Arc<Grp>>)
         assert(es.take(0) =~= Seq::<(KeyView, Grp)>::empty());
         lemma_notu_nil(fy, *u);
         assert(notu_keys(es.take(0), fy, *u) =~= Seq::<KeyView>::empty());
-        assert(take_up(notu_keys(es.take(0), fy, *u), 512) =~= Seq::<KeyView>::empty());
+        assert(take_up(notu_keys(es.take(0), fy, *u), k_refill()) =~= Seq::<KeyView>::empty());
         assert(picked@.map_values(|g: Arc<Grp>| rkey(*g)) =~= Seq::<KeyView>::empty());
     }
-    while picked.len() < 512 && more
+    while picked.len() < K_REFILL && more
         invariant
             c.f.wf(), uset_ok(*u), es == c.f.entries(), fy == c.fy as int,
             0 <= t <= es.len(), cur.remaining() == es.skip(t),
             !more ==> t == es.len(),
-            picked.len() <= 512,
+            picked.len() <= K_REFILL,
             forall|pos: int| #![trigger es[pos]] 0 <= pos < es.len() ==> c.f.at(es[pos].0) == Some(es[pos].1) && es[pos].0 == rkey(es[pos].1),
-            picked@.map_values(|g: Arc<Grp>| rkey(*g)) == take_up(notu_keys(es.take(t), fy, *u), 512),
+            picked@.map_values(|g: Arc<Grp>| rkey(*g)) == take_up(notu_keys(es.take(t), fy, *u), k_refill()),
             forall|i: int| 0 <= i < picked.len() ==> c.f.at(rkey(*(#[trigger] picked@[i]))) == Some(*picked@[i]),
         decreases es.len() - t + if more { 1int } else { 0int },
     {
@@ -301,10 +301,10 @@ pub fn select_f(c: &ClassRec, u: &Index<UnitRef>) -> (picked: Vec<Arc<Grp>>)
                         let nk = notu_keys(es.take(t), fy, *u);
                         assert(picked@ == before.push(g));
                         assert(picked@.map_values(|g: Arc<Grp>| rkey(*g)) =~= before.map_values(|g: Arc<Grp>| rkey(*g)).push(es[t].0));
-                        assert(nk.len() < 512) by { assert(before.len() < 512); assert(take_up(nk, 512).len() == before.len()); }
-                        assert(take_up(nk, 512) =~= nk);
+                        assert(nk.len() < k_refill()) by { assert(before.len() < k_refill()); assert(take_up(nk, k_refill()).len() == before.len()); }
+                        assert(take_up(nk, k_refill()) =~= nk);
                         assert(notu_keys(es.take(t + 1), fy, *u) =~= nk.push(es[t].0));
-                        assert(take_up(nk.push(es[t].0), 512) =~= nk.push(es[t].0));
+                        assert(take_up(nk.push(es[t].0), k_refill()) =~= nk.push(es[t].0));
                     }
                 } else {
                     proof {
@@ -320,11 +320,11 @@ pub fn select_f(c: &ClassRec, u: &Index<UnitRef>) -> (picked: Vec<Arc<Grp>>)
         lemma_notu_prefix(es, fy, *u, t);
         let a = notu_keys(es.take(t), fy, *u);
         let full = notu_keys(es, fy, *u);
-        if picked.len() == 512 {
-            assert(a.len() >= 512);
-            assert(take_up(a, 512) =~= a.take(512));
-            assert(a.take(512) =~= full.take(512));
-            assert(take_up(full, 512) =~= full.take(512));
+        if picked.len() == K_REFILL {
+            assert(a.len() >= k_refill());
+            assert(take_up(a, k_refill()) =~= a.take(k_refill()));
+            assert(a.take(k_refill()) =~= full.take(k_refill()));
+            assert(take_up(full, k_refill()) =~= full.take(k_refill()));
         } else {
             assert(!more && t == es.len());
             assert(es.take(t) =~= es);
@@ -400,7 +400,7 @@ pub fn plan_mv(cls: &Index<ClassRec>, ct: &Index<ClassRef>, u: &Index<UnitRef>) 
                     assert(arc_val(cr).fy == arc_val(&c).fy) by { lemma_okey_inj(arc_val(cr).fy as int, arc_val(cr).stmt@, arc_val(cr).uom@, arc_val(&c).fy as int, arc_val(&c).stmt@, arc_val(&c).uom@); }
                 }
                 let n = count_notu(&c, u);
-                if n < 200 {
+                if n < K_LIMIT {
                     let picked = select_f(&c, u);
                     let ghost mvs0 = mvs@;
                     let mut j = 0;
@@ -616,7 +616,7 @@ pub proof fn lemma_vsel_prefix(es: Seq<(KeyView, Grp)>, fy: int, u: Index<UnitRe
     lemma_notu_sorted(es, fy, u);
     let nk = notu_keys(es, fy, u);
     let vs = vsel(es, fy, u);
-    let m = if nk.len() < 512 { nk.len() as int } else { 512int };
+    let m = if nk.len() < k_refill() { nk.len() as int } else { k_refill() };
     assert(vs =~= nk.take(m));
     assert forall|a: int, b: int| 0 <= a < b < vs.len() implies key_lt((#[trigger] vs[a]), (#[trigger] vs[b])) by { assert(vs[a] == nk[a] && vs[b] == nk[b]); }
     assert forall|x: KeyView, y: KeyView| nk.contains(y) && !vs.contains(y) && vs.contains(x) implies key_lt(x, y) by {

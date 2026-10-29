@@ -17,6 +17,7 @@ use crate::plan::*;
 use crate::evict::*;
 use crate::place::*;
 use crate::cnt::*;
+use crate::ucls::*;
 
 verus! {
 
@@ -73,18 +74,28 @@ pub open spec fn class_cover(cls: Index<ClassRec>, w: Index<UnitRef>, cw: Index<
     forall|ok: KeyView, k: KeyView| #![trigger cls.at(ok), w.at(k)] cls.at(ok) is Some && w.at(k) is Some && k.0 == cls.at(ok)->0.fy as int ==> cw.at(ok) is Some
 }
 
+/// Every class some unit of the set has an entry in is in the class set.
+pub open spec fn class_cover_u(cls: Index<ClassRec>, w: Index<UnitRef>, cw: Index<ClassRef>) -> bool {
+    forall|ok: KeyView, nk: KeyView| #![trigger cls.at(ok), unit_in(cls.at(ok)->0, nk)]
+        cls.at(ok) is Some && unit_in(cls.at(ok)->0, nk) && wn(w, cls.at(ok)->0.fy as int, nk) ==> cw.at(ok) is Some
+}
+
 /// The stored groups of a class outside the class set are of units outside the set.
 pub proof fn lemma_non_cw(cls0: Index<ClassRec>, w: Index<UnitRef>, cw: Index<ClassRef>, ok: KeyView)
-    requires class_cover(cls0, w, cw), cls0.at(ok) is Some, cw.at(ok) is None,
+    requires class_cover_u(cls0, w, cw), cls0.at(ok) is Some, cw.at(ok) is None,
     ensures ({
         let c = cls0.at(ok)->0;
-        &&& forall|nk: KeyView| !wn(w, c.fy as int, nk)
+        &&& forall|q: KeyView| #![trigger c.r.at(q)] c.r.at(q) is Some ==> !wn(w, c.fy as int, nkey_v(ov(c.r.at(q)->0.name)))
+        &&& forall|q: KeyView| #![trigger c.f.at(q)] c.f.at(q) is Some ==> !wn(w, c.fy as int, nkey_v(ov(c.f.at(q)->0.name)))
+        &&& forall|q: KeyView| #![trigger c.hp.at(q)] c.hp.at(q) is Some ==> !wn(w, c.fy as int, q)
+        &&& forall|q: KeyView| #![trigger c.hn.at(q)] c.hn.at(q) is Some ==> !wn(w, c.fy as int, q)
     }),
 {
     let c = cls0.at(ok)->0;
-    assert forall|nk: KeyView| !wn(w, c.fy as int, nk) by {
-        if wn(w, c.fy as int, nk) { assert(w.at((c.fy as int, nk.1)) is Some); }
-    }
+    assert forall|q: KeyView| c.r.at(q) is Some implies !wn(w, c.fy as int, nkey_v(ov(c.r.at(q)->0.name))) by { assert(unit_in(c, nkey_v(ov(c.r.at(q)->0.name)))); }
+    assert forall|q: KeyView| c.f.at(q) is Some implies !wn(w, c.fy as int, nkey_v(ov(c.f.at(q)->0.name))) by { assert(unit_in(c, nkey_v(ov(c.f.at(q)->0.name)))); }
+    assert forall|q: KeyView| c.hp.at(q) is Some implies !wn(w, c.fy as int, q) by { assert(unit_in(c, q)); }
+    assert forall|q: KeyView| c.hn.at(q) is Some implies !wn(w, c.fy as int, q) by { assert(unit_in(c, q)); }
 }
 
 pub proof fn lemma_subset_key(u: Index<UnitRef>, w: Index<UnitRef>, q: KeyView)
@@ -142,7 +153,7 @@ pub proof fn lemma_full_evicted(c0: ClassRec, n: ClassRec, u: Index<UnitRef>, w:
         let fes = c0.f.entries();
         assert(ordered_es(fes));
         lemma_vsel_prefix(fes, c0.fy as int, u);
-        if vs.len() >= 512 {
+        if vs.len() >= k_refill() {
             assert(vs.no_duplicates()) by { assert forall|i: int, j: int| 0 <= i < j < vs.len() implies vs[i] != vs[j] by { lemma_key_order(vs[i], vs[j]); } }
             assert forall|i: int| 0 <= i < vs.len() implies n.r.at(#[trigger] vs[i]) is Some by {
                 assert(pk[i] == c0.f.at(vs[i])->0);
@@ -224,8 +235,7 @@ pub proof fn lemma_bridge(db: Db, db2: Db, cls0: Index<ClassRec>, t: Index<Class
     u: Index<UnitRef>, w: Index<UnitRef>, ct: Index<ClassRef>, cw: Index<ClassRef>)
     requires
         cls_ok(db, cls0), uset_ok(u), uset_ok(w), subset_u(u, w), frame_ok(db, db2, u),
-        class_cover(cls0, w, cw), class_cover(cls0, u, ct), refill_ok(cls0, ct, u, w),
-        forall|ok: KeyView| #![trigger ct.at(ok)] ct.at(ok) is Some ==> cw.at(ok) is Some,
+        class_cover_u(cls0, w, cw), class_cover(cls0, u, ct), refill_ok(cls0, ct, u, w),
         evict_tbl(cls0, t, cw, ct, u, w), kept_tbl(cls0, t, cw, u, w, kept),
     ensures mid_ok(db2, t, kept, u, w, no_done()),
 {

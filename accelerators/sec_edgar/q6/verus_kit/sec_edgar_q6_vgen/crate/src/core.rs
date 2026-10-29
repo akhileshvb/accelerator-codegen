@@ -26,8 +26,7 @@ verus! {
 /// The plan of an update: which units are recomputed and in which classes.
 pub open spec fn plan_ok(cls0: Index<ClassRec>, u: Index<UnitRef>, ct: Index<ClassRef>, w: Index<UnitRef>, cw: Index<ClassRef>) -> bool {
     &&& tbl_str(cls0) && uset_ok(u) && uset_ok(w) && subset_u(u, w) && cset_ok(ct) && cset_ok(cw)
-    &&& class_cover(cls0, w, cw) && class_cover(cls0, u, ct) && refill_ok(cls0, ct, u, w)
-    &&& forall|ok: KeyView| #![trigger ct.at(ok)] ct.at(ok) is Some ==> cw.at(ok) is Some
+    &&& class_cover_u(cls0, w, cw) && class_cover(cls0, u, ct) && refill_ok(cls0, ct, u, w)
 }
 
 #[verifier::rlimit(300)]
