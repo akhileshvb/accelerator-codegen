@@ -63,6 +63,7 @@ cmd_up() {
     docker run -d --name "${NAME}" \
       --shm-size="${ACCEL_PG_SHM_SIZE:-2g}" \
       -e POSTGRES_PASSWORD="${PASSWORD}" \
+      ${ACCEL_AUX_STORE:+-e ACCEL_AUX_STORE="${ACCEL_AUX_STORE}"} \
       -p "127.0.0.1:${port}:5432" \
       -v "${STATE}/data:/var/lib/postgresql/data" \
       -v "${ROOT}:/accel-src" \

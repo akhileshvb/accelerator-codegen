@@ -4,15 +4,16 @@
 //
 //   test_postgres_verus_kit validate     <spec_dir> <query_sql_file>
 //   test_postgres_verus_kit differential <accel_id> <spec_dir> <query_sql_file> [every=10]
-//   test_postgres_verus_kit snapshots    <accel_id> <spec_dir> <query_sql_file> [writes=200] [readers=4] [seed=1]
+//   test_postgres_verus_kit snapshots    <accel_id> <spec_dir> <query_sql_file> [writes=200] [readers=4] [seed=1] [rr|rc]
 //
 // <query_sql_file>: the query with $n parameters (workloads/<bench>/q<N>.sql).  Each run works on a copy of the connection's database (CREATE DATABASE ... TEMPLATE), dropped at the
 // end: the spec's setup.sql and transactions change data.  The spec is DuckDB SQL (eval/harness/suite.hpp):
 // `SELECT * REPLACE (e AS c) FROM t` and `range(n)` are rewritten for Postgres.
 // differential: after the build and after every committed transaction, the accelerator
 //   (accel_<id>(...)) is compared with the query at the same snapshot.
-// snapshots: readers in REPEATABLE READ transactions run the accelerator, the query, the accelerator
-//   again while a writer commits; all three must agree.
+// snapshots: rr (default): readers in REPEATABLE READ transactions run the accelerator, the query, the
+//   accelerator again while a writer commits; all three must agree.  rc: READ COMMITTED readers run
+//   both answers in one statement (one snapshot); the rows must agree (no bounds, no tie leeway).
 // VERUS_KIT_BOUNDS_SQL=<file>: the query's bounds query (eval/harness/float_bounds.hpp), as for DuckDB.
 // A call the accelerator answered from SQL counts as a fallback (reported, and a failure of the run).
 // Connection: libpq's PG* environment, database TPCH_PG_DB (host.sh's) or PGDATABASE.
@@ -340,6 +341,40 @@ void Warm(PgConn &c, const std::string &id, const std::string &tuple) {
   throw std::runtime_error("the accelerator " + id + " did not build in 60 s");
 }
 
+// Both answers in ONE statement, so one snapshot even at READ COMMITTED: the accelerator's rows, then
+// the query's with its $n replaced by the tuple's expressions.  Cells come back as a text array.
+std::pair<Rows, Rows> Together(PgConn &c, const std::string &id, const std::string &query, const std::string &tuple) {
+  std::string q = query;
+  const auto items = SplitTuple(tuple);
+  for (std::size_t i = items.size(); i > 0; --i)
+    q = std::regex_replace(q, std::regex("\\$" + std::to_string(i) + "(?![0-9])"), "(" + items[i - 1] + ")");
+  while (!q.empty() && (q.back() == ';' || std::isspace(static_cast<unsigned char>(q.back()))))
+    q.pop_back();
+  const char *cells = "ARRAY(SELECT value FROM json_each_text(row_to_json(t)))::text";
+  const auto rows = c.Exec(std::string("SELECT 'a', ") + cells + " FROM accel_" + id + "(" + tuple +
+                           ") t UNION ALL SELECT 'q', " + cells + " FROM (" + q + ") t").rows;
+  std::pair<Rows, Rows> out;
+  for (const auto &r : rows) {
+    std::vector<std::string> cellsOf;
+    const std::string &text = r[1];
+    for (std::size_t i = 1; i < text.size() && text[i] != '}';) {
+      std::string cell;
+      if (text[i] == '"') {
+        for (++i; text[i] != '"'; ++i)
+          cell += text[i] == '\\' ? text[++i] : text[i];
+        ++i;
+      } else {
+        for (; text[i] != ',' && text[i] != '}'; ++i)
+          cell += text[i];
+      }
+      cellsOf.push_back(cell);
+      ++i; // , or }
+    }
+    (r[0] == "a" ? out.first : out.second).push_back(std::move(cellsOf));
+  }
+  return out;
+}
+
 std::string Tail(PgConn &c, const Tally &tally, int fallbacks) {
   return "\"fallbacks\":" + std::to_string(fallbacks) + ",\"shard\":" + Json(c.Exec("SELECT accel_shard_stats()").rows[0][0]) +
          "," + tally.Fields();
@@ -371,7 +406,8 @@ int Differential(const std::string &id, const Spec &spec, const std::string &que
   return compared && run.write_errors == 0 && tally.mismatches + tally.order_mismatches == 0 && fallbacks == 0 ? 0 : 1;
 }
 
-int Snapshots(const std::string &id, const Spec &spec, const std::string &query, int writes, int readers, uint64_t seed) {
+int Snapshots(const std::string &id, const Spec &spec, const std::string &query, int writes, int readers, uint64_t seed,
+              bool read_committed) {
   Require(!spec.txns.empty(), "snapshots needs txns/");
   ScratchDatabase scratch;
   PgConn writer(scratch.name);
@@ -390,6 +426,15 @@ int Snapshots(const std::string &id, const Spec &spec, const std::string &query,
         PgConn rc(scratch.name);
         while (!done.load()) {
           const auto &p = spec.params[rng() % spec.params.size()];
+          if (read_committed) { // one statement holds both answers
+            const long before = rc.Fallbacks();
+            const auto [a, b] = Together(rc, id, query, p);
+            std::lock_guard<std::mutex> lock(mutex);
+            if (rc.Fallbacks() > before)
+              tally.NoteFallback("reader " + std::to_string(t), p, "fallback", "answered from SQL");
+            tally.Check("reader " + std::to_string(t) + " rc", p, a, b);
+            continue;
+          }
           rc.Exec("BEGIN ISOLATION LEVEL REPEATABLE READ");
           const auto a = RunAccel(tally, mutex, rc, id, "reader " + std::to_string(t), p);
           std::this_thread::sleep_for(std::chrono::microseconds(rng() % 3000));
@@ -497,7 +542,7 @@ int main(int argc, char **argv) {
       return Differential(argv[2], spec, query, static_cast<int>(arg(5, 10)));
     if (mode == "snapshots")
       return Snapshots(argv[2], spec, query, static_cast<int>(arg(5, 200)), static_cast<int>(arg(6, 4)),
-                       static_cast<uint64_t>(arg(7, 1)));
+                       static_cast<uint64_t>(arg(7, 1)), argc > 8 && std::string(argv[8]) == "rc");
     throw std::runtime_error("unknown mode " + mode);
   } catch (const std::exception &e) {
     std::cerr << "error: " << e.what() << "\n";

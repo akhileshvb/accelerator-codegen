@@ -215,6 +215,20 @@ std::vector<KitRuntime::CollationKey> TextColumns(const Glue &glue) {
   return keys;
 }
 
+// The services' store of a member: its view of the verified store (empty: the default store).
+runtime::StoreHandle VerusStores(const core::AcceleratorId &id, std::function<runtime::Epoch()> epoch,
+                                 std::function<runtime::Epoch()> floor) {
+  runtime::StoreHandle handle;
+  if (auto verus = aux_state::MakeVerusAuxStore(id, epoch, floor)) {
+    auto *store = verus.get();
+    handle.install = [store, id](std::vector<core::StateImage> images, runtime::Epoch at) {
+      store->Install(std::move(images), id, at);
+    };
+    handle.store = std::move(verus);
+  }
+  return handle;
+}
+
 KitRuntime &KitAccelerator(const Glue &glue) {
   static std::map<std::string, std::unique_ptr<KitRuntime>> runtimes;
   static std::deque<KitNames> names;
@@ -231,6 +245,9 @@ KitRuntime &KitAccelerator(const Glue &glue) {
     slot = std::make_unique<KitRuntime>(n.cost_model_env.c_str(),
                                         core::AuxCostModelLocation{n.cost_model_dir.c_str(), n.cost_model_stem.c_str()},
                                         glue.id, KitConfig{&glue}, std::move(tables), TextColumns(glue));
+    // A world's kits share one worker, one commit sequence and the world's store.
+    if (const char *world = verus_kit::WorldOf(glue.id); world && aux_state::VerusAuxStoreRequested())
+      slot->JoinShard(std::string("verus_world:") + world, VerusStores);
     slot->Dependencies(); // resolves the attnums while a transaction can read the catalog
   }
   return *slot;
