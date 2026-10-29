@@ -35,11 +35,14 @@ one() { # suite query expectation...
   if [ "$suite" = queries ]; then dir="$ROOT/workloads/tpch"; schema="$dir/schema.sql"; else schema="$dir/schema.sql"; fi
   local inp=(); [ -f "$dir/$q.inputs" ] && inp=(--inputs "$dir/$q.inputs")
   [ -f "$dir/$q.nullable-params" ] && inp+=(--nullable-params "$(cat "$dir/$q.nullable-params")")
-  local out
-  if ! out=$("$BIN" --schema "$schema" --query "$dir/$q.sql" --out "$d/gen_spec.rs" "${inp[@]}" \
-               --obligations "$d/gen_obligations.rs" --kernel-stub "$d/kernel.rs" --world "$d/gen_world.rs" \
-               --ffi "$d/gen_ffi.rs" --ffi-header "$d/q.h" --ffi-prefix tq \
-               --host-glue "$d/gen_glue.cpp" --accel-id "t_$q" --workload tpch --query-id 1 2>&1); then
+  local out ok=0
+  run() { "$BIN" --schema "$schema" --query "$dir/$q.sql" --out "$d/gen_spec.rs" "${inp[@]}" \
+            --obligations "$d/gen_obligations.rs" --kernel-stub "$d/kernel.rs" --world "$d/gen_world.rs" \
+            --ffi "$d/gen_ffi.rs" --ffi-header "$d/q.h" --ffi-prefix tq "$@" 2>&1; }
+  out=$(run --host-glue "$d/gen_glue.cpp" --accel-id "t_$q" --workload tpch --query-id 1) && ok=1
+  # a production kit whose lossy deltas the derived glue cannot compute has hand-written glue
+  if [ $ok = 0 ] && [ "$suite" = queries ] && [[ "$out" == *"refused: host glue: "* ]]; then out=$(run) && ok=1; fi
+  if [ $ok = 0 ]; then
     if [[ "$out" == *"refused: obligations: "* ]]; then
       if [[ "$want" == ok-spec* ]] && [[ "$out" == *"${want#ok-spec }"* ]]; then
         rm -f "$d/gen_obligations.rs" "$d/kernel.rs" "$d/gen_world.rs" "$d/gen_ffi.rs" "$d/q.h" "$d/gen_glue.cpp"
@@ -104,7 +107,7 @@ open(d + '/hdr.cc', 'w').write('#include "q.h"\nint main() { return 0; }\n')
 PY
   gcc -std=c99 -Wall -Wextra -Werror -I"$d" "$d/link.c" "$d/libq.a" -lpthread -ldl -lm -o "$d/link" &&
     g++ -std=c++17 -Wall -Wextra -Werror -I"$d" -fsyntax-only "$d/hdr.cc" &&
-    g++ -std=c++17 -Wall -Wextra -Werror -Wno-unused-parameter -I"$d" -I"$ROOT" -I"$ROOT/accelerators" -fsyntax-only "$d/gen_glue.cpp" &&
+    { [ ! -f "$d/gen_glue.cpp" ] || g++ -std=c++17 -Wall -Wextra -Werror -Wno-unused-parameter -I"$d" -I"$ROOT" -I"$ROOT/accelerators" -fsyntax-only "$d/gen_glue.cpp"; } &&
     "$d/link"
 }
 export -f one glue_check; export BIN T VERUS WORK ROOT
