@@ -98,8 +98,7 @@ int main(int argc, char **argv) {
       auto database = h::OpenDatabase(db_path);
       auto reader = h::Connect(*database);
       auto writer = h::Connect(*database);
-      const char *schema_sql = std::getenv("ACCEL_SUITE_SCHEMA_SQL");  // constraints, then the suite's data shaping
-      if (schema_sql && *schema_sql) h::Exec(*writer, h::ReadFile(schema_sql));
+      // the suite's data shaping (the database's own schema already carries the declared constraints)
       const char *suite_dir = std::getenv("ACCEL_SUITE_DIR");
       if (suite_dir && *suite_dir && std::filesystem::exists(std::filesystem::path(suite_dir) / "setup.sql"))
         h::Exec(*writer, h::ReadFile(std::filesystem::path(suite_dir) / "setup.sql"));
