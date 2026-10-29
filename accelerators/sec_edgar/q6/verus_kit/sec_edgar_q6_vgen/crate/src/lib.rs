@@ -48,3 +48,4 @@ pub mod subs;
 pub mod canon;
 pub mod keys;
 pub mod umaps;
+pub mod kfacts;
