@@ -205,17 +205,6 @@ pub open spec fn cset_ok(ct: Index<ClassRef>) -> bool {
     ct.wf() && forall|q: KeyView| #![trigger ct.at(q)] ct.at(q) is Some ==> q == okey(ct.at(q)->0.fy as int, ct.at(q)->0.stmt@, ct.at(q)->0.uom@)
 }
 
-pub open spec fn ct_has(ct: Index<ClassRef>, fy: int, stmt: Seq<u8>, uom: Seq<u8>) -> bool {
-    ct.at(okey(fy, stmt, uom)) is Some
-}
-
-pub fn copy_cref(cr: &ClassRef) -> (r: ClassRef)
-    ensures r.fy == cr.fy, r.stmt@ == cr.stmt@, r.uom@ == cr.uom@,
-{
-    ClassRef { fy: cr.fy, stmt: copy_bytes(cr.stmt.as_slice()), uom: copy_bytes(cr.uom.as_slice()) }
-}
-
-
 pub proof fn lemma_notu_nil(fy: int, u: Index<UnitRef>)
     ensures notu_keys(Seq::<(KeyView, Grp)>::empty(), fy, u) =~= Seq::<KeyView>::empty(),
 {
