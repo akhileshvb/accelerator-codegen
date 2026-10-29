@@ -98,6 +98,11 @@ int main(int argc, char **argv) {
       auto database = h::OpenDatabase(db_path);
       auto reader = h::Connect(*database);
       auto writer = h::Connect(*database);
+      const char *schema_sql = std::getenv("ACCEL_SUITE_SCHEMA_SQL");  // constraints, then the suite's data shaping
+      if (schema_sql && *schema_sql) h::Exec(*writer, h::ReadFile(schema_sql));
+      const char *suite_dir = std::getenv("ACCEL_SUITE_DIR");
+      if (suite_dir && *suite_dir && std::filesystem::exists(std::filesystem::path(suite_dir) / "setup.sql"))
+        h::Exec(*writer, h::ReadFile(std::filesystem::path(suite_dir) / "setup.sql"));
       const char *mode = std::getenv("ACCEL_SUITE_MODE");
       if (mode && std::string(mode) == "validate") {
         for (const auto &sql : references) {
