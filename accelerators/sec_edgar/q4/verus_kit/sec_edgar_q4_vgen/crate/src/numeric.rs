@@ -127,25 +127,25 @@ pub fn round_value(x: &Wide, c: &Consts) -> (r: (Wide, Option<u64>))
 }
 
 /// e / k rounded to an integer (halves away from zero).
-pub fn div_round(e: &Wide, k: u64) -> (q: Wide)
-    requires k >= 1,
+pub fn div_round(e: &Wide, k: &Wide) -> (q: Wide)
+    requires k@ >= 1,
     ensures
-        2 * abs(q@ * k as int - e@) <= k as int,
+        2 * abs(q@ * k@ - e@) <= k@,
         abs(q@) <= abs(e@),
 {
     let neg = e.is_neg();
     let m = if neg { e.neg() } else { e.dup() };
-    let kw = Wide::from_i128(k as i128);
+    let kw = k.dup();
     let mut ds: Vec<Wide> = Vec::new();
     ds.push(kw.dup());
     proof { assert(pow2(0) == 1); }
     while !m.lt(&ds[ds.len() - 1])
         invariant
             m@ >= 0,
-            kw@ == k as int,
-            k >= 1,
+            kw@ == k@,
+            k@ >= 1,
             ds.len() >= 1,
-            forall|j: int| 0 <= j < ds.len() ==> (#[trigger] ds[j])@ == k as int * pow2(j as nat),
+            forall|j: int| 0 <= j < ds.len() ==> (#[trigger] ds[j])@ == k@ * pow2(j as nat),
         decreases if m@ >= ds[ds.len() - 1]@ { m@ - ds[ds.len() - 1]@ + 1 } else { 0int },
     {
         let last = &ds[ds.len() - 1];
@@ -154,9 +154,9 @@ pub fn div_round(e: &Wide, k: u64) -> (q: Wide)
             let j = (ds.len() - 1) as nat;
             assert(pow2(j + 1) == 2 * pow2(j)) by { reveal_with_fuel(pow2, 2); }
             lemma_pow2_pos(j);
-            assert(last@ >= 1) by (nonlinear_arith) requires last@ == k as int * pow2(j), k >= 1, pow2(j) >= 1;
-            assert(d@ == k as int * pow2((j + 1) as nat)) by (nonlinear_arith)
-                requires d@ == last@ + last@, last@ == k as int * pow2(j), pow2((j + 1) as nat) == 2 * pow2(j);
+            assert(last@ >= 1) by (nonlinear_arith) requires last@ == k@ * pow2(j), k@ >= 1, pow2(j) >= 1;
+            assert(d@ == k@ * pow2((j + 1) as nat)) by (nonlinear_arith)
+                requires d@ == last@ + last@, last@ == k@ * pow2(j), pow2((j + 1) as nat) == 2 * pow2(j);
         }
         ds.push(d);
     }
@@ -169,19 +169,19 @@ pub fn div_round(e: &Wide, k: u64) -> (q: Wide)
         lemma_pow2_pos(l);
         assert(pow2(l + 1) == 2 * pow2(l)) by { reveal_with_fuel(pow2, 2); }
         assert(m@ < ds[l as int]@);
-        assert(r@ < k as int * pow2(ds.len() as nat)) by (nonlinear_arith)
-            requires r@ == m@, m@ < k as int * pow2(l), pow2((l + 1) as nat) == 2 * pow2(l), pow2(l) >= 1, k >= 1, ds.len() == l + 1;
+        assert(r@ < k@ * pow2(ds.len() as nat)) by (nonlinear_arith)
+            requires r@ == m@, m@ < k@ * pow2(l), pow2((l + 1) as nat) == 2 * pow2(l), pow2(l) >= 1, k@ >= 1, ds.len() == l + 1;
     }
     while i > 0
         invariant
             0 <= i <= ds.len(),
             ds.len() >= 1,
-            k >= 1,
+            k@ >= 1,
             m@ >= 0,
             one@ == 1,
-            forall|j: int| 0 <= j < ds.len() ==> (#[trigger] ds[j])@ == k as int * pow2(j as nat),
-            m@ == q@ * (k as int * pow2(i as nat)) + r@,
-            0 <= r@ < k as int * pow2(i as nat),
+            forall|j: int| 0 <= j < ds.len() ==> (#[trigger] ds[j])@ == k@ * pow2(j as nat),
+            m@ == q@ * (k@ * pow2(i as nat)) + r@,
+            0 <= r@ < k@ * pow2(i as nat),
             q@ >= 0,
         decreases i,
     {
@@ -192,14 +192,14 @@ pub fn div_round(e: &Wide, k: u64) -> (q: Wide)
             lemma_pow2_pos(i as nat);
         }
         let ghost (q0, r0) = (q@, r@);
-        let ghost kj = k as int * pow2(i as nat);
+        let ghost kj = k@ * pow2(i as nat);
         let q2 = q.add(&q);
         if !r.lt(&ds[i]) {
             r = r.sub(&ds[i]);
             q = q2.add(&one);
             proof {
                 assert(ds[i as int]@ == kj);
-                assert(k as int * pow2((i + 1) as nat) == 2 * kj) by (nonlinear_arith) requires pow2((i + 1) as nat) == 2 * pow2(i as nat), kj == k as int * pow2(i as nat);
+                assert(k@ * pow2((i + 1) as nat) == 2 * kj) by (nonlinear_arith) requires pow2((i + 1) as nat) == 2 * pow2(i as nat), kj == k@ * pow2(i as nat);
                 assert(m@ == q@ * kj + r@) by (nonlinear_arith)
                     requires q@ == 2 * q0 + 1, r@ == r0 - kj, m@ == q0 * (2 * kj) + r0;
                 assert(0 <= r@ < kj);
@@ -208,7 +208,7 @@ pub fn div_round(e: &Wide, k: u64) -> (q: Wide)
             q = q2;
             proof {
                 assert(ds[i as int]@ == kj);
-                assert(k as int * pow2((i + 1) as nat) == 2 * kj) by (nonlinear_arith) requires pow2((i + 1) as nat) == 2 * pow2(i as nat), kj == k as int * pow2(i as nat);
+                assert(k@ * pow2((i + 1) as nat) == 2 * kj) by (nonlinear_arith) requires pow2((i + 1) as nat) == 2 * pow2(i as nat), kj == k@ * pow2(i as nat);
                 assert(m@ == q@ * kj + r@) by (nonlinear_arith)
                     requires q@ == 2 * q0, r@ == r0, m@ == q0 * (2 * kj) + r0;
             }
@@ -220,7 +220,7 @@ pub fn div_round(e: &Wide, k: u64) -> (q: Wide)
     let qq = if up { q.add(&one) } else { q.dup() };
     let out = if neg { qq.neg() } else { qq.dup() };
     proof {
-        let (mm, ee, kk) = (m@, e@, k as int);
+        let (mm, ee, kk) = (m@, e@, k@);
         assert(mm == abs(ee));
         assert(mm == q@ * kk + r@) by { assert(pow2(0) == 1); }
         assert(0 <= r@ < kk);

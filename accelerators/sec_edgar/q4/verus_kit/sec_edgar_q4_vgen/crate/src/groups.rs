@@ -106,7 +106,7 @@ proof fn lemma_dedup_push(s: Seq<int>, x: int)
     assert(s.push(x).last() == x);
 }
 
-proof fn lemma_dedup_len(s: Seq<int>)
+pub proof fn lemma_dedup_len(s: Seq<int>)
     ensures dedup(s).len() <= s.len(),
     decreases s.len(),
 {
@@ -115,7 +115,7 @@ proof fn lemma_dedup_len(s: Seq<int>)
     }
 }
 
-proof fn lemma_cikseq_len(l: Seq<Rec>, p: Params, sic: Option<int>, tl: Option<Seq<u8>>)
+pub proof fn lemma_cikseq_len(l: Seq<Rec>, p: Params, sic: Option<int>, tl: Option<Seq<u8>>)
     ensures cikseq(l, p, sic, tl).len() <= l.len(),
     decreases l.len(),
 {
@@ -124,7 +124,7 @@ proof fn lemma_cikseq_len(l: Seq<Rec>, p: Params, sic: Option<int>, tl: Option<S
     }
 }
 
-proof fn lemma_cikseq_push(l: Seq<Rec>, r: Rec, p: Params, sic: Option<int>, tl: Option<Seq<u8>>)
+pub proof fn lemma_cikseq_push(l: Seq<Rec>, r: Rec, p: Params, sic: Option<int>, tl: Option<Seq<u8>>)
     ensures
         cikseq(l.push(r), p, sic, tl)
             == if in_group(p, r, sic, tl) && r.w > 0 && r.cik is Some { cikseq(l, p, sic, tl).push(r.cik->0 as int) } else { cikseq(l, p, sic, tl) },
@@ -134,7 +134,7 @@ proof fn lemma_cikseq_push(l: Seq<Rec>, r: Rec, p: Params, sic: Option<int>, tl:
 }
 
 /// A record adds its weight to its group's sums, and to no other group's.
-proof fn lemma_gsum_push(l: Seq<Rec>, r: Rec, p: Params, sic: Option<int>, tl: Option<Seq<u8>>, f: spec_fn(JK) -> int)
+pub proof fn lemma_gsum_push(l: Seq<Rec>, r: Rec, p: Params, sic: Option<int>, tl: Option<Seq<u8>>, f: spec_fn(JK) -> int)
     ensures
         gsum(l.push(r), p, sic, tl, f)
             == gsum(l, p, sic, tl, f) + if in_group(p, r, sic, tl) { r.w as int * f(rec_jk(p, r)) } else { 0 },

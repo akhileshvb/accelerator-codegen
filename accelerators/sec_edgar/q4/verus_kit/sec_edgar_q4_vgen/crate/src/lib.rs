@@ -13,4 +13,6 @@ pub mod rows;
 pub mod join_spec;
 pub mod join;
 pub mod groups;
+pub mod bridge;
+pub mod output;
 pub mod gen_ffi;
