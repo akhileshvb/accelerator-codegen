@@ -699,8 +699,14 @@ inline int Validate(const std::string &path, const Spec &spec, const std::string
     run("setup.sql", spec.setup);
   const auto ordering = MakeOrdering(c, query_sql, spec.params);
   // the same answer, up to the order and LIMIT cut that ties leave open
+  // the bounds query (VERUS_KIT_BOUNDS_SQL) must admit the reference's own answer
+  const char *bounds_file = std::getenv("VERUS_KIT_BOUNDS_SQL");
+  const std::string bounds_sql = bounds_file && *bounds_file ? ReadFile(bounds_file) : std::string();
+  // (with rounded DOUBLE aggregates the reference itself varies from run to run: an admissible answer counts as the same)
   auto same = [&](std::size_t k, const Rows &a, const Rows &b) {
-    return CompareOrdered(ordering, a, b, [&] { return RunQuery(c, ordering.unlimited_sql, spec.params[k]); }) == 0;
+    if (CompareOrdered(ordering, a, b, [&] { return RunQuery(c, ordering.unlimited_sql, spec.params[k]); }) == 0)
+      return true;
+    return !bounds_sql.empty() && float_bounds::Judge(query_sql, RunProbe(c, bounds_sql, spec.params[k]), a).empty();
   };
   auto answers = [&](std::vector<Rows> &out) {
     out.clear();
@@ -715,9 +721,6 @@ inline int Validate(const std::string &path, const Spec &spec, const std::string
   int nonempty = 0;
   std::string tuple_rows = "[";
   std::vector<Rows> before;
-  // the bounds query (VERUS_KIT_BOUNDS_SQL) must admit the reference's own answer
-  const char *bounds_file = std::getenv("VERUS_KIT_BOUNDS_SQL");
-  const std::string bounds_sql = bounds_file && *bounds_file ? ReadFile(bounds_file) : std::string();
   for (const auto &t : spec.params) {
     try {
       const auto rows = RunQuery(c, query_sql, t);

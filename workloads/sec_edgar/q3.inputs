@@ -1,0 +1,7 @@
+-- Kernel inputs for SEC-EDGAR Q3.  Writes are filing batches (one sub row with its num rows, same adsh), amendments (a new
+-- filing) and withdrawals (a filing's rows deleted).  A sub change reaches the filing's num rows, rescanned by adsh.
+scan sub AS SubRt: SELECT adsh AS adsh, cik AS cik, name AS name, fy AS fy FROM sub;
+scan nums AS NumRt: SELECT adsh AS adsh, uom AS uom, value AS value FROM num;
+rescan nums_by_adsh AS NumRt KEYS adsh: SELECT adsh AS adsh, uom AS uom, value AS value FROM num;
+delta num AS NumDelta OF NumRt: SELECT adsh AS adsh, uom AS uom, value AS value FROM num;
+delta sub AS SubDelta OF SubRt: SELECT adsh AS adsh, cik AS cik, name AS name, fy AS fy FROM sub;
