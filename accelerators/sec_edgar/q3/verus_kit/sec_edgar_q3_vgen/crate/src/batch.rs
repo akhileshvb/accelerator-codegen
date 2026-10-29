@@ -29,7 +29,7 @@ pub open spec fn phi_acc(tab: Seq<SubRow>, ch: Seq<(SubRow, int)>) -> Phi {
     |g: spec_fn(SubRow) -> int| sum(tab, g) + sum(ch, |e: (SubRow, int)| e.1 * g(e.0))
 }
 
-proof fn lemma_wbag_ext(b: Index<Vec<WRow>>, phi1: Phi, phi2: Phi)
+pub proof fn lemma_wbag_ext(b: Index<Vec<WRow>>, phi1: Phi, phi2: Phi)
     requires
         wbag_as(b, phi1),
         forall|g: spec_fn(SubRow) -> int| #[trigger] phi1(g) == phi2(g),
@@ -79,7 +79,7 @@ pub fn sub_bag_apply(sb: &mut Index<Vec<WRow>>, sd: &Vec<SubDelta>, Ghost(tab): 
     proof { assert(view.take(sd.len() as int) =~= view); }
 }
 
-proof fn lemma_empty_ddm(dm: Index<DCls>)
+pub proof fn lemma_empty_ddm(dm: Index<DCls>)
     requires dm.wf(), forall|k: KeyView| #[trigger] dm.at(k) is None,
     ensures ddm_ok(dm, Seq::empty()),
 {

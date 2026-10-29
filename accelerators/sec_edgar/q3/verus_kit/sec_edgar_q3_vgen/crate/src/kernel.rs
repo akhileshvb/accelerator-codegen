@@ -13,6 +13,7 @@ use verus_prooflib::ordered::{Index, Key, KeyView};
 use verus_prooflib::wide::Wide;
 use crate::batch::*;
 use crate::bucket::*;
+use crate::dmap::*;
 use crate::ent::*;
 use crate::exact::*;
 use crate::fin::*;
@@ -60,17 +61,13 @@ pub open spec fn rescan_nums_by_adsh_wanted(s: State, num_delta: Seq<NumDelta>, 
     sub_delta.map_values(|d: SubDelta| d.row.adsh@)
 }
 
-proof fn lemma_empty_sub_zero(db: Db)
-    requires db.sub.len() == 0,
+proof fn lemma_empty_num_zero(db: Db)
+    requires db.num.len() == 0,
     ensures forall|p: Params, h: spec_fn(JK) -> int| #[trigger] jq(db, p, h) == 0,
 {
     assert forall|p: Params, h: spec_fn(JK) -> int| #[trigger] jq(db, p, h) == 0 by {
-        assert forall|i: int| 0 <= i < db.num.len() implies
-            (|n: NumRow| sum(db.sub, |s: SubRow| wt(p, h)(n, s)))(#[trigger] db.num[i]) == 0 by {
-            assert(db.sub =~= Seq::<SubRow>::empty());
-            lemma_sum_empty(db.sub, |s: SubRow| wt(p, h)(db.num[i], s));
-        }
-        lemma_sum_zero(db.num, |n: NumRow| sum(db.sub, |s: SubRow| wt(p, h)(n, s)));
+        assert(db.num =~= Seq::<NumRow>::empty());
+        lemma_sum_empty(db.num, |n: NumRow| sum(db.sub, |s: SubRow| wt(p, h)(n, s)));
     }
 }
 
@@ -94,6 +91,7 @@ fn dup_subs(sub: &Vec<SubRt>) -> (sd: Vec<SubDelta>)
     sd
 }
 
+/// A build is the commit of every num row onto the sub table alone (the num table starts empty).
 pub fn build(
     sub: Vec<SubRt>,
     nums: Vec<NumRt>,
@@ -108,12 +106,35 @@ pub fn build(
         envelope(db) ==> r is Some,
 {
     let consts = Arc::new(consts_new());
-    let ghost db0 = Db { num: db.num, sub: Seq::empty() };
-    let classes0: Index<Class> = Index::new();
-    let subs0 = wbag_new();
+    let ghost db1 = Db { num: Seq::empty(), sub: db.sub };
     let sd = dup_subs(&sub);
-    let nd: Vec<NumDelta> = Vec::new();
-    let nb = bag_build(&nums);
+    let mut subs = wbag_new();
+    proof {
+        let sv = sub_delta_seq_view(sd@);
+        assert forall|f: spec_fn(SubRow) -> int| #[trigger] sum(db.sub, f) == sum(Seq::<SubRow>::empty(), f) + sum(sv, |e: (SubRow, int)| e.1 * f(e.0)) by {
+            lemma_sum_empty(Seq::<SubRow>::empty(), f);
+            assert(sv =~= sub_rt_seq_view(sub@).map_values(|r: SubRow| (r, 1int))) by {
+                assert forall|i: int| 0 <= i < sv.len() implies sv[i] == (sub_rt_seq_view(sub@)[i], 1int) by {
+                    assert(sv[i] == (sub_rt_view(sd@[i].row), sd@[i].sign as int));
+                }
+            }
+            lemma_sum_map(sub_rt_seq_view(sub@), |r: SubRow| (r, 1int), |e: (SubRow, int)| e.1 * f(e.0), f);
+            assert(sum(sub_rt_seq_view(sub@), f) == sum(db.sub, f));
+        }
+        assert forall|i: int| 0 <= i < sd.len() implies (#[trigger] sd[i]).sign == 1 || sd[i].sign == -1 by {}
+    }
+    sub_bag_apply(&mut subs, &sd, Ghost(Seq::empty()));
+    proof {
+        let sv = sub_delta_seq_view(sd@);
+        assert forall|g: spec_fn(SubRow) -> int| #[trigger] phi_acc(Seq::empty(), sv)(g) == phi_tab(db.sub)(g) by {
+            assert(sum(db.sub, g) == sum(Seq::<SubRow>::empty(), g) + sum(sv, |e: (SubRow, int)| e.1 * g(e.0)));
+        }
+        lemma_wbag_ext(subs, phi_acc(Seq::empty(), sv), phi_tab(db.sub));
+    }
+    let mut dm: Index<DCls> = Index::new();
+    proof { lemma_empty_ddm(dm); }
+    let Ghost(l) = stage_n_rows(&mut dm, &nums, &subs, &consts.pows, Ghost(db.sub));
+    let mut classes: Index<Class> = Index::new();
     proof {
         // the nums are doubles
         let pred = |r: NumRow| r.value is Some ==> dbl_raw(r.value->0);
@@ -124,45 +145,35 @@ pub fn build(
         }
         lemma_weighted_equal_preserves_predicate(num_rt_seq_view(nums@), db.num, pred);
         assert(nums_dbl(db));
-        assert(nums_dbl(db0));
-        // the empty state answers for db0
-        lemma_empty_sub_zero(db0);
-        assert(agg_ok(classes0, db0)) by {
-            assert forall|fy: i64, uom: Seq<u8>| #[trigger] classes0.at(ckey(fy as int, uom)) is None implies zero_p(db0, cp(fy, uom)) by {
-                assert forall|gn: Option<Seq<u8>>, gc: Option<int>| qj(db0, cp(fy, uom), true, gn, gc).n == 0 && qj(db0, cp(fy, uom), false, gn, gc).n == 0 by {}
+        assert(nums_dbl(db1));
+        // the empty state answers for db1
+        lemma_empty_num_zero(db1);
+        assert(agg_ok(classes, db1)) by {
+            assert forall|fy: i64, uom: Seq<u8>| #[trigger] classes.at(ckey(fy as int, uom)) is None implies zero_p(db1, cp(fy, uom)) by {
+                assert forall|gn: Option<Seq<u8>>, gc: Option<int>| qj(db1, cp(fy, uom), true, gn, gc).n == 0 && qj(db1, cp(fy, uom), false, gn, gc).n == 0 by {}
             }
         }
-        // the sub rows as changes
-        let sv = sub_delta_seq_view(sd@);
-        assert forall|f: spec_fn(SubRow) -> int| #[trigger] sum(db.sub, f) == sum(db0.sub, f) + sum(sv, |e: (SubRow, int)| e.1 * f(e.0)) by {
-            assert(db0.sub =~= Seq::<SubRow>::empty());
-            lemma_sum_empty(db0.sub, f);
-            assert(sv =~= sub_rt_seq_view(sub@).map_values(|r: SubRow| (r, 1int))) by {
-                assert forall|i: int| 0 <= i < sv.len() implies sv[i] == (sub_rt_seq_view(sub@)[i], 1int) by {
-                    assert(sv[i] == (sub_rt_view(sd@[i].row), sd@[i].sign as int));
-                }
-            }
-            lemma_sum_map(sub_rt_seq_view(sub@), |r: SubRow| (r, 1int), |e: (SubRow, int)| e.1 * f(e.0), f);
-            assert(sum(sub_rt_seq_view(sub@), f) == sum(db.sub, f));
+        // the num rows as changes
+        let nv = nums_unit(nums@);
+        assert forall|f: spec_fn(NumRow) -> int| #[trigger] sum(db.num, f) == sum(db1.num, f) + sum(nv, |e: (NumRow, int)| e.1 * f(e.0)) by {
+            lemma_sum_empty(db1.num, f);
+            assert(nv =~= num_rt_seq_view(nums@).map_values(|r: NumRow| (r, 1int)));
+            lemma_sum_map(num_rt_seq_view(nums@), |r: NumRow| (r, 1int), |e: (NumRow, int)| e.1 * f(e.0), f);
+            assert(sum(num_rt_seq_view(nums@), f) == sum(db.num, f));
         }
-        assert(bag_step(db0.sub, db.sub, sv));
-        assert(num_delta_seq_view(nd@) =~= Seq::<(NumRow, int)>::empty());
-        assert forall|f: spec_fn(NumRow) -> int| #[trigger] sum(db.num, f) == sum(db0.num, f) + sum(num_delta_seq_view(nd@), |e: (NumRow, int)| e.1 * f(e.0)) by {
-            lemma_sum_empty(num_delta_seq_view(nd@), |e: (NumRow, int)| e.1 * f(e.0));
+        assert(bag_step(db1.num, db.num, nv));
+        let nosubs = Seq::<(SubRow, int)>::empty();
+        assert forall|f: spec_fn(SubRow) -> int| #[trigger] sum(db.sub, f) == sum(db1.sub, f) + sum(nosubs, |e: (SubRow, int)| e.1 * f(e.0)) by {
+            lemma_sum_empty(nosubs, |e: (SubRow, int)| e.1 * f(e.0));
         }
-        assert(bag_step(db0.num, db.num, num_delta_seq_view(nd@)));
-        // the nums bucketed by filing hold the table
-        assert(rows_v(nums@) =~= num_rt_seq_view(nums@));
-        assert(nb_covers(nb, db.num, sd@)) by {
-            assert forall|i: int, f: spec_fn(NumRow) -> int| 0 <= i < sd@.len() implies
-                #[trigger] sum(rows_at::<NumRt>(nb, key1(sd[i].row.adsh@)), f) == sum(db.num, key_weight::<NumRt>(key1(sd[i].row.adsh@), f)) by {
-                let kw = key_weight::<NumRt>(key1(sd[i].row.adsh@), f);
-                assert(sum(rows_at::<NumRt>(nb, key1(sd[i].row.adsh@)), f) == sum(rows_v(nums@), kw));
-                assert(sum(num_rt_seq_view(nums@), kw) == sum(db.num, kw));
-            }
+        assert(bag_step(db1.sub, db.sub, nosubs));
+        assert forall|p: Params, h: spec_fn(JK) -> int| #[trigger] lsum(l, p, h)
+            == left_join_delta(nv, db1.sub, wt(p, h)) + right_join_delta(db.num, nosubs, wt(p, h)) by {
+            lemma_sum_empty(nosubs, |e: (SubRow, int)| e.1 * sum(db.num, |o: NumRow| wt(p, h)(o, e.0)));
         }
+        lemma_ledger_from_deltas(l, db1, db, nv, nosubs);
     }
-    let (classes, subs) = apply_core(&classes0, &subs0, &*consts, &nd, &sd, &nb, Ghost(db0), Ghost(db));
+    merge_all(&mut classes, &dm, &*consts, Ghost(db1), Ghost(db), Ghost(l));
     Some(State { classes, subs, consts, db: Ghost(db) })
 }
 

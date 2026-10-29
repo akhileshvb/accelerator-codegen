@@ -253,7 +253,7 @@ pub fn emit_sd(dm: &mut Index<DCls>, s: &SubRt, sg: i64, nr: &Vec<NumRt>, pows: 
 
 
 /// The sub rows of a filing, with multiplicities; none for a NULL filing.
-fn wbucket(subs: &Index<Vec<WRow>>, n: &NumRt) -> (v: Arc<Vec<WRow>>)
+pub fn wbucket(subs: &Index<Vec<WRow>>, n: &NumRt) -> (v: Arc<Vec<WRow>>)
     ensures
         v@ == (if num_rt_view(*n).adsh is Some { wrows_at(*subs, key1(num_rt_view(*n).adsh->0)) } else { Seq::empty() }),
 {
@@ -269,7 +269,7 @@ fn wbucket(subs: &Index<Vec<WRow>>, n: &NumRt) -> (v: Arc<Vec<WRow>>)
 }
 
 /// A num row's sum over the sub rows of its filing, from the buckets.
-proof fn lemma_n_term(subs: Index<Vec<WRow>>, dbsub: Seq<SubRow>, sv: Seq<WRow>, p: Params, h: spec_fn(JK) -> int, nrow: NumRow)
+pub proof fn lemma_n_term(subs: Index<Vec<WRow>>, dbsub: Seq<SubRow>, sv: Seq<WRow>, p: Params, h: spec_fn(JK) -> int, nrow: NumRow)
     requires
         wbag_as(subs, phi_tab(dbsub)),
         sv == (if nrow.adsh is Some { wrows_at(subs, key1(nrow.adsh->0)) } else { Seq::empty() }),
@@ -346,6 +346,59 @@ pub fn stage_n(dm: &mut Index<DCls>, nd: &Vec<NumDelta>, subs: &Index<Vec<WRow>>
         i += 1;
     }
     proof { assert(view.take(nd.len() as int) =~= view); }
+    Ghost(li)
+}
+
+pub open spec fn nums_unit(rows: Seq<NumRt>) -> Seq<(NumRow, int)> {
+    rows.map_values(|r: NumRt| (num_rt_view(r), 1int))
+}
+
+/// Every num row of a table (a build) against the sub rows of its filing.
+pub fn stage_n_rows(dm: &mut Index<DCls>, nums: &Vec<NumRt>, subs: &Index<Vec<WRow>>, pows: &Vec<Wide>, Ghost(dbsub): Ghost<Seq<SubRow>>) -> (r: Ghost<Seq<Ct>>)
+    requires
+        ddm_ok(*old(dm), Seq::empty()),
+        wbag_as(*subs, phi_tab(dbsub)),
+        pows_ok(pows@),
+    ensures
+        ddm_ok(*final(dm), r@),
+        forall|p: Params, h: spec_fn(JK) -> int| #[trigger] lsum(r@, p, h) == left_join_delta(nums_unit(nums@), dbsub, wt(p, h)),
+{
+    let ghost view = nums_unit(nums@);
+    let ghost mut li: Seq<Ct> = Seq::empty();
+    let mut i: usize = 0;
+    proof {
+        assert forall|p: Params, h: spec_fn(JK) -> int| #[trigger] lsum(li, p, h) == left_join_delta(view.take(0), dbsub, wt(p, h)) by {
+            assert(li =~= Seq::<Ct>::empty());
+            assert(view.take(0) =~= Seq::<(NumRow, int)>::empty());
+        }
+    }
+    while i < nums.len()
+        invariant
+            i <= nums.len(),
+            view == nums_unit(nums@),
+            ddm_ok(*dm, li),
+            wbag_as(*subs, phi_tab(dbsub)),
+            pows_ok(pows@),
+            forall|p: Params, h: spec_fn(JK) -> int| #[trigger] lsum(li, p, h) == left_join_delta(view.take(i as int), dbsub, wt(p, h)),
+        decreases nums.len() - i,
+    {
+        let n = &nums[i];
+        let sv = wbucket(subs, n);
+        let Ghost(l2) = emit_nd(dm, n, 1, &*sv, pows, Ghost(li));
+        proof {
+            let nrow = num_rt_view(*n);
+            assert(view[i as int] == (nrow, 1int));
+            assert(view.take(i as int + 1) =~= view.take(i as int).push(view[i as int]));
+            assert forall|p: Params, h: spec_fn(JK) -> int| #[trigger] lsum(l2, p, h) == left_join_delta(view.take(i as int + 1), dbsub, wt(p, h)) by {
+                lemma_n_term(*subs, dbsub, sv@, p, h, nrow);
+                assert(lsum(li, p, h) == left_join_delta(view.take(i as int), dbsub, wt(p, h)));
+                lemma_sum_push(view.take(i as int), view[i as int], |e: (NumRow, int)| e.1 * sum(dbsub, |o: SubRow| wt(p, h)(e.0, o)));
+            }
+            li = l2;
+        }
+        i += 1;
+    }
+    proof { assert(view.take(nums.len() as int) =~= view); }
     Ghost(li)
 }
 
