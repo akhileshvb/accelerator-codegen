@@ -1,7 +1,7 @@
 # Per-query inputs of the TPC-H workloads tpch_q<N> and tpch_q<N>_aux: each is its template
 # (tpch_q.template.yaml, tpch_q_aux.template.yaml) plus the entry below and the reference SQL
 # workloads/tpch/instances/seed_1/<NN>.sql.
-# parameters: SQL type per parameter, in call order. aux: keys only the aux workload takes.
+# parameters: SQL type per template placeholder ($1, $2, ... in order), a derived end date included. aux: keys only the aux workload takes.
 1:
   parameters: {day_offset: INTEGER}
 2:
@@ -25,7 +25,7 @@
 3:
   parameters: {market_segment: VARCHAR, cutoff_date: DATE}
 4:
-  parameters: {start_date: DATE}
+  parameters: {start_date: DATE, end_date: DATE}
   aux:
     optimization_guidance: |
       Q4 counts orders in a date window that have at least one late lineitem
@@ -33,7 +33,7 @@
       Prefer precomputing late-order keys / priority histograms; keep maintenance
       local to orderdate and lineitem commit/receipt edits.
 5:
-  parameters: {region_name: VARCHAR, start_date: DATE}
+  parameters: {region_name: VARCHAR, start_date: DATE, end_date: DATE}
   aux:
     optimization_guidance: |
       **PRIORITY — dual axes (Q5):** read is already strong (~9k× read-only / ~8µs hit on
@@ -60,7 +60,7 @@
       `write_mix_workload_speedup` toward ≥1× (ideally much higher) while keeping
       `read_only_query_speedup` near the current best.
 6:
-  parameters: {start_date: DATE, discount: DECIMAL, quantity: DECIMAL}
+  parameters: {start_date: DATE, discount: DECIMAL, quantity: DECIMAL, end_date: DATE}
 7:
   parameters: {nation1: VARCHAR, nation2: VARCHAR}
   aux:
@@ -92,7 +92,7 @@
       Full redesign is allowed (module.hpp + module.cpp + finalize.cpp + tests + cost model).
       Sources are bootstrapped; retrieved precedents are non-binding. End with `HYPOTHESIS_PATCH_COMPLETE`.
 10:
-  parameters: {start_date: DATE}
+  parameters: {start_date: DATE, end_date: DATE}
 11:
   parameters: {nation_name: VARCHAR, fraction: DOUBLE}
   aux:
@@ -112,7 +112,7 @@
       - Precompute per-nation totals and per-(nation, partkey) sums to avoid rescanning partsupp.
       - Invalidate or incrementally update on deltas to watched columns only.
 12:
-  parameters: {shipmode1: VARCHAR, shipmode2: VARCHAR, start_date: DATE}
+  parameters: {shipmode1: VARCHAR, shipmode2: VARCHAR, start_date: DATE, end_date: DATE}
 13:
   parameters: {comment_pattern: VARCHAR}
   aux:
@@ -121,11 +121,11 @@
       Maintain per-customer order counts (or histogram buckets) under comment-pattern
       filters; avoid full LEFT JOIN + regroup on every read.
 14:
-  parameters: {start_date: DATE}
+  parameters: {start_date: DATE, end_date: DATE}
   aux:
     partitioning: {strategy: monthly_shipdate, key_function: PartitionKeyFromStartDate}
 15:
-  parameters: {start_date: DATE}
+  parameters: {start_date: DATE, end_date: DATE}
   aux:
     optimization_guidance: |
       Q15 finds suppliers with MAX quarterly revenue (3-month shipdate window from start_date).
@@ -172,7 +172,7 @@
       with shipmode/shipinstruct filters. Index parts by brand/container/size bands and
       maintain matching lineitem revenue; Prefer ApplyDelta on part/lineitem edits.
 20:
-  parameters: {start_date: DATE, part_name_pattern: VARCHAR, nation_name: VARCHAR}
+  parameters: {start_date: DATE, part_name_pattern: VARCHAR, nation_name: VARCHAR, end_date: DATE}
   aux:
     optimization_guidance: |
       Q20 lists in-nation suppliers with excess availqty vs yearly shipped qty for
