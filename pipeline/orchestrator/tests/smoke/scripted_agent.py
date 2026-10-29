@@ -387,7 +387,10 @@ def analysis_critic() -> str:
 def host_bootstrap() -> str:
     """The engine's workload harnesses, as a known-good bootstrap wrote them (fixtures/engines/<engine>/harness)."""
     harness = Path(ENV["ACCEL_SMOKE_KIT"]) / "fixtures" / "engines" / ENGINE / "harness"
-    copy_tree(harness, ROOT)
+    copy_tree(harness, ROOT)  # kept as *.fixture so the repo's include checks do not read them as the backend's own
+    for path in [p for p in sorted(harness.rglob("*.fixture"))]:
+        installed = ROOT / path.relative_to(harness)
+        installed.rename(installed.with_suffix(""))
     return "harnesses installed"
 
 
