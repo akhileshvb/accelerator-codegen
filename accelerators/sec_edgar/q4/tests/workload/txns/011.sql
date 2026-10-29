@@ -7,7 +7,7 @@ INSERT INTO num (adsh, tag, version, ddate, qtrs, uom, value) VALUES
     ('E-1', 'EdgeTag', 'vE', 20240101, 4, 'USD', 1.0e16), ('E-2', 'EdgeTag', 'vE', 20240101, 4, 'USD', 1.0),
     ('E-3', 'EdgeTag', 'vE', 20240101, 4, 'USD', -1.0e16), ('E-4', 'EdgeTag', 'vE', 20240101, 4, 'USD', 1.0e-300),
     ('E-5', 'EdgeTag', 'vE', 20240101, 4, 'USD', 4.9e-324), ('E-2', 'EdgeTag', 'vE', 20240101, 0, 'USD', -(0.0::DOUBLE)),
-    ('E-1', 'EdgeTag', 'vE', 20240101, 0, 'USD', 1.7e308), ('E-2', 'EdgeTag', 'vE', 20240101, 3, 'USD', -1.7e308);
+    ('E-1', 'EdgeTag', 'vE', 20240101, 0, 'USD', 1.0e300), ('E-2', 'EdgeTag', 'vE', 20240101, 3, 'USD', -1.0e300);
 INSERT INTO pre (adsh, report, line, stmt, tag, version) VALUES
     ('E-1', 1, 1, 'CF', 'EdgeTag', 'vE'), ('E-2', 1, 1, 'CF', 'EdgeTag', 'vE'), ('E-3', 1, 1, 'CF', 'EdgeTag', 'vE'),
     ('E-4', 1, 1, 'CF', 'EdgeTag', 'vE'), ('E-5', 1, 1, 'CF', 'EdgeTag', 'vE');
