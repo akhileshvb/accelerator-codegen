@@ -211,7 +211,7 @@ int Snapshots(const std::string &path, const std::string &id, const Spec &spec, 
   DuckdbRuntime rt(wc, *s.entry, 10.0);
   rt.Build();
   std::atomic<bool> done{false};
-  std::atomic<int> checks{0}, mismatches{0}, failures{0}, reference_errors{0};
+  std::atomic<int> checks{0}, mismatches{0}, failures{0}, reference_errors{0}, oracle_retries{0};
   std::mutex ex_mutex;
   std::vector<std::string> examples;
   std::vector<std::thread> threads;
@@ -239,7 +239,22 @@ int Snapshots(const std::string &path, const std::string &id, const Spec &spec, 
           const auto c = RunAccel(rc, "accel_" + id, p);
           const auto full = [&] { return RunQuery(rc, s.ordering.unlimited_sql, p); }; // same snapshot
           const auto probe = [&] { return RunProbe(rc, s.ordering.bounds_sql, p); };
-          const bool wrong = CompareOrdered(s.ordering, a, b, full, probe) != 0 || CompareOrdered(s.ordering, c, b, full, probe) != 0;
+          const auto disagree = [&](const Rows &reference) {
+            return CompareOrdered(s.ordering, a, reference, full, probe) != 0 || CompareOrdered(s.ordering, c, reference, full, probe) != 0;
+          };
+          bool wrong = disagree(b);
+          // DuckDB (1.5.4 and 2.0.0 alike) can show a reader the rows of a bulk INSERT ... SELECT while it commits, to
+          // transactions that started before it: the reference itself is torn, the accelerator answers at the snapshot.
+          // A disagreement counts when it survives a fresh evaluation of the reference (the answers do not change).
+          for (int again = 0; wrong && again < 3; ++again) {
+            try {
+              const auto b2 = RunQuery(rc, s.glue->query_sql, p);
+              ++oracle_retries;
+              wrong = disagree(b2);
+            } catch (const std::exception &) {
+              break;
+            }
+          }
           Q(rc, "COMMIT");
           ++checks;
           if (wrong) {
@@ -277,7 +292,7 @@ int Snapshots(const std::string &path, const std::string &id, const Spec &spec, 
     ex += (i ? "," : "") + examples[i];
   std::cout << "{\"mode\":\"snapshots\",\"writes\":" << writes << ",\"write_errors\":" << write_errors
             << ",\"write_error_example\":" << Json(write_error_example) << ",\"readers\":" << readers << ",\"checks\":" << checks << ",\"reference_errors\":" << reference_errors
-            << ",\"mismatches\":" << mismatches << ",\"reader_failures\":" << failures << ",\"examples\":" << ex << "]," << StoreFields(rt) << "}"
+            << ",\"mismatches\":" << mismatches << ",\"oracle_retries\":" << oracle_retries << ",\"reader_failures\":" << failures << ",\"examples\":" << ex << "]," << StoreFields(rt) << "}"
             << std::endl;
   // some writes must commit, or the readers saw no concurrent maintenance
   return mismatches == 0 && failures == 0 && write_errors < writes && checks > 0 && reference_errors <= checks &&
