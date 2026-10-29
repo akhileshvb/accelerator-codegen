@@ -261,4 +261,106 @@ pub fn filing_keys(um: &Index<UnitRec>, w: &Index<UnitRef>, keys0: &Vec<Vec<u8>>
     out
 }
 
+/// The plan of a transaction.
+#[verifier::rlimit(300)]
+#[verifier::spinoff_prover]
+pub fn plan_full(cls: &Index<ClassRec>, fm: &Index<Vec<UnitRef>>, um: &Index<UnitRec>, dn: &Vec<NumDelta>, dp: &Vec<PreDelta>, ds: &Vec<SubDelta>) -> (p: Plan)
+    requires tbl_str(*cls), fm.wf(), um.wf(),
+    ensures
+        plan_ok(*cls, p.u, p.ct, p.w, p.cw),
+        ({ let ka = all_keys(dn@, dp@, ds@); 
+           &&& forall|fy: int, name: Option<Seq<u8>>| #![trigger u_has(p.u, fy, name)] u_has(p.u, fy, name) <==> u_pred_s(*fm, ka, ds@, fy, name)
+           &&& forall|fy: int, name: Option<Seq<u8>>| #![trigger u_has(p.w, fy, name)] u_has(p.w, fy, name) <==> w_pred(*cls, *fm, ka, ds@, fy, name)
+           &&& canon_keys(seq_view_bytes(p.keys@), wanted_pred(*cls, *fm, *um, ka, ds@)) }),
+{
+    let keys0 = collect_keys(dn, dp, ds);
+    let ghost ka = all_keys(dn@, dp@, ds@);
+    let u = plan_u(fm, &keys0, ds);
+    proof {
+        assert forall|fy: int, name: Option<Seq<u8>>| u_has(u, fy, name) <==> u_pred_s(*fm, ka, ds@, fy, name) by {
+            assert(u_has(u, fy, name) == u_pred(*fm, keys0@, ds@, fy, name));
+            if u_pred(*fm, keys0@, ds@, fy, name) {
+                if exists|i: int| 0 <= i < keys0.len() && fm_has(*fm, keys0@[i]@, fy, name) {
+                    let i = choose|i: int| 0 <= i < keys0.len() && fm_has(*fm, keys0@[i]@, fy, name);
+                    assert(ka[i] == keys0@[i]@);
+                }
+            }
+            if u_pred_s(*fm, ka, ds@, fy, name) {
+                if exists|i: int| 0 <= i < ka.len() && fm_has(*fm, ka[i], fy, name) {
+                    let i = choose|i: int| 0 <= i < ka.len() && fm_has(*fm, ka[i], fy, name);
+                    assert(keys0@[i]@ == ka[i]);
+                }
+            }
+        }
+        assert(u_spec(*fm, ka, ds@) == u_spec(*fm, ka, ds@));
+        assert(uset_ok(u) && forall|fy: int, name: Option<Seq<u8>>| u_has(u, fy, name) <==> u_pred_s(*fm, ka, ds@, fy, name));
+    }
+    let ct = plan_classes(cls, &u);
+    let mvs = plan_mv(cls, &ct, &u);
+    let w = plan_w(&u, &mvs);
+    let cw = plan_classes(cls, &w);
+    proof {
+        let us = u_spec(*fm, ka, ds@);
+        assert(uset_ok(us) && forall|fy: int, name: Option<Seq<u8>>| u_has(us, fy, name) <==> u_pred_s(*fm, ka, ds@, fy, name));
+        assert forall|f: int, n: Option<Seq<u8>>| u_has(u, f, n) == u_has(us, f, n) by {}
+        assert forall|fy: int, name: Option<Seq<u8>>| u_has(w, fy, name) <==> w_pred(*cls, *fm, ka, ds@, fy, name) by {
+            lemma_mv_vw(*cls, ct, u, mvs@, fy, name);
+            assert(u_has(w, fy, name) == (u_has(u, fy, name) || mv_has(mvs@, fy, name)));
+            // vw_pred over u and over u_spec agree
+            if vw_pred(*cls, u, fy, name) {
+                let ok = choose|ok: KeyView| #![trigger cls.at(ok)] cls.at(ok) is Some && cls.at(ok)->0.fy as int == fy && fy_in_u(u, fy)
+                    && notu_keys(cls.at(ok)->0.r.entries(), fy, u).len() < k_limit() && exists|k: KeyView| vsel(cls.at(ok)->0.f.entries(), fy, u).contains(k) && ov(cls.at(ok)->0.f.at(k)->0.name) == name;
+                lemma_notu_congr(cls.at(ok)->0.r.entries(), fy, u, us);
+                lemma_vsel_congr(cls.at(ok)->0.f.entries(), fy, u, us);
+                assert(fy_in_u(us, fy)) by { let kk = choose|kk: KeyView| #![trigger u.at(kk)] u.at(kk) is Some && kk.0 == fy; let ur = u.at(kk)->0; assert(kk == ukey(ur.fy as int, ov(ur.name))); assert(u_has(u, ur.fy as int, ov(ur.name))); assert(u_has(us, ur.fy as int, ov(ur.name))); assert(us.at(kk) is Some); }
+                assert(vw_pred(*cls, us, fy, name));
+            }
+            if vw_pred(*cls, us, fy, name) {
+                let ok = choose|ok: KeyView| #![trigger cls.at(ok)] cls.at(ok) is Some && cls.at(ok)->0.fy as int == fy && fy_in_u(us, fy)
+                    && notu_keys(cls.at(ok)->0.r.entries(), fy, us).len() < k_limit() && exists|k: KeyView| vsel(cls.at(ok)->0.f.entries(), fy, us).contains(k) && ov(cls.at(ok)->0.f.at(k)->0.name) == name;
+                lemma_notu_congr(cls.at(ok)->0.r.entries(), fy, u, us);
+                lemma_vsel_congr(cls.at(ok)->0.f.entries(), fy, u, us);
+                assert(fy_in_u(u, fy)) by { let kk = choose|kk: KeyView| #![trigger us.at(kk)] us.at(kk) is Some && kk.0 == fy; let ur = us.at(kk)->0; assert(kk == ukey(ur.fy as int, ov(ur.name))); assert(u_has(us, ur.fy as int, ov(ur.name))); assert(u_has(u, ur.fy as int, ov(ur.name))); assert(u.at(kk) is Some); }
+                assert(vw_pred(*cls, u, fy, name));
+            }
+        }
+        // plan facts
+        assert(subset_u(u, w));
+        assert forall|ok: KeyView| ct.at(ok) is Some implies cw.at(ok) is Some by {
+            let kk = choose|kk: KeyView| #![trigger u.at(kk)] u.at(kk) is Some && kk.0 == cls.at(ok)->0.fy as int;
+            lemma_subset_key(u, w, kk);
+        }
+        assert(refill_ok(*cls, ct, u, w)) by {
+            assert forall|ok: KeyView, k: KeyView| ct.at(ok) is Some && cls.at(ok) is Some && notu_keys(cls.at(ok)->0.r.entries(), cls.at(ok)->0.fy as int, u).len() < k_limit()
+                && #[trigger] vsel(cls.at(ok)->0.f.entries(), cls.at(ok)->0.fy as int, u).contains(k) implies wn(w, cls.at(ok)->0.fy as int, nkey_v(ov(cls.at(ok)->0.f.at(k)->0.name))) by {
+                let i = choose|i: int| 0 <= i < mvs.len() && okey((#[trigger] mvs@[i]).fy as int, mvs@[i].stmt@, mvs@[i].uom@) == ok && rkey(*mvs@[i].g) == k;
+                let c = cls.at(ok)->0;
+                assert(c.f.at(rkey(*mvs@[i].g)) == Some(*mvs@[i].g));
+                lemma_okey_inj(mvs@[i].fy as int, mvs@[i].stmt@, mvs@[i].uom@, c.fy as int, c.stmt@, c.uom@);
+                assert(mv_has(mvs@, c.fy as int, ov(c.f.at(k)->0.name)));
+                assert(u_has(w, c.fy as int, ov(c.f.at(k)->0.name)));
+                assert(wn(w, c.fy as int, nkey_v(ov(c.f.at(k)->0.name))) == u_has(w, c.fy as int, ov(c.f.at(k)->0.name)));
+            }
+        }
+    }
+    let kf = filing_keys(um, &w, &keys0);
+    proof {
+        let ks = seq_view_bytes(kf@);
+        assert(canon_keys(ks, wanted_pred(*cls, *fm, *um, ka, ds@))) by {
+            assert forall|a: Seq<u8>| ks.contains(a) <==> wanted_pred(*cls, *fm, *um, ka, ds@)(a) by {
+                assert(seq_view_bytes(keys0@) == ka);
+                if wanted_pred(*cls, *fm, *um, ka, ds@)(a) && !ka.contains(a) {
+                    let (fy, name) = choose|fy: int, name: Option<Seq<u8>>| #![trigger um_has(*um, fy, name, a)] w_pred(*cls, *fm, ka, ds@, fy, name) && um_has(*um, fy, name, a);
+                    assert(u_has(w, fy, name));
+                }
+                if ks.contains(a) && !ka.contains(a) {
+                    let (fy, name) = choose|fy: int, name: Option<Seq<u8>>| #![trigger um_has(*um, fy, name, a)] u_has(w, fy, name) && um_has(*um, fy, name, a);
+                    assert(w_pred(*cls, *fm, ka, ds@, fy, name));
+                }
+            }
+        }
+    }
+    Plan { u, ct, w, cw, keys: kf }
+}
+
 } // verus!
