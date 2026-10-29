@@ -16,6 +16,7 @@ pub mod rec;
 pub mod cells;
 pub mod algebra;
 pub mod emit;
+pub mod facts;
 pub mod join;
 pub mod groups;
 pub mod bridge;

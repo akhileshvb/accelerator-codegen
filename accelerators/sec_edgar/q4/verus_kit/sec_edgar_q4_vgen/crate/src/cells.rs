@@ -519,4 +519,13 @@ pub fn apply_rec(g: &mut Index<Index<Cell>>, r: &Rec, Ghost(tot): Ghost<Tot>)
     }
 }
 
+
+/// Totals that agree on every parameter set and group function represent the same groups.
+pub proof fn lemma_rep_ext(g: Index<Index<Cell>>, t1: Tot, t2: Tot)
+    requires forall|p: Params, h: spec_fn(JK) -> int| #[trigger] t1(p, h) == t2(p, h),
+    ensures rep(g, t1) == rep(g, t2),
+{
+    assert(t1 =~= t2);
+}
+
 }
