@@ -98,6 +98,7 @@ inline std::vector<std::string> MaterializeOrderedRows(duckdb::MaterializedQuery
 }
 
 inline bool ValuesEqualCell(const duckdb::Value &expected, const duckdb::Value &actual) {
+    if (expected.IsNull() || actual.IsNull()) return expected.IsNull() && actual.IsNull();
     if (expected.type().id() == duckdb::LogicalTypeId::DOUBLE && actual.type().id() == duckdb::LogicalTypeId::DOUBLE) {
         const double expected_value = expected.GetValue<double>();
         const double actual_value = actual.GetValue<double>();
