@@ -1,0 +1,15 @@
+-- Kernel inputs for SEC-EDGAR Q4.  Writes are filing batches: one sub row with its num / pre rows (same adsh), plus
+-- tag rows for the filer's custom tags; an amendment is a new filing; a withdrawal deletes a filing's rows.
+-- A filing's rows are rescanned by adsh; a tag change reaches the num / pre rows of every filing using it, rescanned by tag.
+scan sub AS SubRt: SELECT adsh AS adsh, cik AS cik, sic AS sic FROM sub;
+scan tag AS TagRt: SELECT tag AS tag, version AS version, abstract AS abstract_, tlabel AS tlabel FROM tag;
+scan nums AS NumRt: SELECT adsh AS adsh, tag AS tag, version AS version, uom AS uom, value AS value FROM num;
+scan pres AS PreRt: SELECT adsh AS adsh, stmt AS stmt, tag AS tag, version AS version FROM pre;
+rescan nums_by_adsh AS NumRt KEYS adsh: SELECT adsh AS adsh, tag AS tag, version AS version, uom AS uom, value AS value FROM num;
+rescan pres_by_adsh AS PreRt KEYS adsh: SELECT adsh AS adsh, stmt AS stmt, tag AS tag, version AS version FROM pre;
+rescan nums_by_tag AS NumRt KEYS tag: SELECT adsh AS adsh, tag AS tag, version AS version, uom AS uom, value AS value FROM num;
+rescan pres_by_tag AS PreRt KEYS tag: SELECT adsh AS adsh, stmt AS stmt, tag AS tag, version AS version FROM pre;
+delta num AS NumDelta OF NumRt: SELECT adsh AS adsh, tag AS tag, version AS version, uom AS uom, value AS value FROM num;
+delta pre AS PreDelta OF PreRt: SELECT adsh AS adsh, stmt AS stmt, tag AS tag, version AS version FROM pre;
+delta sub AS SubDelta OF SubRt: SELECT adsh AS adsh, cik AS cik, sic AS sic FROM sub;
+delta tag AS TagDelta OF TagRt: SELECT tag AS tag, version AS version, abstract AS abstract_, tlabel AS tlabel FROM tag;
