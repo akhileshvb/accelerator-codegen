@@ -109,7 +109,8 @@ int main(int argc, char **argv) {
     const auto writes = runtime.CalibrationWrites();
     accelerator_codegen::aux_state::core::AuxCalibrationResult result;
     if (!writes.empty()) {
-      accelerator_codegen::aux_state::engine::duckdb::DuckdbCalibrationEngine calibration_engine(runtime);
+      accelerator_codegen::aux_state::engine::duckdb::DuckdbCalibrationEngine calibration_engine(
+          runtime, accelerator_codegen::aux_state::engine::DefaultArguments(entry));
       const auto calibrated = accelerator_codegen::aux_state::core::CalibrateFromWrites(
           writes, calibration_engine, {}, std::max(1, driver::EnvInt("ACCEL_INTERFERENCE_ISOLATED_SAMPLES", 2)));
       result.params = calibrated.params;
