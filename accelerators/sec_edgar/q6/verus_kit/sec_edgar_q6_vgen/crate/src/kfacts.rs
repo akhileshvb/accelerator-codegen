@@ -197,4 +197,39 @@ pub proof fn lemma_um_ok2(db: Db, db2: Db, ds: Seq<(SubRow, int)>, kall: Seq<Seq
     }
 }
 
+/// A unit outside the plan's set has no sub row, before or after, of a filing with a delta row.
+pub proof fn lemma_not_u_not_asked(db: Db, db2: Db, dn: Seq<NumDelta>, dp: Seq<PreDelta>, ds: Seq<SubDelta>, fm: Index<Vec<UnitRef>>, u: Index<UnitRef>, fy: int, name: Option<Seq<u8>>, a: Seq<u8>)
+    requires
+        capture_ok(db, db2, num_delta_seq_view(dn), pre_delta_seq_view(dp), sub_delta_seq_view(ds)),
+        fm_ok(fm, db),
+        forall|f: int, n: Option<Seq<u8>>| #![trigger u_has(u, f, n)] u_has(u, f, n) <==> u_pred_s(fm, all_keys(dn, dp, ds), ds, f, n),
+        !u_has(u, fy, name), sub_has(db, a, fy, name) || sub_has(db2, a, fy, name),
+    ensures !all_keys(dn, dp, ds).contains(a),
+{
+    let kall = all_keys(dn, dp, ds);
+    let vs = sub_delta_seq_view(ds);
+    if kall.contains(a) {
+        let i = choose|i: int| 0 <= i < kall.len() && kall[i] == a;
+        if sub_has(db, a, fy, name) {
+            assert(fm_has(fm, kall[i], fy, name));
+            assert(u_pred_s(fm, kall, ds, fy, name));
+        } else {
+            let q = choose|q: int| 0 <= q < db2.sub.len() && db2.sub[q].adsh == a && db2.sub[q].fy == Some(fy) && db2.sub[q].name == name;
+            let s = db2.sub[q];
+            if db.sub.contains(s) {
+                let q2 = choose|q2: int| 0 <= q2 < db.sub.len() && db.sub[q2] == s;
+                assert(sub_has(db, a, fy, name));
+                assert(fm_has(fm, kall[i], fy, name));
+                assert(u_pred_s(fm, kall, ds, fy, name));
+            } else {
+                let w = lemma_new_sub_in_delta(db, db2, vs, s);
+                assert(vs[w].0 == sub_rt_view(ds[w].row));
+                assert(sd_at(ds, w, fy, name));
+                assert(u_pred_s(fm, kall, ds, fy, name));
+            }
+        }
+        assert(u_has(u, fy, name));
+    }
+}
+
 } // verus!
