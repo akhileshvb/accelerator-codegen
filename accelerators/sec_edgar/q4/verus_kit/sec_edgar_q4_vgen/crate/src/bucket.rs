@@ -143,4 +143,18 @@ pub proof fn lemma_bucket_sum<R: Keyed>(b: Index<Vec<R>>, tab: Seq<R::V>, k: Key
     lemma_sum_ext_all(tab, key_weight::<R>(k, f), f);
 }
 
+/// Buckets that hold one table hold every other table with the same sums.
+pub proof fn lemma_bag_holds_transfer<R: Keyed>(b: Index<Vec<R>>, tab: Seq<R::V>, other: Seq<R::V>)
+    requires
+        bag_holds::<R>(b, tab),
+        forall|f: spec_fn(R::V) -> int| #[trigger] sum(tab, f) == sum(other, f),
+    ensures
+        bag_holds::<R>(b, other),
+{
+    assert forall|k: KeyView, f: spec_fn(R::V) -> int| #[trigger] sum(rows_at::<R>(b, k), f) == sum(other, key_weight::<R>(k, f)) by {
+        assert(sum(rows_at::<R>(b, k), f) == sum(tab, key_weight::<R>(k, f)));
+        assert(sum(tab, key_weight::<R>(k, f)) == sum(other, key_weight::<R>(k, f)));
+    }
+}
+
 }

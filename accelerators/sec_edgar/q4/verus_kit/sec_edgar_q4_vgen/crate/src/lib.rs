@@ -15,4 +15,5 @@ pub mod join;
 pub mod groups;
 pub mod bridge;
 pub mod output;
+pub mod execute;
 pub mod gen_ffi;
