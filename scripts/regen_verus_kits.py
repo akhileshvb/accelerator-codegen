@@ -2,7 +2,7 @@
 """Regenerate the sql2verus-generated files of a benchmark's Verus kits: gen_world.rs, gen_ffi.rs
 and the C header.  gen_spec.rs and gen_obligations.rs are only compared (the spec is frozen):
 a difference is an error and nothing is written for that kit.  A kit without them yet (a new
-kit) gets them written, with a kernel stub (kernel.rs) if it has no kernel.
+kit) gets them written, with a kernel stub (kernel.rs) if it has no kernel, a minimal lib.rs, and the derived host glue (glue.cpp) if it has none.
 
     python3 scripts/regen_verus_kits.py [--bench tpch] [--update q11,q21] <sql2verus binary> <schema.sql> <inputs dir> [q1 q2 ...]
 
@@ -69,6 +69,8 @@ def main() -> int:
                    "--ffi-prefix", f"{FFI_PREFIX.get(bench, bench.replace('_', ''))}q{n}vgen"]
             if has_inputs:
                 cmd += ["--inputs", t / "q.inputs"]
+            if not (kit / "glue.cpp").exists():  # a new kit: the derived host glue as its start
+                cmd += ["--host-glue", t / "glue.cpp", "--query-id", n, "--accel-id", name, "--workload", bench]
             nullable = ROOT / f"workloads/{bench}/{q}.nullable-params"
             if nullable.exists():
                 cmd += ["--nullable-params", nullable.read_text().strip()]
@@ -81,6 +83,9 @@ def main() -> int:
             fresh = [f for f in ("gen_spec.rs", "gen_obligations.rs") if not (src / f).exists()]
             for f in fresh:  # a new kit: its first spec
                 shutil.copy2(t / f, src / f)
+            if not (src / "lib.rs").exists():
+                mods = ("gen_spec", "gen_obligations", "kernel", "gen_world", "gen_ffi")
+                (src / "lib.rs").write_text("#![allow(unused_imports)]\n\n" + "".join(f"pub mod {m};\n" for m in mods))
             if fresh and not (src / "kernel.rs").exists():
                 shutil.copy2(t / "kernel_stub.rs", src / "kernel.rs")
             frozen = [f for f in ("gen_spec.rs", "gen_obligations.rs") if not same(t / f, src / f)]
@@ -92,6 +97,8 @@ def main() -> int:
                 print(f"{q}: {', '.join(frozen)} differ from the committed ones; not written")
                 bad += 1
                 continue
+            if (t / "glue.cpp").exists():
+                shutil.copy2(t / "glue.cpp", kit / "glue.cpp")
             shutil.copy2(t / "gen_world.rs", src / "gen_world.rs")
             shutil.copy2(t / "gen_ffi.rs", src / "gen_ffi.rs")
             shutil.copy2(t / f"{name}_verus.h", kit / f"{name}_verus.h")
