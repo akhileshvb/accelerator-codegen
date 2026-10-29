@@ -24,10 +24,20 @@ pub struct Cand {
     pub sic: Option<i64>,
     pub tlabel: Option<Vec<u8>>,
     pub nciks: u128,
+    pub count: Wide,
+    pub sum: Wide,
+    pub abs: Wide,
     pub cv_t: Wide,
     pub bits_t: Option<u64>,
+    pub avg_done: bool,
     pub cv_a: Wide,
     pub bits_a: Option<u64>,
+    pub q: Ghost<int>,
+}
+
+/// The average a candidate stands for: the rounded one once computed, else its integer quotient.
+pub open spec fn cand_avg(c: Cand) -> int {
+    if c.avg_done { c.cv_a@ } else { c.q@ }
 }
 
 pub open spec fn cand_row(p: Params, c: Cand) -> OutRow {
@@ -37,7 +47,7 @@ pub open spec fn cand_row(p: Params, c: Cand) -> OutRow {
         stmt: Some(p.p3),
         num_companies: c.nciks as int,
         total_value: Some(c.cv_t@),
-        avg_value: Some(c.cv_a@),
+        avg_value: Some(cand_avg(c)),
     }
 }
 
@@ -49,13 +59,39 @@ pub open spec fn rounded_as(x: int, cv: int, bits: Option<u64>) -> bool {
     }
 }
 
-/// The candidate for cell c: its sum and its average (the sum over the count, to an integer) rounded.
-pub open spec fn cand_of(c: Cell, q: int, k: Cand) -> bool {
-    &&& k.sic == Some(c.sic)
-    &&& opt_bytes(k.tlabel) == opt_bytes(c.tlabel)
-    &&& k.nciks == c.nciks
-    &&& rounded_as(c.sum@, k.cv_t@, k.bits_t)
-    &&& rounded_as(q, k.cv_a@, k.bits_a)
+/// The candidate is a group of the query's answer: its aggregates are the group's, its total is rounded,
+/// and its average is rounded from the integer quotient q once computed.
+pub open spec fn cand_sound(db: Db, p: Params, k: Cand) -> bool {
+    &&& k.sic is Some
+    &&& cell_facts(db, p, k.sic->0 as int, opt_bytes(k.tlabel), k.count@, k.sum@, k.abs@, k.nciks as int)
+    &&& k.nciks >= 2
+    &&& rounded_as(k.sum@, k.cv_t@, k.bits_t)
+    &&& 2 * abs(k.q@ * k.count@ - k.sum@) <= k.count@
+    &&& abs(k.q@) <= abs(k.sum@)
+    &&& (k.avg_done ==> rounded_as(k.q@, k.cv_a@, k.bits_a))
+}
+
+pub open spec fn quot_ok(e: int, k: int, q: int) -> bool {
+    2 * abs(q * k - e) <= k && abs(q) <= abs(e)
+}
+
+/// Some integer is the quotient rounded.
+proof fn lemma_exists_quot(e: int, k: int)
+    requires k >= 1,
+    ensures exists|q: int| #[trigger] quot_ok(e, k, q),
+{
+    let d = 2 * k;
+    let n = 2 * e + k;
+    let q = n / d;
+    let r = n % d;
+    vstd::arithmetic::div_mod::lemma_fundamental_div_mod(n, d);
+    vstd::arithmetic::div_mod::lemma_mod_bound(n, d);
+    assert(n == d * q + r);
+    assert(2 * (q * k - e) == k - r) by (nonlinear_arith) requires n == d * q + r, d == 2 * k, n == 2 * e + k;
+    assert(2 * abs(q * k - e) <= k);
+    assert(abs(q) <= abs(e)) by (nonlinear_arith)
+        requires 2 * abs(q * k - e) <= k, k >= 1;
+    assert(quot_ok(e, k, q));
 }
 
 /// A rounded quotient is within the bound of float_within_div.
@@ -92,19 +128,13 @@ proof fn lemma_avg_within(v: int, q: int, e: int, a: int, k: int)
 }
 
 
-/// A candidate built from a cell is a row of the answer.
-pub proof fn lemma_cand_ok(db: Db, p: Params, c: Cell, q: int, k: Cand)
-    requires
-        cell_facts(db, p, c.sic as int, opt_bytes(c.tlabel), c.count@, c.sum@, c.abs@, c.nciks as int),
-        c.nciks >= 2,
-        cand_of(c, q, k),
-        2 * abs(q * c.count@ - c.sum@) <= c.count@,
-        abs(q) <= abs(c.sum@),
-    ensures
-        row_ok(db, p, cand_row(p, k)),
+/// A sound candidate is a row of the answer.
+pub proof fn lemma_cand_ok(db: Db, p: Params, k: Cand)
+    requires cand_sound(db, p, k),
+    ensures row_ok(db, p, cand_row(p, k)),
 {
-    let (gs, gt) = (Some(c.sic as int), opt_bytes(c.tlabel));
-    let (cnt, e, a) = (c.count@, c.sum@, c.abs@);
+    let (gs, gt) = (Some(k.sic->0 as int), opt_bytes(k.tlabel));
+    let (cnt, e, a, q) = (k.count@, k.sum@, k.abs@, k.q@);
     assert(cnt >= 2);
     let r = cand_row(p, k);
     assert(r.sic == gs && r.tlabel == gt && r.stmt == Some(p.p3));
@@ -120,16 +150,21 @@ pub proof fn lemma_cand_ok(db: Db, p: Params, c: Cell, q: int, k: Cand)
         None => {},
     }
     assert(float_within(k.cv_t@, e, a, cnt - 1));
-    lemma_avg_within(k.cv_a@, q, e, a, cnt);
-    match k.bits_a {
-        Some(b) => {
-            lemma_avg_within(f64_val(b), q, e, a, cnt);
-        },
-        None => {
-            lemma_avg_within(q, q, e, a, cnt);
-        },
+    if k.avg_done {
+        lemma_avg_within(k.cv_a@, q, e, a, cnt);
+        match k.bits_a {
+            Some(b) => {
+                lemma_avg_within(f64_val(b), q, e, a, cnt);
+            },
+            None => {
+                lemma_avg_within(q, q, e, a, cnt);
+            },
+        }
+        assert(float_within_div(k.cv_a@ * cnt, e, a, cnt - 1 + 1, cnt));
+    } else {
+        lemma_avg_within(q, q, e, a, cnt);
+        assert(float_within_div(q * cnt, e, a, cnt - 1 + 1, cnt));
     }
-    assert(float_within_div(k.cv_a@ * cnt, e, a, cnt - 1 + 1, cnt));
     assert(row_ok(db, p, r));
 }
 
@@ -146,8 +181,7 @@ pub fn make_cands(rows: &Vec<(Key, Arc<Cell>)>, c: &Consts, Ghost(db): Ghost<Db>
         forall|sc: int, tl: Option<Seq<u8>>| p.p1 <= sc <= p.p2 && #[trigger] cell_at(g, p.p4, p.p3, sc, tl) is Some ==>
             exists|j: int| 0 <= j < rows.len() && rows[j].1.sic as int == sc && opt_bytes(rows[j].1.tlabel) == tl,
     ensures
-        forall|j: int| 0 <= j < cands.len() ==> row_ok(db, p, cand_row(p, #[trigger] cands[j])),
-        forall|j: int| 0 <= j < cands.len() ==> cand_sane(#[trigger] cands[j]),
+        forall|j: int| 0 <= j < cands.len() ==> cand_sound(db, p, #[trigger] cands[j]) && !cands[j].avg_done,
         forall|j: int, m: int| 0 <= j < m < cands.len() ==>
             !(cands[j].sic == cands[m].sic && opt_bytes(cands[j].tlabel) == opt_bytes(cands[m].tlabel)),
         forall|gs: Option<int>, gt: Option<Seq<u8>>|
@@ -165,8 +199,7 @@ pub fn make_cands(rows: &Vec<(Key, Arc<Cell>)>, c: &Consts, Ghost(db): Ghost<Db>
             forall|j: int| 0 <= j < rows.len() ==> p.p1 <= (#[trigger] rows[j]).1.sic as int <= p.p2
                 && cell_at(g, p.p4, p.p3, rows[j].1.sic as int, opt_bytes(rows[j].1.tlabel)) == Some(*rows[j].1),
             src.len() == cands.len(),
-            forall|j: int| 0 <= j < cands.len() ==> row_ok(db, p, cand_row(p, #[trigger] cands[j])),
-            forall|j: int| 0 <= j < cands.len() ==> cand_sane(#[trigger] cands[j]),
+            forall|j: int| 0 <= j < cands.len() ==> cand_sound(db, p, #[trigger] cands[j]) && !cands[j].avg_done,
             forall|j: int| 0 <= j < cands.len() ==> 0 <= #[trigger] src[j] < i
                 && cands[j].sic == Some(rows[src[j]].1.sic)
                 && opt_bytes(cands[j].tlabel) == opt_bytes(rows[src[j]].1.tlabel),
@@ -181,15 +214,17 @@ pub fn make_cands(rows: &Vec<(Key, Arc<Cell>)>, c: &Consts, Ghost(db): Ghost<Db>
                 assert(cell.count@ >= 2);
             }
             let (cvt, bt) = round_value(&cell.sum, c);
-            let q = div_round(&cell.sum, &cell.count);
-            let (cva, ba) = round_value(&q, c);
+            proof { lemma_exists_quot(cell.sum@, cell.count@); }
+            let ghost q = choose|q: int| quot_ok(cell.sum@, cell.count@, q);
             let k = Cand {
                 sic: Some(cell.sic),
                 tlabel: match &cell.tlabel { Some(b) => Some(crate::rows::copy_bytes(b.as_slice())), None => None },
                 nciks: cell.nciks,
-                cv_t: cvt, bits_t: bt, cv_a: cva, bits_a: ba,
+                count: cell.count.dup(), sum: cell.sum.dup(), abs: cell.abs.dup(),
+                cv_t: cvt, bits_t: bt,
+                avg_done: false, cv_a: Wide::zero(), bits_a: None, q: Ghost(q),
             };
-            proof { lemma_cand_ok(db, p, *cell, q@, k); lemma_cand_sane(*cell, q@, k); }
+            proof { assert(cand_sound(db, p, k)); }
             let ghost old_len = cands.len();
             cands.push(k);
             proof {
@@ -336,7 +371,7 @@ proof fn lemma_sorted_full(db: Db, p: Params, cands: Seq<Cand>, sorted: Seq<usiz
 pub type Out = (Option<i64>, Option<Vec<u8>>, Option<Vec<u8>>, i64, Option<u64>, Option<u64>);
 
 pub open spec fn cand_fits(k: Cand) -> bool {
-    k.bits_t is Some && k.bits_a is Some && k.nciks <= i64::MAX as u128
+    k.bits_t is Some && k.avg_done && k.bits_a is Some && k.nciks <= i64::MAX as u128
 }
 
 /// The candidate's values and its bits agree.
@@ -345,34 +380,57 @@ pub open spec fn cand_sane(k: Cand) -> bool {
         Some(b) => f64_in_range(k.cv_t@) && k.cv_t@ == f64_val(b),
         None => !f64_in_range(k.cv_t@),
     }
-    &&& match k.bits_a {
+    &&& (k.avg_done ==> match k.bits_a {
         Some(b) => f64_in_range(k.cv_a@) && k.cv_a@ == f64_val(b),
         None => !f64_in_range(k.cv_a@),
-    }
+    })
 }
 
-proof fn lemma_cand_sane(c: Cell, q: int, k: Cand)
-    requires cand_of(c, q, k),
+proof fn lemma_cand_sane(db: Db, p: Params, k: Cand)
+    requires cand_sound(db, p, k),
     ensures cand_sane(k),
 {
     if let Some(b) = k.bits_t { lemma_f64_in_range(b); }
-    if let Some(b) = k.bits_a { lemma_f64_in_range(b); }
+    if k.avg_done { if let Some(b) = k.bits_a { lemma_f64_in_range(b); } }
 }
 
 /// A candidate that does not fit the result's types is in no answer that fits; one that does is a fitting row.
 proof fn lemma_fits_row(p: Params, k: Cand)
-    requires cand_sane(k),
+    requires cand_sane(k), k.avg_done,
     ensures out_fits(cand_row(p, k)) == cand_fits(k),
 {
 }
 
-/// The answer: the first 500 candidates in order, or None when one of them has a value that is no double.
-pub fn finish(cands: &Vec<Cand>, stmt: &[u8], Ghost(db): Ghost<Db>, Ghost(p): Ghost<Params>)
+/// Two candidates of the same group with the same total.
+pub open spec fn same_key(a: Cand, b: Cand) -> bool {
+    a.sic == b.sic && opt_bytes(a.tlabel) == opt_bytes(b.tlabel) && a.cv_t@ == b.cv_t@
+}
+
+/// The candidate with its average rounded from the integer quotient.
+fn complete_avg(k: &Cand, c: &Consts, Ghost(db): Ghost<Db>, Ghost(p): Ghost<Params>) -> (r: Cand)
+    requires consts_ok(*c), cand_sound(db, p, *k), !k.avg_done,
+    ensures cand_sound(db, p, r), r.avg_done, same_key(*k, r),
+{
+    let q = div_round(&k.sum, &k.count);
+    let (cva, ba) = round_value(&q, c);
+    Cand {
+        sic: k.sic,
+        tlabel: match &k.tlabel { Some(b) => Some(crate::rows::copy_bytes(b.as_slice())), None => None },
+        nciks: k.nciks,
+        count: k.count.dup(), sum: k.sum.dup(), abs: k.abs.dup(),
+        cv_t: k.cv_t.dup(), bits_t: k.bits_t,
+        avg_done: true, cv_a: cva, bits_a: ba, q: Ghost(q@),
+    }
+}
+
+/// The answer: the first 500 candidates in order (their averages rounded now), or None when one of them
+/// has a value that is no double.
+pub fn finish(mut cands: Vec<Cand>, stmt: &[u8], c: &Consts, Ghost(db): Ghost<Db>, Ghost(p): Ghost<Params>)
     -> (r: Option<Vec<Out>>)
     requires
         p.p3 == stmt@,
-        forall|j: int| 0 <= j < cands.len() ==> row_ok(db, p, cand_row(p, #[trigger] cands[j])),
-        forall|j: int| 0 <= j < cands.len() ==> cand_sane(#[trigger] cands[j]),
+        consts_ok(*c),
+        forall|j: int| 0 <= j < cands.len() ==> cand_sound(db, p, #[trigger] cands[j]) && !cands[j].avg_done,
         forall|j: int, m: int| 0 <= j < m < cands.len() ==>
             !(cands[j].sic == cands[m].sic && opt_bytes(cands[j].tlabel) == opt_bytes(cands[m].tlabel)),
         forall|gs: Option<int>, gt: Option<Seq<u8>>|
@@ -384,6 +442,7 @@ pub fn finish(cands: &Vec<Cand>, stmt: &[u8], Ghost(db): Ghost<Db>, Ghost(p): Gh
         r is None ==> !answer_fits(db, p),
 {
     let n = cands.len();
+    let ghost orig = cands@;
     let mut indices: Vec<usize> = Vec::with_capacity(n);
     let mut i: usize = 0;
     while i < n
@@ -415,15 +474,61 @@ pub fn finish(cands: &Vec<Cand>, stmt: &[u8], Ghost(db): Ghost<Db>, Ghost(p): Gh
         }
         lemma_index_permutation(sorted@, indices@, n as nat);
         assert forall|a: int, b: int| 0 <= a < b < sorted.len() implies
-            cands@[sorted@[a] as int].cv_t@ >= cands@[sorted@[b] as int].cv_t@ by {
+            orig[sorted@[a] as int].cv_t@ >= orig[sorted@[b] as int].cv_t@ by {
             assert(le(sorted@[a], sorted@[b]));
+        }
+    }
+    let m = if sorted.len() < 500 { sorted.len() } else { 500 };
+    // the first m candidates get their averages rounded (the rest are cut)
+    let mut r: usize = 0;
+    while r < m
+        invariant
+            r <= m, m <= sorted.len(), m <= 500, cands.len() == n, sorted.len() == n,
+            consts_ok(*c),
+            forall|j: int| 0 <= j < sorted.len() ==> (#[trigger] sorted@[j]) < n,
+            sorted@.no_duplicates(),
+            forall|j: int| 0 <= j < n ==> cand_sound(db, p, #[trigger] cands[j]) && same_key(cands[j], orig[j]),
+            forall|j: int| 0 <= j < r ==> cands[sorted@[j] as int].avg_done,
+            forall|j: int| r <= j < n ==> !cands[sorted@[j] as int].avg_done,
+        decreases m - r,
+    {
+        let idx = sorted[r];
+        let done = complete_avg(&cands[idx], c, Ghost(db), Ghost(p));
+        cands.set(idx, done);
+        proof {
+            assert forall|j: int| r + 1 <= j < n implies !cands[sorted@[j] as int].avg_done by {
+                assert(sorted@[j] != sorted@[r as int]);
+            }
+        }
+        r += 1;
+    }
+    proof {
+        assert forall|j: int| 0 <= j < cands.len() implies row_ok(db, p, cand_row(p, #[trigger] cands[j])) by {
+            lemma_cand_ok(db, p, cands[j]);
+        }
+        assert forall|j: int| 0 <= j < cands.len() implies cand_sane(#[trigger] cands[j]) by {
+            lemma_cand_sane(db, p, cands[j]);
+        }
+        assert forall|j: int, k2: int| 0 <= j < k2 < cands.len() implies
+            !(cands[j].sic == cands[k2].sic && opt_bytes(cands[j].tlabel) == opt_bytes(cands[k2].tlabel)) by {
+            assert(same_key(cands[j], orig[j]) && same_key(cands[k2], orig[k2]));
+        }
+        assert forall|gs: Option<int>, gt: Option<Seq<u8>>|
+            group_count(db, p, gs, gt, Some(p.p3)) > 0 && #[trigger] having(db, p, gs, gt, Some(p.p3))
+                implies exists|j: int| 0 <= j < cands.len() && opt_int(cands[j].sic) == gs && opt_bytes(cands[j].tlabel) == gt by {
+            let j = choose|j: int| 0 <= j < orig.len() && opt_int(orig[j].sic) == gs && opt_bytes(orig[j].tlabel) == gt;
+            assert(same_key(cands[j], orig[j]));
+        }
+        assert forall|a: int, b: int| 0 <= a < b < sorted.len() implies
+            cands@[sorted@[a] as int].cv_t@ >= cands@[sorted@[b] as int].cv_t@ by {
+            assert(same_key(cands[sorted@[a] as int], orig[sorted@[a] as int]));
+            assert(same_key(cands[sorted@[b] as int], orig[sorted@[b] as int]));
         }
         lemma_sorted_full(db, p, cands@, sorted@);
     }
     let ghost full = sorted_rows(p, cands@, sorted@);
     let ghost limited = if full.len() <= 500 { full } else { full.take(500) };
     proof { assert(query_result(db, p, limited)); }
-    let m = if sorted.len() < 500 { sorted.len() } else { 500 };
     let mut out: Vec<Out> = Vec::new();
     let mut k: usize = 0;
     proof {
@@ -437,6 +542,7 @@ pub fn finish(cands: &Vec<Cand>, stmt: &[u8], Ghost(db): Ghost<Db>, Ghost(p): Gh
             k <= m, m <= sorted.len(), m <= 500, m == limited.len(),
             sorted.len() == cands.len(),
             forall|j: int| 0 <= j < cands.len() ==> cand_sane(#[trigger] cands[j]),
+            forall|j: int| 0 <= j < m ==> cands[sorted@[j] as int].avg_done,
             p.p3 == stmt@,
             forall|j: int| 0 <= j < sorted.len() ==> (#[trigger] sorted@[j]) < cands.len(),
             forall|j: int| 0 <= j < m ==> limited[j] == cand_row(p, cands@[sorted@[j] as int]),
@@ -453,6 +559,7 @@ pub fn finish(cands: &Vec<Cand>, stmt: &[u8], Ghost(db): Ghost<Db>, Ghost(p): Gh
             let idx = sorted@[k as int] as int;
             assert(0 <= idx < cands.len());
             assert(cand_sane(cands[idx]));
+            assert(cand.avg_done);
             lemma_fits_row(p, *cand);
         }
         if cand.bits_t.is_none() || cand.bits_a.is_none() || cand.nciks > 0x7fff_ffff_ffff_ffffu128 {
@@ -502,7 +609,6 @@ pub fn finish(cands: &Vec<Cand>, stmt: &[u8], Ghost(db): Ghost<Db>, Ghost(p): Gh
     }
     Some(out)
 }
-
 
 /// The answer to the query for a parameter set, from the stored groups.
 pub fn answer(groups: &Index<Index<Cell>>, p1: i64, p2: i64, p3: &[u8], p4: &[u8], c: &Consts, Ghost(db): Ghost<Db>) -> (r: Option<Vec<Out>>)
@@ -577,7 +683,7 @@ pub fn answer(groups: &Index<Index<Cell>>, p1: i64, p2: i64, p3: &[u8], p4: &[u8
         },
     };
     let cands = make_cands(&rows, c, Ghost(db), Ghost(p), Ghost(g));
-    finish(&cands, p3, Ghost(db), Ghost(p))
+    finish(cands, p3, c, Ghost(db), Ghost(p))
 }
 
 }
