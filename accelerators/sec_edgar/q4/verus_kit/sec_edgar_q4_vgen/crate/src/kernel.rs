@@ -60,19 +60,19 @@ pub open spec fn history(s: State) -> nat {
     0
 }
 
-pub open spec fn rescan_nums_by_adsh_wanted(s: State, num_delta: Seq<NumDelta>, pre_delta: Seq<PreDelta>, sub_delta: Seq<SubDelta>, tag_delta: Seq<TagDelta>) -> Seq<Vec<u8>> {
+pub open spec fn rescan_nums_by_adsh_wanted(s: State, num_delta: Seq<NumDelta>, pre_delta: Seq<PreDelta>, sub_delta: Seq<SubDelta>, tag_delta: Seq<TagDelta>) -> Seq<Seq<u8>> {
     Seq::empty()
 }
 
-pub open spec fn rescan_pres_by_adsh_wanted(s: State, num_delta: Seq<NumDelta>, pre_delta: Seq<PreDelta>, sub_delta: Seq<SubDelta>, tag_delta: Seq<TagDelta>) -> Seq<Vec<u8>> {
+pub open spec fn rescan_pres_by_adsh_wanted(s: State, num_delta: Seq<NumDelta>, pre_delta: Seq<PreDelta>, sub_delta: Seq<SubDelta>, tag_delta: Seq<TagDelta>) -> Seq<Seq<u8>> {
     Seq::empty()
 }
 
-pub open spec fn rescan_nums_by_tag_wanted(s: State, num_delta: Seq<NumDelta>, pre_delta: Seq<PreDelta>, sub_delta: Seq<SubDelta>, tag_delta: Seq<TagDelta>) -> Seq<Vec<u8>> {
+pub open spec fn rescan_nums_by_tag_wanted(s: State, num_delta: Seq<NumDelta>, pre_delta: Seq<PreDelta>, sub_delta: Seq<SubDelta>, tag_delta: Seq<TagDelta>) -> Seq<Seq<u8>> {
     Seq::empty()
 }
 
-pub open spec fn rescan_pres_by_tag_wanted(s: State, num_delta: Seq<NumDelta>, pre_delta: Seq<PreDelta>, sub_delta: Seq<SubDelta>, tag_delta: Seq<TagDelta>) -> Seq<Vec<u8>> {
+pub open spec fn rescan_pres_by_tag_wanted(s: State, num_delta: Seq<NumDelta>, pre_delta: Seq<PreDelta>, sub_delta: Seq<SubDelta>, tag_delta: Seq<TagDelta>) -> Seq<Seq<u8>> {
     Seq::empty()
 }
 
@@ -185,7 +185,7 @@ pub fn rescan_nums_by_adsh_keys(
     sub_delta: &Vec<SubDelta>,
     tag_delta: &Vec<TagDelta>,
 ) -> (r: Vec<Vec<u8>>)
-    ensures r@ == crate::kernel::rescan_nums_by_adsh_wanted(*s, num_delta@, pre_delta@, sub_delta@, tag_delta@),
+    ensures seq_view_bytes(r@) == crate::kernel::rescan_nums_by_adsh_wanted(*s, num_delta@, pre_delta@, sub_delta@, tag_delta@),
 {
     Vec::new()
 }
@@ -197,7 +197,7 @@ pub fn rescan_pres_by_adsh_keys(
     sub_delta: &Vec<SubDelta>,
     tag_delta: &Vec<TagDelta>,
 ) -> (r: Vec<Vec<u8>>)
-    ensures r@ == crate::kernel::rescan_pres_by_adsh_wanted(*s, num_delta@, pre_delta@, sub_delta@, tag_delta@),
+    ensures seq_view_bytes(r@) == crate::kernel::rescan_pres_by_adsh_wanted(*s, num_delta@, pre_delta@, sub_delta@, tag_delta@),
 {
     Vec::new()
 }
@@ -209,7 +209,7 @@ pub fn rescan_nums_by_tag_keys(
     sub_delta: &Vec<SubDelta>,
     tag_delta: &Vec<TagDelta>,
 ) -> (r: Vec<Vec<u8>>)
-    ensures r@ == crate::kernel::rescan_nums_by_tag_wanted(*s, num_delta@, pre_delta@, sub_delta@, tag_delta@),
+    ensures seq_view_bytes(r@) == crate::kernel::rescan_nums_by_tag_wanted(*s, num_delta@, pre_delta@, sub_delta@, tag_delta@),
 {
     Vec::new()
 }
@@ -221,7 +221,7 @@ pub fn rescan_pres_by_tag_keys(
     sub_delta: &Vec<SubDelta>,
     tag_delta: &Vec<TagDelta>,
 ) -> (r: Vec<Vec<u8>>)
-    ensures r@ == crate::kernel::rescan_pres_by_tag_wanted(*s, num_delta@, pre_delta@, sub_delta@, tag_delta@),
+    ensures seq_view_bytes(r@) == crate::kernel::rescan_pres_by_tag_wanted(*s, num_delta@, pre_delta@, sub_delta@, tag_delta@),
 {
     Vec::new()
 }
@@ -384,13 +384,13 @@ pub fn apply(
 ) -> (r: Result<State, u32>)
     requires
         capture_ok(s.db(), db2, num_delta_seq_view(num_delta@), pre_delta_seq_view(pre_delta@), sub_delta_seq_view(sub_delta@), tag_delta_seq_view(tag_delta@)),
-        nums_by_adsh_keys@ == crate::kernel::rescan_nums_by_adsh_wanted(*s, num_delta@, pre_delta@, sub_delta@, tag_delta@),
+        seq_view_bytes(nums_by_adsh_keys@) == crate::kernel::rescan_nums_by_adsh_wanted(*s, num_delta@, pre_delta@, sub_delta@, tag_delta@),
         rescan_nums_by_adsh_ok(db2, nums_by_adsh_keys@, nums_by_adsh_rows@),
-        pres_by_adsh_keys@ == crate::kernel::rescan_pres_by_adsh_wanted(*s, num_delta@, pre_delta@, sub_delta@, tag_delta@),
+        seq_view_bytes(pres_by_adsh_keys@) == crate::kernel::rescan_pres_by_adsh_wanted(*s, num_delta@, pre_delta@, sub_delta@, tag_delta@),
         rescan_pres_by_adsh_ok(db2, pres_by_adsh_keys@, pres_by_adsh_rows@),
-        nums_by_tag_keys@ == crate::kernel::rescan_nums_by_tag_wanted(*s, num_delta@, pre_delta@, sub_delta@, tag_delta@),
+        seq_view_bytes(nums_by_tag_keys@) == crate::kernel::rescan_nums_by_tag_wanted(*s, num_delta@, pre_delta@, sub_delta@, tag_delta@),
         rescan_nums_by_tag_ok(db2, nums_by_tag_keys@, nums_by_tag_rows@),
-        pres_by_tag_keys@ == crate::kernel::rescan_pres_by_tag_wanted(*s, num_delta@, pre_delta@, sub_delta@, tag_delta@),
+        seq_view_bytes(pres_by_tag_keys@) == crate::kernel::rescan_pres_by_tag_wanted(*s, num_delta@, pre_delta@, sub_delta@, tag_delta@),
         rescan_pres_by_tag_ok(db2, pres_by_tag_keys@, pres_by_tag_rows@),
     ensures
         r matches Ok(s2) ==> s2.db() == db2,

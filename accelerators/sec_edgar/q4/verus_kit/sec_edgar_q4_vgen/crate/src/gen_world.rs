@@ -58,13 +58,13 @@ pub fn stage_apply(
 ) -> (r: Result<QStaged, u32>)
     requires
         capture_ok((base.timeline())(base.epoch() as nat), (base.timeline())((base.epoch() + 1) as nat), num_delta_seq_view(num_delta@), pre_delta_seq_view(pre_delta@), sub_delta_seq_view(sub_delta@), tag_delta_seq_view(tag_delta@)),
-        nums_by_adsh_keys@ == crate::kernel::rescan_nums_by_adsh_wanted(base.state_spec(), num_delta@, pre_delta@, sub_delta@, tag_delta@),
+        seq_view_bytes(nums_by_adsh_keys@) == crate::kernel::rescan_nums_by_adsh_wanted(base.state_spec(), num_delta@, pre_delta@, sub_delta@, tag_delta@),
         rescan_nums_by_adsh_ok((base.timeline())((base.epoch() + 1) as nat), nums_by_adsh_keys@, nums_by_adsh_rows@),
-        pres_by_adsh_keys@ == crate::kernel::rescan_pres_by_adsh_wanted(base.state_spec(), num_delta@, pre_delta@, sub_delta@, tag_delta@),
+        seq_view_bytes(pres_by_adsh_keys@) == crate::kernel::rescan_pres_by_adsh_wanted(base.state_spec(), num_delta@, pre_delta@, sub_delta@, tag_delta@),
         rescan_pres_by_adsh_ok((base.timeline())((base.epoch() + 1) as nat), pres_by_adsh_keys@, pres_by_adsh_rows@),
-        nums_by_tag_keys@ == crate::kernel::rescan_nums_by_tag_wanted(base.state_spec(), num_delta@, pre_delta@, sub_delta@, tag_delta@),
+        seq_view_bytes(nums_by_tag_keys@) == crate::kernel::rescan_nums_by_tag_wanted(base.state_spec(), num_delta@, pre_delta@, sub_delta@, tag_delta@),
         rescan_nums_by_tag_ok((base.timeline())((base.epoch() + 1) as nat), nums_by_tag_keys@, nums_by_tag_rows@),
-        pres_by_tag_keys@ == crate::kernel::rescan_pres_by_tag_wanted(base.state_spec(), num_delta@, pre_delta@, sub_delta@, tag_delta@),
+        seq_view_bytes(pres_by_tag_keys@) == crate::kernel::rescan_pres_by_tag_wanted(base.state_spec(), num_delta@, pre_delta@, sub_delta@, tag_delta@),
         rescan_pres_by_tag_ok((base.timeline())((base.epoch() + 1) as nat), pres_by_tag_keys@, pres_by_tag_rows@),
     ensures
         r matches Ok(p) ==> p.epoch() == base.epoch() && p.timeline() == base.timeline(),
