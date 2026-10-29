@@ -52,9 +52,9 @@ pub fn stage_apply(
 ) -> (r: Result<QStaged, u32>)
     requires
         capture_ok((base.timeline())(base.epoch() as nat), (base.timeline())((base.epoch() + 1) as nat), num_delta_seq_view(num_delta@), sub_delta_seq_view(sub_delta@)),
-        num_by_filing_keys@ == crate::kernel::rescan_num_by_filing_wanted(base.state_spec(), num_delta@, sub_delta@),
+        seq_view_bytes(num_by_filing_keys@) == crate::kernel::rescan_num_by_filing_wanted(base.state_spec(), num_delta@, sub_delta@),
         rescan_num_by_filing_ok((base.timeline())((base.epoch() + 1) as nat), num_by_filing_keys@, num_by_filing_rows@),
-        sub_by_filing_keys@ == crate::kernel::rescan_sub_by_filing_wanted(base.state_spec(), num_delta@, sub_delta@),
+        seq_view_bytes(sub_by_filing_keys@) == crate::kernel::rescan_sub_by_filing_wanted(base.state_spec(), num_delta@, sub_delta@),
         rescan_sub_by_filing_ok((base.timeline())((base.epoch() + 1) as nat), sub_by_filing_keys@, sub_by_filing_rows@),
     ensures
         r matches Ok(p) ==> p.epoch() == base.epoch() && p.timeline() == base.timeline(),

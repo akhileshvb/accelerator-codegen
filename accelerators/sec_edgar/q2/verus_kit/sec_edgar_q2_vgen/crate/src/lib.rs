@@ -20,3 +20,6 @@ pub mod maint;
 pub mod keys;
 pub mod group;
 pub mod filing;
+pub mod agree;
+pub mod rescan;
+pub mod delta;

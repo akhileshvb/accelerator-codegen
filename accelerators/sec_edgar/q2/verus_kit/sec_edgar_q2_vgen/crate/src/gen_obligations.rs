@@ -263,7 +263,7 @@ pub fn ob_rescan_num_by_filing_keys(
     sub_delta: &Vec<SubDelta>,
 ) -> (r: Vec<Vec<u8>>)
     ensures
-        r@ == crate::kernel::rescan_num_by_filing_wanted(*s, num_delta@, sub_delta@),
+        seq_view_bytes(r@) == crate::kernel::rescan_num_by_filing_wanted(*s, num_delta@, sub_delta@),
 {
     kernel::rescan_num_by_filing_keys(s, num_delta, sub_delta)
 }
@@ -276,7 +276,7 @@ pub fn ob_rescan_sub_by_filing_keys(
     sub_delta: &Vec<SubDelta>,
 ) -> (r: Vec<Vec<u8>>)
     ensures
-        r@ == crate::kernel::rescan_sub_by_filing_wanted(*s, num_delta@, sub_delta@),
+        seq_view_bytes(r@) == crate::kernel::rescan_sub_by_filing_wanted(*s, num_delta@, sub_delta@),
 {
     kernel::rescan_sub_by_filing_keys(s, num_delta, sub_delta)
 }
@@ -295,9 +295,9 @@ pub fn ob_apply(
 ) -> (r: Result<State, u32>)
     requires
         capture_ok(s.db(), db2, num_delta_seq_view(num_delta@), sub_delta_seq_view(sub_delta@)),
-        num_by_filing_keys@ == crate::kernel::rescan_num_by_filing_wanted(*s, num_delta@, sub_delta@),
+        seq_view_bytes(num_by_filing_keys@) == crate::kernel::rescan_num_by_filing_wanted(*s, num_delta@, sub_delta@),
         rescan_num_by_filing_ok(db2, num_by_filing_keys@, num_by_filing_rows@),
-        sub_by_filing_keys@ == crate::kernel::rescan_sub_by_filing_wanted(*s, num_delta@, sub_delta@),
+        seq_view_bytes(sub_by_filing_keys@) == crate::kernel::rescan_sub_by_filing_wanted(*s, num_delta@, sub_delta@),
         rescan_sub_by_filing_ok(db2, sub_by_filing_keys@, sub_by_filing_rows@),
     ensures
         r matches Ok(s2) ==> s2.db() == db2,

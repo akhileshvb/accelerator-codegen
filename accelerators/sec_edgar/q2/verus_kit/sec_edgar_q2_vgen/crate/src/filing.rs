@@ -297,4 +297,173 @@ pub proof fn lemma_ents_cell_w(mr: Seq<MR>, sr: Seq<SR>, a: Seq<u8>, db: Db, id:
     lemma_sum_ext(mr, inner, |t: MR| hh(mr_view(a, t)));
 }
 
+
+pub proof fn lemma_push_contains2<T>(s: Seq<T>, x: T, y: T)
+    ensures
+        s.push(x).contains(y) == (s.contains(y) || y == x),
+{
+    if s.push(x).contains(y) {
+        let i = choose|i: int| 0 <= i < s.push(x).len() && s.push(x)[i] == y;
+        if i < s.len() { assert(s[i] == y); } else { assert(y == x); }
+    }
+    if s.contains(y) {
+        let i = choose|i: int| 0 <= i < s.len() && s[i] == y;
+        assert(s.push(x)[i] == y);
+    }
+    if y == x { assert(s.push(x)[s.len() as int] == x); }
+}
+
+pub open spec fn w_upd(w: Fam, a: Seq<u8>, db: Db) -> Fam {
+    |id: CellId, g: spec_fn(OutRow) -> int| if id.a == a { cell_w(db, id, g) } else { w(id, g) }
+}
+
+pub proof fn lemma_cover_congr(h: Index<Vec<CK>>, w1: Fam, w2: Fam)
+    requires
+        cover(h, w1),
+        forall|id: CellId, g: spec_fn(OutRow) -> int| #[trigger] fam_w(w2, id, g) == fam_w(w1, id, g),
+    ensures
+        cover(h, w2),
+{
+    assert forall|id: CellId| !(#[trigger] zero_fam(w2, id)) implies listed(dir_of(h, id.a), id) by {
+        lemma_zero_congr(w1, w2, id);
+    }
+}
+
+pub fn get_mrs(mri: &Index<Vec<MR>>, a: &Arc<Vec<u8>>) -> (r: Vec<MR>)
+    requires
+        mri.wf(),
+    ensures
+        r@ == mr_at(*mri, (**a)@),
+{
+    match mri.get(&kkey(0, a)) {
+        Some(v) => copy_mrs(&*v),
+        None => Vec::new(),
+    }
+}
+
+pub fn get_srs(sri: &Index<Vec<SR>>, a: &Arc<Vec<u8>>) -> (r: Vec<SR>)
+    requires
+        sri.wf(),
+    ensures
+        r@ == sr_at(*sri, (**a)@),
+{
+    match sri.get(&kkey(0, a)) {
+        Some(v) => copy_srs(&*v),
+        None => Vec::new(),
+    }
+}
+
+/// Replace one filing's cells by those of its max rows and sub rows.
+pub fn refresh_filing(
+    c: &mut Cells,
+    h: &mut Index<Vec<CK>>,
+    a: &Arc<Vec<u8>>,
+    mri: &Index<Vec<MR>>,
+    sri: &Index<Vec<SR>>,
+    Ghost(w): Ghost<Fam>,
+    Ghost(db): Ghost<Db>,
+)
+    requires
+        cells_rep(*old(c), w),
+        cover(*old(h), w),
+        mri.wf(),
+        sri.wf(),
+        mr_sem(mr_at(*mri, (**a)@), (**a)@, db),
+        sr_sem(sr_at(*sri, (**a)@), (**a)@, db),
+        forall|k: int| 0 <= k < mr_at(*mri, (**a)@).len() ==> f64_finite((#[trigger] mr_at(*mri, (**a)@)[k]).val),
+    ensures
+        cells_rep(*final(c), w_upd(w, (**a)@, db)),
+        cover(*final(h), w_upd(w, (**a)@, db)),
+{
+    let ghost av = (**a)@;
+    retract(c, h, a, Ghost(w));
+    let mr = get_mrs(mri, a);
+    let sr = get_srs(sri, a);
+    let ents = build_ents(&mr, &sr);
+    proof {
+        assert forall|id: CellId| id.a == av implies zero_fam(w_zero(w, av), id) by { lemma_zero_w_zero(w, av, id); }
+    }
+    insert_filing(c, h, a, &ents, Ghost(w_zero(w, av)));
+    proof {
+        assert forall|id: CellId, g: spec_fn(OutRow) -> int| #[trigger] fam_w(w_upd(w, av, db), id, g) == fam_w(w_ins(w_zero(w, av), av, ents@), id, g) by {
+            if id.a == av { lemma_ents_cell_w(mr@, sr@, av, db, id, g); }
+        }
+        lemma_rep_congr(*c, w_ins(w_zero(w, av), av, ents@), w_upd(w, av, db));
+        lemma_cover_congr(*h, w_ins(w_zero(w, av), av, ents@), w_upd(w, av, db));
+    }
+}
+
+pub open spec fn fam_keys(w0: Fam, keys: Seq<Seq<u8>>, db: Db) -> Fam {
+    |id: CellId, g: spec_fn(OutRow) -> int| if keys.contains(id.a) { cell_w(db, id, g) } else { w0(id, g) }
+}
+
+/// Refresh every listed filing (a key may repeat).
+pub fn refresh(
+    c: &mut Cells,
+    h: &mut Index<Vec<CK>>,
+    keys: &Vec<Vec<u8>>,
+    mri: &Index<Vec<MR>>,
+    sri: &Index<Vec<SR>>,
+    Ghost(w0): Ghost<Fam>,
+    Ghost(db): Ghost<Db>,
+)
+    requires
+        cells_rep(*old(c), w0),
+        cover(*old(h), w0),
+        mri.wf(),
+        sri.wf(),
+        forall|a: Seq<u8>| seq_view_bytes(keys@).contains(a) ==> {
+            &&& mr_sem(mr_at(*mri, a), a, db)
+            &&& sr_sem(sr_at(*sri, a), a, db)
+            &&& forall|k: int| 0 <= k < mr_at(*mri, a).len() ==> f64_finite((#[trigger] mr_at(*mri, a)[k]).val)
+        },
+    ensures
+        cells_rep(*final(c), fam_keys(w0, seq_view_bytes(keys@), db)),
+        cover(*final(h), fam_keys(w0, seq_view_bytes(keys@), db)),
+{
+    let ghost kv = seq_view_bytes(keys@);
+    proof {
+        assert forall|id: CellId, g: spec_fn(OutRow) -> int| #[trigger] fam_w(fam_keys(w0, kv.take(0), db), id, g) == fam_w(w0, id, g) by {
+            assert(!kv.take(0).contains(id.a));
+        }
+        lemma_rep_congr(*c, w0, fam_keys(w0, kv.take(0), db));
+        lemma_cover_congr(*h, w0, fam_keys(w0, kv.take(0), db));
+    }
+    let mut i: usize = 0;
+    while i < keys.len()
+        invariant
+            i <= keys@.len(),
+            kv == seq_view_bytes(keys@),
+            mri.wf(),
+            sri.wf(),
+            forall|a: Seq<u8>| kv.contains(a) ==> {
+                &&& mr_sem(mr_at(*mri, a), a, db)
+                &&& sr_sem(sr_at(*sri, a), a, db)
+                &&& forall|k: int| 0 <= k < mr_at(*mri, a).len() ==> f64_finite((#[trigger] mr_at(*mri, a)[k]).val)
+            },
+            cells_rep(*c, fam_keys(w0, kv.take(i as int), db)),
+            cover(*h, fam_keys(w0, kv.take(i as int), db)),
+        decreases keys.len() - i,
+    {
+        let a = Arc::new(copy_vec(keys[i].as_slice()));
+        let ghost wi = fam_keys(w0, kv.take(i as int), db);
+        proof {
+            assert(kv[i as int] == keys@[i as int]@);
+            assert(kv.contains((*a)@)) by { assert(kv[i as int] == (*a)@); }
+        }
+        refresh_filing(c, h, &a, mri, sri, Ghost(wi), Ghost(db));
+        proof {
+            let post = kv.take(i as int + 1);
+            assert(post =~= kv.take(i as int).push(kv[i as int]));
+            assert forall|id: CellId, g: spec_fn(OutRow) -> int| #[trigger] fam_w(fam_keys(w0, post, db), id, g) == fam_w(w_upd(wi, (*a)@, db), id, g) by {
+                lemma_push_contains2(kv.take(i as int), kv[i as int], id.a);
+            }
+            lemma_rep_congr(*c, w_upd(wi, (*a)@, db), fam_keys(w0, post, db));
+            lemma_cover_congr(*h, w_upd(wi, (*a)@, db), fam_keys(w0, post, db));
+        }
+        i += 1;
+    }
+    proof { assert(kv.take(kv.len() as int) =~= kv); }
+}
+
 } // verus!
