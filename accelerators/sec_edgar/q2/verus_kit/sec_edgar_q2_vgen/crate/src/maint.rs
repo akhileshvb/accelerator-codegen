@@ -3,6 +3,8 @@ use vstd::prelude::*;
 use std::sync::Arc;
 use verus_common::sums::*;
 use verus_common::rel::*;
+use verus_common::bytes::*;
+use verus_common::sort::*;
 use verus_prooflib::ordered::{Index, Key, KeyView};
 use crate::gen_spec::*;
 use crate::model::*;
@@ -253,6 +255,205 @@ pub proof fn lemma_views_push(c: Seq<Row>, r: Row)
     assert(views(c.push(r)) =~= views(c).push(r.view()));
 }
 
+pub open spec fn ck_lt(a: CK, b: CK) -> bool {
+    a.fy < b.fy || (a.fy == b.fy && (bytes_lt((*a.uom)@, (*b.uom)@) || ((*a.uom)@ == (*b.uom)@ && a.d < b.d)))
+}
+
+pub open spec fn ck_same(a: CK, b: CK) -> bool {
+    a.fy == b.fy && (*a.uom)@ == (*b.uom)@ && a.d == b.d
+}
+
+pub open spec fn pick_ents(ents: Seq<Ent>, s: Seq<usize>) -> Seq<Ent> {
+    s.map_values(|i: usize| ents[i as int])
+}
+
+pub proof fn lemma_ck_order(a: CK, b: CK, c: CK)
+    ensures
+        ck_lt(a, b) || ck_lt(b, a) || ck_same(a, b),
+        !(ck_lt(a, b) && ck_lt(b, a)),
+        ck_lt(a, b) && ck_lt(b, c) ==> ck_lt(a, c),
+        ck_same(a, b) ==> !ck_lt(a, b),
+{
+    if (*a.uom)@ != (*b.uom)@ { lemma_bytes_lt_total((*a.uom)@, (*b.uom)@); }
+    lemma_bytes_lt_asym((*a.uom)@, (*b.uom)@);
+    lemma_bytes_lt_irrefl((*a.uom)@);
+    if ck_lt(a, b) && ck_lt(b, c) && a.fy == b.fy && b.fy == c.fy {
+        if bytes_lt((*a.uom)@, (*b.uom)@) && bytes_lt((*b.uom)@, (*c.uom)@) { lemma_bytes_lt_trans((*a.uom)@, (*b.uom)@, (*c.uom)@); }
+    }
+}
+
+pub fn ck_lt_exec(a: &CK, b: &CK) -> (r: bool)
+    ensures r == ck_lt(*a, *b),
+{
+    if a.fy != b.fy { return a.fy < b.fy; }
+    let c = verus_prooflib::ordered::compare_bytes(a.uom.as_slice(), b.uom.as_slice());
+    if c != 0 { return c < 0; }
+    a.d < b.d
+}
+
+pub fn ck_same_exec(a: &CK, b: &CK) -> (r: bool)
+    ensures r == ck_same(*a, *b),
+{
+    a.fy == b.fy && a.d == b.d && bytes_eq_exec(a.uom.as_slice(), b.uom.as_slice())
+}
+
+/// The entries' positions with equal cells next to each other.
+pub fn sort_ents(ents: &Vec<Ent>) -> (sorted: Vec<usize>)
+    ensures
+        forall|k: int| 0 <= k < sorted@.len() ==> (#[trigger] sorted@[k]) < ents@.len(),
+        forall|f: spec_fn(Ent) -> int| #[trigger] sum(pick_ents(ents@, sorted@), f) == sum(ents@, f),
+{
+    let mut pos: Vec<usize> = Vec::new();
+    let mut i: usize = 0;
+    while i < ents.len()
+        invariant
+            i <= ents@.len(),
+            pos@.len() == i,
+            forall|k: int| 0 <= k < pos@.len() ==> (#[trigger] pos@[k]) as int == k,
+        decreases ents.len() - i,
+    {
+        pos.push(i);
+        i += 1;
+    }
+    let ghost ev = ents@;
+    let ghost le = |x: usize, y: usize| !ck_lt(ev[y as int].ck, ev[x as int].ck);
+    let ghost valid = |x: usize| x < ev.len();
+    let ents_ref = ents;
+    let compare = |x: usize, y: usize| -> (r: bool)
+        requires x < ents_ref.len(), y < ents_ref.len(),
+        ensures r == !ck_lt(ents_ref@[y as int].ck, ents_ref@[x as int].ck),
+    { !ck_lt_exec(&ents_ref[y].ck, &ents_ref[x].ck) };
+    proof {
+        assert forall|x: usize, y: usize| valid(x) && valid(y) implies #[trigger] le(x, y) || le(y, x) by {
+            lemma_ck_order(ev[x as int].ck, ev[y as int].ck, ev[y as int].ck);
+        }
+        assert forall|x: usize, y: usize, z: usize| valid(x) && valid(y) && valid(z) && #[trigger] le(x, y) && #[trigger] le(y, z) implies le(x, z) by {
+            let (a, b, c) = (ev[x as int].ck, ev[y as int].ck, ev[z as int].ck);
+            lemma_ck_order(c, b, a);
+            lemma_ck_order(c, a, b);
+            lemma_ck_order(b, a, c);
+        }
+        assert(preorder_on(le, valid));
+        assert(all_valid(pos@, valid));
+        assert(cmp_ok(&compare, le, valid)) by {
+            assert forall|x: usize, y: usize| valid(x) && valid(y) implies #[trigger] compare.requires((x, y)) by {}
+            assert forall|x: usize, y: usize, r: bool| #[trigger] compare.ensures((x, y), r) implies r == le(x, y) by {}
+        }
+    }
+    let sorted = sort_idx(&pos, &compare, Ghost(le), Ghost(valid));
+    proof {
+        assert forall|k: int| 0 <= k < sorted@.len() implies (#[trigger] sorted@[k]) < ents@.len() by { assert(valid(sorted@[k])); }
+        assert forall|f: spec_fn(Ent) -> int| #[trigger] sum(pick_ents(ents@, sorted@), f) == sum(ents@, f) by {
+            let fi = |x: usize| f(ev[x as int]);
+            assert(sum(sorted@, fi) == sum(pos@, fi));
+            lemma_sum_map(sorted@, |x: usize| ev[x as int], f, fi);
+            assert(ev =~= pos@.map_values(|x: usize| ev[x as int]));
+            lemma_sum_map(pos@, |x: usize| ev[x as int], f, fi);
+        }
+    }
+    sorted
+}
+
+/// Flushing a run of entries with one cell key into that cell.
+pub proof fn lemma_flush(
+    before: Cells, after: Cells, w: Fam, av: Seq<u8>, s: Seq<Ent>, f: int, j: int, acc: Seq<Row>, me: CellId,
+)
+    requires
+        cells_rep(before, w_ins(w, av, s.take(f))),
+        0 <= f < j <= s.len(),
+        me.a == av,
+        forall|p: int| f <= p < j ==> ck_matches((#[trigger] s[p]).ck, me),
+        forall|p: int| f <= p < j ==> ent_ok(#[trigger] s[p]),
+        acc == s.subrange(f, j).map_values(|e: Ent| e.row),
+        after.wf(),
+        forall|k: KeyView| #[trigger] after.at(k) is Some ==> after.at(k)->0.wf(),
+        cell_at(after, me) is Some,
+        cell_at(after, me)->0@ == (match cell_at(before, me) { Some(v) => v@, None => Seq::empty() }) + acc,
+        forall|id: CellId| id != me ==> #[trigger] cell_at(after, id) == cell_at(before, id),
+    ensures
+        cells_rep(after, w_ins(w, av, s.take(j))),
+{
+    let pre = s.take(f);
+    let post = s.take(j);
+    let run = s.subrange(f, j);
+    assert(post =~= pre + run);
+    assert forall|id: CellId| #[trigger] cell_ok(cell_at(after, id), w_ins(w, av, post), id) by {
+        if id == me {
+            let base = match cell_at(before, me) { Some(v) => v@, None => Seq::empty() };
+            let cell = cell_at(after, me)->0;
+            assert(cell_ok(cell_at(before, me), w_ins(w, av, pre), me));
+            assert forall|g: spec_fn(OutRow) -> int| #[trigger] sum(views(cell@), g) == fam_w(w_ins(w, av, post), me, g) by {
+                let phi = |e: Ent| if ck_matches(e.ck, me) { g(e.row.view()) } else { 0 };
+                lemma_sum_concat(pre, run, phi);
+                assert(ent_sum(post, me, g) == ent_sum(pre, me, g) + ent_sum(run, me, g));
+                let gr = |e: Ent| g(e.row.view());
+                assert forall|e: Ent| run.contains(e) implies #[trigger] phi(e) == gr(e) by {
+                    let q = choose|q: int| 0 <= q < run.len() && run[q] == e;
+                    assert(run[q] == s[f + q]);
+                }
+                assert forall|q: int| 0 <= q < run.len() implies phi(#[trigger] run[q]) == gr(run[q]) by { assert(run[q] == s[f + q]); }
+                lemma_sum_ext(run, phi, gr);
+                lemma_cell_concat(base, acc, g);
+                lemma_run_sum(run, g);
+                match cell_at(before, me) {
+                    Some(v) => { assert(sum(views(v@), g) == fam_w(w_ins(w, av, pre), me, g)); }
+                    None => {
+                        assert(fam_w(w_ins(w, av, pre), me, g) == 0);
+                        assert(views(base) =~= Seq::<OutRow>::empty());
+                        lemma_sum_empty(Seq::<OutRow>::empty(), g);
+                    }
+                }
+            }
+            assert forall|k: int| 0 <= k < cell@.len() implies f64_finite((#[trigger] cell@[k]).val) && f64_desc_key(cell@[k].val) == me.d by {
+                if k < base.len() {
+                    match cell_at(before, me) { Some(v) => { assert(cell@[k] == v@[k]); } None => {} }
+                } else {
+                    let q = k - base.len();
+                    assert(cell@[k] == acc[q]);
+                    assert(acc[q] == run[q].row);
+                    assert(run[q] == s[f + q]);
+                    assert(ent_ok(s[f + q]) && ck_matches(s[f + q].ck, me));
+                }
+            }
+        } else {
+            assert(cell_ok(cell_at(before, id), w_ins(w, av, pre), id));
+            assert forall|g: spec_fn(OutRow) -> int| #[trigger] fam_w(w_ins(w, av, post), id, g) == fam_w(w_ins(w, av, pre), id, g) by {
+                if id.a == av {
+                    let phi = |e: Ent| if ck_matches(e.ck, id) { g(e.row.view()) } else { 0 };
+                    lemma_sum_concat(pre, run, phi);
+                    let z = |e: Ent| 0int;
+                    assert forall|q: int| 0 <= q < run.len() implies phi(#[trigger] run[q]) == z(run[q]) by {
+                        assert(run[q] == s[f + q]);
+                        assert(ck_matches(s[f + q].ck, me));
+                        assert(!ck_matches(s[f + q].ck, id));
+                    }
+                    lemma_sum_ext(run, phi, z);
+                    lemma_sum_zero(run, z);
+                }
+            }
+            lemma_cell_ok_congr(cell_at(before, id), w_ins(w, av, pre), w_ins(w, av, post), id);
+        }
+    }
+}
+
+pub proof fn lemma_cell_concat(a: Seq<Row>, b: Seq<Row>, g: spec_fn(OutRow) -> int)
+    ensures
+        sum(views(a + b), g) == sum(views(a), g) + sum(views(b), g),
+{
+    assert(views(a + b) =~= views(a) + views(b));
+    lemma_sum_concat(views(a), views(b), g);
+}
+
+pub proof fn lemma_run_sum(run: Seq<Ent>, g: spec_fn(OutRow) -> int)
+    ensures
+        sum(run, |e: Ent| g(e.row.view())) == sum(views(run.map_values(|e: Ent| e.row)), g),
+{
+    let rows = run.map_values(|e: Ent| e.row);
+    lemma_sum_map(rows, |r: Row| r.view(), g, |r: Row| g(r.view()));
+    lemma_sum_map(run, |e: Ent| e.row, |r: Row| g(r.view()), |e: Ent| g(e.row.view()));
+    assert(views(rows) =~= rows.map_values(|r: Row| r.view()));
+}
+
 /// Add every row of filing a (whose cells are empty) to its cell and list its cells.
 pub fn insert_filing(c: &mut Cells, h: &mut Index<Vec<CK>>, a: &Arc<Vec<u8>>, ents: &Vec<Ent>, Ghost(w): Ghost<Fam>)
     requires
@@ -266,79 +467,85 @@ pub fn insert_filing(c: &mut Cells, h: &mut Index<Vec<CK>>, a: &Arc<Vec<u8>>, en
 {
     let ghost av = (**a)@;
     let ghost h0 = *old(h);
+    let sorted = sort_ents(ents);
+    let ghost sv = pick_ents(ents@, sorted@);
     proof {
-        assert forall|id: CellId, g: spec_fn(OutRow) -> int| #[trigger] fam_w(w_ins(w, av, ents@.take(0)), id, g) == fam_w(w, id, g) by {
+        assert forall|id: CellId, g: spec_fn(OutRow) -> int| #[trigger] fam_w(w_ins(w, av, sv.take(0)), id, g) == fam_w(w, id, g) by {
             if id.a == av {
-                assert(ents@.take(0) =~= Seq::<Ent>::empty());
+                assert(sv.take(0) =~= Seq::<Ent>::empty());
                 lemma_sum_empty(Seq::<Ent>::empty(), |x: Ent| if ck_matches(x.ck, id) { g(x.row.view()) } else { 0 });
                 assert(zero_fam(w, id));
                 assert(fam_w(w, id, g) == 0);
             }
         }
-        lemma_rep_congr(*c, w, w_ins(w, av, ents@.take(0)));
+        lemma_rep_congr(*c, w, w_ins(w, av, sv.take(0)));
+        assert forall|j: int| 0 <= j < sv.len() implies ent_ok(#[trigger] sv[j]) by { assert(sv[j] == ents@[sorted@[j] as int]); }
     }
-    let mut i: usize = 0;
-    while i < ents.len()
+    let n = sorted.len();
+    let mut acc: Vec<Row> = Vec::new();
+    let mut f: usize = 0;
+    let mut j: usize = 0;
+    while j < n
         invariant
-            i <= ents@.len(),
+            j <= n,
+            f <= j,
+            n == sorted@.len(),
             av == (**a)@,
-            forall|j: int| 0 <= j < ents@.len() ==> ent_ok(#[trigger] ents@[j]),
-            cells_rep(*c, w_ins(w, av, ents@.take(i as int))),
-        decreases ents.len() - i,
+            sv == pick_ents(ents@, sorted@),
+            forall|k: int| 0 <= k < sorted@.len() ==> (#[trigger] sorted@[k]) < ents@.len(),
+            forall|q: int| 0 <= q < sv.len() ==> ent_ok(#[trigger] sv[q]),
+            cells_rep(*c, w_ins(w, av, sv.take(f as int))),
+            acc@ == sv.subrange(f as int, j as int).map_values(|e: Ent| e.row),
+            forall|p: int| f <= p < j ==> ck_same((#[trigger] sv[p]).ck, sv[f as int].ck),
+        decreases n - j,
     {
-        let e = &ents[i];
-        let ghost before = *c;
-        let ghost pre = ents@.take(i as int);
-        let ghost post = ents@.take(i as int + 1);
-        let ghost me = CellId { fy: e.ck.fy as int, uom: (*e.ck.uom)@, d: e.ck.d as int, a: av };
-        proof { assert(post =~= pre.push(ents@[i as int])); }
-        cells_push(c, e.ck.fy, &e.ck.uom, e.ck.d, a, copy_row(&e.row));
+        let e = &ents[sorted[j]];
+        proof { assert(sv[j as int] == *e); }
+        if j > f && !ck_same_exec(&ents[sorted[f]].ck, &e.ck) {
+            let ghost before = *c;
+            let ghost me = CellId { fy: sv[f as int].ck.fy as int, uom: (*sv[f as int].ck.uom)@, d: sv[f as int].ck.d as int, a: av };
+            proof { assert(sv[f as int] == ents@[sorted@[f as int] as int]); }
+            cells_append(c, ents[sorted[f]].ck.fy, &ents[sorted[f]].ck.uom, ents[sorted[f]].ck.d, a, &acc);
+            proof {
+                assert forall|p: int| f <= p < j implies ck_matches((#[trigger] sv[p]).ck, me) by { assert(ck_same(sv[p].ck, sv[f as int].ck)); }
+                lemma_flush(before, *c, w, av, sv, f as int, j as int, acc@, me);
+            }
+            acc = Vec::new();
+            f = j;
+            proof { assert(sv.subrange(f as int, f as int) =~= Seq::<Ent>::empty()); }
+        }
+        acc.push(copy_row(&e.row));
         proof {
-            assert(ents@[i as int] == *e);
-            assert(ck_matches(e.ck, me));
-            let cell = cell_at(*c, me)->0;
-            let base = match cell_at(before, me) { Some(v) => v@, None => Seq::empty() };
-            assert(cell@ == base.push(e.row));
-            assert forall|id: CellId| #[trigger] cell_ok(cell_at(*c, id), w_ins(w, av, post), id) by {
-                if id == me {
-                    assert(cell_ok(cell_at(before, me), w_ins(w, av, pre), me));
-                    assert forall|g: spec_fn(OutRow) -> int| #[trigger] sum(views(cell@), g) == fam_w(w_ins(w, av, post), me, g) by {
-                        lemma_views_push(base, e.row);
-                        lemma_sum_push(views(base), e.row.view(), g);
-                        lemma_ent_sum_push(pre, *e, me, g);
-                        match cell_at(before, me) {
-                            Some(v) => { assert(sum(views(v@), g) == fam_w(w_ins(w, av, pre), me, g)); }
-                            None => {
-                                assert(fam_w(w_ins(w, av, pre), me, g) == 0);
-                                lemma_sum_empty(Seq::<OutRow>::empty(), g);
-                                assert(views(base) =~= Seq::<OutRow>::empty());
-                            }
-                        }
-                    }
-                    assert forall|k: int| 0 <= k < cell@.len() implies f64_finite((#[trigger] cell@[k]).val) && f64_desc_key(cell@[k].val) == id.d by {
-                        if k < base.len() {
-                            match cell_at(before, me) { Some(v) => { assert(cell@[k] == v@[k]); } None => {} }
-                        } else {
-                            assert(cell@[k] == e.row);
-                            assert(ent_ok(*e));
-                        }
-                    }
-                } else {
-                    assert(cell_at(*c, id) == cell_at(before, id));
-                    assert(cell_ok(cell_at(before, id), w_ins(w, av, pre), id));
-                    assert forall|g: spec_fn(OutRow) -> int| #[trigger] fam_w(w_ins(w, av, post), id, g) == fam_w(w_ins(w, av, pre), id, g) by {
-                        if id.a == av {
-                            lemma_ent_sum_push(pre, *e, id, g);
-                            assert(!ck_matches(e.ck, id));
-                        }
-                    }
-                    lemma_cell_ok_congr(cell_at(before, id), w_ins(w, av, pre), w_ins(w, av, post), id);
-                }
+            assert(sv.subrange(f as int, j as int + 1) =~= sv.subrange(f as int, j as int).push(sv[j as int]));
+            assert(sv.subrange(f as int, j as int + 1).map_values(|e: Ent| e.row) =~= sv.subrange(f as int, j as int).map_values(|e: Ent| e.row).push(sv[j as int].row));
+            assert forall|p: int| f <= p < j + 1 implies ck_same((#[trigger] sv[p]).ck, sv[f as int].ck) by {
+                if p == j as int { assert(ck_same(ents@[sorted@[j as int] as int].ck, sv[f as int].ck)) by {
+                    if j > f { assert(ck_same(sv[f as int].ck, e.ck)); }
+                } }
             }
         }
-        i += 1;
+        j += 1;
     }
-    proof { assert(ents@.take(ents@.len() as int) =~= ents@); }
+    if j > f {
+        let ghost before = *c;
+        let ghost me = CellId { fy: sv[f as int].ck.fy as int, uom: (*sv[f as int].ck.uom)@, d: sv[f as int].ck.d as int, a: av };
+        proof { assert(sv[f as int] == ents@[sorted@[f as int] as int]); }
+        cells_append(c, ents[sorted[f]].ck.fy, &ents[sorted[f]].ck.uom, ents[sorted[f]].ck.d, a, &acc);
+        proof {
+            assert forall|p: int| f <= p < j implies ck_matches((#[trigger] sv[p]).ck, me) by { assert(ck_same(sv[p].ck, sv[f as int].ck)); }
+            lemma_flush(before, *c, w, av, sv, f as int, j as int, acc@, me);
+        }
+    }
+    proof {
+        assert(sv.take(sv.len() as int) =~= sv);
+        assert forall|id: CellId, g: spec_fn(OutRow) -> int| #[trigger] fam_w(w_ins(w, av, ents@), id, g) == fam_w(w_ins(w, av, sv), id, g) by {
+            if id.a == av {
+                let phi = |x: Ent| if ck_matches(x.ck, id) { g(x.row.view()) } else { 0 };
+                assert(sum(sv, phi) == sum(ents@, phi));
+            }
+        }
+        lemma_rep_congr(*c, w_ins(w, av, sv), w_ins(w, av, ents@));
+    }
     let mut keys: Vec<CK> = Vec::new();
     let mut j: usize = 0;
     while j < ents.len()

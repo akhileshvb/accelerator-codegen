@@ -272,4 +272,41 @@ pub proof fn lemma_vkey_iff(b: u64, d: int)
     }
 }
 
+
+/// Append rows to one cell (creating it): one copy of the cell for all of them.
+pub fn cells_append(c: &mut Cells, fy: i64, uom: &Arc<Vec<u8>>, d: i64, a: &Arc<Vec<u8>>, rows: &Vec<Row>)
+    requires
+        old(c).wf(),
+        forall|k: KeyView| #[trigger] old(c).at(k) is Some ==> old(c).at(k)->0.wf(),
+    ensures
+        final(c).wf(),
+        forall|k: KeyView| #[trigger] final(c).at(k) is Some ==> final(c).at(k)->0.wf(),
+        ({
+            let me = CellId { fy: fy as int, uom: (**uom)@, d: d as int, a: (**a)@ };
+            let before = match cell_at(*old(c), me) { Some(v) => v@, None => Seq::empty() };
+            &&& cell_at(*final(c), me) is Some
+            &&& cell_at(*final(c), me)->0@ == before + rows@
+            &&& forall|id: CellId| id != me ==> #[trigger] cell_at(*final(c), id) == cell_at(*old(c), id)
+        }),
+{
+    let mut cell = match cells_get(c, fy, uom, d, a) {
+        Some(v) => copy_cell(&*v),
+        None => Vec::new(),
+    };
+    let ghost base = cell@;
+    let mut i: usize = 0;
+    while i < rows.len()
+        invariant
+            i <= rows@.len(),
+            cell@ == base + rows@.take(i as int),
+        decreases rows.len() - i,
+    {
+        cell.push(copy_row(&rows[i]));
+        proof { assert(rows@.take(i as int + 1) =~= rows@.take(i as int).push(rows@[i as int])); assert(cell@ =~= base + rows@.take(i as int + 1)); }
+        i += 1;
+    }
+    proof { assert(rows@.take(rows@.len() as int) =~= rows@); }
+    cells_put(c, fy, uom, d, a, cell);
+}
+
 } // verus!
