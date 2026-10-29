@@ -349,4 +349,27 @@ pub fn desc_key(bits: u64) -> (r: i64)
     if neg { m as i64 } else { -(m as i64) }
 }
 
+pub fn is_finite(bits: u64) -> (r: bool)
+    ensures r == f64_finite(bits),
+{
+    proof { lemma_pow2_consts(); }
+    let e = (bits >> 52) & 0x7FFu64;
+    proof {
+        assert(e == (bits / 4503599627370496u64) % 2048u64) by (bit_vector)
+            requires e == (bits >> 52) & 0x7FFu64;
+    }
+    e != 0x7FFu64
+}
+
+pub proof fn lemma_key_range(b: u64)
+    ensures
+        -9223372036854775808 <= f64_desc_key(b) <= 9223372036854775807,
+        (f64_desc_key(b) as i64) as int == f64_desc_key(b),
+{
+    lemma_pow2_consts();
+    assert(0 <= b as int % pow2(63) < pow2(63)) by {
+        assert(pow2(63) > 0);
+    }
+}
+
 }

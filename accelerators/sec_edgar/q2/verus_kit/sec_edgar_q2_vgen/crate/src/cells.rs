@@ -245,4 +245,31 @@ pub fn cells_push(c: &mut Cells, fy: i64, uom: &Arc<Vec<u8>>, d: i64, a: &Arc<Ve
     cells_put(c, fy, uom, d, a, cell);
 }
 
+
+/// Σ g over the answer rows of filing a in cell (fy, uom, d).
+pub open spec fn cell_w(db: Db, id: CellId, g: spec_fn(OutRow) -> int) -> int {
+    sum(db.num, |n: NumRow| if picked(db.num, n, id.uom) && n.adsh == Some(id.a) && vkey(n.value->0, id.d) {
+        pair_w(db.sub, n, id.fy, g)
+    } else {
+        0
+    })
+}
+
+pub open spec fn cw(db: Db) -> Fam {
+    |id: CellId, g: spec_fn(OutRow) -> int| cell_w(db, id, g)
+}
+
+
+pub proof fn lemma_vkey_iff(b: u64, d: int)
+    requires
+        f64_finite(b),
+    ensures
+        vkey(f64_val(b), d) == (f64_desc_key(b) == d),
+{
+    if vkey(f64_val(b), d) {
+        let b2 = choose|b2: u64| f64_finite(b2) && f64_val(b2) == f64_val(b) && f64_desc_key(b2) == d;
+        lemma_desc_key(b, b2);
+    }
+}
+
 } // verus!
