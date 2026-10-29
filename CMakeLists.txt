@@ -91,6 +91,7 @@ accel_add_unit_test(test_verus_world_commits eval/tests/test_verus_world_commits
 add_executable(tsan_module_driver eval/tests/tsan_module_driver.cpp)
 target_link_libraries(tsan_module_driver PRIVATE accelerator_codegen)
 target_include_directories(tsan_module_driver PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/accelerators)
+accel_add_unit_test(test_float_bounds eval/tests/test_float_bounds.cpp float_bounds_test)
 accel_add_unit_test(test_core_helpers eval/tests/test_core_helpers.cpp core_helpers_test)
 accel_add_unit_test(test_versioned_aux_store_caps eval/tests/test_versioned_aux_store_caps.cpp versioned_aux_store_caps_test)
 accel_add_unit_test(test_scratch_dir eval/tests/test_scratch_dir.cpp scratch_dir_cleanup_test)
