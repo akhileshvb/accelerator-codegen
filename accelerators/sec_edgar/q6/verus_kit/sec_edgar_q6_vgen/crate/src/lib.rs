@@ -43,3 +43,7 @@ pub mod cnt;
 pub mod place;
 pub mod trim;
 pub mod bridge;
+pub mod core;
+pub mod subs;
+pub mod canon;
+pub mod keys;

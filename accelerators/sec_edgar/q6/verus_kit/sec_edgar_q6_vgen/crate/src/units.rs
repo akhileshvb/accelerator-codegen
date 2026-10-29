@@ -26,10 +26,9 @@ pub struct ClassRef {
     pub uom: Vec<u8>,
 }
 
-/// A unit's filings (adsh) and the classes it may have groups in.
+/// A unit's filings (adsh).
 pub struct UnitRec {
     pub filings: Vec<Vec<u8>>,
-    pub classes: Vec<ClassRef>,
 }
 
 pub open spec fn ukey(fy: int, name: Option<Seq<u8>>) -> KeyView {
@@ -62,14 +61,6 @@ pub open spec fn bytes_has(l: Seq<Vec<u8>>, a: Seq<u8>) -> bool {
     exists|i: int| 0 <= i < l.len() && (#[trigger] l[i])@ == a
 }
 
-pub open spec fn cref_is(cr: ClassRef, fy: int, stmt: Seq<u8>, uom: Seq<u8>) -> bool {
-    cr.fy as int == fy && cr.stmt@ == stmt && cr.uom@ == uom
-}
-
-pub open spec fn cref_has(l: Seq<ClassRef>, fy: int, stmt: Seq<u8>, uom: Seq<u8>) -> bool {
-    exists|i: int| 0 <= i < l.len() && cref_is(#[trigger] l[i], fy, stmt, uom)
-}
-
 /// Filing a has a sub row of unit (fy, name).
 pub open spec fn sub_has(db: Db, a: Seq<u8>, fy: int, name: Option<Seq<u8>>) -> bool {
     exists|i: int| 0 <= i < db.sub.len() && (#[trigger] db.sub[i]).adsh == a && db.sub[i].fy == Some(fy) && db.sub[i].name == name
@@ -92,23 +83,6 @@ pub open spec fn um_ok(um: Index<UnitRec>, db: Db) -> bool {
     &&& um.wf()
     &&& forall|a: Seq<u8>, fy: int, name: Option<Seq<u8>>| #![trigger um_has(um, fy, name, a)] um_has(um, fy, name, a) <==> sub_has(db, a, fy, name)
 }
-
-/// Every class a unit has stored groups in is listed with the unit.
-pub open spec fn ucl_ok(um: Index<UnitRec>, cls: Index<ClassRec>) -> bool {
-    forall|ok: KeyView, nk: KeyView| #![trigger cls.at(ok), um.at((ok.0, nk.1))] cls.at(ok) is Some ==> {
-        let c = cls.at(ok)->0;
-        &&& (c.fb.at(nk) is Some || c.hp.at(nk) is Some || c.hn.at(nk) is Some) ==> listed(um, c, nk)
-        &&& (exists|q: KeyView| #![trigger c.r.at(q)] c.r.at(q) is Some && nkey_v(ov(c.r.at(q)->0.name)) == nk) ==> listed(um, c, nk)
-    }
-}
-
-pub open spec fn listed(um: Index<UnitRec>, c: ClassRec, nk: KeyView) -> bool {
-    match um.at((c.fy as int, nk.1)) {
-        Some(u) => cref_has(u.classes@, c.fy as int, c.stmt@, c.uom@),
-        None => false,
-    }
-}
-
 
 /// A set of units: keyed by their (fy, name), holding the unit.
 pub open spec fn uset_ok(u: Index<UnitRef>) -> bool {
