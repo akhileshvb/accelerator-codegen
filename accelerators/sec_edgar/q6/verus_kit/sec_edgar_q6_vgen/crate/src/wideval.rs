@@ -70,4 +70,117 @@ pub fn wide_of_bits(tab: &Pow2Tab, bits: u64) -> (r: Wide)
     if neg { mag.neg() } else { mag }
 }
 
+/// Setting the sign bit negates a non-negative finite double.
+proof fn lemma_set_sign(lo: u64)
+    requires f64_finite(lo), lo < 9223372036854775808,
+    ensures
+        f64_finite((lo + 9223372036854775808u64) as u64),
+        f64_val((lo + 9223372036854775808u64) as u64) == -f64_val(lo),
+{
+    lemma_pow2_consts();
+    lemma_val_pos(lo);
+    let r = (lo + 9223372036854775808u64) as u64;
+    let p52: int = 4503599627370496;
+    let q = lo as int / p52;
+    vstd::arithmetic::div_mod::lemma_fundamental_div_mod(lo as int, p52);
+    vstd::arithmetic::div_mod::lemma_mod_bound(lo as int, p52);
+    assert(r as int == p52 * (q + 2048) + lo as int % p52);
+    vstd::arithmetic::div_mod::lemma_fundamental_div_mod_converse(r as int, p52, q + 2048, lo as int % p52);
+    assert(r as int / p52 == q + 2048 && r as int % p52 == lo as int % p52);
+    assert((q + 2048) % 2048 == q % 2048) by (nonlinear_arith);
+    assert(f64_exp(r) == f64_exp(lo) && f64_frac(r) == f64_frac(lo));
+    assert(r as int / pow2(63) == 1) by (nonlinear_arith)
+        requires (r as int) >= pow2(63), (r as int) < 2 * pow2(63), pow2(63) > 0;
+}
+
+/// Bits whose value is e, found by bisection (e is the value of some finite double).
+pub fn bits_exact(tab: &Pow2Tab, e: &Wide) -> (r: u64)
+    requires
+        tab.ok(),
+        exists|x: u64| f64_finite(x) && f64_val(x) == e@,
+    ensures
+        f64_finite(r),
+        f64_val(r) == e@,
+{
+    let neg = e.is_neg();
+    let a = if neg { e.neg() } else { e.dup() };
+    let ghost t0: u64 = {
+        let x = choose|x: u64| f64_finite(x) && f64_val(x) == e@;
+        lemma_clear_sign(x);
+        (x % 9223372036854775808) as u64
+    };
+    proof {
+        let x = choose|x: u64| f64_finite(x) && f64_val(x) == e@;
+        lemma_clear_sign(x);
+        lemma_val_pos(t0);
+        assert(f64_val(t0) == f64_mag(t0) && f64_mag(t0) == f64_mag(x));
+        assert(e@ == f64_val(x));
+        lemma_mag_bound(x);
+        if neg { assert(a@ == -e@); } else { assert(a@ == e@); }
+        assert(a@ == f64_val(t0));
+        lemma_pow2_consts();
+        lemma_decompose(t0);
+        // t0 <= 0x7FEF_FFFF_FFFF_FFFF: exponent field at most 2046
+        assert(t0 as int == f64_exp(t0) * pow2(52) + f64_frac(t0));
+        assert(f64_exp(t0) <= 2046);
+        assert(t0 <= 0x7FEF_FFFF_FFFF_FFFFu64) by (nonlinear_arith)
+            requires t0 as int == f64_exp(t0) * 4503599627370496 + f64_frac(t0), f64_exp(t0) <= 2046, 0 <= f64_frac(t0) < 4503599627370496;
+    }
+    let mut lo: u64 = 0;
+    let mut hi: u64 = 0x7FEF_FFFF_FFFF_FFFF;
+    while lo < hi
+        invariant
+            lo <= t0 <= hi, hi <= 0x7FEF_FFFF_FFFF_FFFFu64,
+            tab.ok(), a@ == f64_val(t0), f64_finite(t0), t0 < 9223372036854775808,
+        decreases hi - lo,
+    {
+        let mid = lo + (hi - lo) / 2;
+        proof {
+            lemma_pow2_consts();
+            // every pattern up to hi is finite: exponent field at most 2046
+            assert(f64_finite(mid) && f64_finite(lo) && f64_finite(hi)) by {
+                assert forall|b: u64| b <= 0x7FEF_FFFF_FFFF_FFFFu64 implies f64_finite(b) by {
+                    assert((b / 4503599627370496) % 2048 != 2047) by (nonlinear_arith)
+                        requires b <= 0x7FEF_FFFF_FFFF_FFFFu64;
+                    assert(f64_exp(b) == (b / 4503599627370496) % 2048);
+                }
+            }
+        }
+        let w = wide_of_bits(tab, mid);
+        proof { lemma_f64_finite_below(mid); }
+        if w.lt(&a) {
+            proof {
+                // value(mid) < value(t0) forces mid < t0
+                if t0 <= mid {
+                    if t0 < mid { lemma_val_mono(t0, mid); }
+                }
+            }
+            lo = mid + 1;
+        } else {
+            proof {
+                if t0 > mid { lemma_f64_finite_below(t0); lemma_val_mono(mid, t0); }
+            }
+            hi = mid;
+        }
+    }
+    proof { lemma_f64_finite_below(lo); }
+    if neg {
+        proof { lemma_set_sign(lo); lemma_val_pos(lo); }
+        (lo + 9223372036854775808u64) as u64
+    } else {
+        proof { lemma_val_pos(lo); }
+        lo
+    }
+}
+
+proof fn lemma_f64_finite_below(b: u64)
+    requires b <= 0x7FEF_FFFF_FFFF_FFFFu64,
+    ensures f64_finite(b),
+{
+    lemma_pow2_consts();
+    assert((b / 4503599627370496) % 2048 != 2047) by (nonlinear_arith)
+        requires b <= 0x7FEF_FFFF_FFFF_FFFFu64;
+}
+
+
 } // verus!

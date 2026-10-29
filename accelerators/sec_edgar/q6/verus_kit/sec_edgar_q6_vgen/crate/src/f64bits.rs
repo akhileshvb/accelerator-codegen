@@ -97,7 +97,7 @@ pub proof fn lemma_decompose(b: u64)
     assert(x / pow2(63) == s);
 }
 
-proof fn lemma_mag_bound(b: u64)
+pub proof fn lemma_mag_bound(b: u64)
     requires
         f64_finite(b),
     ensures
@@ -231,6 +231,105 @@ pub proof fn lemma_f64_val_eq(a: u64, b: u64)
     if f64_val(a) == f64_val(b) && f64_mag(a) != 0 {
         assert(a as int / pow2(63) == b as int / pow2(63));
         lemma_mag_inj(a, b);
+    }
+}
+
+
+/// Magnitude fields order the magnitudes of finite doubles.
+pub proof fn lemma_mag_mono(a: u64, b: u64)
+    requires
+        f64_finite(a),
+        f64_finite(b),
+        f64_mag_bits(a) < f64_mag_bits(b),
+    ensures
+        f64_mag(a) < f64_mag(b),
+{
+    lemma_pow2_consts();
+    lemma_decompose(a);
+    lemma_decompose(b);
+    let (ea, eb) = (f64_exp(a), f64_exp(b));
+    let (fa, fb) = (f64_frac(a), f64_frac(b));
+    lemma_pow2_pos(0);
+    if ea == eb {
+        assert(fa < fb) by (nonlinear_arith)
+            requires f64_mag_bits(a) == ea * pow2(52) + fa, f64_mag_bits(b) == eb * pow2(52) + fb, f64_mag_bits(a) < f64_mag_bits(b), ea == eb;
+        if ea != 0 {
+            lemma_pow2_pos((ea - 1) as nat);
+            let w = pow2((ea - 1) as nat);
+            assert((fa + pow2(52)) * w < (fb + pow2(52)) * w) by (nonlinear_arith)
+                requires fa < fb, w > 0;
+        }
+    } else {
+        assert(ea < eb) by (nonlinear_arith)
+            requires f64_mag_bits(a) == ea * pow2(52) + fa, f64_mag_bits(b) == eb * pow2(52) + fb, f64_mag_bits(a) < f64_mag_bits(b),
+                0 <= fa < pow2(52), 0 <= fb < pow2(52), pow2(52) > 0, ea != eb, 0 <= ea, 0 <= eb;
+        lemma_pow2_pos((eb - 1) as nat);
+        let wb = pow2((eb - 1) as nat);
+        assert(f64_mag(b) >= pow2(52) * wb) by (nonlinear_arith)
+            requires f64_mag(b) == (fb + pow2(52)) * wb, fb >= 0, wb > 0;
+        if ea == 0 {
+            assert(pow2(52) * wb >= pow2(52)) by (nonlinear_arith) requires wb >= 1, pow2(52) > 0;
+        } else {
+            lemma_pow2_pos((ea - 1) as nat);
+            lemma_pow2_mono(ea as nat, (eb - 1) as nat);
+            let wa = pow2((ea - 1) as nat);
+            assert(pow2(ea as nat) == 2 * wa) by { reveal_with_fuel(pow2, 2); }
+            assert(f64_mag(a) < pow2(53) * wa) by (nonlinear_arith)
+                requires f64_mag(a) == (fa + pow2(52)) * wa, fa < pow2(52), wa > 0, pow2(53) == 2 * pow2(52);
+            assert(pow2(52) * wb >= pow2(52) * (2 * wa)) by (nonlinear_arith)
+                requires wb >= 2 * wa, pow2(52) > 0;
+            assert(pow2(53) * wa == pow2(52) * (2 * wa)) by (nonlinear_arith) requires pow2(53) == 2 * pow2(52);
+        }
+    }
+}
+
+/// A double of sign 0 has value equal to its magnitude.
+pub proof fn lemma_val_pos(b: u64)
+    requires f64_finite(b), b < 9223372036854775808,
+    ensures f64_val(b) == f64_mag(b), f64_mag_bits(b) == b as int,
+{
+    lemma_pow2_consts();
+    assert(b as int / pow2(63) == 0) by (nonlinear_arith) requires 0 <= b as int, (b as int) < pow2(63), pow2(63) > 0;
+    assert(b as int % pow2(63) == b as int) by (nonlinear_arith) requires 0 <= b as int, (b as int) < pow2(63), pow2(63) > 0;
+}
+
+/// Larger magnitude fields give larger values among non-negative finite doubles.
+pub proof fn lemma_val_mono(a: u64, b: u64)
+    requires f64_finite(a), f64_finite(b), a < b, b < 9223372036854775808,
+    ensures f64_val(a) < f64_val(b),
+{
+    lemma_val_pos(a);
+    lemma_val_pos(b);
+    lemma_mag_mono(a, b);
+}
+
+
+/// Clearing the sign bit keeps exponent, fraction and magnitude.
+pub proof fn lemma_clear_sign(x: u64)
+    requires f64_finite(x),
+    ensures
+        ({
+            let y = (x % 9223372036854775808) as u64;
+            &&& f64_exp(y) == f64_exp(x) && f64_frac(y) == f64_frac(x)
+            &&& f64_finite(y) && f64_mag(y) == f64_mag(x) && y < 9223372036854775808
+            &&& f64_val(x) == if x < 9223372036854775808 { f64_mag(x) } else { -f64_mag(x) }
+        }),
+{
+    lemma_pow2_consts();
+    lemma_decompose(x);
+    let y = (x % 9223372036854775808) as u64;
+    let (e, f) = (f64_exp(x), f64_frac(x));
+    assert(y as int == f64_mag_bits(x));
+    assert(y as int == e * pow2(52) + f);
+    lemma_fundamental_div_mod_converse(y as int, pow2(52), e, f);
+    assert(y as int / pow2(52) == e && y as int % pow2(52) == f);
+    assert(f64_exp(y) == e % 2048);
+    assert(e % 2048 == e) by { lemma_small_mod(e as nat, 2048); }
+    assert(f64_frac(y) == f);
+    if x < 9223372036854775808 {
+        assert(x as int / pow2(63) == 0) by (nonlinear_arith) requires 0 <= x as int, (x as int) < pow2(63), pow2(63) > 0;
+    } else {
+        assert(x as int / pow2(63) == 1) by (nonlinear_arith) requires (x as int) >= pow2(63), (x as int) < 2 * pow2(63), pow2(63) > 0;
     }
 }
 
