@@ -42,6 +42,13 @@ def test_a_clean_run_has_no_problems(tmp_path):
     assert problems(CLEAN_LOG, tmp_path, calls) == []
 
 
+def test_the_first_bootstrap_gate_of_a_clean_tree_fails_by_design(tmp_path):
+    calls = [{"stage": s, "resumed": False} for s in smoke_report.STAGES]
+    fail = "[pipeline] gate FAILED: host_bootstrap\n"
+    assert problems(fail + "[pipeline] stage start: host_bootstrap model=x\n" + CLEAN_LOG, tmp_path, calls) == []
+    assert any("gate FAILED" in p for p in problems(fail + "[pipeline] stage start: analysis\n" + CLEAN_LOG, tmp_path, calls))
+
+
 def test_announced_gates_are_read_from_the_log():
     assert smoke_report.planned_gates(CLEAN_LOG) == [
         ("test_suite", "test_suite_validate"), ("implementation", "aux_unit"), ("implementation", "aux_correctness")]

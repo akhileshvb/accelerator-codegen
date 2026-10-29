@@ -14,6 +14,8 @@ GATE_REUSED = re.compile(r"gate (\w+): reused")
 STAGE_MARK = re.compile(r"^=== stage: (\w+) ===", re.M)
 # a line that says something was broken or repaired (a clean run prints none of them)
 TROUBLE = re.compile(r"gate FAILED|^\[repair\]|stage \w+ raised|retrying stage|write_policy_violation|stopped:", re.M)
+# a clean tree has no workload harnesses: host_bootstrap's gate fails once, and the stage that writes them follows
+EXPECTED_BOOTSTRAP_FAILURE = re.compile(r"^\[pipeline\] gate FAILED: host_bootstrap\n(?=\[pipeline\] stage start: host_bootstrap )", re.M)
 SINGLE_RUN_STAGES = ("analysis", "test_suite", "implementation", "audit")
 REPAIR_STAGES = ("crash_debug", "optimization_fix")
 SCALING_MIN_THREADS, MIN_BUILD_SPEEDUP = 4, 1.5  # a build that does not speed up at 4+ threads is serial
@@ -41,7 +43,7 @@ def problems_of(log: str, tree: Path, calls: list[dict], rc: int | None) -> list
         found.append("the run never printed 'pipeline complete'")
     seen = STAGE_MARK.findall(log)
     found += [f"stage {s} never started" for s in STAGES if s not in seen]
-    for line in TROUBLE.findall(log):
+    for line in TROUBLE.findall(EXPECTED_BOOTSTRAP_FAILURE.sub("", log)):
         found.append(f"trouble in the log: {line}")
     done = {(g, s): st for g, s, st in GATE_DONE.findall(log)}
     reused = set(GATE_REUSED.findall(log))
