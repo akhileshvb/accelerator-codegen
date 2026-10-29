@@ -7,3 +7,4 @@ pub mod kernel;
 pub mod gen_world;
 pub mod gen_ffi;
 pub mod model;
+pub mod algebra;
