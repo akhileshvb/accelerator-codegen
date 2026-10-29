@@ -50,7 +50,7 @@ pub fn stage_apply(
 ) -> (r: Result<QStaged, u32>)
     requires
         capture_ok((base.timeline())(base.epoch() as nat), (base.timeline())((base.epoch() + 1) as nat), num_delta_seq_view(num_delta@), sub_delta_seq_view(sub_delta@)),
-        nums_by_adsh_keys@ == crate::kernel::rescan_nums_by_adsh_wanted(base.state_spec(), num_delta@, sub_delta@),
+        seq_view_bytes(nums_by_adsh_keys@) == crate::kernel::rescan_nums_by_adsh_wanted(base.state_spec(), num_delta@, sub_delta@),
         rescan_nums_by_adsh_ok((base.timeline())((base.epoch() + 1) as nat), nums_by_adsh_keys@, nums_by_adsh_rows@),
     ensures
         r matches Ok(p) ==> p.epoch() == base.epoch() && p.timeline() == base.timeline(),

@@ -248,7 +248,7 @@ pub fn ob_rescan_nums_by_adsh_keys(
     sub_delta: &Vec<SubDelta>,
 ) -> (r: Vec<Vec<u8>>)
     ensures
-        r@ == crate::kernel::rescan_nums_by_adsh_wanted(*s, num_delta@, sub_delta@),
+        seq_view_bytes(r@) == crate::kernel::rescan_nums_by_adsh_wanted(*s, num_delta@, sub_delta@),
 {
     kernel::rescan_nums_by_adsh_keys(s, num_delta, sub_delta)
 }
@@ -265,7 +265,7 @@ pub fn ob_apply(
 ) -> (r: Result<State, u32>)
     requires
         capture_ok(s.db(), db2, num_delta_seq_view(num_delta@), sub_delta_seq_view(sub_delta@)),
-        nums_by_adsh_keys@ == crate::kernel::rescan_nums_by_adsh_wanted(*s, num_delta@, sub_delta@),
+        seq_view_bytes(nums_by_adsh_keys@) == crate::kernel::rescan_nums_by_adsh_wanted(*s, num_delta@, sub_delta@),
         rescan_nums_by_adsh_ok(db2, nums_by_adsh_keys@, nums_by_adsh_rows@),
     ensures
         r matches Ok(s2) ==> s2.db() == db2,

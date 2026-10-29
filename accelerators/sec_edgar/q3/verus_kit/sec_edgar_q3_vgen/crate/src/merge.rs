@@ -292,7 +292,7 @@ proof fn lemma_tmap_same(inner: bool, m1: &Index<Ent>, m2: &Index<Ent>, tf: spec
     }
 }
 
-proof fn lemma_empty_tmap(inner: bool, m: Index<Ent>, tf: spec_fn(Option<Seq<u8>>, Option<int>) -> Q)
+pub proof fn lemma_empty_tmap(inner: bool, m: Index<Ent>, tf: spec_fn(Option<Seq<u8>>, Option<int>) -> Q)
     requires
         m.wf(),
         forall|k: KeyView| #[trigger] m.at(k) is None,

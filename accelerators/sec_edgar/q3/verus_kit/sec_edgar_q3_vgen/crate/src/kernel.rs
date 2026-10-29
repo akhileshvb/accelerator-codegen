@@ -1,36 +1,40 @@
-// The kernel: num and sub as bags, sub bucketed by its join key; a read joins, groups and orders them
-// (execute.rs).  Writes apply the changed rows to the bags.
+// The kernel: per parameter set (fy, uom), the companies' exact totals with the sum of their rounded totals,
+// and the (name, company) groups' exact totals with their rounded totals; the sub table bucketed by filing
+// with multiplicities, to join the changed num rows.  A commit is applied per changed row (batch.rs);
+// a read walks one class (reply.rs).
 #![allow(unused_imports)]
 use vstd::prelude::*;
 use std::sync::Arc;
 use verus_common::bag::*;
-use verus_common::rat::*;
+use verus_common::rel::*;
 use verus_common::sums::*;
-use verus_prooflib::ordered::Index;
+use verus_prooflib::*;
+use verus_prooflib::ordered::{Index, Key, KeyView};
+use verus_prooflib::wide::Wide;
+use crate::batch::*;
 use crate::bucket::*;
-use crate::execute::*;
-use crate::f64bits::*;
+use crate::ent::*;
+use crate::exact::*;
+use crate::fin::*;
 use crate::gen_obligations::*;
 use crate::gen_spec::*;
+use crate::join_spec::*;
+use crate::keys::*;
+use crate::merge::*;
 use crate::numeric::*;
+use crate::qty::*;
+use crate::reply::*;
 use crate::rows::*;
+use crate::stagea::*;
+use crate::wbag::*;
 
 verus! {
 
 pub struct State {
-    nums: Vec<NumRt>,
-    subs: Vec<SubRt>,
-    sub_bag: Index<Vec<SubRt>>,
+    classes: Index<Class>,
+    subs: Index<Vec<WRow>>,
     consts: Arc<Consts>,
     db: Ghost<Db>,
-}
-
-pub open spec fn same_sums<A>(rows: Seq<A>, tab: Seq<A>) -> bool {
-    forall|f: spec_fn(A) -> int| #[trigger] sum(rows, f) == sum(tab, f)
-}
-
-pub open spec fn finite_nums(nums: Seq<NumRt>) -> bool {
-    forall|i: int| 0 <= i < nums.len() ==> (#[trigger] nums[i]).value__null != 0 || f64_finite(nums[i].value)
 }
 
 impl State {
@@ -40,10 +44,9 @@ impl State {
 
     #[verifier::type_invariant]
     closed spec fn holds(self) -> bool {
-        &&& same_sums(rows_v(self.nums@), self.db@.num)
-        &&& same_sums(rows_v(self.subs@), self.db@.sub)
-        &&& finite_nums(self.nums@)
-        &&& bag_holds::<SubRt>(self.sub_bag, self.db@.sub)
+        &&& agg_ok(self.classes, self.db@)
+        &&& wbag_as(self.subs, phi_tab(self.db@.sub))
+        &&& nums_dbl(self.db@)
         &&& consts_ok(*self.consts)
     }
 }
@@ -52,52 +55,43 @@ pub open spec fn history(s: State) -> nat {
     0
 }
 
-pub open spec fn rescan_nums_by_adsh_wanted(s: State, num_delta: Seq<NumDelta>, sub_delta: Seq<SubDelta>) -> Seq<Vec<u8>> {
-    Seq::empty()
+/// The filings of the changed sub rows: their num rows meet the changed sub rows.
+pub open spec fn rescan_nums_by_adsh_wanted(s: State, num_delta: Seq<NumDelta>, sub_delta: Seq<SubDelta>) -> Seq<Seq<u8>> {
+    sub_delta.map_values(|d: SubDelta| d.row.adsh@)
 }
 
-/// A num row with a value that is no double is outside the envelope.
-proof fn lemma_nonfinite_outside(db: Db, nums: Seq<NumRt>, i: int)
-    requires
-        same_sums(rows_v(nums), db.num),
-        0 <= i < nums.len(),
-        nums[i].value__null == 0,
-        !f64_finite(nums[i].value),
-    ensures
-        !envelope(db),
+proof fn lemma_empty_sub_zero(db: Db)
+    requires db.sub.len() == 0,
+    ensures forall|p: Params, h: spec_fn(JK) -> int| #[trigger] jq(db, p, h) == 0,
 {
-    lemma_sums_eq_multiset(rows_v(nums), db.num);
-    let row = nums[i].rv();
-    assert(rows_v(nums)[i] == row);
-    assert(rows_v(nums).contains(row));
-    assert(rows_v(nums).to_multiset().count(row) > 0) by {
-        broadcast use vstd::seq_lib::group_to_multiset_ensures;
-    }
-    assert(db.num.to_multiset().count(row) > 0);
-    assert(db.num.contains(row)) by {
-        broadcast use vstd::seq_lib::group_to_multiset_ensures;
-    }
-    let j = choose|j: int| 0 <= j < db.num.len() && db.num[j] == row;
-    lemma_f64_in_range(nums[i].value);
-    assert(!num_in_type(db.num[j]));
-}
-
-fn all_finite(nums: &Vec<NumRt>) -> (r: bool)
-    ensures r == finite_nums(nums@),
-{
-    let mut i: usize = 0;
-    while i < nums.len()
-        invariant i <= nums.len(), forall|j: int| 0 <= j < i ==> (#[trigger] nums[j]).value__null != 0 || f64_finite(nums[j].value),
-        decreases nums.len() - i,
-    {
-        if nums[i].value__null == 0 && (nums[i].value / 4503599627370496) % 2048 == 2047 {
-            proof { lemma_pow2_consts(); assert(!f64_finite(nums[i as int].value)); }
-            return false;
+    assert forall|p: Params, h: spec_fn(JK) -> int| #[trigger] jq(db, p, h) == 0 by {
+        assert forall|i: int| 0 <= i < db.num.len() implies
+            (|n: NumRow| sum(db.sub, |s: SubRow| wt(p, h)(n, s)))(#[trigger] db.num[i]) == 0 by {
+            assert(db.sub =~= Seq::<SubRow>::empty());
+            lemma_sum_empty(db.sub, |s: SubRow| wt(p, h)(db.num[i], s));
         }
-        proof { lemma_pow2_consts(); }
+        lemma_sum_zero(db.num, |n: NumRow| sum(db.sub, |s: SubRow| wt(p, h)(n, s)));
+    }
+}
+
+fn dup_subs(sub: &Vec<SubRt>) -> (sd: Vec<SubDelta>)
+    ensures
+        sd.len() == sub.len(),
+        forall|i: int| 0 <= i < sd.len() ==> (#[trigger] sd[i]).sign == 1 && sub_rt_view(sd[i].row) == sub_rt_view(sub[i]),
+{
+    let mut sd: Vec<SubDelta> = Vec::new();
+    let mut i: usize = 0;
+    while i < sub.len()
+        invariant
+            i <= sub.len(),
+            sd.len() == i,
+            forall|j: int| 0 <= j < i ==> (#[trigger] sd[j]).sign == 1 && sub_rt_view(sd[j].row) == sub_rt_view(sub[j]),
+        decreases sub.len() - i,
+    {
+        sd.push(SubDelta { row: sub[i].dup(), sign: 1 });
         i += 1;
     }
-    true
+    sd
 }
 
 pub fn build(
@@ -113,21 +107,63 @@ pub fn build(
         r matches Some(s) ==> crate::kernel::history(s) == 0,
         envelope(db) ==> r is Some,
 {
-    proof {
-        assert(rows_v(nums@) =~= num_rt_seq_view(nums@));
-        assert(rows_v(sub@) =~= sub_rt_seq_view(sub@));
-    }
-    if !all_finite(&nums) {
-        proof {
-            let i = choose|i: int| 0 <= i < nums.len() && !(nums[i].value__null != 0 || f64_finite(nums[i].value));
-            lemma_nonfinite_outside(db, nums@, i);
-        }
-        return None;
-    }
-    let sub_bag = bag_build(&sub);
-    proof { lemma_bag_holds_transfer::<SubRt>(sub_bag, rows_v(sub@), db.sub); }
     let consts = Arc::new(consts_new());
-    Some(State { nums, subs: sub, sub_bag, consts, db: Ghost(db) })
+    let ghost db0 = Db { num: db.num, sub: Seq::empty() };
+    let classes0: Index<Class> = Index::new();
+    let subs0 = wbag_new();
+    let sd = dup_subs(&sub);
+    let nd: Vec<NumDelta> = Vec::new();
+    let nb = bag_build(&nums);
+    proof {
+        // the nums are doubles
+        let pred = |r: NumRow| r.value is Some ==> dbl_raw(r.value->0);
+        assert forall|i: int| 0 <= i < num_rt_seq_view(nums@).len() implies pred(#[trigger] num_rt_seq_view(nums@)[i]) by {
+            let r = nums@[i];
+            assert(num_rt_seq_view(nums@)[i] == num_rt_view(r));
+            if r.value__null == 0 { assert(f64_val(r.value) == f64_val(r.value)); }
+        }
+        lemma_weighted_equal_preserves_predicate(num_rt_seq_view(nums@), db.num, pred);
+        assert(nums_dbl(db));
+        assert(nums_dbl(db0));
+        // the empty state answers for db0
+        lemma_empty_sub_zero(db0);
+        assert(agg_ok(classes0, db0)) by {
+            assert forall|fy: i64, uom: Seq<u8>| #[trigger] classes0.at(ckey(fy as int, uom)) is None implies zero_p(db0, cp(fy, uom)) by {
+                assert forall|gn: Option<Seq<u8>>, gc: Option<int>| qj(db0, cp(fy, uom), true, gn, gc).n == 0 && qj(db0, cp(fy, uom), false, gn, gc).n == 0 by {}
+            }
+        }
+        // the sub rows as changes
+        let sv = sub_delta_seq_view(sd@);
+        assert forall|f: spec_fn(SubRow) -> int| #[trigger] sum(db.sub, f) == sum(db0.sub, f) + sum(sv, |e: (SubRow, int)| e.1 * f(e.0)) by {
+            assert(db0.sub =~= Seq::<SubRow>::empty());
+            lemma_sum_empty(db0.sub, f);
+            assert(sv =~= sub_rt_seq_view(sub@).map_values(|r: SubRow| (r, 1int))) by {
+                assert forall|i: int| 0 <= i < sv.len() implies sv[i] == (sub_rt_seq_view(sub@)[i], 1int) by {
+                    assert(sv[i] == (sub_rt_view(sd@[i].row), sd@[i].sign as int));
+                }
+            }
+            lemma_sum_map(sub_rt_seq_view(sub@), |r: SubRow| (r, 1int), |e: (SubRow, int)| e.1 * f(e.0), f);
+            assert(sum(sub_rt_seq_view(sub@), f) == sum(db.sub, f));
+        }
+        assert(bag_step(db0.sub, db.sub, sv));
+        assert(num_delta_seq_view(nd@) =~= Seq::<(NumRow, int)>::empty());
+        assert forall|f: spec_fn(NumRow) -> int| #[trigger] sum(db.num, f) == sum(db0.num, f) + sum(num_delta_seq_view(nd@), |e: (NumRow, int)| e.1 * f(e.0)) by {
+            lemma_sum_empty(num_delta_seq_view(nd@), |e: (NumRow, int)| e.1 * f(e.0));
+        }
+        assert(bag_step(db0.num, db.num, num_delta_seq_view(nd@)));
+        // the nums bucketed by filing hold the table
+        assert(rows_v(nums@) =~= num_rt_seq_view(nums@));
+        assert(nb_covers(nb, db.num, sd@)) by {
+            assert forall|i: int, f: spec_fn(NumRow) -> int| 0 <= i < sd@.len() implies
+                #[trigger] sum(rows_at::<NumRt>(nb, key1(sd[i].row.adsh@)), f) == sum(db.num, key_weight::<NumRt>(key1(sd[i].row.adsh@), f)) by {
+                let kw = key_weight::<NumRt>(key1(sd[i].row.adsh@), f);
+                assert(sum(rows_at::<NumRt>(nb, key1(sd[i].row.adsh@)), f) == sum(rows_v(nums@), kw));
+                assert(sum(num_rt_seq_view(nums@), kw) == sum(db.num, kw));
+            }
+        }
+    }
+    let (classes, subs) = apply_core(&classes0, &subs0, &*consts, &nd, &sd, &nb, Ghost(db0), Ghost(db));
+    Some(State { classes, subs, consts, db: Ghost(db) })
 }
 
 pub fn execute(
@@ -141,7 +177,33 @@ pub fn execute(
         r matches Some(out) ==> forall|i: int| 0 <= i < out.len() ==> out_fits(#[trigger] out_view(out@)[i]),
 {
     proof { use_type_invariant(s); }
-    answer(&s.nums, &s.sub_bag, p1, p2, &*s.consts, Ghost(s.db@))
+    let ghost db = s.db@;
+    let ghost p = params(p1 as int, p2@);
+    let key = class_key(p1, p2);
+    let found = s.classes.get(&key);
+    let cls = match found {
+        Some(a) => {
+            proof { assert(cls_ok(*a, db, cp(p1, p2@))); }
+            a
+        },
+        None => {
+            let cm: Index<Ent> = Index::new();
+            let om: Index<Ent> = Index::new();
+            proof {
+                assert(zero_p(db, cp(p1, p2@)));
+                lemma_empty_tmap(true, cm, tf_of(db, cp(p1, p2@), true));
+                lemma_empty_tmap(false, om, tf_of(db, cp(p1, p2@), false));
+                assert(cm.entries() =~= Seq::<(KeyView, Ent)>::empty());
+                lemma_sum_empty(cm.entries(), cvw());
+                lemma_sum_empty(cm.entries(), onew());
+            }
+            let c = Arc::new(Class { cmap: cm, omap: om, sr: Wide::zero(), k: Wide::zero() });
+            proof { assert(cls_ok(*c, db, cp(p1, p2@))); }
+            c
+        },
+    };
+    proof { assert(cp(p1, p2@) == p); }
+    finish(&*cls, &*s.consts, Ghost(db), Ghost(p))
 }
 
 pub fn rescan_nums_by_adsh_keys(
@@ -149,97 +211,27 @@ pub fn rescan_nums_by_adsh_keys(
     num_delta: &Vec<NumDelta>,
     sub_delta: &Vec<SubDelta>,
 ) -> (r: Vec<Vec<u8>>)
-    ensures r@ == crate::kernel::rescan_nums_by_adsh_wanted(*s, num_delta@, sub_delta@),
+    ensures seq_view_bytes(r@) == crate::kernel::rescan_nums_by_adsh_wanted(*s, num_delta@, sub_delta@),
 {
-    Vec::new()
-}
-
-/// A table with its changed rows applied.
-fn apply_table<R: BagRow>(old: &Vec<R>, d: &Vec<(R, i64)>, Ghost(before): Ghost<Seq<R::V>>, Ghost(after): Ghost<Seq<R::V>>) -> (r: Vec<R>)
-    requires
-        same_sums(rows_v(old@), before),
-        bag_step(before, after, dview(d@)),
-        unit_signs(dview(d@)),
-    ensures
-        same_sums(rows_v(r@), after),
-{
-    broadcast use vstd::multiset::group_multiset_axioms;
-    proof {
-        lemma_sums_eq_multiset(rows_v(old@), before);
-        lemma_bag_step_multiset(before, after, dview(d@));
-    }
-    match apply_bag(old, d) {
-        Some(v) => {
-            proof {
-                assert(rows_v(old@).to_multiset() == before.to_multiset());
-                lemma_apply_bag_step(old@, v@, d@, before, after);
-                assert forall|f: spec_fn(R::V) -> int| #[trigger] sum(rows_v(v@), f) == sum(after, f) by {
-                    lemma_sum_perm(rows_v(v@), after, f);
-                }
-            }
-            v
-        },
-        None => {
-            proof {
-                let x = choose|x: R::V| #[trigger] minus_rows(dview(d@)).to_multiset().count(x)
-                    > rows_v(old@).to_multiset().add(plus_rows(dview(d@)).to_multiset()).count(x);
-                assert(rows_v(old@).to_multiset() == before.to_multiset());
-                assert(after.to_multiset().add(minus_rows(dview(d@)).to_multiset()).count(x)
-                    == before.to_multiset().add(plus_rows(dview(d@)).to_multiset()).count(x));
-                assert(false);
-            }
-            Vec::new()
-        },
-    }
-}
-
-fn pairs_num(d: &Vec<NumDelta>) -> (r: Vec<(NumRt, i64)>)
-    ensures dview(r@) == num_delta_seq_view(d@),
-{
-    let mut r: Vec<(NumRt, i64)> = Vec::new();
+    let mut r: Vec<Vec<u8>> = Vec::new();
     let mut i: usize = 0;
-    while i < d.len()
-        invariant i <= d.len(), dview(r@) == num_delta_seq_view(d@.take(i as int)),
-        decreases d.len() - i,
+    while i < sub_delta.len()
+        invariant
+            i <= sub_delta.len(),
+            seq_view_bytes(r@) == sub_delta@.take(i as int).map_values(|d: SubDelta| d.row.adsh@),
+        decreases sub_delta.len() - i,
     {
         let ghost old_r = r@;
-        let row = d[i].row.dup();
-        r.push((row, d[i].sign));
+        r.push(copy_bytes(sub_delta[i].row.adsh.as_slice()));
         proof {
-            assert(d@.take(i as int + 1) =~= d@.take(i as int).push(d@[i as int]));
-            assert(r@ =~= old_r.push((row, d[i as int].sign)));
-            assert(dview(r@) =~= dview(old_r).push((row.rv(), d[i as int].sign as int)));
-            assert(num_delta_seq_view(d@.take(i as int + 1)) =~= num_delta_seq_view(d@.take(i as int)).push((num_delta_seq_view(d@).index(i as int))));
-            assert(dview(r@) =~= num_delta_seq_view(d@.take(i as int + 1)));
+            assert(sub_delta@.take(i as int + 1) =~= sub_delta@.take(i as int).push(sub_delta@[i as int]));
+            assert(seq_view_bytes(r@) =~= seq_view_bytes(old_r).push(sub_delta@[i as int].row.adsh@));
+            assert(sub_delta@.take(i as int + 1).map_values(|d: SubDelta| d.row.adsh@)
+                =~= sub_delta@.take(i as int).map_values(|d: SubDelta| d.row.adsh@).push(sub_delta@[i as int].row.adsh@));
         }
         i += 1;
     }
-    proof { assert(d@.take(d.len() as int) =~= d@); }
-    r
-}
-
-fn pairs_sub(d: &Vec<SubDelta>) -> (r: Vec<(SubRt, i64)>)
-    ensures dview(r@) == sub_delta_seq_view(d@),
-{
-    let mut r: Vec<(SubRt, i64)> = Vec::new();
-    let mut i: usize = 0;
-    while i < d.len()
-        invariant i <= d.len(), dview(r@) == sub_delta_seq_view(d@.take(i as int)),
-        decreases d.len() - i,
-    {
-        let ghost old_r = r@;
-        let row = d[i].row.dup();
-        r.push((row, d[i].sign));
-        proof {
-            assert(d@.take(i as int + 1) =~= d@.take(i as int).push(d@[i as int]));
-            assert(r@ =~= old_r.push((row, d[i as int].sign)));
-            assert(dview(r@) =~= dview(old_r).push((row.rv(), d[i as int].sign as int)));
-            assert(sub_delta_seq_view(d@.take(i as int + 1)) =~= sub_delta_seq_view(d@.take(i as int)).push((sub_delta_seq_view(d@).index(i as int))));
-            assert(dview(r@) =~= sub_delta_seq_view(d@.take(i as int + 1)));
-        }
-        i += 1;
-    }
-    proof { assert(d@.take(d.len() as int) =~= d@); }
+    proof { assert(sub_delta@.take(sub_delta.len() as int) =~= sub_delta@); }
     r
 }
 
@@ -253,7 +245,7 @@ pub fn apply(
 ) -> (r: Result<State, u32>)
     requires
         capture_ok(s.db(), db2, num_delta_seq_view(num_delta@), sub_delta_seq_view(sub_delta@)),
-        nums_by_adsh_keys@ == crate::kernel::rescan_nums_by_adsh_wanted(*s, num_delta@, sub_delta@),
+        seq_view_bytes(nums_by_adsh_keys@) == crate::kernel::rescan_nums_by_adsh_wanted(*s, num_delta@, sub_delta@),
         rescan_nums_by_adsh_ok(db2, nums_by_adsh_keys@, nums_by_adsh_rows@),
     ensures
         r matches Ok(s2) ==> s2.db() == db2,
@@ -262,18 +254,30 @@ pub fn apply(
 {
     proof { use_type_invariant(s); }
     let ghost db = s.db@;
-    let nums = apply_table(&s.nums, &pairs_num(num_delta), Ghost(db.num), Ghost(db2.num));
-    let subs = apply_table(&s.subs, &pairs_sub(sub_delta), Ghost(db.sub), Ghost(db2.sub));
-    if !all_finite(&nums) {
-        proof {
-            let i = choose|i: int| 0 <= i < nums.len() && !(nums[i].value__null != 0 || f64_finite(nums[i].value));
-            lemma_nonfinite_outside(db2, nums@, i);
+    let nb = bag_build(nums_by_adsh_rows);
+    proof {
+        let pred = |r: NumRow| r.value is Some ==> dbl_raw(r.value->0);
+        let nv = num_delta_seq_view(num_delta@);
+        assert forall|i: int| 0 <= i < nv.len() implies pred(#[trigger] nv[i].0) by {
+            let r = num_delta@[i].row;
+            assert(nv[i].0 == num_rt_view(r));
+            if r.value__null == 0 { assert(f64_val(r.value) == f64_val(r.value)); }
         }
-        return Err(1);
+        lemma_bag_step_preserves_predicate(db.num, db2.num, nv, pred);
+        assert(nums_dbl(db2));
+        assert forall|i: int| 0 <= i < sub_delta.len() implies (#[trigger] sub_delta[i]).sign == 1 || sub_delta[i].sign == -1 by {
+            assert(sub_delta_seq_view(sub_delta@)[i].1 == sub_delta[i].sign as int);
+        }
+        assert forall|i: int| 0 <= i < num_delta.len() implies (#[trigger] num_delta[i]).sign == 1 || num_delta[i].sign == -1 by {
+            assert(nv[i].1 == num_delta[i].sign as int);
+        }
+        assert forall|i: int| 0 <= i < sub_delta@.len() implies seq_view_bytes(nums_by_adsh_keys@).contains((#[trigger] sub_delta@[i]).row.adsh@) by {
+            assert(seq_view_bytes(nums_by_adsh_keys@)[i] == sub_delta@[i].row.adsh@);
+        }
+        lemma_nb_covers(nb, nums_by_adsh_rows@, db2.num, sub_delta@, seq_view_bytes(nums_by_adsh_keys@));
     }
-    let sub_bag = bag_build(&subs);
-    proof { lemma_bag_holds_transfer::<SubRt>(sub_bag, rows_v(subs@), db2.sub); }
-    Ok(State { nums, subs, sub_bag, consts: s.consts.clone(), db: Ghost(db2) })
+    let (classes, subs) = apply_core(&s.classes, &s.subs, &*s.consts, num_delta, sub_delta, &nb, Ghost(db), Ghost(db2));
+    Ok(State { classes, subs, consts: s.consts.clone(), db: Ghost(db2) })
 }
 
 }
