@@ -37,7 +37,7 @@ pub proof fn lemma_gk_inj(name: Option<Seq<u8>>, cik: Option<int>, name2: Option
 pub fn gk_key(name: &Option<Vec<u8>>, cik: Option<i64>) -> (k: Key)
     ensures k.view() == gk(match name { Some(b) => Some(b@), None => None }, opt_int(cik)),
 {
-    let mut text: Vec<u8> = Vec::new();
+    let mut text: Vec<u8> = Vec::with_capacity(2 + match name { Some(b) => b.len(), None => 0 });
     text.push(if cik.is_some() { 1 } else { 0 });
     text.push(if name.is_some() { 1 } else { 0 });
     if let Some(b) = name {
