@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <csignal>
 #include <exception>
+#include <utility>
 
 #include <pthread.h>
 
@@ -101,10 +102,16 @@ void ShardServer::Stop() {
   threads.clear();
 }
 
-void ShardServer::WaitWork(std::chrono::milliseconds timeout) {
+bool ShardServer::WaitWork(std::chrono::milliseconds timeout) {
   std::unique_lock<std::mutex> lock(work_mutex);
   work_cv.wait_for(lock, timeout, [&] { return work; });
-  work = false;
+  return std::exchange(work, false);
+}
+
+void ShardServer::SetPatient(std::size_t member) {
+  patient.resize(runtimes.size());
+  patient.at(member) = true;
+  runtimes[member]->SetSqlFallbackUs(1e15);
 }
 
 void ShardServer::Wake() {
@@ -174,7 +181,9 @@ bool ShardServer::ReadWithin(runtime::AcceleratorRuntime &runtime, const ReadReq
     const auto now = Clock::now();
     const auto remaining_us = std::chrono::duration_cast<std::chrono::microseconds>(
                                   std::min(budget_end, deadline) - now).count();
-    if (const double sql_us = postgres::shared::SqlFallbackUs(static_cast<int>(index), request.member); sql_us > 0) {
+    const bool patient_member = request.member < patient.size() && patient[request.member];
+    if (const double sql_us = postgres::shared::SqlFallbackUs(static_cast<int>(index), request.member);
+        sql_us > 0 && !patient_member) {
       runtime.SetSqlFallbackUs(sql_us);
     }
     runtime::ReadOptions options;

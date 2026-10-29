@@ -66,13 +66,20 @@ private:
 // fails).
 class PgBuildSnapshot final : public runtime::BuildSnapshot {
 public:
-  PgBuildSnapshot(PgSlots &slots_p, runtime::Epoch epoch_p) : slots(slots_p), epoch(epoch_p) {}
-  ~PgBuildSnapshot() override { slots.End(std::uncaught_exceptions() > 0); }
+  // `shared`: the maintenance pass's snapshot, which the pass closes.
+  PgBuildSnapshot(PgSlots &slots_p, runtime::Epoch epoch_p, bool shared_p)
+      : slots(slots_p), epoch(epoch_p), shared(shared_p) {}
+  ~PgBuildSnapshot() override {
+    if (!shared) {
+      slots.End(std::uncaught_exceptions() > 0);
+    }
+  }
   runtime::Epoch SnapshotEpoch() const override { return epoch; }
 
 private:
   PgSlots &slots;
   runtime::Epoch epoch;
+  bool shared;
 };
 
 PgSlots::PgSlots(int index_p, std::vector<PostgresAccelerator *> members_p, CommitArrivals &arrivals_p)
@@ -143,8 +150,13 @@ bool PgSlots::WaitForPreRegistrationWriters(const std::vector<core::TableId> &, 
 
 std::unique_ptr<runtime::BuildSnapshot>
 PgSlots::OpenBuildSnapshot(runtime::AcceleratorRuntime &runtime) {
-  End(false); // maintenance a previous build left open
-  Begin();
+  // Inside a maintenance pass every build reads the pass's snapshot: the members that were not stale
+  // have applied everything through its epoch, so the builds and the applies are one version at b.
+  const bool in_pass = open && lookup_epoch;
+  if (!in_pass) {
+    End(false); // maintenance a previous build left open
+    Begin();
+  }
   const auto epoch = shared::ReaderEpoch(index, GetActiveSnapshot());
   if (!epoch) {
     End(true);
@@ -157,7 +169,7 @@ PgSlots::OpenBuildSnapshot(runtime::AcceleratorRuntime &runtime) {
   if (*epoch > 0) {
     runtime.OfferCommit(runtime::CommittedChange{*epoch, *epoch, {}, false, false});
   }
-  return std::make_unique<PgBuildSnapshot>(*this, *epoch);
+  return std::make_unique<PgBuildSnapshot>(*this, *epoch, in_pass);
 }
 
 // Postgres applies a commit after it is visible, so the lookups of a
