@@ -268,7 +268,7 @@ pub fn bag_remove<R: Keyed>(b: &mut Index<Vec<R>>, r: &R, Ghost(tab): Ghost<Seq<
 
 use vstd::multiset::Multiset;
 
-proof fn lemma_dview_step<T: BagRow>(d: Seq<(T, i64)>, t: int)
+pub proof fn lemma_dview_step<T: BagRow>(d: Seq<(T, i64)>, t: int)
     requires 0 <= t < d.len(),
     ensures
         dview(d.take(t + 1)) == dview(d.take(t)).push((d[t].0.rv(), d[t].1 as int)),
