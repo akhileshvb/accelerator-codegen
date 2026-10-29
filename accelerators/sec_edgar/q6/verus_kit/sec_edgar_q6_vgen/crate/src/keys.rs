@@ -84,12 +84,30 @@ pub proof fn lemma_vsel_congr(es: Seq<(KeyView, Grp)>, fy: int, u1: Index<UnitRe
     lemma_notu_congr(es, fy, u1, u2);
 }
 
+proof fn lemma_notu_len_all(es: Seq<(KeyView, Grp)>, fy: int, u: Index<UnitRef>)
+    requires forall|j: int| 0 <= j < es.len() ==> !u_has(u, fy, ov((#[trigger] es[j]).1.name)),
+    ensures notu_keys(es, fy, u).len() == es.len(),
+    decreases es.len(),
+{
+    if es.len() > 0 {
+        lemma_notu_len_all(es.drop_last(), fy, u);
+        assert(!u_has(u, fy, ov(es.last().1.name)));
+    }
+}
+
+proof fn lemma_notu_len_le(es: Seq<(KeyView, Grp)>, fy: int, u: Index<UnitRef>)
+    ensures notu_keys(es, fy, u).len() <= es.len(),
+    decreases es.len(),
+{
+    if es.len() > 0 { lemma_notu_len_le(es.drop_last(), fy, u); }
+}
+
 /// The moved groups' units are those the predicate names.
 pub proof fn lemma_mv_vw(cls: Index<ClassRec>, ct: Index<ClassRef>, u: Index<UnitRef>, mvs: Seq<Mv>, fy: int, name: Option<Seq<u8>>)
     requires
-        tbl_str(cls), uset_ok(u), mv_ok(cls, ct, u, mvs),
-        forall|ok: KeyView, k: KeyView| #![trigger cls.at(ok), u.at(k)] cls.at(ok) is Some && u.at(k) is Some && k.0 == cls.at(ok)->0.fy as int ==> ct.at(ok) is Some,
-        forall|ok: KeyView| #![trigger ct.at(ok)] ct.at(ok) is Some ==> cls.at(ok) is Some && exists|k: KeyView| #![trigger u.at(k)] u.at(k) is Some && k.0 == cls.at(ok)->0.fy as int,
+        tbl_str(cls), uset_ok(u), mv_ok(cls, ct, u, mvs), class_cover_u(cls, u, ct),
+        forall|ok: KeyView| #![trigger cls.at(ok)] cls.at(ok) is Some ==> crec_full(cls.at(ok)->0),
+        forall|ok: KeyView| #![trigger ct.at(ok)] ct.at(ok) is Some ==> exists|k: KeyView| #![trigger u.at(k)] u.at(k) is Some && k.0 == ok.0,
     ensures mv_has(mvs, fy, name) <==> vw_pred(cls, u, fy, name),
 {
     if mv_has(mvs, fy, name) {
@@ -99,6 +117,8 @@ pub proof fn lemma_mv_vw(cls: Index<ClassRec>, ct: Index<ClassRef>, u: Index<Uni
         assert(cls_key(c) == ok);
         lemma_okey_inj(c.fy as int, c.stmt@, c.uom@, mvs[i].fy as int, mvs[i].stmt@, mvs[i].uom@);
         assert(c.fy as int == fy);
+        assert(ct.at(ok) is Some);
+        assert(ok.0 == fy);
         assert(fy_in_u(u, fy));
         let k = rkey(arc_val(&mvs[i].g));
         assert(c.f.at(k) == Some(*mvs[i].g));
@@ -109,8 +129,23 @@ pub proof fn lemma_mv_vw(cls: Index<ClassRec>, ct: Index<ClassRef>, u: Index<Uni
             && notu_keys(cls.at(ok)->0.r.entries(), fy, u).len() < k_limit() && exists|k: KeyView| vsel(cls.at(ok)->0.f.entries(), fy, u).contains(k) && ov(cls.at(ok)->0.f.at(k)->0.name) == name;
         let c = cls.at(ok)->0;
         let k = choose|k: KeyView| vsel(c.f.entries(), fy, u).contains(k) && ov(c.f.at(k)->0.name) == name;
-        let kk = choose|kk: KeyView| #![trigger u.at(kk)] u.at(kk) is Some && kk.0 == fy;
-        assert(ct.at(ok) is Some);
+        assert(ct.at(ok) is Some) by {
+            if ct.at(ok) is None {
+                c.r.model();
+                c.f.model();
+                let rs = c.r.entries();
+                assert forall|j: int| 0 <= j < rs.len() implies !u_has(u, fy, ov((#[trigger] rs[j]).1.name)) by {
+                    assert(c.r.at(rs[j].0) == Some(rs[j].1));
+                    assert(unit_in(c, nkey_v(ov(rs[j].1.name))));
+                }
+                lemma_notu_len_all(rs, fy, u);
+                let vs = vsel(c.f.entries(), fy, u);
+                lemma_notu_len_le(c.f.entries(), fy, u);
+                assert(vs.len() > 0);
+                assert(c.f.entries().len() > 0);
+                assert(crec_full(c));
+            }
+        }
         let i = choose|i: int| 0 <= i < mvs.len() && okey((#[trigger] mvs[i]).fy as int, mvs[i].stmt@, mvs[i].uom@) == ok && rkey(*mvs[i].g) == k;
         assert(cls.at(ok)->0.f.at(rkey(*mvs[i].g)) == Some(*mvs[i].g));
         lemma_okey_inj(mvs[i].fy as int, mvs[i].stmt@, mvs[i].uom@, c.fy as int, c.stmt@, c.uom@);
@@ -266,7 +301,7 @@ pub fn filing_keys(um: &Index<UnitRec>, w: &Index<UnitRef>, keys0: &Vec<Vec<u8>>
 #[verifier::rlimit(300)]
 #[verifier::spinoff_prover]
 pub fn plan_full(cls: &Index<ClassRec>, uc: &Index<ClsSet>, fm: &Index<Vec<UnitRef>>, um: &Index<UnitRec>, dn: &Vec<NumDelta>, dp: &Vec<PreDelta>, ds: &Vec<SubDelta>) -> (p: Plan)
-    requires tbl_str(*cls), uc_str(*uc), unit_cls_ok(*cls, *uc), fm.wf(), um.wf(),
+    requires tbl_str(*cls), uc_str(*uc), unit_cls_ok(*cls, *uc), fm.wf(), um.wf(), forall|ok: KeyView| #![trigger cls.at(ok)] cls.at(ok) is Some ==> crec_full(cls.at(ok)->0),
     ensures
         plan_ok(*cls, p.u, p.ct, p.w, p.cw),
         ({ let ka = all_keys(dn@, dp@, ds@); 
@@ -296,7 +331,12 @@ pub fn plan_full(cls: &Index<ClassRec>, uc: &Index<ClsSet>, fm: &Index<Vec<UnitR
         assert(u_spec(*fm, ka, ds@) == u_spec(*fm, ka, ds@));
         assert(uset_ok(u) && forall|fy: int, name: Option<Seq<u8>>| u_has(u, fy, name) <==> u_pred_s(*fm, ka, ds@, fy, name));
     }
-    let ct = plan_classes(cls, &u);
+    let ct = uc_classes(uc, &u);
+    proof {
+        assert forall|ok: KeyView, nk: KeyView| cls.at(ok) is Some && unit_in(cls.at(ok)->0, nk) && wn(u, cls.at(ok)->0.fy as int, nk) implies ct.at(ok) is Some by {
+            assert(ucs_has(*uc, (cls.at(ok)->0.fy as int, nk.1), ok));
+        }
+    }
     let mvs = plan_mv(cls, &ct, &u);
     let w = plan_w(&u, &mvs);
     let cw = uc_classes(uc, &w);

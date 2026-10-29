@@ -69,11 +69,6 @@ pub proof fn lemma_sem_switch(db: Db, db2: Db, c: ClassRec, u: Index<UnitRef>)
     }
 }
 
-/// Every class whose fy some unit of the set has is in the class set.
-pub open spec fn class_cover(cls: Index<ClassRec>, w: Index<UnitRef>, cw: Index<ClassRef>) -> bool {
-    forall|ok: KeyView, k: KeyView| #![trigger cls.at(ok), w.at(k)] cls.at(ok) is Some && w.at(k) is Some && k.0 == cls.at(ok)->0.fy as int ==> cw.at(ok) is Some
-}
-
 /// Every class some unit of the set has an entry in is in the class set.
 pub open spec fn class_cover_u(cls: Index<ClassRec>, w: Index<UnitRef>, cw: Index<ClassRef>) -> bool {
     forall|ok: KeyView, nk: KeyView| #![trigger cls.at(ok), unit_in(cls.at(ok)->0, nk)]
@@ -235,7 +230,7 @@ pub proof fn lemma_bridge(db: Db, db2: Db, cls0: Index<ClassRec>, t: Index<Class
     u: Index<UnitRef>, w: Index<UnitRef>, ct: Index<ClassRef>, cw: Index<ClassRef>)
     requires
         cls_ok(db, cls0), uset_ok(u), uset_ok(w), subset_u(u, w), frame_ok(db, db2, u),
-        class_cover_u(cls0, w, cw), class_cover(cls0, u, ct), refill_ok(cls0, ct, u, w),
+        class_cover_u(cls0, w, cw), class_cover_u(cls0, u, ct), refill_ok(cls0, ct, u, w),
         evict_tbl(cls0, t, cw, ct, u, w), kept_tbl(cls0, t, cw, u, w, kept),
     ensures mid_ok(db2, t, kept, u, w, no_done()),
 {
@@ -293,6 +288,13 @@ pub proof fn lemma_bridge(db: Db, db2: Db, cls0: Index<ClassRec>, t: Index<Class
                 }
             }
             lemma_sem_switch(db, db2, n, u);
+            assert(!refill ==> forall|q: KeyView| #![trigger c0.r.at(q)] c0.r.at(q) is Some ==> !wn(u, c0.fy as int, nkey_v(ov(c0.r.at(q)->0.name)))) by {
+                if !refill {
+                    assert forall|q: KeyView| c0.r.at(q) is Some implies !wn(u, c0.fy as int, nkey_v(ov(c0.r.at(q)->0.name))) by {
+                        assert(unit_in(c0, nkey_v(ov(c0.r.at(q)->0.name))));
+                    }
+                }
+            }
             lemma_full_evicted(c0, n, u, w, refill);
             assert forall|q: KeyView| n.r.at(q) is Some && wn(w, n.fy as int, nkey_v(ov(n.r.at(q)->0.name))) implies gm_at(kept, ok, n.r.at(q)->0.ik()) == n.r.at(q) by {
                 assert(t.at(ok) is Some && cw.at(ok) is Some);

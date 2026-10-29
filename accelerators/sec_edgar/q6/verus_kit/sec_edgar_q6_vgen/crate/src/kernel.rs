@@ -212,8 +212,9 @@ pub fn apply(
             assert(acc_s(acc, k) == acc_s(acc0, k) + nn_s(unit_l(rn), unit_l(rs), unit_l(rp), 1)(k));
         }
     }
-    let cls2 = core_update(&s.cls, &plan.u, &plan.ct, &plan.w, &plan.cw, &acc, &s.tab, Ghost(db), Ghost(db2));
     let uc2 = uc_update(&s.uc, &plan.u, &acc);
+    let tc = uc_classes(&uc2, &plan.w);
+    let cls2 = core_update(&s.cls, &plan.u, &plan.ct, &plan.w, &plan.cw, &tc, &acc, &s.tab, Ghost(db), Ghost(db2));
     let fm2 = fm_update(&s.fm, &plan.keys, subs_by_filing_rows);
     let um2 = um_update(&s.um, &plan.u, subs_by_filing_rows);
     proof {
@@ -272,8 +273,8 @@ pub fn build(
     let no_keys: Vec<Vec<u8>> = Vec::new();
     let fm = fm_update(&fm0, &no_keys, &subs);
     let um = um_update(&um0, &u, &subs);
-    let ct = plan_classes(&cls0, &u);
-    let cw = plan_classes(&cls0, &u);
+    let ct: Index<ClassRef> = Index::new();
+    let cw: Index<ClassRef> = Index::new();
     let ls = wrap_sub_owned(subs);
     let lp = wrap_pre_owned(pres);
     let mut acc: Index<AccEnt> = Index::new();
@@ -311,9 +312,10 @@ pub fn build(
             assert(acc_s(acc, k) == acc_s(acc0, k) + nn_s(unit_l(num_rt_seq_view(nums@)), sub_delta_seq_view(ls@), pre_delta_seq_view(lp@), 1)(k));
         }
     }
-    let cls = core_update(&cls0, &u, &ct, &u, &cw, &acc, &tab, Ghost(db0), Ghost(db));
     let uc0: Index<ClsSet> = Index::new();
     let uc = uc_update(&uc0, &u, &acc);
+    let tc = uc_classes(&uc, &u);
+    let cls = core_update(&cls0, &u, &ct, &u, &cw, &tc, &acc, &tab, Ghost(db0), Ghost(db));
     proof {
         assert(uc_ok(uc, db)) by {
             assert forall|k: GK| cntk(db, k) > 0 implies ucs_has(uc, ukey(k.fy, k.name), okey(k.fy, k.stmt, k.uom)) by {

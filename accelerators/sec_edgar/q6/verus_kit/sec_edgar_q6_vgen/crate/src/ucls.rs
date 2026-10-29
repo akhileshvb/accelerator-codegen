@@ -26,8 +26,11 @@ pub open spec fn ucs_has(uc: Index<ClsSet>, q: KeyView, ok: KeyView) -> bool {
     match uc.at(q) { Some(c) => c.s.at(ok) is Some, None => false }
 }
 
+/// Well formed: the sets are class sets, and a unit lists only classes of its own fy.
 pub open spec fn uc_str(uc: Index<ClsSet>) -> bool {
-    uc.wf() && forall|q: KeyView| #![trigger uc.at(q)] uc.at(q) is Some ==> cset_ok(uc.at(q)->0.s)
+    &&& uc.wf()
+    &&& forall|q: KeyView| #![trigger uc.at(q)] uc.at(q) is Some ==> cset_ok(uc.at(q)->0.s)
+    &&& forall|q: KeyView, oq: KeyView| #![trigger ucs_has(uc, q, oq)] ucs_has(uc, q, oq) ==> oq.0 == q.0
 }
 
 /// Every group of db is in a class its unit lists.
@@ -92,6 +95,7 @@ pub fn uc_classes(uc: &Index<ClsSet>, s: &Index<UnitRef>) -> (ct: Index<ClassRef
     ensures
         cset_ok(ct),
         forall|q: KeyView, ok: KeyView| #![trigger s.at(q), ucs_has(*uc, q, ok)] s.at(q) is Some && ucs_has(*uc, q, ok) ==> ct.at(ok) is Some,
+        forall|ok: KeyView| #![trigger ct.at(ok)] ct.at(ok) is Some ==> exists|q: KeyView| #![trigger s.at(q)] s.at(q) is Some && ucs_has(*uc, q, ok) && q.0 == ok.0,
 {
     let ents = s.rows();
     let ghost es = s.entries();
@@ -104,6 +108,7 @@ pub fn uc_classes(uc: &Index<ClsSet>, s: &Index<UnitRef>) -> (ct: Index<ClassRef
             ents@.map_values(|row: (Key, Arc<UnitRef>)| (row.0.view(), *row.1)) == es, es == s.entries(),
             forall|pos: int| #![trigger es[pos]] 0 <= pos < es.len() ==> s.at(es[pos].0) == Some(es[pos].1),
             forall|j: int, ok: KeyView| #![trigger ucs_has(*uc, es[j].0, ok)] 0 <= j < i && ucs_has(*uc, es[j].0, ok) ==> ct.at(ok) is Some,
+            forall|ok: KeyView| #![trigger ct.at(ok)] ct.at(ok) is Some ==> exists|q: KeyView| #![trigger s.at(q)] s.at(q) is Some && ucs_has(*uc, q, ok) && q.0 == ok.0,
         decreases ents.len() - i,
     {
         let ur = &ents[i].1;
@@ -129,6 +134,7 @@ pub fn uc_classes(uc: &Index<ClsSet>, s: &Index<UnitRef>) -> (ct: Index<ClassRef
                         cents@.map_values(|row: (Key, Arc<ClassRef>)| (row.0.view(), *row.1)) == ces, ces == cs.s.entries(),
                         forall|pos: int| #![trigger ces[pos]] 0 <= pos < ces.len() ==> cs.s.at(ces[pos].0) == Some(ces[pos].1),
                         forall|ok: KeyView| #![trigger ct_before.at(ok)] ct_before.at(ok) is Some ==> ct.at(ok) is Some,
+                        forall|ok: KeyView| #![trigger ct.at(ok)] ct.at(ok) is Some ==> (ct_before.at(ok) is Some || cs.s.at(ok) is Some),
                         forall|p: int| #![trigger ces[p]] 0 <= p < j ==> ct.at(ces[p].0) is Some,
                     decreases cents.len() - j,
                 {
@@ -142,12 +148,22 @@ pub fn uc_classes(uc: &Index<ClsSet>, s: &Index<UnitRef>) -> (ct: Index<ClassRef
                         assert forall|q: KeyView| ct.at(q) is Some implies q == okey(ct.at(q)->0.fy as int, ct.at(q)->0.stmt@, ct.at(q)->0.uom@) by {
                             if q != ck.view() { assert(ct_pre.at(q) is Some); }
                         }
+                        assert forall|ok: KeyView| ct.at(ok) is Some implies (ct_before.at(ok) is Some || cs.s.at(ok) is Some) by {
+                            if ok != ck.view() { assert(ct_pre.at(ok) is Some); }
+                        }
                     }
                 }
                 proof {
                     assert forall|ok: KeyView| ucs_has(*uc, es[i as int].0, ok) implies ct.at(ok) is Some by {
                         assert(cs.s.at(ok) is Some);
                         let p = choose|p: int| #![auto] 0 <= p < ces.len() && ces[p].0 == ok;
+                    }
+                    assert forall|ok: KeyView| ct.at(ok) is Some implies exists|q: KeyView| #![trigger s.at(q)] s.at(q) is Some && ucs_has(*uc, q, ok) && q.0 == ok.0 by {
+                        if ct_before.at(ok) is None {
+                            assert(cs.s.at(ok) is Some);
+                            assert(s.at(es[i as int].0) is Some);
+                            assert(ucs_has(*uc, es[i as int].0, ok));
+                        }
                     }
                 }
             }
@@ -174,6 +190,10 @@ pub fn uc_update(uc: &Index<ClsSet>, u: &Index<UnitRef>, acc: &Index<AccEnt>) ->
             ucs_has(r, ukey(acc.at(kv)->0.fy as int, ov(acc.at(kv)->0.name)), okey(acc.at(kv)->0.fy as int, acc.at(kv)->0.stmt@, acc.at(kv)->0.uom@)),
 {
     let mut r = sh(uc);
+    proof {
+        assert forall|q: KeyView| r.at(q) is Some implies cset_ok(r.at(q)->0.s) by { assert(uc.at(q) is Some); }
+        assert forall|q: KeyView, oq: KeyView| ucs_has(r, q, oq) implies oq.0 == q.0 by { assert(ucs_has(*uc, q, oq)); }
+    }
     let uents = u.rows();
     let ghost ues = u.entries();
     proof { u.model(); }
@@ -194,6 +214,9 @@ pub fn uc_update(uc: &Index<ClsSet>, u: &Index<UnitRef>, acc: &Index<AccEnt>) ->
         proof {
             assert forall|q: KeyView| r.at(q) is Some && (r.at(q)->0.s.wf() == r.at(q)->0.s.wf()) implies cset_ok(r.at(q)->0.s) by {
                 if q != uk.view() { assert(r0.at(q) is Some); }
+            }
+            assert forall|q: KeyView, oq: KeyView| ucs_has(r, q, oq) implies oq.0 == q.0 by {
+                if q != uk.view() { assert(ucs_has(r0, q, oq)); }
             }
             assert forall|q: KeyView| (forall|j: int| 0 <= j < i ==> (#[trigger] ues[j]).0 != q) implies r.at(q) == uc.at(q) by {
                 assert(forall|j: int| 0 <= j < i - 1 ==> ues[j].0 != q);
@@ -256,6 +279,10 @@ pub fn uc_update(uc: &Index<ClsSet>, u: &Index<UnitRef>, acc: &Index<AccEnt>) ->
                 }
                 assert forall|q: KeyView, ok: KeyView| ucs_has(r0, q, ok) implies ucs_has(r, q, ok) by {
                     if q == uk.view() { assert(cs0.s.at(ok) is Some); }
+                }
+                assert forall|q: KeyView, oq: KeyView| ucs_has(r, q, oq) implies oq.0 == q.0 by {
+                    if q != uk.view() { assert(ucs_has(r0, q, oq)); }
+                    else if oq != okey(e.fy as int, e.stmt@, e.uom@) { assert(cs0.s.at(oq) is Some); assert(ucs_has(r0, q, oq)); }
                 }
                 assert(ucs_has(r, ukey(e.fy as int, ov(e.name)), okey(e.fy as int, e.stmt@, e.uom@)));
                 assert forall|q: KeyView| u.at(q) is None implies r.at(q) == uc.at(q) by { assert(q != uk.view()); }
