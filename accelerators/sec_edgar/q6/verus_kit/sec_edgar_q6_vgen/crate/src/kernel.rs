@@ -357,6 +357,9 @@ pub fn execute(
         r matches Some(out) ==> forall|i: int| 0 <= i < out.len() ==> out_fits(#[trigger] out_view(out@)[i]),
 {
     proof { use_type_invariant(s); }
+    if s.ranked {
+        return crate::fast::read_ranked(&s.rank, Ghost(s.groups), Ghost(s.db()), p1, p2, p3);
+    }
     let rows = crate::emit::gather(&s.groups, &s.tab, Ghost(s.db()), p1, p2, p3);
     crate::emit::finish(rows, Ghost(s.db()), p1, p2, p3)
 }

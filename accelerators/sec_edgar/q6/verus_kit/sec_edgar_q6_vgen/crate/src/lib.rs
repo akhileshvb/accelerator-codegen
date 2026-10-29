@@ -23,3 +23,4 @@ pub mod ordering;
 pub mod answer;
 pub mod emit;
 pub mod rank;
+pub mod fast;
