@@ -4,7 +4,7 @@ use vstd::prelude::*;
 use std::sync::Arc;
 use verus_common::rel::*;
 use verus_common::sums::*;
-use verus_prooflib::ordered::{Index, Key, KeyView, Cursor};
+use verus_prooflib::ordered::{Index, Key, KeyView, Cursor, key_lt};
 use crate::gen_spec::*;
 use crate::gen_obligations::*;
 use crate::esc::*;
@@ -669,6 +669,94 @@ pub fn plan_w(u: &Index<UnitRef>, mvs: &Vec<Mv>) -> (w: Index<UnitRef>)
         }
     }
     w
+}
+
+pub open spec fn ordered_es(es: Seq<(KeyView, Grp)>) -> bool {
+    forall|a: int, b: int| 0 <= a < b < es.len() ==> key_lt((#[trigger] es[a]).0, (#[trigger] es[b]).0)
+}
+
+/// The keys outside u are the entries' keys whose unit is outside u, in the entries' order.
+pub proof fn lemma_notu_sorted(es: Seq<(KeyView, Grp)>, fy: int, u: Index<UnitRef>)
+    requires ordered_es(es),
+    ensures
+        forall|a: int, b: int| 0 <= a < b < notu_keys(es, fy, u).len() ==> key_lt((#[trigger] notu_keys(es, fy, u)[a]), (#[trigger] notu_keys(es, fy, u)[b])),
+        forall|x: KeyView| notu_keys(es, fy, u).contains(x) <==> exists|j: int| 0 <= j < es.len() && (#[trigger] es[j]).0 == x && !u_has(u, fy, ov(es[j].1.name)),
+    decreases es.len(),
+{
+    if es.len() == 0 {
+        lemma_notu_nil(fy, u);
+    } else {
+        let t = es.drop_last();
+        assert(ordered_es(t)) by { assert forall|a: int, b: int| 0 <= a < b < t.len() implies key_lt((#[trigger] t[a]).0, (#[trigger] t[b]).0) by { assert(t[a] == es[a] && t[b] == es[b]); } }
+        lemma_notu_sorted(t, fy, u);
+        let nt = notu_keys(t, fy, u);
+        let l = es[es.len() - 1];
+        let nk = notu_keys(es, fy, u);
+        assert(nk == nt + if u_has(u, fy, ov(l.1.name)) { Seq::empty() } else { seq![l.0] });
+        if !u_has(u, fy, ov(l.1.name)) {
+            assert forall|a: int, b: int| 0 <= a < b < nk.len() implies key_lt((#[trigger] nk[a]), (#[trigger] nk[b])) by {
+                if b == nk.len() - 1 {
+                    assert(nk[a] == nt[a]);
+                    assert(nt.contains(nk[a]));
+                    let j = choose|j: int| 0 <= j < t.len() && t[j].0 == nk[a];
+                    assert(es[j] == t[j]);
+                    assert(key_lt(es[j].0, l.0));
+                } else {
+                    assert(nk[a] == nt[a] && nk[b] == nt[b]);
+                }
+            }
+        } else {
+            assert(nk =~= nt);
+        }
+        assert forall|x: KeyView| nk.contains(x) <==> exists|j: int| 0 <= j < es.len() && (#[trigger] es[j]).0 == x && !u_has(u, fy, ov(es[j].1.name)) by {
+            if nk.contains(x) {
+                let q = choose|q: int| 0 <= q < nk.len() && nk[q] == x;
+                if q < nt.len() {
+                    assert(nt.contains(x));
+                    let j = choose|j: int| 0 <= j < t.len() && t[j].0 == x && !u_has(u, fy, ov(t[j].1.name));
+                    assert(es[j] == t[j]);
+                } else {
+                    assert(x == l.0);
+                    assert(es[es.len() - 1] == l);
+                }
+            }
+            if exists|j: int| 0 <= j < es.len() && es[j].0 == x && !u_has(u, fy, ov(es[j].1.name)) {
+                let j = choose|j: int| 0 <= j < es.len() && es[j].0 == x && !u_has(u, fy, ov(es[j].1.name));
+                if j < t.len() {
+                    assert(t[j] == es[j]);
+                    assert(nt.contains(x));
+                    let q = choose|q: int| 0 <= q < nt.len() && nt[q] == x;
+                    assert(nk[q] == x);
+                } else {
+                    assert(j == es.len() - 1);
+                    assert(nk[nk.len() - 1] == x);
+                }
+            }
+        }
+    }
+}
+
+/// The first units' keys outside u: a prefix of the keys outside u, every later key is greater.
+pub proof fn lemma_vsel_prefix(es: Seq<(KeyView, Grp)>, fy: int, u: Index<UnitRef>)
+    requires ordered_es(es),
+    ensures
+        forall|a: int, b: int| 0 <= a < b < vsel(es, fy, u).len() ==> key_lt((#[trigger] vsel(es, fy, u)[a]), (#[trigger] vsel(es, fy, u)[b])),
+        forall|x: KeyView, y: KeyView| notu_keys(es, fy, u).contains(y) && !vsel(es, fy, u).contains(y) && vsel(es, fy, u).contains(x) ==> key_lt(x, y),
+{
+    lemma_notu_sorted(es, fy, u);
+    let nk = notu_keys(es, fy, u);
+    let vs = vsel(es, fy, u);
+    let m = if nk.len() < 512 { nk.len() as int } else { 512int };
+    assert(vs =~= nk.take(m));
+    assert forall|a: int, b: int| 0 <= a < b < vs.len() implies key_lt((#[trigger] vs[a]), (#[trigger] vs[b])) by { assert(vs[a] == nk[a] && vs[b] == nk[b]); }
+    assert forall|x: KeyView, y: KeyView| nk.contains(y) && !vs.contains(y) && vs.contains(x) implies key_lt(x, y) by {
+        let a = choose|a: int| 0 <= a < vs.len() && vs[a] == x;
+        let b = choose|b: int| 0 <= b < nk.len() && nk[b] == y;
+        assert(nk[a] == x);
+        if b < m { assert(vs[b] == y); }
+        assert(b >= m);
+        assert(a < b);
+    }
 }
 
 } // verus!
