@@ -318,7 +318,6 @@ pub fn build(
     Some(State { groups, tab, db: Ghost(db) })
 }
 
-#[verifier::external_body]
 pub fn execute(
     s: &State,
     p1: i64,
@@ -330,7 +329,9 @@ pub fn execute(
         envelope(s.db()) && answer_fits(s.db(), params(p1 as int, p2@, p3@)) ==> r is Some,
         r matches Some(out) ==> forall|i: int| 0 <= i < out.len() ==> out_fits(#[trigger] out_view(out@)[i]),
 {
-    unimplemented!()
+    proof { use_type_invariant(s); }
+    let rows = crate::emit::gather(&s.groups, &s.tab, Ghost(s.db()), p1, p2, p3);
+    crate::emit::finish(rows, Ghost(s.db()), p1, p2, p3)
 }
 
 

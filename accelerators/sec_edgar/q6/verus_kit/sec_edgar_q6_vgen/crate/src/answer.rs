@@ -95,3 +95,31 @@ pub proof fn lemma_row_ok(db: Db, p: Params, k: GK, v: int)
 }
 
 } // verus!
+
+verus! {
+
+/// A spec group with rows is a stored group: its stmt and tag are the asked ones.
+pub proof fn lemma_group_nonempty(db: Db, p: Params, g_name: Option<Seq<u8>>, g_stmt: Option<Seq<u8>>, g_tag: Option<Seq<u8>>, g_plabel: Option<Seq<u8>>)
+    requires group_count(db, p, g_name, g_stmt, g_tag, g_plabel) > 0,
+    ensures
+        g_stmt == Some(p.p2), g_tag is Some,
+        cntk(db, GK { fy: p.p1, stmt: p.p2, uom: p.p3, name: g_name, tag: g_tag->0, plabel: g_plabel }) > 0,
+{
+    let one = |t: Tuple| 1int;
+    lemma_group_sum_nested(db, p, g_name, g_stmt, g_tag, g_plabel, one);
+    assert(group_count(db, p, g_name, g_stmt, g_tag, g_plabel) == group_sum(db, p, g_name, g_stmt, g_tag, g_plabel, one)) by {
+        reveal(group_sum);
+        reveal(group_count);
+        let a = |t: Tuple| if t.s_.name == g_name && t.p.stmt == g_stmt && t.n.tag == g_tag && t.p.plabel == g_plabel { 1int } else { 0 };
+        let b = |t: Tuple| if t.s_.name == g_name && t.p.stmt == g_stmt && t.n.tag == g_tag && t.p.plabel == g_plabel { one(t) } else { 0 };
+        assert forall|t: Tuple| #[trigger] a(t) == b(t) by {}
+        lemma_sum_ext_all(tuples(db, p), a, b);
+    }
+    assert(is_key(p, g_stmt, g_tag));
+    let k = GK { fy: p.p1, stmt: p.p2, uom: p.p3, name: g_name, tag: g_tag->0, plabel: g_plabel };
+    assert(k_of(p, g_name, g_tag, g_plabel) == k);
+    lemma_agg(db, p, k, one, icnt(k));
+    assert(group_sum(db, p, k.name, Some(p.p2), Some(k.tag), k.plabel, one) == gdb(db, icnt(k)));
+}
+
+} // verus!
