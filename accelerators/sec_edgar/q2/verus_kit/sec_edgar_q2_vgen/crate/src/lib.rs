@@ -13,3 +13,7 @@ pub mod kernel;
 pub mod gen_world;
 pub mod gen_ffi;
 pub mod f64bits;
+pub mod model;
+pub mod bridge;
+pub mod cells;
+pub mod maint;
