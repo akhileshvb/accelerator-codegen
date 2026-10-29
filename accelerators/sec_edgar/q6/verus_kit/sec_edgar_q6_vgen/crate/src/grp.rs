@@ -35,6 +35,14 @@ pub open spec fn max_val() -> int {
     (pow2(53) - 1) * pow2(2045)
 }
 
+pub proof fn lemma_max_pos()
+    ensures max_val() > 0,
+{
+    lemma_pow2_consts();
+    lemma_pow2_pos(2045);
+    assert((pow2(53) - 1) * pow2(2045) > 0) by (nonlinear_arith) requires pow2(53) == 9007199254740992, pow2(2045) > 0;
+}
+
 /// The double `b` is the exact sum (one tuple) or a rounding of it.
 pub open spec fn okbits(b: u64, s: int, n: int) -> bool {
     &&& f64_finite(b)
@@ -48,6 +56,15 @@ pub open spec fn bits_ok(g: Grp) -> bool {
 /// A group's place in its class's rank order: larger totals first, then the group's key.
 pub open spec fn rkey(g: Grp) -> KeyView {
     (f64_desc_key(g.bits), g.ik().1)
+}
+
+pub proof fn lemma_rkey_fields(a: Grp, b: Grp)
+    requires rkey(a) == rkey(b),
+    ensures a.ik() == b.ik(), ov(a.name) == ov(b.name), a.tag@ == b.tag@, ov(a.plabel) == ov(b.plabel),
+{
+    assert(a.ik() == (0int, a.ik().1));
+    assert(b.ik() == (0int, b.ik().1));
+    lemma_ikey_inj(ov(a.name), a.tag@, ov(a.plabel), ov(b.name), b.tag@, ov(b.plabel));
 }
 
 pub open spec fn rkey_gk(b: u64, k: GK) -> KeyView {
