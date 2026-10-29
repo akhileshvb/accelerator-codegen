@@ -11,4 +11,6 @@ pub mod bucket;
 pub mod keys;
 pub mod rows;
 pub mod join_spec;
+pub mod join;
+pub mod groups;
 pub mod gen_ffi;

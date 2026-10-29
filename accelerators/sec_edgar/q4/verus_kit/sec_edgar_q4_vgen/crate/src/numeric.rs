@@ -77,21 +77,174 @@ pub fn wide_of_bits(bits: u64, t: &Vec<Wide>) -> (w: Wide)
     v
 }
 
-/// |x| <= the largest double (at the spec's scale).
-pub fn in_range(x: &Wide, t: &Vec<Wide>) -> (r: bool)
-    requires pows_ok(t@),
-    ensures r == f64_in_range(x@),
+/// The power table and the largest double, built once.
+pub struct Consts {
+    pub pows: Vec<Wide>,
+    pub top: Wide,
+}
+
+pub open spec fn consts_ok(c: Consts) -> bool {
+    &&& pows_ok(c.pows@)
+    &&& c.top@ == (pow2(53) - 1) * pow2(2045)
+}
+
+pub fn consts_new() -> (c: Consts)
+    ensures consts_ok(c),
 {
-    let top = Wide::from_i128(0x1F_FFFF_FFFF_FFFFi128).mul(&t[2045]);
+    let pows = pows_new();
+    let top = Wide::from_i128(0x1F_FFFF_FFFF_FFFFi128).mul(&pows[2045]);
     proof {
         assert(pow2(53) == 0x20_0000_0000_0000int) by { lemma_pow2_consts(); }
-        assert(top@ == (pow2(53) - 1) * pow2(2045));
     }
+    Consts { pows, top }
+}
+
+/// |x| <= the largest double (at the spec's scale).
+pub fn in_range(x: &Wide, c: &Consts) -> (r: bool)
+    requires consts_ok(*c),
+    ensures r == f64_in_range(x@),
+{
     let neg = x.neg();
-    let above = top.lt(x);
-    let below = x.lt(&neg.neg());
-    let _ = below;
-    !top.lt(x) && !top.lt(&neg)
+    !c.top.lt(x) && !c.top.lt(&neg)
+}
+
+/// A value as the engine would hold it: bits when it is a double, else the exact value itself.
+pub fn round_value(x: &Wide, c: &Consts) -> (r: (Wide, Option<u64>))
+    requires consts_ok(*c),
+    ensures
+        match r.1 {
+            Some(bits) => f64_rounded(bits, x@) && f64_finite(bits) && r.0@ == f64_val(bits),
+            None => !f64_in_range(x@) && r.0@ == x@,
+        },
+{
+    if in_range(x, c) {
+        let bits = x.f64_bits();
+        proof { lemma_f64_in_range(bits); }
+        (wide_of_bits(bits, &c.pows), Some(bits))
+    } else {
+        (x.dup(), None)
+    }
+}
+
+/// e / k rounded to an integer (halves away from zero).
+pub fn div_round(e: &Wide, k: u64) -> (q: Wide)
+    requires k >= 1,
+    ensures
+        2 * abs(q@ * k as int - e@) <= k as int,
+        abs(q@) <= abs(e@),
+{
+    let neg = e.is_neg();
+    let m = if neg { e.neg() } else { e.dup() };
+    let kw = Wide::from_i128(k as i128);
+    let mut ds: Vec<Wide> = Vec::new();
+    ds.push(kw.dup());
+    proof { assert(pow2(0) == 1); }
+    while !m.lt(&ds[ds.len() - 1])
+        invariant
+            m@ >= 0,
+            kw@ == k as int,
+            k >= 1,
+            ds.len() >= 1,
+            forall|j: int| 0 <= j < ds.len() ==> (#[trigger] ds[j])@ == k as int * pow2(j as nat),
+        decreases if m@ >= ds[ds.len() - 1]@ { m@ - ds[ds.len() - 1]@ + 1 } else { 0int },
+    {
+        let last = &ds[ds.len() - 1];
+        let d = last.add(last);
+        proof {
+            let j = (ds.len() - 1) as nat;
+            assert(pow2(j + 1) == 2 * pow2(j)) by { reveal_with_fuel(pow2, 2); }
+            lemma_pow2_pos(j);
+            assert(last@ >= 1) by (nonlinear_arith) requires last@ == k as int * pow2(j), k >= 1, pow2(j) >= 1;
+            assert(d@ == k as int * pow2((j + 1) as nat)) by (nonlinear_arith)
+                requires d@ == last@ + last@, last@ == k as int * pow2(j), pow2((j + 1) as nat) == 2 * pow2(j);
+        }
+        ds.push(d);
+    }
+    let mut q = Wide::zero();
+    let mut r = m.dup();
+    let one = Wide::from_i128(1);
+    let mut i = ds.len();
+    proof {
+        let l = (ds.len() - 1) as nat;
+        lemma_pow2_pos(l);
+        assert(pow2(l + 1) == 2 * pow2(l)) by { reveal_with_fuel(pow2, 2); }
+        assert(m@ < ds[l as int]@);
+        assert(r@ < k as int * pow2(ds.len() as nat)) by (nonlinear_arith)
+            requires r@ == m@, m@ < k as int * pow2(l), pow2((l + 1) as nat) == 2 * pow2(l), pow2(l) >= 1, k >= 1, ds.len() == l + 1;
+    }
+    while i > 0
+        invariant
+            0 <= i <= ds.len(),
+            ds.len() >= 1,
+            k >= 1,
+            m@ >= 0,
+            one@ == 1,
+            forall|j: int| 0 <= j < ds.len() ==> (#[trigger] ds[j])@ == k as int * pow2(j as nat),
+            m@ == q@ * (k as int * pow2(i as nat)) + r@,
+            0 <= r@ < k as int * pow2(i as nat),
+            q@ >= 0,
+        decreases i,
+    {
+        i -= 1;
+        proof {
+            reveal_with_fuel(pow2, 2);
+            assert(pow2((i + 1) as nat) == 2 * pow2(i as nat));
+            lemma_pow2_pos(i as nat);
+        }
+        let ghost (q0, r0) = (q@, r@);
+        let ghost kj = k as int * pow2(i as nat);
+        let q2 = q.add(&q);
+        if !r.lt(&ds[i]) {
+            r = r.sub(&ds[i]);
+            q = q2.add(&one);
+            proof {
+                assert(ds[i as int]@ == kj);
+                assert(k as int * pow2((i + 1) as nat) == 2 * kj) by (nonlinear_arith) requires pow2((i + 1) as nat) == 2 * pow2(i as nat), kj == k as int * pow2(i as nat);
+                assert(m@ == q@ * kj + r@) by (nonlinear_arith)
+                    requires q@ == 2 * q0 + 1, r@ == r0 - kj, m@ == q0 * (2 * kj) + r0;
+                assert(0 <= r@ < kj);
+            }
+        } else {
+            q = q2;
+            proof {
+                assert(ds[i as int]@ == kj);
+                assert(k as int * pow2((i + 1) as nat) == 2 * kj) by (nonlinear_arith) requires pow2((i + 1) as nat) == 2 * pow2(i as nat), kj == k as int * pow2(i as nat);
+                assert(m@ == q@ * kj + r@) by (nonlinear_arith)
+                    requires q@ == 2 * q0, r@ == r0, m@ == q0 * (2 * kj) + r0;
+            }
+        }
+    }
+    proof { assert(pow2(0) == 1); }
+    let rem2 = r.add(&r);
+    let up = !rem2.lt(&kw);
+    let qq = if up { q.add(&one) } else { q.dup() };
+    let out = if neg { qq.neg() } else { qq.dup() };
+    proof {
+        let (mm, ee, kk) = (m@, e@, k as int);
+        assert(mm == abs(ee));
+        assert(mm == q@ * kk + r@) by { assert(pow2(0) == 1); }
+        assert(0 <= r@ < kk);
+        if up {
+            assert(2 * abs(qq@ * kk - mm) <= kk) by (nonlinear_arith)
+                requires qq@ == q@ + 1, mm == q@ * kk + r@, 0 <= r@ < kk, 2 * r@ >= kk;
+        } else {
+            assert(2 * abs(qq@ * kk - mm) <= kk) by (nonlinear_arith)
+                requires qq@ == q@, mm == q@ * kk + r@, 0 <= r@ < kk, 2 * r@ < kk;
+        }
+        assert(qq@ >= 0);
+        assert(qq@ <= mm) by (nonlinear_arith)
+            requires qq@ >= 0, 2 * abs(qq@ * kk - mm) <= kk, kk >= 1, mm >= 0;
+        if neg {
+            assert(out@ == -qq@);
+            assert(ee == -mm);
+            assert(out@ * kk - ee == -(qq@ * kk - mm)) by (nonlinear_arith) requires out@ == -qq@, ee == -mm;
+        } else {
+            assert(out@ == qq@);
+            assert(ee == mm);
+        }
+        assert(abs(out@) == qq@);
+    }
+    out
 }
 
 }
