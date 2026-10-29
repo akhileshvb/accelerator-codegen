@@ -32,3 +32,4 @@ pub mod cnt;
 pub mod plan;
 pub mod pick;
 pub mod step;
+pub mod trim;

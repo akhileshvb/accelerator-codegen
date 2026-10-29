@@ -26,6 +26,7 @@ use crate::cnt::*;
 use crate::plan::*;
 use crate::pick::*;
 use crate::step::*;
+use crate::trim::*;
 
 verus! {
 
@@ -280,6 +281,8 @@ pub fn build(
             }
         }
     }
+    let mut thn = thn;
+    trim_all(&mut cells, &mut dir, &mut thn, Ghost(cw(db)));
     Some(State { db: Ghost(db), cells, dir, thr: thn })
 }
 
@@ -408,6 +411,8 @@ pub fn apply(
             }
         }
     }
+    let mut thr_new = thr_new;
+    trim_all(&mut cells, &mut dir, &mut thr_new, Ghost(cw(db2)));
     Ok(State { db: Ghost(db2), cells, dir, thr: thr_new })
 }
 
