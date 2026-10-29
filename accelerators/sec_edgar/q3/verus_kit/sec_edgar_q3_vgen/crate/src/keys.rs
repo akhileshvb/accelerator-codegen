@@ -158,7 +158,7 @@ pub fn make_key3(a: &[u8], b: &[u8], c: &[u8]) -> (k: Key)
 pub fn make_key1(a: &[u8]) -> (k: Key)
     ensures k.view() == key1(a@),
 {
-    let mut t: Vec<u8> = Vec::with_capacity(2 * a.len() + 1);
+    let mut t: Vec<u8> = Vec::with_capacity(if a.len() < 1048576 { 2 * a.len() + 1 } else { 1 });
     append_escaped(&mut t, a);
     proof { assert(t@ =~= Seq::<u8>::empty() + escape(a@)); }
     Key::text(t)
