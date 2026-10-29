@@ -70,6 +70,8 @@ generated:
   # per-query accelerators and their benchmark-level shared code; also prims/ and prooflib/, which are
   # grown from the skeleton by primitive_publish / prooflib_publish
   - accelerators/*/**
+  # each query's kernel inputs, written by the analysis stage and kept so that the kit regenerates
+  - workloads/*/q*.inputs
   - pipeline/verus/prooflib_provenance.jsonl
   - pipeline/verus/spec_audits.jsonl
   - pipeline/verus/playbook/**
