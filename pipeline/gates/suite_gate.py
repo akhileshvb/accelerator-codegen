@@ -57,7 +57,7 @@ def prepare_conformance(ts, ctx: dict, suite: Path | None) -> int:
     if binding is None:
         return 0
     out = Path(os.environ.get("ACCEL_GATE_OUT_DIR") or art / "gates")
-    print(_exports(_suite_env(ts, ctx, ts.write_probe_suite(out / "harness_conformance" / "probe_suite", binding), "quick")))
+    print(_exports(_suite_env(ts, ctx, ts.write_probe_suite(out / "conformance_probe_suite", binding), "quick")))
     return 0
 
 
