@@ -12,7 +12,7 @@
 #   A <query>.inputs next to a query declares its kernel inputs (default:
 #   every table whole); a <query>.nullable-params its NULL-able parameters
 #   (numbers, comma separated).  A <query>.flags holds extra
-#   sql2verus flags (e.g. --engine postgres).  Suite `queries`: the production queries with declared
+#   sql2verus flags (e.g. --engine E).  Suite `queries`: the production queries with declared
 #   inputs (workloads/tpch/<q>.inputs), each expected ok.
 #   scripts/test_sql2verus.sh [-j N] [suite ...]      (default: all suites)
 set -euo pipefail

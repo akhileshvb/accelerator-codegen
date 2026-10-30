@@ -1,4 +1,4 @@
-# float SUM / AVG that raise on overflow in the engine (--engine postgres): float_safe in defined / full_result
+# float SUM / AVG that raise on overflow in the engine (an engine whose float_overflow default is error): float_safe in defined / full_result
 o01 ok
 o02 ok
 o03 ok

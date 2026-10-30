@@ -263,14 +263,13 @@ pub open spec fn f64_in_range(v: int) -> bool {
     abs(v) <= (pow2(53) - 1) * pow2(2045)
 }
 
-/// No evaluation order of a float8 SUM overflows (an engine that raises on overflow, e.g. Postgres'
-/// float8pl): a = Σ|x| of the summed values at the spec's float scale.  Every partial sum, whatever
+/// No evaluation order of a float8 SUM overflows (an engine whose float8 addition raises on overflow): a = Σ|x| of the summed values at the spec's float scale.  Every partial sum, whatever
 /// the order, is at most a, and the rounded one at most 2a, so 2a in range suffices.
 pub open spec fn float8_sum_safe(a: int) -> bool {
     2 * a <= (pow2(53) - 1) * pow2(2045)
 }
 
-/// No evaluation order of a float8 AVG overflows (Postgres float8_accum keeps the count, the sum
+/// No evaluation order of a float8 AVG overflows (an accumulator that keeps the count, the sum
 /// Sx and the sum of squared deviations Sxx; Sxx <= 4 (n+1)^3 a^2 whatever the order): a = Σ|x| at
 /// the spec's float scale (2^1074 times the value), n the number of values.  In scaled ints
 /// 4 (n+1)^3 a^2 <= DBL_MAX * 2^1074, with DBL_MAX * 2^1074 = (2^53 - 1) * 2^2045 * 2^1074.
