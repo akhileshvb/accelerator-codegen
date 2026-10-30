@@ -133,20 +133,22 @@ float_bounds::Probe RunProbe(PgConn &c, const std::string &bounds_sql, const std
   return {r.names, r.rows};
 }
 
-// The bounds queries' helpers (DuckDB's fsum, fl_delta macro): an exact sum of the DOUBLEs' shortest
-// decimal forms, which is within the bound's slack of their exact sum.  fl_delta is computed in numeric:
-// Postgres float8 arithmetic raises on underflow where DuckDB's rounds to a denormal or 0.
+// The bounds queries' helpers, in numeric so that they cannot overflow: float8 arithmetic and SUM raise on
+// overflow where DuckDB's round to inf, and groups of 1e308-sized values sum past the double range.  fsum
+// is an exact sum of the DOUBLEs' shortest decimal forms (within the bound's slack of their exact sum), and
+// the bounds query's SUM is rewritten to it; fl_delta is the same formula as DuckDB's macro, clamped to 0
+// where float8 would underflow.
 constexpr const char *kBoundsPrelude = R"SQL(
-CREATE OR REPLACE FUNCTION fl_delta(m double precision, a double precision) RETURNS double precision
+CREATE OR REPLACE FUNCTION fl_delta(m numeric, a numeric) RETURNS numeric
   LANGUAGE sql IMMUTABLE AS $$
-    SELECT CASE WHEN r < 2.2250738585072014e-308 THEN 0 ELSE r::double precision END
-    FROM (SELECT a::text::numeric * ((m::text::numeric * 1.1102230246251565e-16) /
-                                     (1 - m::text::numeric * 1.1102230246251565e-16) + 4.4408920985006262e-16) AS r) t $$;
+    SELECT CASE WHEN r < 2.2250738585072014e-308 THEN 0 ELSE r END
+    FROM (SELECT a * ((m * 1.1102230246251565e-16) / (1 - m * 1.1102230246251565e-16) + 4.4408920985006262e-16) AS r) t $$;
 CREATE OR REPLACE FUNCTION fsum_step(s numeric, v double precision) RETURNS numeric
   LANGUAGE sql IMMUTABLE AS 'SELECT s + v::text::numeric';
-CREATE OR REPLACE FUNCTION fsum_final(s numeric) RETURNS double precision
-  LANGUAGE sql IMMUTABLE AS 'SELECT s::double precision';
-CREATE OR REPLACE AGGREGATE fsum(double precision) (SFUNC = fsum_step, STYPE = numeric, INITCOND = '0', FINALFUNC = fsum_final);
+CREATE OR REPLACE FUNCTION fsum_step(s numeric, v numeric) RETURNS numeric
+  LANGUAGE sql IMMUTABLE AS 'SELECT s + v';
+CREATE OR REPLACE AGGREGATE fsum(double precision) (SFUNC = fsum_step, STYPE = numeric, INITCOND = '0');
+CREATE OR REPLACE AGGREGATE fsum(numeric) (SFUNC = fsum_step, STYPE = numeric, INITCOND = '0');
 )SQL";
 
 // DuckDB SQL of the spec -> Postgres.
@@ -339,7 +341,7 @@ Setup Prepare(PgConn &c, Dialect &dialect, const std::string &query, const Spec 
     return std::vector<std::string>{};
   });
   if (const char *bounds = std::getenv("VERUS_KIT_BOUNDS_SQL"); bounds && *bounds) {
-    s.ordering.bounds_sql = ReadFile(bounds);
+    s.ordering.bounds_sql = std::regex_replace(ReadFile(bounds), std::regex(R"(\bSUM\()", std::regex::icase), "fsum(");
     s.ordering.query_sql = query;
   }
   return s;
@@ -552,6 +554,7 @@ int Snapshots(const std::string &id, const Spec &spec, const std::string &query,
             continue;
           }
           rc.Exec("BEGIN ISOLATION LEVEL REPEATABLE READ");
+          const long fb0 = rc.Fallbacks();
           const auto a = RunAccel(tally, mutex, rc, id, "reader " + std::to_string(t), p);
           std::this_thread::sleep_for(std::chrono::microseconds(rng() % 3000));
           Rows b;
@@ -564,12 +567,15 @@ int Snapshots(const std::string &id, const Spec &spec, const std::string &query,
             continue;
           }
           std::this_thread::sleep_for(std::chrono::microseconds(rng() % 3000));
+          const long fb1 = rc.Fallbacks();
           const auto c = RunAccel(tally, mutex, rc, id, "reader " + std::to_string(t), p);
+          const long fb2 = rc.Fallbacks();
           const auto full = [&] { return RunQuery(rc, s.ordering.unlimited_sql, p); };
           const auto probe = [&] { return RunProbe(rc, s.ordering.bounds_sql, p); };
           std::lock_guard<std::mutex> lock(mutex);
-          tally.Check("reader " + std::to_string(t) + " first", p, a, b, s.ordering, full, probe);
-          tally.Check("reader " + std::to_string(t) + " again", p, c, b, s.ordering, full, probe);
+          const std::string served = std::string(" [first ") + (fb1 > fb0 ? "sql" : "accel") + ", again " + (fb2 > fb1 ? "sql" : "accel") + "]";
+          tally.Check("reader " + std::to_string(t) + " first" + served, p, a, b, s.ordering, full, probe);
+          tally.Check("reader " + std::to_string(t) + " again" + served, p, c, b, s.ordering, full, probe);
           rc.Exec("COMMIT");
         }
         causes.Add(rc);
