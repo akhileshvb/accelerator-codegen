@@ -232,6 +232,35 @@ std::vector<std::string> Canon(duckdb::MaterializedQueryResult &r) {
   return rows;
 }
 
+// Whether two sorted canonical answers agree: the same text, or numbers equal up to the noise of summing doubles in
+// another order (a SUM of 1e13-sized values differs in its last digits).
+bool SameAnswers(const std::vector<std::string> &x, const std::vector<std::string> &y) {
+  const auto cells = [](const std::string &row) {
+    std::vector<std::string> out;
+    std::stringstream in(row);
+    for (std::string cell; std::getline(in, cell, '|');)
+      out.push_back(cell);
+    return out;
+  };
+  const auto same_cell = [](const std::string &a, const std::string &b) {
+    if (a == b)
+      return true;
+    char *end_a = nullptr, *end_b = nullptr;
+    const double u = std::strtod(a.c_str(), &end_a), v = std::strtod(b.c_str(), &end_b);
+    return !a.empty() && !b.empty() && !*end_a && !*end_b && std::fabs(u - v) <= 1e-4 + 1e-12 * std::max(std::fabs(u), std::fabs(v));
+  };
+  if (x.size() != y.size())
+    return false;
+  for (std::size_t i = 0; i < x.size(); ++i) {
+    if (x[i] == y[i])
+      continue;
+    const auto a = cells(x[i]), b = cells(y[i]);
+    if (a.size() != b.size() || !std::equal(a.begin(), a.end(), b.begin(), same_cell))
+      return false;
+  }
+  return true;
+}
+
 // The baseline's SQL: a Verus kit's query text, or (no such kit built in) the file named by <baseline>,
 // e.g. workloads/tpch/q6.sql: the same text with the same $n parameters.
 std::string BaselineSql(const std::string &baseline) {
@@ -618,7 +647,7 @@ int Read(const std::string &path, const std::string &id, const std::string &base
     auto bs = br, as = ar;
     std::sort(bs.begin(), bs.end());
     std::sort(as.begin(), as.end());
-    const bool match = bs == as;
+    const bool match = SameAnswers(bs, as);
     mismatches += match ? 0 : 1;
     std::vector<double> tb, ta;
     for (int r = 0; r < reps; ++r) {
