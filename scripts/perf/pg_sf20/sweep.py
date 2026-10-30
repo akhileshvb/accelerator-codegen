@@ -93,6 +93,7 @@ def main():
     ap.add_argument("--reps", type=int, default=5); ap.add_argument("--base-reps", type=int, default=1)
     ap.add_argument("--seed", type=int, default=None); ap.add_argument("--sf", type=float, default=20)
     ap.add_argument("--query-timeout", type=float, default=1800)
+    ap.add_argument("--keep-workers", action="store_true", help="--system verus: do not stop the shard workers first (a world already built is reused)")
     ap.add_argument("--wait-build", action="store_true",
                     help="before timing, trigger the build with one untimed call and wait until the shard worker reports it "
                          "built and synced (build = that wall time). Needed when plain SQL is faster than the build: the "
@@ -160,7 +161,8 @@ def planned_workers(db, sql):
 def build_world(a, reps):
     """Verus world: stop the workers once, then wait until every query's kit is served (the world builds all kits in
     one worker); -> seconds from the first request to each query's first hit.  Nothing is timed meanwhile."""
-    rsb.restart_shared_worker(a)
+    if not a.keep_workers:
+        rsb.restart_shared_worker(a)
     db = rsb.Db(a, accel=True)
     db.set_timeout(8 * 3600)
     for g in WAIT_GUCS:
