@@ -368,7 +368,7 @@ proof fn lemma_tuple_where(db: Db, p: Params, t: Tuple)
     assert(ss[j] == tuples_2(db, p, n, db.sub[j]));
 }
 
-proof fn lemma_avg_tuple_where(db: Db, p: Params, t: AvgSubTuple)
+pub proof fn lemma_avg_tuple_where(db: Db, p: Params, t: AvgSubTuple)
     requires avg_sub_tuples(db, p).contains(t),
     ensures avg_sub_where_clause(db, p, t.n2, t.s2),
 {

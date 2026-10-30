@@ -177,6 +177,7 @@ pub fn build(
     Some(State { classes, subs, consts, db: Ghost(db) })
 }
 
+#[verifier::rlimit(200)]
 pub fn execute(
     s: &State,
     p1: i64,
@@ -207,8 +208,10 @@ pub fn execute(
                 assert(cm.entries() =~= Seq::<(KeyView, Ent)>::empty());
                 lemma_sum_empty(cm.entries(), cvw());
                 lemma_sum_empty(cm.entries(), onew());
+                lemma_sum_empty(cm.entries(), aw());
+                lemma_sum_empty(cm.entries(), nw());
             }
-            let c = Arc::new(Class { cmap: cm, omap: om, sr: Wide::zero(), k: Wide::zero(), ord: Index::new(), oor: Wide::zero() });
+            let c = Arc::new(Class { cmap: cm, omap: om, sr: Wide::zero(), k: Wide::zero(), ia: Wide::zero(), tn: Wide::zero(), ord: Index::new(), oor: Wide::zero() });
             proof { assert(cls_ok(*c, db, cp(p1, p2@))); }
             c
         },
