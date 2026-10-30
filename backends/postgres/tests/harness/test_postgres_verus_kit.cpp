@@ -18,7 +18,8 @@
 // The writer of snapshots: commit (the spec's transactions), abort (every third one rolled back, every
 //   third one a savepoint rolled back to before its commit), rebuild (every 15th write TRUNCATEs a table
 //   of the query and reloads it, which makes the shard rebuild), kill (its backend is terminated at random
-//   moments, mid-commit among them; it reconnects).  Readers must see 0 mismatches and 0 fallbacks.
+//   moments, mid-commit among them; it reconnects), vacuum (VACUUM of the query's tables after every write).
+//   Readers must see 0 mismatches and 0 fallbacks.
 // VERUS_KIT_BOUNDS_SQL=<file>: the query's bounds query (eval/harness/float_bounds.hpp), as for DuckDB.
 // A call the accelerator answered from SQL counts as a fallback (reported, and a failure of the run).
 // Connection: libpq's PG* environment, database TPCH_PG_DB (host.sh's) or PGDATABASE.
@@ -515,7 +516,28 @@ void WriteOnce(PgConn &w, Dialect &dialect, const std::string &mode, int i, cons
     return;
   }
   Apply(w, dialect, a, false);
+  if (mode == "vacuum") // what the worker has not looked up yet must survive: its snapshots hold the horizon back
+    for (const auto &t : tables)
+      w.Exec("VACUUM " + t);
 }
+
+// Milliseconds of the operations a mode times, summarized as p50 / p99 / max.
+struct Latencies {
+  void Add(std::chrono::steady_clock::time_point since) {
+    std::lock_guard<std::mutex> lock(mutex);
+    ms.push_back(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - since).count());
+  }
+  std::string Json() {
+    std::lock_guard<std::mutex> lock(mutex);
+    std::sort(ms.begin(), ms.end());
+    const auto at = [&](double q) { return ms.empty() ? 0.0 : ms[static_cast<std::size_t>(q * (ms.size() - 1))]; };
+    char text[160];
+    std::snprintf(text, sizeof text, "{\"n\":%zu,\"p50\":%.2f,\"p99\":%.2f,\"max\":%.2f}", ms.size(), at(0.5), at(0.99), at(1));
+    return text;
+  }
+  std::mutex mutex;
+  std::vector<double> ms;
+};
 
 int Snapshots(const std::string &id, const Spec &spec, const std::string &query, int writes, int readers, uint64_t seed,
               bool read_committed, const std::string &mode) {
@@ -534,6 +556,7 @@ int Snapshots(const std::string &id, const Spec &spec, const std::string &query,
   std::mutex mutex;
   std::atomic<bool> done{false};
   std::atomic<int> failures{0};
+  Latencies write_latency, read_latency;
   std::vector<std::thread> threads;
   for (int t = 0; t < readers; ++t)
     threads.emplace_back([&, t] {
@@ -544,7 +567,9 @@ int Snapshots(const std::string &id, const Spec &spec, const std::string &query,
           const auto &p = spec.params[rng() % spec.params.size()];
           if (read_committed) { // one statement holds both answers
             const long before = rc.Fallbacks();
+            const auto started = std::chrono::steady_clock::now();
             const auto [a, b] = Together(rc, id, query, p);
+            read_latency.Add(started);
             std::lock_guard<std::mutex> lock(mutex);
             if (rc.Fallbacks() > before)
               tally.NoteFallback("reader " + std::to_string(t), p, "fallback", "answered from SQL");
@@ -552,7 +577,9 @@ int Snapshots(const std::string &id, const Spec &spec, const std::string &query,
             continue;
           }
           rc.Exec("BEGIN ISOLATION LEVEL REPEATABLE READ");
+          const auto started = std::chrono::steady_clock::now();
           const auto a = RunAccel(tally, mutex, rc, id, "reader " + std::to_string(t), p);
+          read_latency.Add(started);
           std::this_thread::sleep_for(std::chrono::microseconds(rng() % 3000));
           Rows b;
           try {
@@ -593,7 +620,9 @@ int Snapshots(const std::string &id, const Spec &spec, const std::string &query,
   std::string write_error_example;
   for (int i = 0; i < writes; ++i) {
     try {
+      const auto started = std::chrono::steady_clock::now();
       WriteOnce(*session, dialect, mode, i, spec.txns, tables, rng);
+      write_latency.Add(started);
     } catch (const std::exception &e) { // random order: a transaction can legitimately fail (its rows gone)
       const std::string message = e.what();
       const bool terminated = message.find("terminating connection") != std::string::npos ||
@@ -624,7 +653,8 @@ int Snapshots(const std::string &id, const Spec &spec, const std::string &query,
     fallbacks += count;
   std::cout << "{\"mode\":\"snapshots\",\"writes\":" << writes << ",\"write_errors\":" << write_errors
             << ",\"write_error_example\":" << Json(write_error_example) << ",\"readers\":" << readers
-            << ",\"writer\":" << Json(mode) << ",\"kills\":" << kills << ",\"reader_failures\":" << failures << ","
+            << ",\"writer\":" << Json(mode) << ",\"kills\":" << kills << ",\"reader_failures\":" << failures
+            << ",\"write_ms\":" << write_latency.Json() << ",\"read_ms\":" << read_latency.Json() << ","
             << Tail(writer, tally, fallbacks, causes) << "}" << std::endl;
   return tally.mismatches + tally.order_mismatches == 0 && failures == 0 && write_errors < writes && tally.checks > 0 &&
                  fallbacks == 0

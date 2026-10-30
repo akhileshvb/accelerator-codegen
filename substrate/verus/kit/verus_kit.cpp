@@ -16,6 +16,7 @@
 #include <map>
 #include <mutex>
 #include <stdexcept>
+#include <thread>
 #include <utility>
 #include <variant>
 
@@ -291,8 +292,16 @@ const void *ReadAwaitingPublish(uint64_t pending_wait_micros, core::Version at, 
   // The verified store's own "newest" is 0 (its engines' epochs are positive).
   if (at == core::kNewestVersion || Fault() == "ignore_snapshot")
     at = 0;
-  if (pending_wait_micros == core::kWaitForPublish)
-    return read(at, std::numeric_limits<uint64_t>::max(), &status);
+  if (pending_wait_micros == core::kWaitForPublish) { // polls, off the CPU once the publish takes a while
+    const void *state = nullptr;
+    for (int polls = 0; (state = read(at, 64, &status), status == 2); ++polls) {
+      if (polls < 16)
+        std::this_thread::yield();
+      else
+        std::this_thread::sleep_for(std::chrono::microseconds(50));
+    }
+    return state;
+  }
   const auto deadline = std::chrono::steady_clock::now() + std::chrono::microseconds(pending_wait_micros);
   const void *state = nullptr;
   do {

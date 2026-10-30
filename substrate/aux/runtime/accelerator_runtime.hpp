@@ -150,6 +150,10 @@ public:
   void SetCommitGroup(std::shared_ptr<CommitGroup> group);
   // The epoch of the commit whose end was deferred (0: none), cleared.
   Epoch TakeDeferredEnd();
+  // The host is leaving: reads waiting for the state give up (answered from the engine).
+  void StopReads();
+  // Drops the commit whose end was deferred: the store keeps its previous version.
+  void AbandonDeferredEnd();
   void AnnounceCommit(Seq seq);
   // Applies whatever is ready; requests a build when stale, or when a gap
   // has persisted for `gap_timeout_us`.

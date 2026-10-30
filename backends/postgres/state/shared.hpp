@@ -13,6 +13,9 @@
 //                      (n, xid) in ring_i, and releases the gate once it is
 //                      visible. So i's commits become visible in epoch order
 //                      and every snapshot sees a prefix 1..k of them.
+//   Commit backlog     the worker applies one commit at a time, each under the
+//                      database as of its epoch; writers wait (never reader
+//                      fallback) while more than kMaxBacklog are unapplied.
 //   Reader epoch       k = the largest n in ring_i whose xid the snapshot
 //                      sees (all of i's commits up to n are then visible).
 //   Thread tokens      accel.threads tokens, one pool for all shard workers.
@@ -88,6 +91,10 @@ double SqlFallbackUs(int index, uint32_t member);
 // writes of transactions that began before the accelerator was activated
 // (they have no epoch, but the build contains them): answer from SQL.
 std::optional<Epoch> ReaderEpoch(int index, Snapshot snapshot);
+// The xids of the commits with epochs in (after, through], nullopt if the ring no longer reaches back
+// that far. A snapshot that sees them all, plus these xids as in progress, is the database as of `after`
+// (for the tables the accelerator's commits write).
+std::optional<std::vector<TransactionId>> CommitXids(int index, Epoch after, Epoch through);
 // An epoch every open snapshot in the database sees: no reader will ever ask
 // for an older one. Uses Postgres APIs (worker main thread).
 Epoch HorizonEpoch(int index);

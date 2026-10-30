@@ -306,6 +306,18 @@ bool RuntimeHost::EndDeferredCommits() {
   return blocked;
 }
 
+void RuntimeHost::AbandonDeferredCommits() {
+  for (auto *runtime : All()) {
+    runtime->AbandonDeferredEnd();
+  }
+}
+
+void RuntimeHost::StopReads() {
+  for (auto *runtime : All()) {
+    runtime->StopReads();
+  }
+}
+
 ThreadBudget &RuntimeHost::Threads() { return impl->threads; }
 
 } // namespace accelerator_codegen::aux_state::runtime

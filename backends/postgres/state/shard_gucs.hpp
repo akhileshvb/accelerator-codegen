@@ -26,6 +26,8 @@ int ReadThreads();
 int PhaseReadThreads();
 int PhaseBuildThreads();
 int PhaseMaintenanceThreads();
+// accel.per_commit_versions: verified-store shards apply and publish one commit at a time.
+bool PerCommitVersions();
 // accel.shard_idle_exit_s: a worker exits after this much idleness (0: never).
 int IdleExitSeconds();
 
