@@ -11,6 +11,7 @@
 #include "backends/postgres/api/pg_sink.hpp"
 #include "backends/postgres/engine/accelerator_tables.hpp"
 #include "backends/postgres/state/messages.hpp"
+#include "substrate/aux/core/aux_execute_stats.hpp"
 #include "backends/postgres/state/shard_gucs.hpp"
 #include "backends/postgres/state/shared.hpp"
 
@@ -35,6 +36,7 @@ constexpr auto kInterruptEvery = milliseconds(20);
 struct Held {
   ShardSegment *segment = nullptr;
   uint32_t slot = 0;
+  int waiting_index = -1; // the shard whose writers wait for this reader (shared::NoteReaderWaiting)
   bool exit_hook = false;
 } g_held;
 
@@ -42,6 +44,10 @@ void ReleaseHeld() {
   if (g_held.segment) {
     g_held.segment->ReleaseSlot(g_held.slot);
     g_held.segment = nullptr;
+  }
+  if (g_held.waiting_index >= 0) {
+    shared::ReaderWaitEnded(g_held.waiting_index);
+    g_held.waiting_index = -1;
   }
 }
 
@@ -82,27 +88,36 @@ bool AwaitReply(ShardSegment &segment, uint32_t slot, Clock::time_point deadline
   return received;
 }
 
+// The read goes to SQL; `cause` is counted (accel_fallback_causes).
+Remote Declined(const std::string &cause) {
+  core::RecordAuxFallbackCause(cause);
+  return Remote::Fallback;
+}
+
 } // namespace
 
 Remote RemoteRead(int index, uint32_t member, runtime::Epoch epoch, const core::QueryArguments &arguments,
                   FunctionCallInfo fcinfo) {
   ShardSegment *segment = Segment(index);
   if (!segment) {
-    return Remote::Fallback;
+    return Declined("reader:no_segment");
   }
   EnsureWorker(index);
   // The state was built under the worker's search_path: another one may name
   // other tables.
   if (segment->state.load() != ShardSegment::kRunning ||
       segment->GetText(ShardSegment::kSearchPath) != GetConfigOption("search_path", false, false)) {
-    return Remote::Fallback;
+    return Declined(segment->state.load() != ShardSegment::kRunning ? "reader:worker_not_running" : "reader:search_path");
   }
   const int claimed = segment->ClaimSlot();
   if (claimed < 0) {
-    return Remote::Fallback;
+    return Declined("reader:no_slot");
   }
   const auto slot = static_cast<uint32_t>(claimed);
   Hold(*segment, slot);
+  if (shared::NoteReaderWaiting(index, epoch)) {
+    g_held.waiting_index = index;
+  }
 
   const auto deadline = Clock::now() + milliseconds(ReadTimeoutMs());
   ReadRequest request;
@@ -121,16 +136,16 @@ Remote RemoteRead(int index, uint32_t member, runtime::Epoch epoch, const core::
       segment->SendRequest(slot, message, deadline) && AwaitReply(*segment, slot, deadline, reply);
   ReleaseHeld(); // before anything below can raise
   if (!received) {
-    return Remote::Fallback;
+    return Declined("reader:no_reply");
   }
   ReadResponse response;
   try {
     response = DecodeResponse(reply);
   } catch (const std::exception &) {
-    return Remote::Fallback;
+    return Declined("reader:bad_reply");
   }
   if (!response.served) {
-    return Remote::Fallback;
+    return Declined("worker:" + response.cause);
   }
   auto *return_set_info = reinterpret_cast<ReturnSetInfo *>(fcinfo->resultinfo);
   detail::PgSink sink(return_set_info->setResult, return_set_info->setDesc);
@@ -156,15 +171,25 @@ bool ServeFromShard(const PostgresAccelerator &accelerator, const core::QueryArg
                     FunctionCallInfo fcinfo) {
   int index;
   uint32_t member;
-  if (!ShardPosition(accelerator, index, member) || ForceFallback()) {
+  if (!ShardPosition(accelerator, index, member)) {
+    Declined("reader:no_shard");
+    return false;
+  }
+  if (ForceFallback()) {
+    Declined("reader:forced");
     return false;
   }
   // A transaction's own writes to the tables are in no worker's state.
   if (shared::TransactionWrote(HostTables(index))) {
+    Declined("reader:own_writes");
     return false;
   }
   const auto epoch = shared::ReaderEpoch(index, GetActiveSnapshot());
-  return epoch && RemoteRead(index, member, *epoch, arguments, fcinfo) == Remote::Served;
+  if (!epoch) {
+    Declined("reader:no_epoch");
+    return false;
+  }
+  return RemoteRead(index, member, *epoch, arguments, fcinfo) == Remote::Served;
 }
 
 } // namespace accelerator_codegen::aux_state::engine::postgres::shard

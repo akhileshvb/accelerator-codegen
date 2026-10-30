@@ -12,6 +12,7 @@
 #include <csignal>
 #include <cstring>
 #include <dlfcn.h>
+#include <limits>
 #include <map>
 #include <memory>
 #include <string>
@@ -211,6 +212,7 @@ public:
     segment.stats.builds = builds;
     segment.stats.gaps = gaps;
     segment.stats.synced = synced;
+    segment.stats.members = runtimes.size();
   }
 
   // Takes the forced maintenance action diagnostics set (before the next apply).
@@ -294,6 +296,18 @@ void ApplyPhaseLimits(runtime::ThreadBudget &threads) {
        members.size(), index, static_cast<unsigned>(MyDatabaseId));
 
   Diagnostics diagnostics(*segment, runtimes);
+  // A verified store: writers wait while a build is under way and readers wait for the state.
+  const bool exact_versions = std::any_of(members.begin(), members.end(), [](auto *m) { return m->Stores() != nullptr; });
+  const auto applied_through = [&] {
+    runtime::Epoch through = std::numeric_limits<runtime::Epoch>::max();
+    for (auto *runtime : runtimes) {
+      through = std::min(through, runtime->AppliedThrough());
+    }
+    return through;
+  };
+  if (exact_versions) {
+    shared::PublishCatchingUp(index, true); // until the first pass has found every member synced
+  }
   const auto all_synced = [&] {
     return std::all_of(runtimes.begin(), runtimes.end(), [](auto *runtime) { return runtime->IsSynced(); });
   };
@@ -340,8 +354,17 @@ void ApplyPhaseLimits(runtime::ThreadBudget &threads) {
       }
       bool again = host.EndDeferredCommits(); // a member waited for the commit that just ended
       if (arrived && epoch && !again) {
+        if (exact_versions) {
+          shared::PublishCatchingUp(index, !all_synced());
+        }
         again = host.RunEngineWork(); // builds, on this thread
         host.EndDeferredCommits();
+      }
+      if (exact_versions) {
+        shared::PublishCatchingUp(index, !all_synced());
+      }
+      if (exact_versions) {
+        shared::PublishApplied(index, arrived && epoch && !again && applied_through() >= *epoch ? *epoch : 0);
       }
       if (again || !arrived) {
         last_pump = Clock::time_point();
@@ -377,6 +400,11 @@ std::vector<ShardSegment *> RunningSegments() {
 }
 
 } // namespace
+
+bool WorkerRunning(int index) {
+  const ShardSegment *segment = Segment(index);
+  return segment && Alive(*segment);
+}
 
 ShardSegment *Segment(int index) {
   static Oid database = InvalidOid;
@@ -414,7 +442,7 @@ std::string StatsText() {
     return "no worker";
   }
   uint64_t requests = 0, served = 0, fallback = 0, errors = 0, commits = 0, applied = 0, builds = 0,
-           gaps = 0, synced = 0;
+           gaps = 0, synced = 0, members = 0;
   uint32_t generation = 0;
   for (const ShardSegment *segment : running) {
     requests += segment->stats.requests;
@@ -426,16 +454,17 @@ std::string StatsText() {
     builds += segment->stats.builds;
     gaps += segment->stats.gaps;
     synced += segment->stats.synced;
+    members += segment->stats.members;
     generation = std::max(generation, segment->generation.load());
   }
   char text[400];
   snprintf(text, sizeof(text),
            "requests=%llu served=%llu fallback=%llu errors=%llu commits=%llu applied=%llu "
-           "builds=%llu gaps=%llu synced=%llu workers=%zu generation=%u pid=%u",
+           "builds=%llu gaps=%llu synced=%llu members=%llu workers=%zu generation=%u pid=%u",
            (unsigned long long)requests, (unsigned long long)served, (unsigned long long)fallback,
            (unsigned long long)errors, (unsigned long long)commits, (unsigned long long)applied,
            (unsigned long long)builds, (unsigned long long)gaps, (unsigned long long)synced,
-           running.size(), generation, running.front()->pid.load());
+           (unsigned long long)members, running.size(), generation, running.front()->pid.load());
   return text;
 }
 

@@ -125,7 +125,7 @@ std::string ShardSegment::GetText(Text which) {
 
 void ShardSegment::ClearStats() {
   for (auto *counter : {&stats.requests, &stats.served, &stats.fallback, &stats.errors, &stats.commits,
-                        &stats.applied, &stats.builds, &stats.gaps, &stats.synced}) {
+                        &stats.applied, &stats.builds, &stats.gaps, &stats.synced, &stats.members}) {
     *counter = 0;
   }
   stats.decision_ns = 0;

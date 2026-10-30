@@ -76,7 +76,7 @@ public:
   struct Stats {
     std::atomic<uint64_t> requests, served, fallback, errors, commits;
     // Published by the main thread from AcceleratorStats.
-    std::atomic<uint64_t> applied, builds, gaps, synced;
+    std::atomic<uint64_t> applied, builds, gaps, synced, members;
     std::atomic<int64_t> decision_ns; // when kLastDecision was published
   } stats;
 

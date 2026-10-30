@@ -5,6 +5,7 @@
 //   test_postgres_verus_kit validate     <spec_dir> <query_sql_file>
 //   test_postgres_verus_kit differential <accel_id> <spec_dir> <query_sql_file> [every=10]
 //   test_postgres_verus_kit snapshots    <accel_id> <spec_dir> <query_sql_file> [writes=200] [readers=4] [seed=1] [rr|rc]
+//                                        [commit|abort|rebuild|kill]
 //
 // <query_sql_file>: the query with $n parameters (workloads/<bench>/q<N>.sql).  Each run works on a copy of the connection's database (CREATE DATABASE ... TEMPLATE), dropped at the
 // end: the spec's setup.sql and transactions change data.  The spec is DuckDB SQL (eval/harness/suite.hpp):
@@ -14,6 +15,10 @@
 // snapshots: rr (default): readers in REPEATABLE READ transactions run the accelerator, the query, the
 //   accelerator again while a writer commits; all three must agree.  rc: READ COMMITTED readers run
 //   both answers in one statement (one snapshot); the rows must agree (no bounds, no tie leeway).
+// The writer of snapshots: commit (the spec's transactions), abort (every third one rolled back, every
+//   third one a savepoint rolled back to before its commit), rebuild (every 15th write TRUNCATEs a table
+//   of the query and reloads it, which makes the shard rebuild), kill (its backend is terminated at random
+//   moments, mid-commit among them; it reconnects).  Readers must see 0 mismatches and 0 fallbacks.
 // VERUS_KIT_BOUNDS_SQL=<file>: the query's bounds query (eval/harness/float_bounds.hpp), as for DuckDB.
 // A call the accelerator answered from SQL counts as a fallback (reported, and a failure of the run).
 // Connection: libpq's PG* environment, database TPCH_PG_DB (host.sh's) or PGDATABASE.
@@ -21,11 +26,13 @@
 
 #include "eval/harness/suite.hpp"
 
+#include <algorithm>
 #include <atomic>
 #include <cstdlib>
 #include <iostream>
 #include <mutex>
 #include <map>
+#include <memory>
 #include <random>
 #include <regex>
 #include <thread>
@@ -77,6 +84,19 @@ public:
     const auto at = counts.find("fallback=");
     return at == std::string::npos ? 0 : std::atol(counts.c_str() + at + 9);
   }
+
+  // This session's fallback causes: name -> count ("reader:", "worker:", runtime and kit reasons).
+  std::map<std::string, long> Causes() {
+    std::map<std::string, long> out;
+    const auto text = Exec("SELECT accel_fallback_causes()").rows.at(0).at(0);
+    for (std::size_t i = 0; i < text.size();) {
+      const auto end = std::min(text.find(',', i), text.size()), eq = text.rfind('=', end);
+      out[text.substr(i, eq - i)] = std::atol(text.c_str() + eq + 1);
+      i = end + 1;
+    }
+    return out;
+  }
+  void ResetCounts() { Exec("SELECT accel_reset_execute_counts()"); }
 
 private:
   static PgResult Collect(PGresult *r, const std::string &sql) {
@@ -329,16 +349,26 @@ Rows RunAccel(Tally &tally, std::mutex &tally_mutex, PgConn &c, const std::strin
   return rows;
 }
 
-// The first build of the state runs in the shard worker: reads before it is done fall back.
+// The shard worker's counter `name` of "accel_shard_stats()".
+long ShardStat(PgConn &c, const std::string &name) {
+  const auto text = c.Exec("SELECT accel_shard_stats()").rows.at(0).at(0);
+  const auto at = text.find(name + "=");
+  return at == std::string::npos ? -1 : std::atol(text.c_str() + at + name.size() + 1);
+}
+
+// The first build of the state runs in the shard worker, for every member of its shard: the test starts
+// once all are built.  A read before that falls back or waits, and commits made meanwhile are applied
+// together afterwards (no reader can be served between them).
 void Warm(PgConn &c, const std::string &id, const std::string &tuple) {
-  for (int tries = 0; tries < 600; ++tries) {
+  for (int tries = 0; tries < 1800; ++tries) {
     const long before = c.Fallbacks();
     c.Exec("SELECT * FROM accel_" + id + "(" + tuple + ")");
-    if (c.Fallbacks() == before)
+    const long members = ShardStat(c, "members");
+    if (c.Fallbacks() == before && members > 0 && ShardStat(c, "synced") == members)
       return;
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
   }
-  throw std::runtime_error("the accelerator " + id + " did not build in 60 s");
+  throw std::runtime_error("the accelerator " + id + " did not build in 180 s");
 }
 
 // Both answers in ONE statement, so one snapshot even at READ COMMITTED: the accelerator's rows, then
@@ -375,8 +405,32 @@ std::pair<Rows, Rows> Together(PgConn &c, const std::string &id, const std::stri
   return out;
 }
 
-std::string Tail(PgConn &c, const Tally &tally, int fallbacks) {
-  return "\"fallbacks\":" + std::to_string(fallbacks) + ",\"shard\":" + Json(c.Exec("SELECT accel_shard_stats()").rows[0][0]) +
+ // The sessions' fallback causes, summed.  Reads of the transaction that wrote the captured tables
+// ("reader:own_writes") are the one allowed cause: counted apart from the rest.
+struct CauseTotals {
+  void Add(PgConn &c) {
+    std::lock_guard<std::mutex> lock(mutex);
+    for (const auto &[cause, n] : c.Causes())
+      totals[cause] += n;
+  }
+  long Other() const {
+    long n = 0;
+    for (const auto &[cause, count] : totals)
+      n += cause == "reader:own_writes" || cause.rfind("event:", 0) == 0 ? 0 : count;
+    return n;
+  }
+  std::string Json() const {
+    std::string out;
+    for (const auto &[cause, n] : totals)
+      out += (out.empty() ? "" : ",") + std::string("\"") + cause + "\":" + std::to_string(n);
+    return "\"causes\":{" + out + "}";
+  }
+  std::mutex mutex;
+  std::map<std::string, long> totals;
+};
+
+std::string Tail(PgConn &c, const Tally &tally, int fallbacks, const CauseTotals &causes) {
+  return "\"fallbacks\":" + std::to_string(fallbacks) + "," + causes.Json() + ",\"shard\":" + Json(c.Exec("SELECT accel_shard_stats()").rows[0][0]) +
          "," + tally.Fields();
 }
 
@@ -386,6 +440,8 @@ int Differential(const std::string &id, const Spec &spec, const std::string &que
   Dialect dialect(writer);
   const auto s = Prepare(writer, dialect, query, spec);
   Warm(reader, id, spec.params.at(0));
+  reader.ResetCounts();
+  CauseTotals causes;
   Tally tally;
   std::mutex mutex;
   const auto run = RunDifferentialLoop(
@@ -393,6 +449,7 @@ int Differential(const std::string &id, const Spec &spec, const std::string &que
       [&](const std::string &where, const std::string &t) { return RunAccel(tally, mutex, reader, id, where, t); },
       [&](const std::string &sql) { Apply(writer, dialect, sql, false); },
       [&](const std::string &sql) { Apply(writer, dialect, sql, true); });
+  causes.Add(reader);
   const int fallbacks = [&] {
     int n = 0;
     for (const auto &[kind, count] : tally.fallback_kinds)
@@ -400,20 +457,57 @@ int Differential(const std::string &id, const Spec &spec, const std::string &que
     return n;
   }();
   std::cout << "{\"mode\":\"differential\",\"txns\":" << spec.txns.size() << ",\"write_errors\":" << run.write_errors
-            << ",\"write_error_examples\":" << run.write_error_examples << "]," << Tail(reader, tally, fallbacks) << "}"
+            << ",\"write_error_examples\":" << run.write_error_examples << "]," << Tail(reader, tally, fallbacks, causes) << "}"
             << std::endl;
   const bool compared = tally.checks > 0 && tally.reference_errors <= tally.checks;
   return compared && run.write_errors == 0 && tally.mismatches + tally.order_mismatches == 0 && fallbacks == 0 ? 0 : 1;
 }
 
+// The tables of the query: names after FROM / JOIN that the database has.
+std::vector<std::string> QueryTables(PgConn &c, const std::string &query) {
+  std::vector<std::string> out;
+  static const std::regex from(R"(\b(?:FROM|JOIN)\s+([a-z_][a-z_0-9]*))", std::regex::icase);
+  for (std::sregex_iterator it(query.begin(), query.end(), from), end; it != end; ++it) {
+    const std::string name = (*it)[1];
+    if (std::find(out.begin(), out.end(), name) == out.end() &&
+        !c.Exec("SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = '" + name + "'").rows.empty())
+      out.push_back(name);
+  }
+  return out;
+}
+
+// One write of the writer, by mode (see the file header).
+void WriteOnce(PgConn &w, Dialect &dialect, const std::string &mode, int i, const std::vector<std::string> &txns,
+               const std::vector<std::string> &tables, std::mt19937_64 &rng) {
+  const auto &a = txns[rng() % txns.size()], &b = txns[rng() % txns.size()];
+  if (mode == "abort" && i % 3 == 1)
+    return Apply(w, dialect, a, true);
+  if (mode == "abort" && i % 3 == 2) {
+    w.Exec("BEGIN; SAVEPOINT s; " + dialect(a) + "\n; ROLLBACK TO s; SAVEPOINT t; " + dialect(b) + "\n; RELEASE t; COMMIT");
+    return;
+  }
+  if (mode == "rebuild" && i % 15 == 14 && !tables.empty()) {
+    const auto &t = tables[(i / 15) % tables.size()];
+    w.Exec("BEGIN; CREATE TEMP TABLE reload ON COMMIT DROP AS SELECT * FROM " + t + "; TRUNCATE " + t + "; INSERT INTO " + t +
+           " SELECT * FROM reload; COMMIT");
+    return;
+  }
+  Apply(w, dialect, a, false);
+}
+
 int Snapshots(const std::string &id, const Spec &spec, const std::string &query, int writes, int readers, uint64_t seed,
-              bool read_committed) {
+              bool read_committed, const std::string &mode) {
   Require(!spec.txns.empty(), "snapshots needs txns/");
   ScratchDatabase scratch;
   PgConn writer(scratch.name);
   Dialect dialect(writer);
   const auto s = Prepare(writer, dialect, query, spec);
   Warm(writer, id, spec.params.at(0));
+  writer.ResetCounts();
+  const auto tables = QueryTables(writer, query);
+  auto session = std::make_unique<PgConn>(scratch.name); // the writes' session (kill replaces it)
+  std::atomic<int> session_pid{std::atoi(session->Exec("SELECT pg_backend_pid()").rows[0][0].c_str())};
+  CauseTotals causes;
   Tally tally;
   std::mutex mutex;
   std::atomic<bool> done{false};
@@ -456,25 +550,51 @@ int Snapshots(const std::string &id, const Spec &spec, const std::string &query,
           tally.Check("reader " + std::to_string(t) + " again", p, c, b, s.ordering, full, probe);
           rc.Exec("COMMIT");
         }
+        causes.Add(rc);
       } catch (const std::exception &e) {
         if (++failures <= 3)
           std::cerr << "reader " << t << ": " << e.what() << "\n";
       }
     });
+  std::thread killer;
+  if (mode == "kill")
+    killer = std::thread([&] {
+      std::mt19937_64 krng(seed ^ 0x5bd1e995);
+      PgConn admin(scratch.name);
+      while (!done.load()) {
+        std::this_thread::sleep_for(std::chrono::microseconds(500 + krng() % 40000));
+        admin.Exec("SELECT pg_terminate_backend(" + std::to_string(session_pid.load()) + ")");
+      }
+    });
   std::mt19937_64 rng(seed);
-  int write_errors = 0;
+  int write_errors = 0, kills = 0;
   std::string write_error_example;
   for (int i = 0; i < writes; ++i) {
     try {
-      Apply(writer, dialect, spec.txns[rng() % spec.txns.size()], false);
+      WriteOnce(*session, dialect, mode, i, spec.txns, tables, rng);
     } catch (const std::exception &e) { // random order: a transaction can legitimately fail (its rows gone)
-      writer.Exec("ROLLBACK");
-      if (++write_errors == 1)
-        write_error_example = std::string(e.what()).substr(0, 600);
+      const std::string message = e.what();
+      const bool terminated = message.find("terminating connection") != std::string::npos ||
+                              message.find("server closed the connection") != std::string::npos ||
+                              message.find("no connection to the server") != std::string::npos;
+      if (terminated) {
+        ++kills;
+        session = std::make_unique<PgConn>(scratch.name);
+        session_pid = std::atoi(session->Exec("SELECT pg_backend_pid()").rows[0][0].c_str());
+      } else {
+        try {
+          session->Exec("ROLLBACK");
+        } catch (const std::exception &) {
+        }
+        if (++write_errors == 1)
+          write_error_example = message.substr(0, 600);
+      }
     }
     std::this_thread::sleep_for(std::chrono::microseconds(rng() % 2000));
   }
   done = true;
+  if (killer.joinable())
+    killer.join();
   for (auto &th : threads)
     th.join();
   int fallbacks = 0;
@@ -482,11 +602,47 @@ int Snapshots(const std::string &id, const Spec &spec, const std::string &query,
     fallbacks += count;
   std::cout << "{\"mode\":\"snapshots\",\"writes\":" << writes << ",\"write_errors\":" << write_errors
             << ",\"write_error_example\":" << Json(write_error_example) << ",\"readers\":" << readers
-            << ",\"reader_failures\":" << failures << "," << Tail(writer, tally, fallbacks) << "}" << std::endl;
+            << ",\"writer\":" << Json(mode) << ",\"kills\":" << kills << ",\"reader_failures\":" << failures << ","
+            << Tail(writer, tally, fallbacks, causes) << "}" << std::endl;
   return tally.mismatches + tally.order_mismatches == 0 && failures == 0 && write_errors < writes && tally.checks > 0 &&
                  fallbacks == 0
              ? 0
              : 1;
+}
+
+// A transaction reading after its own writes to the captured tables is the one read the worker cannot
+// serve: the accelerator answers from SQL (cause reader:own_writes), as the query itself would.
+int OwnWrites(const std::string &id, const Spec &spec, const std::string &query) {
+  Require(!spec.txns.empty(), "ownwrites needs txns/");
+  ScratchDatabase scratch;
+  PgConn c(scratch.name);
+  Dialect dialect(c);
+  const auto s = Prepare(c, dialect, query, spec);
+  Warm(c, id, spec.params.at(0));
+  c.ResetCounts();
+  int unequal = 0, reads = 0;
+  for (std::size_t i = 0; i < spec.txns.size() && i < 5; ++i) {
+    c.Exec("BEGIN; " + dialect(spec.txns[i]));
+    for (const auto &p : spec.params) {
+      Rows a, b;
+      try {
+        b = RunQuery(c, s.query_sql, p);
+      } catch (const std::exception &) {
+        c.Exec("ROLLBACK; BEGIN; " + dialect(spec.txns[i]));
+        continue;
+      }
+      a = c.Run("SELECT * FROM accel_" + id + "(" + p + ")", "").rows;
+      ++reads;
+      unequal += a != b;
+    }
+    c.Exec("ROLLBACK");
+  }
+  CauseTotals causes;
+  causes.Add(c);
+  const long own = causes.totals["reader:own_writes"], fallbacks = c.Fallbacks();
+  std::cout << "{\"mode\":\"ownwrites\",\"reads\":" << reads << ",\"unequal\":" << unequal << ",\"fallbacks\":" << fallbacks
+            << "," << causes.Json() << "}" << std::endl;
+  return reads > 0 && unequal == 0 && own == fallbacks && causes.Other() == 0 ? 0 : 1;
 }
 
 // No accelerator: the spec runs on the database; every tuple evaluates, every transaction applies and rolls back.
@@ -540,9 +696,12 @@ int main(int argc, char **argv) {
     const auto arg = [&](int i, long fallback) { return argc > i ? std::atol(argv[i]) : fallback; };
     if (mode == "differential")
       return Differential(argv[2], spec, query, static_cast<int>(arg(5, 10)));
+    if (mode == "ownwrites")
+      return OwnWrites(argv[2], spec, query);
     if (mode == "snapshots")
       return Snapshots(argv[2], spec, query, static_cast<int>(arg(5, 200)), static_cast<int>(arg(6, 4)),
-                       static_cast<uint64_t>(arg(7, 1)), argc > 8 && std::string(argv[8]) == "rc");
+                       static_cast<uint64_t>(arg(7, 1)), argc > 8 && std::string(argv[8]) == "rc",
+                       argc > 9 ? argv[9] : "commit");
     throw std::runtime_error("unknown mode " + mode);
   } catch (const std::exception &e) {
     std::cerr << "error: " << e.what() << "\n";

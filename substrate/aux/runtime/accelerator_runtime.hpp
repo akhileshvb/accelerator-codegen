@@ -174,6 +174,8 @@ public:
   // to this runtime.
   void UseModuleServices(core::AuxEngineServices &services);
   bool IsSynced() const;
+  // The newest epoch whose commit and all before it are applied (0 while not synced).
+  Epoch AppliedThrough() const;
 
   // ---- core::AuxEngineServices (what modules see) ----
   core::VisibilityToken CurrentVisibility() const override;

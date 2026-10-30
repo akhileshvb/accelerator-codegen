@@ -69,3 +69,13 @@ foreach(q RANGE 1 22)
 endforeach()
 accel_add_backend_exe(postgres calibrate_postgres_tpch_aux_cost_model
     backends/postgres/bench/calibrate_postgres_tpch_aux_cost_model.cpp)
+
+# These link libaccelerator_codegen for the query catalog.  Its per-query code registers kernels and calls
+# the extension's pg_base entry points, which the module defines; a client gets the shared ones and stubs.
+foreach(_t test_postgres_shared_state test_postgres_tpch_fuzz test_postgres_tpch_params test_postgres_tpch_differential
+    test_postgres_aux_multi_connection_stress test_postgres_cross_accel)
+    if(TARGET ${_t})
+        target_sources(${_t} PRIVATE backends/postgres/api/base/runtime_common.cpp
+            backends/postgres/tests/harness/pg_base_client_stubs.cpp)
+    endif()
+endforeach()

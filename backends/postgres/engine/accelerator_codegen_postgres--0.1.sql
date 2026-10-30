@@ -30,6 +30,16 @@ RETURNS text
 AS 'MODULE_PATHNAME', 'accel_get_execute_counts'
 LANGUAGE C STRICT;
 
+CREATE FUNCTION accel_fallback_causes()
+RETURNS text
+AS 'MODULE_PATHNAME', 'accel_fallback_causes'
+LANGUAGE C STRICT;
+
+CREATE FUNCTION accel_reset_execute_counts()
+RETURNS void
+AS 'MODULE_PATHNAME', 'accel_reset_execute_counts'
+LANGUAGE C STRICT;
+
 CREATE FUNCTION accel_get_last_maintenance_action()
 RETURNS text
 AS 'MODULE_PATHNAME', 'accel_get_last_maintenance_action'

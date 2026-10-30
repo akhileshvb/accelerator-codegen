@@ -42,6 +42,9 @@ namespace accelerator_codegen::aux_state::engine::postgres::shard {
 // Shard `index`'s shared memory in this database (attached on first use).
 ShardSegment *Segment(int index);
 
+// Whether shard `index` has a running worker.
+bool WorkerRunning(int index);
+
 // Starts shard worker `index` if it is not running (shared::Activate), and
 // returns once it accepts requests.
 void EnsureWorker(int index);
@@ -77,7 +80,7 @@ void DefineGucs();
 bool BuildTuning();
 
 // "requests=N served=N fallback=N errors=N commits=N applied=N builds=N gaps=N
-// synced=N workers=N generation=G pid=P" summed over the database's running
+// synced=N members=N workers=N generation=G pid=P" summed over the database's running
 // shard workers, or "no worker".
 std::string StatsText();
 // Stops the database's shard workers and waits for them (they restart on

@@ -68,6 +68,13 @@ void ReleaseGates();
 bool TransactionWrote(const std::vector<core::TableId> &tables);
 // Highest epoch assigned so far for accelerator `index`.
 Epoch AssignedEpoch(int index);
+// The worker of a verified-store shard: every member has applied through `applied`, and is alive.
+void PublishApplied(int index, Epoch applied);
+void PublishCatchingUp(int index, bool catching_up);
+// A reader of such a shard at `epoch`: true if it must wait for the worker (writers' next commits then
+// wait for it); ReaderWaitEnded after.
+bool NoteReaderWaiting(int index, Epoch epoch);
+void ReaderWaitEnded(int index);
 
 // ---- SQL fallback time (C11) ----------------------------------------------------
 // What a backend's SQL fallback of member `member` of shard `index` took (moving average,

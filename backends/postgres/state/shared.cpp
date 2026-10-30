@@ -41,6 +41,14 @@ struct Entry {
 struct Slot {
   // Highest epoch assigned; its entry is published before this is raised.
   pg_atomic_uint64 assigned;
+  // Exact-version shards (verified stores; `exact` set by their worker): the epoch through which every
+  // member has applied.
+  pg_atomic_uint64 applied;
+  pg_atomic_uint32 exact;
+  // Readers of an exact shard that wait for a version the worker has not made yet; and whether some
+  // member is stale or being built (the worker is then away for long, and applies what it finds after).
+  pg_atomic_uint32 waiting_readers;
+  pg_atomic_uint32 catching_up;
   Entry ring[kRingSize];
 };
 
@@ -82,6 +90,10 @@ void InitRegistry(void *ptr) {
   }
   for (auto &slot : registry->slots) {
     pg_atomic_init_u64(&slot.assigned, 0);
+    pg_atomic_init_u64(&slot.applied, 0);
+    pg_atomic_init_u32(&slot.exact, 0);
+    pg_atomic_init_u32(&slot.waiting_readers, 0);
+    pg_atomic_init_u32(&slot.catching_up, 0);
     for (auto &entry : slot.ring) {
       pg_atomic_init_u64(&entry.epoch, 0);
       pg_atomic_init_u32(&entry.xid, InvalidTransactionId);
@@ -180,6 +192,7 @@ bool SeesPreActivationWrites(int index, Snapshot snapshot) {
 // ---- thread tokens --------------------------------------------------------------
 int g_threads = 1;
 int g_ship_timeout_ms = 2000;
+int g_apply_wait_ms = 2000;
 
 class SharedTokens final : public runtime::TokenSource {
 public:
@@ -270,6 +283,32 @@ std::vector<int> Active() {
 uint64_t Generation() { return pg_atomic_read_u64(&Reg().generation); }
 
 // ---- commit epochs --------------------------------------------------------------
+namespace {
+// A worker that applies several commits at once does so under one lookup snapshot, and no reader can
+// then be served at the epochs between them.  That is what a build does to the commits made during it.
+// So while a reader of a verified-store shard waits and the worker is catching up from a build, the
+// writers' next commit waits (the gate holder, before it takes its epoch), unless the worker is gone
+// or the wait outlasts accel.commit_apply_wait_ms: then the commits that follow are applied together,
+// and the readers at the epochs between them go to SQL.
+void AwaitCatchUp(int index, Slot &slot) {
+  if (!pg_atomic_read_u32(&slot.exact)) {
+    return;
+  }
+  const auto give_up = std::chrono::steady_clock::now() + std::chrono::milliseconds(g_apply_wait_ms);
+  while (pg_atomic_read_u32(&slot.waiting_readers) > 0 && pg_atomic_read_u32(&slot.catching_up)) {
+    if (!shard::WorkerRunning(index)) {
+      return;
+    }
+    if (std::chrono::steady_clock::now() > give_up) {
+      pg_atomic_write_u32(&slot.exact, 0); // the next pass of the worker sets it again: no wait per commit meanwhile
+      return;
+    }
+    CHECK_FOR_INTERRUPTS();
+    pg_usleep(100);
+  }
+}
+} // namespace
+
 std::vector<Epoch> TakeCommitEpochs(const std::vector<int> &indices, TransactionId xid) {
   Registry &registry = Reg();
   g_held_gates.reserve(indices.size());
@@ -277,6 +316,9 @@ std::vector<Epoch> TakeCommitEpochs(const std::vector<int> &indices, Transaction
     const LOCKTAG tag = GateTag(index);
     (void)LockAcquire(&tag, ExclusiveLock, true, false); // waits; cancellable
     g_held_gates.push_back(index);
+  }
+  for (const int index : indices) {
+    AwaitCatchUp(index, registry.slots[index]);
   }
   std::vector<Epoch> epochs;
   epochs.reserve(indices.size());
@@ -307,6 +349,31 @@ void NoteSqlFallbackUs(int index, uint32_t member, double us) {
 
 double SqlFallbackUs(int index, uint32_t member) {
   return static_cast<double>(pg_atomic_read_u64(&Reg().sql_us[index][member % kMaxMembers]));
+}
+
+bool NoteReaderWaiting(int index, Epoch epoch) {
+  Slot &slot = Reg().slots[index];
+  if (!pg_atomic_read_u32(&slot.exact) || epoch <= pg_atomic_read_u64(&slot.applied)) {
+    return false;
+  }
+  pg_atomic_fetch_add_u32(&slot.waiting_readers, 1);
+  return true;
+}
+
+void ReaderWaitEnded(int index) { pg_atomic_fetch_sub_u32(&Reg().slots[index].waiting_readers, 1); }
+
+void PublishCatchingUp(int index, bool catching_up) {
+  Slot &slot = Reg().slots[index];
+  pg_atomic_write_u32(&slot.exact, 1);
+  pg_atomic_write_u32(&slot.catching_up, catching_up);
+}
+
+void PublishApplied(int index, Epoch applied) {
+  Slot &slot = Reg().slots[index];
+  pg_atomic_write_u32(&slot.exact, 1);
+  if (applied > pg_atomic_read_u64(&slot.applied)) {
+    pg_atomic_write_u64(&slot.applied, applied);
+  }
 }
 
 Epoch AssignedEpoch(int index) { return pg_atomic_read_u64(&Reg().slots[index].assigned); }
@@ -375,6 +442,11 @@ void DefineGucs() {
                           "gives up (the worker then rebuilds).",
                           nullptr, &g_ship_timeout_ms, g_ship_timeout_ms, 1, 600000, PGC_USERSET, 0, nullptr,
                           nullptr, nullptr);
+  DefineCustomIntVariable("accel.commit_apply_wait_ms",
+                          "How long a committing writer to a verified-store shard waits for its worker to have "
+                          "applied the previous commit (one version per commit).",
+                          nullptr, &g_apply_wait_ms, g_apply_wait_ms, 0, 600000, PGC_USERSET, 0, nullptr, nullptr,
+                          nullptr);
 }
 
 } // namespace accelerator_codegen::aux_state::engine::postgres::shared
