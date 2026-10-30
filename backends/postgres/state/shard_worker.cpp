@@ -290,7 +290,9 @@ void ApplyPhaseLimits(runtime::ThreadBudget &threads) {
   }
   server.Start(ReadThreads());
   // From here on, writers ship their commits (those visible before were
-  // dropped, and are in the first build: its snapshot comes after this).
+  // dropped, and are in the first build: its snapshot comes after this).  A restarted worker never sees
+  // the epochs before it: its passes must not wait for them.
+  arrivals.Covered(shared::AssignedEpoch(index));
   segment->state = ShardSegment::kRunning;
   elog(LOG, "accel shard worker started: %s (%zu accelerators, index %d), database %u", id.c_str(),
        members.size(), index, static_cast<unsigned>(MyDatabaseId));

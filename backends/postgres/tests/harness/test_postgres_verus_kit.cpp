@@ -294,8 +294,8 @@ struct ScratchDatabase {
   }
   ~ScratchDatabase() {
     try {
-      PgConn admin("postgres");
-      admin.Exec("SELECT accel_stop_shard_workers()"); // the workers hold the database
+      PgConn run(name);
+      run.Exec("SELECT accel_stop_shard_workers()"); // the workers hold the database
     } catch (const std::exception &) {
     }
     try {
@@ -487,9 +487,23 @@ void WriteOnce(PgConn &w, Dialect &dialect, const std::string &mode, int i, cons
     return;
   }
   if (mode == "rebuild" && i % 15 == 14 && !tables.empty()) {
+    // The TRUNCATE queues behind readers' locks and the worker's build scan queues behind it, while those
+    // readers wait for the worker: the lock timeout cancels the TRUNCATE and the reload is tried again.
     const auto &t = tables[(i / 15) % tables.size()];
-    w.Exec("BEGIN; CREATE TEMP TABLE reload ON COMMIT DROP AS SELECT * FROM " + t + "; TRUNCATE " + t + "; INSERT INTO " + t +
-           " SELECT * FROM reload; COMMIT");
+    w.Exec("SET lock_timeout = '150ms'");
+    for (int attempt = 0; attempt < 40; ++attempt) {
+      try {
+        w.Exec("BEGIN; CREATE TEMP TABLE reload ON COMMIT DROP AS SELECT * FROM " + t + "; TRUNCATE " + t + "; INSERT INTO " + t +
+               " SELECT * FROM reload; COMMIT");
+        break;
+      } catch (const std::exception &e) {
+        w.Exec("ROLLBACK");
+        if (std::string(e.what()).find("lock timeout") == std::string::npos)
+          throw;
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+      }
+    }
+    w.Exec("RESET lock_timeout");
     return;
   }
   Apply(w, dialect, a, false);
@@ -631,9 +645,11 @@ int OwnWrites(const std::string &id, const Spec &spec, const std::string &query)
         c.Exec("ROLLBACK; BEGIN; " + dialect(spec.txns[i]));
         continue;
       }
+      const long before = c.Fallbacks();
       a = c.Run("SELECT * FROM accel_" + id + "(" + p + ")", "").rows;
       ++reads;
-      unequal += a != b;
+      if (c.Fallbacks() > before) // from SQL in this transaction: the query's own rows
+        unequal += a != b;
     }
     c.Exec("ROLLBACK");
   }
@@ -642,7 +658,7 @@ int OwnWrites(const std::string &id, const Spec &spec, const std::string &query)
   const long own = causes.totals["reader:own_writes"], fallbacks = c.Fallbacks();
   std::cout << "{\"mode\":\"ownwrites\",\"reads\":" << reads << ",\"unequal\":" << unequal << ",\"fallbacks\":" << fallbacks
             << "," << causes.Json() << "}" << std::endl;
-  return reads > 0 && unequal == 0 && own == fallbacks && causes.Other() == 0 ? 0 : 1;
+  return reads > 0 && unequal == 0 && own > 0 && own == fallbacks && causes.Other() == 0 ? 0 : 1;
 }
 
 // No accelerator: the spec runs on the database; every tuple evaluates, every transaction applies and rolls back.
