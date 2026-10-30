@@ -112,6 +112,7 @@ generated:
   - eval/compare/*.cpp
   - eval/compare/mv_defs.py
   - eval/compare/pg_cost_models.py
+  - eval/compare/sec_edgar_params.py
   - eval/compare/run_sql_backend.py
   - eval/bench/aux_state/*.cpp
   - eval/bench/mysql/**
@@ -142,6 +143,7 @@ generated:
   - scripts/run_tpch_pg_*
   - scripts/tpch_pg_matview_vs_aux_bench.py
   - scripts/perf/pg_sf20/**
+  - scripts/perf/pg_sec_edgar/**
   # engine-specific scripts: drivers of the DuckDB host's built tests and benchmarks
   - scripts/calibrate_duckdb_tpch_aux_cost_models.sh
   - scripts/calibrate_shared_aux_cost_models.sh

@@ -36,14 +36,14 @@ the C++ Q18 accelerator keeps LIMIT 100 and the C++ Q21 accelerator drops it, so
 their answers are compared as sets and may report a row-count mismatch.
 
   python3 eval/compare/run_compare.py read --queries "1 3 6" --sets 4
-  python3 eval/compare/run_compare.py read --workload sec_edgar --db <sec_edgar_sf3.duckdb> --systems cpp --queries "1 2 3 4 6 24"
+  python3 eval/compare/run_compare.py read --workload sec_edgar --db <the sf3 database file> --systems cpp --queries "1 2 3 4 6 24"
   python3 eval/compare/run_compare.py refresh --queries "1 3" --sf 20 --pairs 2
   python3 eval/compare/run_compare.py concurrent --readers 8 --seconds 60 --wps 5
   python3 eval/compare/run_compare.py multi --readers 8 --seconds 120 --wps 5
   python3 eval/compare/run_compare.py tpch --streams 3 --runs 3 --systems "cpp verus"
   python3 eval/compare/run_compare.py summary <out_dir>
 read also runs the SEC-EDGAR accelerators (--workload sec_edgar, systems cpp and verus): parameters from
-eval/bench/sec_edgar/params, baseline text from eval/compare/sec_edgar_params.py.
+eval/bench/sec_edgar/params, baseline text from the sec_edgar_params module beside this file.
 Env defaults: DB=<repo>/../accelerator-codegen-duckdb/tpch_sf20.duckdb  WORK=/flash1/akhilvb/tpch/work (each run works on a copy of DB in WORK)
 """
 import argparse
