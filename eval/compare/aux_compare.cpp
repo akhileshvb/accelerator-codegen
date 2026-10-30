@@ -636,6 +636,48 @@ int Read(const std::string &path, const std::string &id, const std::string &base
   const double build_ms = Us(b0, Clock::now()) / 1000;
   const double rss_peak = RssMb().second, rss_after = SettledRssMb(qc);
   core::ResetAuxExecuteCounts();
+  // ACCEL_COMPARE_PROFILE_LOOP=<n>: accelerator calls only, n rounds over the cases (for perf), then exit.
+  if (const char *loop = std::getenv("ACCEL_COMPARE_PROFILE_LOOP"); loop && *loop) {
+    const long rounds = std::strtol(loop, nullptr, 10);
+    // ACCEL_COMPARE_PROFILE_BETWEEN: before each call, "base" runs the baseline, "base1" the baseline then SELECT 1,
+    // "sleep" sleeps 200 ms.
+    const char *between_env = std::getenv("ACCEL_COMPARE_PROFILE_BETWEEN");
+    const std::string between = between_env ? between_env : "";
+    // ACCEL_COMPARE_PROFILE_PREPARED=1: the call is one prepared statement executed with each case's values.
+    const bool prepared = std::getenv("ACCEL_COMPARE_PROFILE_PREPARED") != nullptr;
+    std::vector<duckdb::vector<duckdb::Value>> case_values;
+    std::unique_ptr<duckdb::PreparedStatement> stmt;
+    if (prepared) {
+      for (const auto &c : cases)
+        case_values.push_back(ArgValues(qc, c.accel_args));
+      std::string sql = "SELECT * FROM " + fn + "(";
+      for (std::size_t i = 0; i < case_values.front().size(); ++i)
+        sql += (i ? ", $" : "$") + std::to_string(i + 1);
+      stmt = qc.Prepare(sql + ")");
+      Require(stmt && !stmt->HasError(), stmt ? stmt->GetError() : "prepare failed");
+    }
+    std::vector<double> t;
+    for (long k = 0; k < rounds; ++k)
+      for (std::size_t ci = 0; ci < cases.size(); ++ci) {
+        const auto &c = cases[ci];
+        if (between == "base" || between == "base1")
+          RunBaseline(qc, base_sql, c.base_args);
+        if (between == "base1")
+          qc.Query("SELECT 1");
+        if (between == "sleep")
+          std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        const auto t0 = Clock::now();
+        if (prepared) {
+          auto r = stmt->Execute(case_values[ci], false);
+          Require(r && !r->HasError(), r ? r->GetError() : "accelerator failed");
+        } else {
+          RunAccel(qc, fn, c.accel_args);
+        }
+        t.push_back(Us(t0, Clock::now()));
+      }
+    std::fprintf(stderr, "profile loop: %zu calls, median %.1f us\n", t.size(), Percentile(t, 0.5));
+    return 0;
+  }
   std::string per = "[";
   double log_sum = 0;
   int n = 0, mismatches = 0;
