@@ -1,0 +1,663 @@
+{
+ "mode": "writerate",
+ "backend": "postgres",
+ "system": "mv",
+ "rate_target": -1.0,
+ "rep": 0,
+ "seed": 20261018,
+ "chunk": 500,
+ "sf": 20.0,
+ "batch_orders": 500,
+ "rf_source": "tpch_update_sets",
+ "rf_dir": "/disk3/akhilvb_tpch/refresh_sf20",
+ "rf_orders_used": 500,
+ "readers": 0,
+ "seconds": 86400.0,
+ "seconds_min": 86400.0,
+ "min_reads": 0,
+ "warmup": 0.0,
+ "queries": [
+  2
+ ],
+ "sets_per_query": 1,
+ "prime_s": 0.0,
+ "triggers_on": 0,
+ "qps": 0.0,
+ "reads": 0,
+ "timeouts": 0,
+ "read_errors": 0,
+ "read_p50_us": 0.0,
+ "read_p99_us": 0.0,
+ "per_query": {
+  "2": {
+   "reads": 0,
+   "p50_us": 0.0,
+   "p95_us": 0.0,
+   "p99_us": 0.0,
+   "timeouts": 0,
+   "errors": 0
+  }
+ },
+ "commits": 35,
+ "commits_total": 35,
+ "commit_rate": 0.0004050925925925926,
+ "rf_commits": 5,
+ "rf_rate": 5.787037037037037e-05,
+ "write_errors": 0,
+ "commit_p50_us": 16388.290096074343,
+ "commit_p99_us": 247316.36699289083,
+ "commit_max_us": 247316.36699289083,
+ "writer_lag_p50_s": 0.0008105607703328133,
+ "writer_lag_max_s": 1.8152222419157624,
+ "rows_per_commit": 384.51428571428573,
+ "rows_per_s": 0.1557638888888889,
+ "rf_rows_per_s": 0.14574074074074075,
+ "pg_workers": 9,
+ "worker_restart": "each",
+ "commit_us_by_kind": {
+  "rf1": {
+   "n": 3,
+   "p50": 235655.56667745113,
+   "max": 247316.36699289083
+  },
+  "supplier update": {
+   "n": 5,
+   "p50": 29674.597084522247,
+   "max": 42478.37932780385
+  },
+  "part delete": {
+   "n": 5,
+   "p50": 5985.025316476822,
+   "max": 6179.226096719503
+  },
+  "part insert": {
+   "n": 5,
+   "p50": 5893.481895327568,
+   "max": 5980.350077152252
+  },
+  "supplier delete": {
+   "n": 5,
+   "p50": 23650.59219300747,
+   "max": 25044.528767466545
+  },
+  "supplier insert": {
+   "n": 5,
+   "p50": 20128.85408475995,
+   "max": 22460.714913904667
+  },
+  "partsupp update": {
+   "n": 5,
+   "p50": 6213.854998350143,
+   "max": 6910.884287208319
+  },
+  "rf2": {
+   "n": 2,
+   "p50": 11691.59822165966,
+   "max": 11691.59822165966
+  }
+ },
+ "tables_written": {
+  "region": 0,
+  "nation": 0,
+  "customer": 0,
+  "supplier": 15,
+  "part": 10,
+  "partsupp": 25,
+  "orders": 5,
+  "lineitem": 5
+ },
+ "tables_not_written": [],
+ "rf_only": false,
+ "dim_after_rf": true,
+ "final_check": {
+  "2": {
+   "accel": "ok",
+   "base": "ok",
+   "changed": false,
+   "match": true
+  }
+ },
+ "restore_s": 1.0144037143327296,
+ "restore_ok": true,
+ "shared_worker": null,
+ "reads_raw": [],
+ "commits_raw": [
+  [
+   "rf1",
+   0.205,
+   0.205,
+   247316.4,
+   2512,
+   "ok"
+  ],
+  [
+   "supplier update",
+   0.454,
+   0.001,
+   42478.4,
+   1,
+   "ok"
+  ],
+  [
+   "part delete",
+   0.497,
+   0.001,
+   6179.2,
+   5,
+   "ok"
+  ],
+  [
+   "part insert",
+   0.504,
+   0.001,
+   5980.4,
+   5,
+   "ok"
+  ],
+  [
+   "supplier delete",
+   0.511,
+   0.001,
+   23938.5,
+   81,
+   "ok"
+  ],
+  [
+   "supplier insert",
+   0.537,
+   0.001,
+   21549.2,
+   81,
+   "ok"
+  ],
+  [
+   "partsupp update",
+   0.559,
+   0.001,
+   6213.9,
+   1,
+   "ok"
+  ],
+  [
+   "rf2",
+   0.603,
+   0.603,
+   11691.6,
+   2496,
+   "ok"
+  ],
+  [
+   "supplier update",
+   0.615,
+   0.0,
+   26176.6,
+   1,
+   "ok"
+  ],
+  [
+   "part delete",
+   0.642,
+   0.001,
+   5980.2,
+   5,
+   "ok"
+  ],
+  [
+   "part insert",
+   0.649,
+   0.001,
+   5951.6,
+   5,
+   "ok"
+  ],
+  [
+   "supplier delete",
+   0.656,
+   0.001,
+   22819.2,
+   80,
+   "ok"
+  ],
+  [
+   "supplier insert",
+   0.68,
+   0.001,
+   22460.7,
+   81,
+   "ok"
+  ],
+  [
+   "partsupp update",
+   0.704,
+   0.001,
+   6910.9,
+   1,
+   "ok"
+  ],
+  [
+   "rf1",
+   1.028,
+   1.028,
+   235655.6,
+   2538,
+   "ok"
+  ],
+  [
+   "supplier update",
+   1.264,
+   0.0,
+   29674.6,
+   1,
+   "ok"
+  ],
+  [
+   "part delete",
+   1.294,
+   0.001,
+   5782.5,
+   5,
+   "ok"
+  ],
+  [
+   "part insert",
+   1.301,
+   0.001,
+   5893.5,
+   5,
+   "ok"
+  ],
+  [
+   "supplier delete",
+   1.308,
+   0.001,
+   23650.6,
+   80,
+   "ok"
+  ],
+  [
+   "supplier insert",
+   1.333,
+   0.001,
+   20128.9,
+   81,
+   "ok"
+  ],
+  [
+   "partsupp update",
+   1.354,
+   0.001,
+   6071.5,
+   1,
+   "ok"
+  ],
+  [
+   "rf2",
+   1.397,
+   1.397,
+   11632.6,
+   2543,
+   "ok"
+  ],
+  [
+   "supplier update",
+   1.409,
+   0.0,
+   33692.2,
+   1,
+   "ok"
+  ],
+  [
+   "part delete",
+   1.444,
+   0.001,
+   5989.2,
+   5,
+   "ok"
+  ],
+  [
+   "part insert",
+   1.45,
+   0.001,
+   5889.2,
+   5,
+   "ok"
+  ],
+  [
+   "supplier delete",
+   1.457,
+   0.001,
+   25044.5,
+   80,
+   "ok"
+  ],
+  [
+   "supplier insert",
+   1.484,
+   0.001,
+   18630.4,
+   81,
+   "ok"
+  ],
+  [
+   "partsupp update",
+   1.503,
+   0.001,
+   6074.0,
+   1,
+   "ok"
+  ],
+  [
+   "rf1",
+   1.815,
+   1.815,
+   221167.2,
+   2503,
+   "ok"
+  ],
+  [
+   "supplier update",
+   2.037,
+   0.001,
+   29174.4,
+   1,
+   "ok"
+  ],
+  [
+   "part delete",
+   2.067,
+   0.001,
+   5985.0,
+   5,
+   "ok"
+  ],
+  [
+   "part insert",
+   2.074,
+   0.001,
+   5338.4,
+   5,
+   "ok"
+  ],
+  [
+   "supplier delete",
+   2.08,
+   0.001,
+   22878.5,
+   80,
+   "ok"
+  ],
+  [
+   "supplier insert",
+   2.104,
+   0.001,
+   16388.3,
+   81,
+   "ok"
+  ],
+  [
+   "partsupp update",
+   2.121,
+   0.001,
+   6745.8,
+   1,
+   "ok"
+  ]
+ ],
+ "valid": true,
+ "mv_refresh_us_by_view": {},
+ "mv_refresh_s": 0.0,
+ "mv_refresh_s_total": 0.0,
+ "mv_refresh_raw": [
+  [
+   "rf1",
+   0.205,
+   0,
+   {},
+   "ok"
+  ],
+  [
+   "supplier update",
+   0.454,
+   0,
+   {},
+   "ok"
+  ],
+  [
+   "part delete",
+   0.497,
+   0,
+   {},
+   "ok"
+  ],
+  [
+   "part insert",
+   0.504,
+   0,
+   {},
+   "ok"
+  ],
+  [
+   "supplier delete",
+   0.511,
+   0,
+   {},
+   "ok"
+  ],
+  [
+   "supplier insert",
+   0.537,
+   0,
+   {},
+   "ok"
+  ],
+  [
+   "partsupp update",
+   0.559,
+   0,
+   {},
+   "ok"
+  ],
+  [
+   "rf2",
+   0.603,
+   0,
+   {},
+   "ok"
+  ],
+  [
+   "supplier update",
+   0.615,
+   0,
+   {},
+   "ok"
+  ],
+  [
+   "part delete",
+   0.642,
+   0,
+   {},
+   "ok"
+  ],
+  [
+   "part insert",
+   0.649,
+   0,
+   {},
+   "ok"
+  ],
+  [
+   "supplier delete",
+   0.656,
+   0,
+   {},
+   "ok"
+  ],
+  [
+   "supplier insert",
+   0.68,
+   0,
+   {},
+   "ok"
+  ],
+  [
+   "partsupp update",
+   0.704,
+   0,
+   {},
+   "ok"
+  ],
+  [
+   "rf1",
+   1.028,
+   0,
+   {},
+   "ok"
+  ],
+  [
+   "supplier update",
+   1.264,
+   0,
+   {},
+   "ok"
+  ],
+  [
+   "part delete",
+   1.294,
+   0,
+   {},
+   "ok"
+  ],
+  [
+   "part insert",
+   1.301,
+   0,
+   {},
+   "ok"
+  ],
+  [
+   "supplier delete",
+   1.308,
+   0,
+   {},
+   "ok"
+  ],
+  [
+   "supplier insert",
+   1.333,
+   0,
+   {},
+   "ok"
+  ],
+  [
+   "partsupp update",
+   1.354,
+   0,
+   {},
+   "ok"
+  ],
+  [
+   "rf2",
+   1.397,
+   0,
+   {},
+   "ok"
+  ],
+  [
+   "supplier update",
+   1.409,
+   0,
+   {},
+   "ok"
+  ],
+  [
+   "part delete",
+   1.444,
+   0,
+   {},
+   "ok"
+  ],
+  [
+   "part insert",
+   1.45,
+   0,
+   {},
+   "ok"
+  ],
+  [
+   "supplier delete",
+   1.457,
+   0,
+   {},
+   "ok"
+  ],
+  [
+   "supplier insert",
+   1.484,
+   0,
+   {},
+   "ok"
+  ],
+  [
+   "partsupp update",
+   1.503,
+   0,
+   {},
+   "ok"
+  ],
+  [
+   "rf1",
+   1.815,
+   0,
+   {},
+   "ok"
+  ],
+  [
+   "supplier update",
+   2.037,
+   0,
+   {},
+   "ok"
+  ],
+  [
+   "part delete",
+   2.067,
+   0,
+   {},
+   "ok"
+  ],
+  [
+   "part insert",
+   2.074,
+   0,
+   {},
+   "ok"
+  ],
+  [
+   "supplier delete",
+   2.08,
+   0,
+   {},
+   "ok"
+  ],
+  [
+   "supplier insert",
+   2.104,
+   0,
+   {},
+   "ok"
+  ],
+  [
+   "partsupp update",
+   2.121,
+   0,
+   {},
+   "ok"
+  ]
+ ],
+ "mv_post_restore_refresh_s": 0.0009644818492233753,
+ "answers_changed": [],
+ "answers_unchanged": [
+  2
+ ],
+ "final_mismatches": []
+}

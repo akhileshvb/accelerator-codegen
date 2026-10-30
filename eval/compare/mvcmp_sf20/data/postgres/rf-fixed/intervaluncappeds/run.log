@@ -1,0 +1,24 @@
+# --pg-workers 9: max_parallel_workers_per_gather = 9 for every session; table parallel_workers already 9
+parameter draws: 3 repetition(s) x 4 sets, seeds 20261018..20261020
+uncapped rep 0 accel (RF: update sets, 500, 8 readers) 04:24:38
+   qps 46.0  read p50 1.7ms p99 299.3ms  timeouts 0  RF commits 85 (0.283/s of -1) of 589 commits  commit p50 2.1ms max 32956ms  lag max 305.1s  rows/s 757 (RF 709)  errors read 0 write 0  final-check mismatches none  answers unchanged by writes [2, 3, 8, 10, 15, 18, 22]  workers: commits 7272 applied 7193 builds 7 gaps 0 fallback 71 errors 0  RUN INVALID (a worker rebuilt / lost a commit)
+# --pg-workers 9: max_parallel_workers_per_gather = 9 for every session; table parallel_workers already 9
+parameter draws: 3 repetition(s) x 4 sets, seeds 20261018..20261020
+uncapped rep 1 accel (RF: update sets, 500, 8 readers) 04:42:26
+   qps 36.7  read p50 1.9ms p99 1562.4ms  timeouts 0  RF commits 186 (0.62/s of -1) of 1302 commits  commit p50 2.0ms max 13863ms  lag max 322.8s  rows/s 1660 (RF 1552)  errors read 0 write 0  final-check mismatches none  answers unchanged by writes [2, 3, 8, 10, 15, 18, 22]  workers: commits 14472 applied 14176 builds 12 gaps 0 fallback 90 errors 0  RUN INVALID (a worker rebuilt / lost a commit)
+# --pg-workers 9: max_parallel_workers_per_gather = 9 for every session; table parallel_workers already 9
+parameter draws: 3 repetition(s) x 4 sets, seeds 20261018..20261020
+uncapped rep 2 accel (RF: update sets, 500, 8 readers) 06:22:31
+   qps 55.0  read p50 2.1ms p99 1560.4ms  timeouts 0  RF commits 135 (0.45/s of -1) of 951 commits  commit p50 2.2ms max 9829ms  lag max 325.8s  rows/s 1204 (RF 1125)  errors read 0 write 0  final-check mismatches none  answers unchanged by writes [2, 3, 8, 14, 18, 22]  workers: commits 11160 applied 11083 builds 7 gaps 0 fallback 117 errors 0  RUN INVALID (a worker rebuilt / lost a commit)
+# --pg-workers 9: max_parallel_workers_per_gather = 9 for every session; table parallel_workers already 9
+parameter draws: 3 repetition(s) x 4 sets, seeds 20261018..20261020
+uncapped rep 0 mv (RF: update sets, 500, 8 readers) 09:38:33
+   qps 55.7  read p50 6.8ms p99 1288.2ms  timeouts 0  RF commits 2 (0.00666/s of -1) of 18 commits  commit p50 274.1ms max 55141ms  lag max 264.0s  rows/s 18 (RF 17)  errors read 0 write 0  refresh 280.0s in window (post-restore 30.2s)  final-check mismatches none  answers unchanged by writes [2, 3, 8, 10, 11, 14, 15, 17, 18, 20, 21, 22]  RUN INVALID (an error, a failed restore or a final-check mismatch)
+# --pg-workers 9: max_parallel_workers_per_gather = 9 for every session; table parallel_workers already 9
+parameter draws: 3 repetition(s) x 4 sets, seeds 20261018..20261020
+uncapped rep 1 mv (RF: update sets, 500, 8 readers) 09:52:03
+   qps 45.1  read p50 6.7ms p99 1599.8ms  timeouts 0  RF commits 2 (0.00666/s of -1) of 14 commits  commit p50 6556.9ms max 90486ms  lag max 279.6s  rows/s 18 (RF 17)  errors read 0 write 0  refresh 303.5s in window (post-restore 37.6s)  final-check mismatches none  answers unchanged by writes [2, 3, 8, 10, 11, 14, 15, 18, 19, 20, 21, 22]  RUN INVALID (an error, a failed restore or a final-check mismatch)
+# --pg-workers 9: max_parallel_workers_per_gather = 9 for every session; table parallel_workers already 9
+parameter draws: 3 repetition(s) x 4 sets, seeds 20261018..20261020
+uncapped rep 2 mv (RF: update sets, 500, 8 readers) 12:19:58
+   qps 58.8  read p50 6.6ms p99 1223.4ms  timeouts 0  RF commits 2 (0.00666/s of -1) of 18 commits  commit p50 300.0ms max 72955ms  lag max 241.7s  rows/s 18 (RF 17)  errors read 0 write 0  refresh 261.8s in window (post-restore 28.6s)  final-check mismatches none  answers unchanged by writes [2, 3, 8, 10, 11, 14, 15, 18, 19, 20, 21, 22]

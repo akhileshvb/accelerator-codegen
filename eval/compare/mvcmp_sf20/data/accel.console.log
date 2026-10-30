@@ -1,0 +1,121 @@
+# table parallel_workers now {'region': 9, 'nation': 9, 'customer': 9, 'supplier': 9, 'part': 9, 'partsupp': 9, 'orders': 9, 'lineitem': 9}
+=== rf-fixed postgres accel rep 0 interval=0s window=300s (min reads 3, max 900s) warmup=30s readers=8 seed=20261018 pg_workers=9 06:27:00
+# --pg-workers 9: max_parallel_workers_per_gather = 9 for every session; table parallel_workers already 9
+parameter draws: 3 repetition(s) x 4 sets, seeds 20261018..20261020
+cps0 rep 0 accel (RF: update sets, 500, 8 readers) 06:27:00
+   qps 205.6  read p50 3.3ms p99 222.6ms  timeouts 0  RF commits 0 (0/s of 0) of 0 commits  commit p50 0.0ms max 0ms  lag max 0.0s  rows/s 0 (RF 0)  errors read 0 write 0  final-check mismatches none  answers unchanged by writes [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22]  workers: commits 0 applied 0 builds 0 gaps 0 fallback 0 errors 0  TABLES NOT WRITTEN ['supplier', 'part', 'partsupp', 'orders', 'lineitem']
+=== rf-fixed postgres accel rep 0 interval=53.7s window=300s (min reads 3, max 900s) warmup=30s readers=8 seed=20261018 pg_workers=9 06:42:36
+# --pg-workers 9: max_parallel_workers_per_gather = 9 for every session; table parallel_workers already 9
+parameter draws: 3 repetition(s) x 4 sets, seeds 20261018..20261020
+cps0.018622 rep 0 accel (RF: update sets, 500, 8 readers) 06:42:36
+   qps 189.2  read p50 3.1ms p99 225.5ms  timeouts 0  RF commits 6 (0.02/s of 0.018622) of 42 commits  commit p50 3.0ms max 790ms  lag max 0.7s  rows/s 54 (RF 50)  errors read 0 write 0  final-check mismatches none  answers unchanged by writes [2, 3, 8, 10, 11, 14, 15, 18, 21, 22]  workers: commits 504 applied 504 builds 0 gaps 0 fallback 7 errors 0
+=== rf-fixed postgres accel rep 0 interval=13.43s window=300s (min reads 3, max 900s) warmup=30s readers=8 seed=20261018 pg_workers=9 06:54:29
+# --pg-workers 9: max_parallel_workers_per_gather = 9 for every session; table parallel_workers already 9
+parameter draws: 3 repetition(s) x 4 sets, seeds 20261018..20261020
+cps0.07446 rep 0 accel (RF: update sets, 500, 8 readers) 06:54:29
+   qps 165.7  read p50 2.2ms p99 216.7ms  timeouts 0  RF commits 22 (0.0733/s of 0.07446) of 154 commits  commit p50 4.0ms max 1103ms  lag max 3.6s  rows/s 196 (RF 184)  errors read 0 write 0  final-check mismatches none  answers unchanged by writes [2, 3, 8, 10, 14, 15, 18, 21, 22]  workers: commits 1800 applied 1800 builds 0 gaps 0 fallback 18 errors 0
+=== rf-fixed postgres accel rep 0 interval=2.686s window=300s (min reads 3, max 900s) warmup=30s readers=8 seed=20261018 pg_workers=9 07:06:30
+# --pg-workers 9: max_parallel_workers_per_gather = 9 for every session; table parallel_workers already 9
+parameter draws: 3 repetition(s) x 4 sets, seeds 20261018..20261020
+cps0.372301 rep 0 accel (RF: update sets, 500, 8 readers) 07:06:30
+  WRITER STOPPED: AssertionError: TPC-H update set 41 missing: /disk3/akhilvb_tpch/refresh_sf20/orders.tbl.u41 (scripts/gen_tpch_refresh_sets.sh)
+  WRITER THREAD EXITED before the window ended
+   qps 44.1  read p50 2.1ms p99 335.4ms  timeouts 0  RF commits 68 (0.227/s of 0.372301) of 477 commits  commit p50 1.8ms max 1536ms  lag max 22.1s  rows/s 606 (RF 567)  errors read 0 write 1  final-check mismatches none  answers unchanged by writes [2, 3, 8, 10, 15, 18, 22]  workers: commits 5760 applied 5760 builds 0 gaps 0 fallback 103 errors 0
+=== rf-fixed postgres accel rep 0 interval=0.537s window=300s (min reads 3, max 900s) warmup=30s readers=8 seed=20261018 pg_workers=9 07:16:57
+# --pg-workers 9: max_parallel_workers_per_gather = 9 for every session; table parallel_workers already 9
+parameter draws: 3 repetition(s) x 4 sets, seeds 20261018..20261020
+cps1.8622 rep 0 accel (RF: update sets, 500, 8 readers) 07:16:57
+   qps 40.6  read p50 1.6ms p99 208.2ms  timeouts 0  RF commits 43 (0.143/s of 1.8622) of 295 commits  commit p50 2.3ms max 93005ms  lag max 291.7s  rows/s 383 (RF 359)  errors read 0 write 0  final-check mismatches none  answers unchanged by writes [2, 3, 8, 10, 15, 18, 22]  workers: commits 4824 applied 4811 builds 2 gaps 0 fallback 36 errors 0  RUN INVALID (a worker rebuilt / lost a commit)
+=== rf-fixed postgres accel rep 0 interval=uncappeds window=300s (min reads 3, max 900s) warmup=30s readers=8 seed=20261018 pg_workers=9 07:32:13
+# --pg-workers 9: max_parallel_workers_per_gather = 9 for every session; table parallel_workers already 9
+parameter draws: 3 repetition(s) x 4 sets, seeds 20261018..20261020
+uncapped rep 0 accel (RF: update sets, 500, 8 readers) 07:32:13
+   qps 13.7  read p50 1.3ms p99 278.6ms  timeouts 0  RF commits 60 (0.2/s of -1) of 416 commits  commit p50 2.1ms max 49096ms  lag max 322.5s  rows/s 535 (RF 500)  errors read 0 write 0  final-check mismatches none  answers unchanged by writes [2, 3, 8, 10, 15, 18, 22]  workers: commits 5400 applied 5259 builds 9 gaps 0 fallback 35 errors 0  RUN INVALID (a worker rebuilt / lost a commit)
+=== rf-fixed postgres accel rep 1 interval=uncappeds window=300s (min reads 3, max 900s) warmup=30s readers=8 seed=20261018 pg_workers=9 07:48:47
+# --pg-workers 9: max_parallel_workers_per_gather = 9 for every session; table parallel_workers already 9
+parameter draws: 3 repetition(s) x 4 sets, seeds 20261018..20261020
+uncapped rep 1 accel (RF: update sets, 500, 8 readers) 07:48:47
+   qps 1.8  read p50 1.8ms p99 93716.7ms  timeouts 0  RF commits 41 (0.137/s of -1) of 281 commits  commit p50 2.1ms max 42171ms  lag max 328.5s  rows/s 365 (RF 342)  errors read 0 write 0  final-check mismatches none  answers unchanged by writes [2, 3, 8, 10, 14, 15, 18, 21, 22]  workers: commits 5688 applied 5460 builds 15 gaps 0 fallback 42 errors 0  RUN INVALID (a worker rebuilt / lost a commit)
+=== rf-fixed postgres accel rep 1 interval=0.537s window=300s (min reads 3, max 900s) warmup=30s readers=8 seed=20261018 pg_workers=9 08:05:42
+# --pg-workers 9: max_parallel_workers_per_gather = 9 for every session; table parallel_workers already 9
+parameter draws: 3 repetition(s) x 4 sets, seeds 20261018..20261020
+cps1.8622 rep 1 accel (RF: update sets, 500, 8 readers) 08:05:42
+  WRITER STOPPED: AssertionError: TPC-H update set 41 missing: /disk3/akhilvb_tpch/refresh_sf20/orders.tbl.u41 (scripts/gen_tpch_refresh_sets.sh)
+  WRITER THREAD EXITED before the window ended
+   qps 23.3  read p50 2.0ms p99 270.1ms  timeouts 0  RF commits 49 (0.163/s of 1.8622) of 350 commits  commit p50 2.2ms max 3872ms  lag max 76.0s  rows/s 437 (RF 409)  errors read 0 write 1  final-check mismatches none  answers unchanged by writes [2, 3, 8, 10, 14, 15, 18, 21, 22]  workers: commits 5760 applied 5757 builds 1 gaps 0 fallback 44 errors 0  RUN INVALID (a worker rebuilt / lost a commit)
+=== rf-fixed postgres accel rep 1 interval=2.686s window=300s (min reads 3, max 900s) warmup=30s readers=8 seed=20261018 pg_workers=9 08:14:47
+# --pg-workers 9: max_parallel_workers_per_gather = 9 for every session; table parallel_workers already 9
+parameter draws: 3 repetition(s) x 4 sets, seeds 20261018..20261020
+cps0.372301 rep 1 accel (RF: update sets, 500, 8 readers) 08:14:47
+  WRITER STOPPED: AssertionError: TPC-H update set 41 missing: /disk3/akhilvb_tpch/refresh_sf20/orders.tbl.u41 (scripts/gen_tpch_refresh_sets.sh)
+  WRITER THREAD EXITED before the window ended
+   qps 11.2  read p50 1.7ms p99 15049.7ms  timeouts 0  RF commits 68 (0.227/s of 0.372301) of 481 commits  commit p50 2.2ms max 15387ms  lag max 74.0s  rows/s 607 (RF 567)  errors read 0 write 1  final-check mismatches none  answers unchanged by writes [2, 3, 8, 10, 14, 15, 18, 21, 22]  workers: commits 5760 applied 5540 builds 20 gaps 0 fallback 76 errors 0  RUN INVALID (a worker rebuilt / lost a commit)
+=== rf-fixed postgres accel rep 1 interval=13.43s window=300s (min reads 3, max 900s) warmup=30s readers=8 seed=20261018 pg_workers=9 08:27:35
+# --pg-workers 9: max_parallel_workers_per_gather = 9 for every session; table parallel_workers already 9
+parameter draws: 3 repetition(s) x 4 sets, seeds 20261018..20261020
+cps0.07446 rep 1 accel (RF: update sets, 500, 8 readers) 08:27:35
+   qps 167.7  read p50 2.4ms p99 219.7ms  timeouts 0  RF commits 22 (0.0733/s of 0.07446) of 154 commits  commit p50 3.9ms max 4755ms  lag max 7.0s  rows/s 196 (RF 184)  errors read 0 write 0  final-check mismatches none  answers unchanged by writes [2, 3, 8, 10, 15, 18, 20, 21, 22]  workers: commits 1800 applied 1800 builds 0 gaps 0 fallback 20 errors 0
+=== rf-fixed postgres accel rep 1 interval=53.7s window=300s (min reads 3, max 900s) warmup=30s readers=8 seed=20261018 pg_workers=9 08:39:42
+# --pg-workers 9: max_parallel_workers_per_gather = 9 for every session; table parallel_workers already 9
+parameter draws: 3 repetition(s) x 4 sets, seeds 20261018..20261020
+cps0.018622 rep 1 accel (RF: update sets, 500, 8 readers) 08:39:42
+   qps 206.3  read p50 2.7ms p99 216.0ms  timeouts 0  RF commits 6 (0.02/s of 0.018622) of 42 commits  commit p50 4.1ms max 1391ms  lag max 0.8s  rows/s 54 (RF 50)  errors read 0 write 0  final-check mismatches none  answers unchanged by writes [2, 3, 8, 10, 11, 14, 15, 18, 19, 20, 21, 22]  workers: commits 504 applied 504 builds 0 gaps 0 fallback 6 errors 0
+=== rf-fixed postgres accel rep 1 interval=0s window=300s (min reads 3, max 900s) warmup=30s readers=8 seed=20261018 pg_workers=9 08:52:01
+# --pg-workers 9: max_parallel_workers_per_gather = 9 for every session; table parallel_workers already 9
+parameter draws: 3 repetition(s) x 4 sets, seeds 20261018..20261020
+cps0 rep 1 accel (RF: update sets, 500, 8 readers) 08:52:02
+   qps 216.7  read p50 3.3ms p99 218.9ms  timeouts 0  RF commits 0 (0/s of 0) of 0 commits  commit p50 0.0ms max 0ms  lag max 0.0s  rows/s 0 (RF 0)  errors read 0 write 0  final-check mismatches none  answers unchanged by writes [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22]  workers: commits 0 applied 0 builds 0 gaps 0 fallback 0 errors 0  TABLES NOT WRITTEN ['supplier', 'part', 'partsupp', 'orders', 'lineitem']
+=== rf-fixed postgres accel rep 2 interval=0s window=300s (min reads 3, max 900s) warmup=30s readers=8 seed=20261018 pg_workers=9 09:03:22
+# --pg-workers 9: max_parallel_workers_per_gather = 9 for every session; table parallel_workers already 9
+parameter draws: 3 repetition(s) x 4 sets, seeds 20261018..20261020
+cps0 rep 2 accel (RF: update sets, 500, 8 readers) 09:03:22
+   qps 205.0  read p50 3.4ms p99 222.7ms  timeouts 0  RF commits 0 (0/s of 0) of 0 commits  commit p50 0.0ms max 0ms  lag max 0.0s  rows/s 0 (RF 0)  errors read 0 write 0  final-check mismatches none  answers unchanged by writes [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22]  workers: commits 0 applied 0 builds 0 gaps 0 fallback 0 errors 0  TABLES NOT WRITTEN ['supplier', 'part', 'partsupp', 'orders', 'lineitem']
+=== rf-fixed postgres accel rep 2 interval=53.7s window=300s (min reads 3, max 900s) warmup=30s readers=8 seed=20261018 pg_workers=9 09:15:13
+# --pg-workers 9: max_parallel_workers_per_gather = 9 for every session; table parallel_workers already 9
+parameter draws: 3 repetition(s) x 4 sets, seeds 20261018..20261020
+cps0.018622 rep 2 accel (RF: update sets, 500, 8 readers) 09:15:14
+   qps 191.5  read p50 2.6ms p99 219.3ms  timeouts 0  RF commits 6 (0.02/s of 0.018622) of 42 commits  commit p50 5.8ms max 628ms  lag max 0.8s  rows/s 54 (RF 50)  errors read 0 write 0  final-check mismatches none  answers unchanged by writes [2, 3, 8, 10, 11, 14, 15, 18, 20, 21, 22]  workers: commits 504 applied 504 builds 0 gaps 0 fallback 11 errors 0
+=== rf-fixed postgres accel rep 2 interval=13.43s window=300s (min reads 3, max 900s) warmup=30s readers=8 seed=20261018 pg_workers=9 09:26:36
+# --pg-workers 9: max_parallel_workers_per_gather = 9 for every session; table parallel_workers already 9
+parameter draws: 3 repetition(s) x 4 sets, seeds 20261018..20261020
+cps0.07446 rep 2 accel (RF: update sets, 500, 8 readers) 09:26:37
+   qps 162.9  read p50 2.2ms p99 224.2ms  timeouts 0  RF commits 22 (0.0733/s of 0.07446) of 154 commits  commit p50 2.7ms max 764ms  lag max 6.5s  rows/s 196 (RF 184)  errors read 0 write 0  final-check mismatches none  answers unchanged by writes [2, 3, 8, 10, 15, 18, 22]  workers: commits 1800 applied 1800 builds 0 gaps 0 fallback 23 errors 0
+=== rf-fixed postgres accel rep 2 interval=2.686s window=300s (min reads 3, max 900s) warmup=30s readers=8 seed=20261018 pg_workers=9 09:39:50
+# --pg-workers 9: max_parallel_workers_per_gather = 9 for every session; table parallel_workers already 9
+parameter draws: 3 repetition(s) x 4 sets, seeds 20261018..20261020
+cps0.372301 rep 2 accel (RF: update sets, 500, 8 readers) 09:39:50
+  WRITER STOPPED: AssertionError: TPC-H update set 41 missing: /disk3/akhilvb_tpch/refresh_sf20/orders.tbl.u41 (scripts/gen_tpch_refresh_sets.sh)
+  WRITER THREAD EXITED before the window ended
+   qps 12.3  read p50 2.5ms p99 13491.7ms  timeouts 0  RF commits 68 (0.227/s of 0.372301) of 477 commits  commit p50 2.0ms max 3887ms  lag max 6.5s  rows/s 606 (RF 567)  errors read 0 write 1  final-check mismatches none  answers unchanged by writes [2, 3, 8, 10, 14, 18, 22]  workers: commits 5760 applied 5580 builds 23 gaps 0 fallback 108 errors 0  RUN INVALID (a worker rebuilt / lost a commit)
+=== rf-fixed postgres accel rep 2 interval=0.537s window=300s (min reads 3, max 900s) warmup=30s readers=8 seed=20261018 pg_workers=9 09:50:36
+# --pg-workers 9: max_parallel_workers_per_gather = 9 for every session; table parallel_workers already 9
+parameter draws: 3 repetition(s) x 4 sets, seeds 20261018..20261020
+cps1.8622 rep 2 accel (RF: update sets, 500, 8 readers) 09:50:36
+  WRITER STOPPED: AssertionError: TPC-H update set 41 missing: /disk3/akhilvb_tpch/refresh_sf20/orders.tbl.u41 (scripts/gen_tpch_refresh_sets.sh)
+  WRITER THREAD EXITED before the window ended
+   qps 20.4  read p50 2.0ms p99 232.7ms  timeouts 0  RF commits 56 (0.187/s of 1.8622) of 393 commits  commit p50 2.3ms max 3511ms  lag max 89.1s  rows/s 499 (RF 467)  errors read 0 write 1  final-check mismatches none  answers unchanged by writes [2, 3, 8, 10, 14, 18, 22]  workers: commits 5760 applied 5722 builds 4 gaps 0 fallback 31 errors 0  RUN INVALID (a worker rebuilt / lost a commit)
+=== rf-fixed postgres accel rep 2 interval=uncappeds window=300s (min reads 3, max 900s) warmup=30s readers=8 seed=20261018 pg_workers=9 09:59:27
+# --pg-workers 9: max_parallel_workers_per_gather = 9 for every session; table parallel_workers already 9
+parameter draws: 3 repetition(s) x 4 sets, seeds 20261018..20261020
+uncapped rep 2 accel (RF: update sets, 500, 8 readers) 09:59:28
+  WRITER STOPPED: AssertionError: TPC-H update set 41 missing: /disk3/akhilvb_tpch/refresh_sf20/orders.tbl.u41 (scripts/gen_tpch_refresh_sets.sh)
+  WRITER THREAD EXITED before the window ended
+   qps 15.5  read p50 2.0ms p99 497.5ms  timeouts 0  RF commits 50 (0.167/s of -1) of 351 commits  commit p50 1.9ms max 1968ms  lag max 97.8s  rows/s 446 (RF 417)  errors read 0 write 1  final-check mismatches none  answers unchanged by writes [2, 3, 8, 10, 14, 18, 22]  workers: commits 5760 applied 5760 builds 0 gaps 0 fallback 42 errors 0
+# table parallel_workers now {'region': None, 'nation': None, 'customer': None, 'supplier': None, 'part': None, 'partsupp': None, 'orders': None, 'lineitem': None}
+# table parallel_workers now {'region': 9, 'nation': 9, 'customer': 9, 'supplier': 9, 'part': 9, 'partsupp': 9, 'orders': 9, 'lineitem': 9}
+=== rf-fixed postgres accel rep 0 interval=268.6s window=900s (min reads 3, max 900s) warmup=30s readers=8 seed=20261018 pg_workers=9 10:08:19
+# --pg-workers 9: max_parallel_workers_per_gather = 9 for every session; table parallel_workers already 9
+parameter draws: 3 repetition(s) x 4 sets, seeds 20261018..20261020
+cps0.003723 rep 0 accel (RF: update sets, 500, 8 readers) 10:08:20
+   qps 205.2  read p50 3.1ms p99 219.7ms  timeouts 0  RF commits 3 (0.00333/s of 0.003723) of 21 commits  commit p50 2.8ms max 533ms  lag max 1.8s  rows/s 9 (RF 8)  errors read 0 write 0  final-check mismatches none  answers unchanged by writes [2, 3, 6, 8, 10, 11, 14, 15, 18, 20, 21, 22]  workers: commits 288 applied 288 builds 0 gaps 0 fallback 8 errors 0
+=== rf-fixed postgres accel rep 1 interval=268.6s window=900s (min reads 3, max 900s) warmup=30s readers=8 seed=20261018 pg_workers=9 10:30:13
+# --pg-workers 9: max_parallel_workers_per_gather = 9 for every session; table parallel_workers already 9
+parameter draws: 3 repetition(s) x 4 sets, seeds 20261018..20261020
+cps0.003723 rep 1 accel (RF: update sets, 500, 8 readers) 10:30:13
+   qps 224.3  read p50 2.7ms p99 215.1ms  timeouts 0  RF commits 3 (0.00333/s of 0.003723) of 21 commits  commit p50 3.8ms max 1397ms  lag max 0.8s  rows/s 9 (RF 8)  errors read 0 write 0  final-check mismatches none  answers unchanged by writes [2, 3, 8, 10, 11, 14, 15, 18, 19, 20, 21, 22]  workers: commits 288 applied 288 builds 0 gaps 0 fallback 6 errors 0
+=== rf-fixed postgres accel rep 2 interval=268.6s window=900s (min reads 3, max 900s) warmup=30s readers=8 seed=20261018 pg_workers=9 10:52:05
+# --pg-workers 9: max_parallel_workers_per_gather = 9 for every session; table parallel_workers already 9
+parameter draws: 3 repetition(s) x 4 sets, seeds 20261018..20261020
+cps0.003723 rep 2 accel (RF: update sets, 500, 8 readers) 10:52:06
+   qps 201.1  read p50 3.2ms p99 223.2ms  timeouts 0  RF commits 3 (0.00333/s of 0.003723) of 21 commits  commit p50 4.0ms max 903ms  lag max 2.3s  rows/s 9 (RF 8)  errors read 0 write 0  final-check mismatches none  answers unchanged by writes [2, 3, 6, 8, 10, 11, 14, 15, 18, 19, 20, 21, 22]  workers: commits 288 applied 288 builds 0 gaps 0 fallback 7 errors 0
+# table parallel_workers now {'region': None, 'nation': None, 'customer': None, 'supplier': None, 'part': None, 'partsupp': None, 'orders': None, 'lineitem': None}

@@ -1,0 +1,25 @@
+    PID USER     %CPU %MEM     ELAPSED COMMAND
+1190544 renjie    504  0.0       00:03 python
+1190819 renjie    132  0.0       00:00 node
+1190751 renjie    102  0.0       00:01 ps <defunct>
+1190806 renjie    101  0.0       00:00 node
+1181039 998      98.9  0.3       01:53 git
+1190774 renjie   73.2  0.0       00:01 node
+1190814 renjie   44.2  0.0       00:00 python
+1190761 renjie   34.6  0.0       00:01 python
+1184816 renjie   18.8  0.0       01:07 chrome
+1082898 998      15.8  0.2       07:45 bundle
+1188224 renjie   15.0  0.0       00:20 chrome
+1187832 renjie   14.6  0.0       00:21 chrome
+1188571 renjie   14.2  0.0       00:18 chrome
+1188259 renjie   11.4  0.0       00:20 chrome
+1188633 renjie   10.5  0.0       00:17 ps <defunct>
+1184606 renjie   10.5  0.0       01:07 chrome
+ 957693 102      10.4  0.3       12:52 java
+ 957581 102       9.8  0.3       12:52 java
+ 900296 renjie    9.3  0.1       18:16 MainThread
+ 902283 renjie    8.6  0.4       17:58 MainThread
+1188390 renjie    8.4  0.0       00:19 ps <defunct>
+1187901 renjie    8.2  0.0       00:21 node
+1186520 renjie    8.0  0.0       00:47 chrome
+1187823 renjie    7.7  0.0       00:21 ps <defunct>

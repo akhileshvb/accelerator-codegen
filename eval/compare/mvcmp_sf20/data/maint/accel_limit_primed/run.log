@@ -1,0 +1,4 @@
+# --pg-workers 9: max_parallel_workers_per_gather and table parallel_workers = 9 for every session (tables' original reloptions {'region': None, 'nation': None, 'customer': None, 'supplier': None, 'part': None, 'partsupp': None, 'orders': None, 'lineitem': None}, restored on exit)
+parameter draws: 1 repetition(s) x 2 sets, seeds 20261018..20261018
+uncapped rep 0 accel (RF: update sets, 500, 1 readers) 06:10:24
+   qps 0.5  read p50 4.3ms p99 9802.4ms  timeouts 0  RF commits 11 (0.0917/s of -1) of 77 commits  commit p50 1.3ms max 719ms  lag max 5.5s  rows/s 246 (RF 230)  errors read 0 write 0  final-check mismatches none  answers unchanged by writes [2, 3, 8, 10, 14, 15, 18, 19, 22]  workers: commits 792 applied 792 builds 0 gaps 0 fallback 1 errors 0
