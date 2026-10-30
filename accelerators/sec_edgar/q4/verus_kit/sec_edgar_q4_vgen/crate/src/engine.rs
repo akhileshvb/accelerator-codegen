@@ -1,5 +1,5 @@
 // The engine's float SUM / AVG overflow check.  DuckDB's SUM / AVG of DOUBLE give infinity, never an
-// error: every group is fine.  (Postgres raises: postgres/fsafe.rs.)
+// error: every group is fine.  (Postgres raises: postgres/engine.rs.)
 use vstd::prelude::*;
 use std::sync::Arc;
 use verus_prooflib::ordered::{Index, Key};

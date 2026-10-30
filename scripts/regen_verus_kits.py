@@ -118,7 +118,8 @@ def main() -> int:
                 for f in own_files:
                     shutil.copy2(t / f, src / engine / f)
                 lib = (src / "lib.rs").read_text()
-                for f in own_files:
+                # every file under crate/src/<engine>/ replaces the same-named module (gen_*, and the kernel's engine.rs)
+                for f in sorted(p.name for p in (src / engine).glob("*.rs")):
                     mod = f.removesuffix(".rs")
                     lib = lib.replace(f"pub mod {mod};", f'#[path = "{engine}/{f}"]\npub mod {mod};')
                 (src / f"lib_{engine}.rs").write_text(lib)
