@@ -1,0 +1,88 @@
+{
+ "mode": "read",
+ "accel": "tpch:8",
+ "function": "accel_tpch_q8_aux",
+ "store": "cpp",
+ "build_ms": 5911.55,
+ "state_mb": 338.754,
+ "rss_mb_settled_after": 1754.55,
+ "rss_mb_settled_freed": 1415.8,
+ "rss_mb_peak_build": 4120.48,
+ "speedup_geomean": 409.02772224885763,
+ "mismatches": 0,
+ "hits": 240,
+ "fallbacks": 0,
+ "cases": [
+  {
+   "args": "'ROMANIA', 'EUROPE', 'STANDARD BURNISHED TIN'",
+   "base_us": 165862.201,
+   "accel_us": 422.138,
+   "base_rows": 2,
+   "accel_rows": 2,
+   "match": true
+  },
+  {
+   "args": "'PERU', 'AMERICA', 'ECONOMY PLATED BRASS'",
+   "base_us": 165740.6,
+   "accel_us": 430.868,
+   "base_rows": 2,
+   "accel_rows": 2,
+   "match": true
+  },
+  {
+   "args": "'GERMANY', 'EUROPE', 'ECONOMY POLISHED STEEL'",
+   "base_us": 166683.704,
+   "accel_us": 420.997,
+   "base_rows": 2,
+   "accel_rows": 2,
+   "match": true
+  },
+  {
+   "args": "'CANADA', 'AMERICA', 'STANDARD BRUSHED COPPER'",
+   "base_us": 173352.143,
+   "accel_us": 408.265,
+   "base_rows": 2,
+   "accel_rows": 2,
+   "match": true
+  },
+  {
+   "args": "'INDONESIA', 'ASIA', 'ECONOMY BURNISHED BRASS'",
+   "base_us": 173152.33,
+   "accel_us": 421.691,
+   "base_rows": 2,
+   "accel_rows": 2,
+   "match": true
+  },
+  {
+   "args": "'GERMANY', 'EUROPE', 'ECONOMY PLATED TIN'",
+   "base_us": 173313.892,
+   "accel_us": 399.162,
+   "base_rows": 2,
+   "accel_rows": 2,
+   "match": true
+  },
+  {
+   "args": "'MOROCCO', 'AFRICA', 'MEDIUM PLATED STEEL'",
+   "base_us": 172144.065,
+   "accel_us": 425.361,
+   "base_rows": 2,
+   "accel_rows": 2,
+   "match": true
+  },
+  {
+   "args": "'GERMANY', 'EUROPE', 'ECONOMY PLATED BRASS'",
+   "base_us": 175332.063,
+   "accel_us": 410.271,
+   "base_rows": 2,
+   "accel_rows": 2,
+   "match": true
+  }
+ ],
+ "wall_s": 48.9,
+ "query": 8,
+ "system": "cpp",
+ "rep": 0,
+ "seed": 632608726,
+ "note": "",
+ "counts_cover_all_draws": true
+}

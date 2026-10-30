@@ -1,0 +1,88 @@
+{
+ "mode": "read",
+ "accel": "tpch:5",
+ "function": "accel_tpch_q5_aux",
+ "store": "cpp",
+ "build_ms": 5689.55,
+ "state_mb": 1318.36,
+ "rss_mb_settled_after": 2009.74,
+ "rss_mb_settled_freed": 691.383,
+ "rss_mb_peak_build": 4632.11,
+ "speedup_geomean": 326.65370757992827,
+ "mismatches": 0,
+ "hits": 0,
+ "fallbacks": 0,
+ "cases": [
+  {
+   "args": "'EUROPE', DATE '1993-01-01'",
+   "base_us": 177304.987,
+   "accel_us": 552.401,
+   "base_rows": 5,
+   "accel_rows": 5,
+   "match": true
+  },
+  {
+   "args": "'AMERICA', DATE '1997-01-01'",
+   "base_us": 175161.154,
+   "accel_us": 531.341,
+   "base_rows": 5,
+   "accel_rows": 5,
+   "match": true
+  },
+  {
+   "args": "'AFRICA', DATE '1994-01-01'",
+   "base_us": 174936.344,
+   "accel_us": 532.482,
+   "base_rows": 5,
+   "accel_rows": 5,
+   "match": true
+  },
+  {
+   "args": "'ASIA', DATE '1996-01-01'",
+   "base_us": 161843.384,
+   "accel_us": 517.075,
+   "base_rows": 5,
+   "accel_rows": 5,
+   "match": true
+  },
+  {
+   "args": "'MIDDLE EAST', DATE '1996-01-01'",
+   "base_us": 174500.01,
+   "accel_us": 538.796,
+   "base_rows": 5,
+   "accel_rows": 5,
+   "match": true
+  },
+  {
+   "args": "'ASIA', DATE '1995-01-01'",
+   "base_us": 171473.429,
+   "accel_us": 546.178,
+   "base_rows": 5,
+   "accel_rows": 5,
+   "match": true
+  },
+  {
+   "args": "'EUROPE', DATE '1996-01-01'",
+   "base_us": 183780.154,
+   "accel_us": 525.502,
+   "base_rows": 5,
+   "accel_rows": 5,
+   "match": true
+  },
+  {
+   "args": "'AFRICA', DATE '1995-01-01'",
+   "base_us": 174197.131,
+   "accel_us": 519.931,
+   "base_rows": 5,
+   "accel_rows": 5,
+   "match": true
+  }
+ ],
+ "wall_s": 48.2,
+ "query": 5,
+ "system": "cpp",
+ "rep": 2,
+ "seed": 632608728,
+ "note": "",
+ "counts_cover_all_draws": true
+}

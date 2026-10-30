@@ -1,0 +1,88 @@
+{
+ "mode": "read",
+ "accel": "tpch:17",
+ "function": "accel_tpch_q17_aux",
+ "store": "cpp",
+ "build_ms": 53289.6,
+ "state_mb": 2318.18,
+ "rss_mb_settled_after": 3099.64,
+ "rss_mb_settled_freed": 781.469,
+ "rss_mb_peak_build": 16950.9,
+ "speedup_geomean": 3725.6683027063905,
+ "mismatches": 0,
+ "hits": 0,
+ "fallbacks": 0,
+ "cases": [
+  {
+   "args": "'Brand#41', 'MED BAG'",
+   "base_us": 1628386.612,
+   "accel_us": 436.457,
+   "base_rows": 1,
+   "accel_rows": 1,
+   "match": true
+  },
+  {
+   "args": "'Brand#52', 'JUMBO CASE'",
+   "base_us": 1606516.363,
+   "accel_us": 442.089,
+   "base_rows": 1,
+   "accel_rows": 1,
+   "match": true
+  },
+  {
+   "args": "'Brand#33', 'MED BOX'",
+   "base_us": 1605371.988,
+   "accel_us": 445.645,
+   "base_rows": 1,
+   "accel_rows": 1,
+   "match": true
+  },
+  {
+   "args": "'Brand#12', 'MED DRUM'",
+   "base_us": 1609506.307,
+   "accel_us": 423.846,
+   "base_rows": 1,
+   "accel_rows": 1,
+   "match": true
+  },
+  {
+   "args": "'Brand#15', 'MED DRUM'",
+   "base_us": 1611034.589,
+   "accel_us": 432.957,
+   "base_rows": 1,
+   "accel_rows": 1,
+   "match": true
+  },
+  {
+   "args": "'Brand#15', 'LG BOX'",
+   "base_us": 1649013.247,
+   "accel_us": 465.377,
+   "base_rows": 1,
+   "accel_rows": 1,
+   "match": true
+  },
+  {
+   "args": "'Brand#34', 'JUMBO BOX'",
+   "base_us": 1621650.791,
+   "accel_us": 404.376,
+   "base_rows": 1,
+   "accel_rows": 1,
+   "match": true
+  },
+  {
+   "args": "'Brand#41', 'LG CASE'",
+   "base_us": 1609289.072,
+   "accel_us": 425.123,
+   "base_rows": 1,
+   "accel_rows": 1,
+   "match": true
+  }
+ ],
+ "wall_s": 445.9,
+ "query": 17,
+ "system": "cpp",
+ "rep": 4,
+ "seed": 632608730,
+ "note": "",
+ "counts_cover_all_draws": true
+}

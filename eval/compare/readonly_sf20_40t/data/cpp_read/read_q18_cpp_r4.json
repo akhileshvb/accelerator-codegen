@@ -1,0 +1,56 @@
+{
+ "mode": "read",
+ "accel": "tpch:18",
+ "function": "accel_tpch_q18_aux",
+ "store": "cpp",
+ "build_ms": 7042.38,
+ "state_mb": -25.3477,
+ "rss_mb_settled_after": 630.461,
+ "rss_mb_settled_freed": 655.809,
+ "rss_mb_peak_build": 3839.1,
+ "speedup_geomean": 993.7959502937632,
+ "mismatches": 0,
+ "hits": 0,
+ "fallbacks": 0,
+ "cases": [
+  {
+   "args": "315",
+   "base_us": 661293.136,
+   "accel_us": 671.585,
+   "base_rows": 128,
+   "accel_rows": 128,
+   "match": true
+  },
+  {
+   "args": "314",
+   "base_us": 696492.464,
+   "accel_us": 685.188,
+   "base_rows": 148,
+   "accel_rows": 148,
+   "match": true
+  },
+  {
+   "args": "313",
+   "base_us": 718477.377,
+   "accel_us": 694.036,
+   "base_rows": 178,
+   "accel_rows": 178,
+   "match": true
+  },
+  {
+   "args": "312",
+   "base_us": 682207.283,
+   "accel_us": 724.7,
+   "base_rows": 201,
+   "accel_rows": 201,
+   "match": true
+  }
+ ],
+ "wall_s": 89.8,
+ "query": 18,
+ "system": "cpp",
+ "rep": 4,
+ "seed": 632608730,
+ "note": "",
+ "counts_cover_all_draws": true
+}

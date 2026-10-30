@@ -1,0 +1,88 @@
+{
+ "mode": "read",
+ "accel": "tpch:7",
+ "function": "accel_tpch_q7_aux",
+ "store": "cpp",
+ "build_ms": 4117.1,
+ "state_mb": 669.812,
+ "rss_mb_settled_after": 1578.49,
+ "rss_mb_settled_freed": 908.68,
+ "rss_mb_peak_build": 3711.75,
+ "speedup_geomean": 270.03527678335,
+ "mismatches": 0,
+ "hits": 0,
+ "fallbacks": 0,
+ "cases": [
+  {
+   "args": "'JORDAN', 'JAPAN'",
+   "base_us": 135537.865,
+   "accel_us": 466.593,
+   "base_rows": 4,
+   "accel_rows": 4,
+   "match": true
+  },
+  {
+   "args": "'FRANCE', 'SAUDI ARABIA'",
+   "base_us": 136068.721,
+   "accel_us": 507.0,
+   "base_rows": 4,
+   "accel_rows": 4,
+   "match": true
+  },
+  {
+   "args": "'EGYPT', 'ROMANIA'",
+   "base_us": 134936.878,
+   "accel_us": 498.96,
+   "base_rows": 4,
+   "accel_rows": 4,
+   "match": true
+  },
+  {
+   "args": "'FRANCE', 'ALGERIA'",
+   "base_us": 130891.89,
+   "accel_us": 507.376,
+   "base_rows": 4,
+   "accel_rows": 4,
+   "match": true
+  },
+  {
+   "args": "'ETHIOPIA', 'VIETNAM'",
+   "base_us": 130572.136,
+   "accel_us": 482.727,
+   "base_rows": 4,
+   "accel_rows": 4,
+   "match": true
+  },
+  {
+   "args": "'ETHIOPIA', 'CHINA'",
+   "base_us": 129382.134,
+   "accel_us": 504.49,
+   "base_rows": 4,
+   "accel_rows": 4,
+   "match": true
+  },
+  {
+   "args": "'IRAN', 'MOROCCO'",
+   "base_us": 135222.216,
+   "accel_us": 482.253,
+   "base_rows": 4,
+   "accel_rows": 4,
+   "match": true
+  },
+  {
+   "args": "'UNITED STATES', 'ETHIOPIA'",
+   "base_us": 134266.722,
+   "accel_us": 502.422,
+   "base_rows": 4,
+   "accel_rows": 4,
+   "match": true
+  }
+ ],
+ "wall_s": 36.8,
+ "query": 7,
+ "system": "cpp",
+ "rep": 2,
+ "seed": 632608728,
+ "note": "",
+ "counts_cover_all_draws": true
+}

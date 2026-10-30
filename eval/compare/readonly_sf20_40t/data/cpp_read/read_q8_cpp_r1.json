@@ -1,0 +1,88 @@
+{
+ "mode": "read",
+ "accel": "tpch:8",
+ "function": "accel_tpch_q8_aux",
+ "store": "cpp",
+ "build_ms": 5911.55,
+ "state_mb": 338.754,
+ "rss_mb_settled_after": 1754.55,
+ "rss_mb_settled_freed": 1415.8,
+ "rss_mb_peak_build": 4120.48,
+ "speedup_geomean": 423.24893005651717,
+ "mismatches": 0,
+ "hits": 0,
+ "fallbacks": 0,
+ "cases": [
+  {
+   "args": "'JAPAN', 'ASIA', 'LARGE POLISHED STEEL'",
+   "base_us": 173833.2,
+   "accel_us": 428.847,
+   "base_rows": 2,
+   "accel_rows": 2,
+   "match": true
+  },
+  {
+   "args": "'SAUDI ARABIA', 'MIDDLE EAST', 'PROMO ANODIZED NICKEL'",
+   "base_us": 173168.922,
+   "accel_us": 405.718,
+   "base_rows": 2,
+   "accel_rows": 2,
+   "match": true
+  },
+  {
+   "args": "'VIETNAM', 'ASIA', 'SMALL BURNISHED BRASS'",
+   "base_us": 173840.258,
+   "accel_us": 392.889,
+   "base_rows": 2,
+   "accel_rows": 2,
+   "match": true
+  },
+  {
+   "args": "'FRANCE', 'EUROPE', 'SMALL BRUSHED TIN'",
+   "base_us": 174382.476,
+   "accel_us": 412.882,
+   "base_rows": 2,
+   "accel_rows": 2,
+   "match": true
+  },
+  {
+   "args": "'BRAZIL', 'AMERICA', 'STANDARD BURNISHED COPPER'",
+   "base_us": 176216.542,
+   "accel_us": 422.356,
+   "base_rows": 2,
+   "accel_rows": 2,
+   "match": true
+  },
+  {
+   "args": "'UNITED KINGDOM', 'EUROPE', 'SMALL ANODIZED NICKEL'",
+   "base_us": 173446.681,
+   "accel_us": 430.183,
+   "base_rows": 2,
+   "accel_rows": 2,
+   "match": true
+  },
+  {
+   "args": "'JAPAN', 'ASIA', 'STANDARD ANODIZED STEEL'",
+   "base_us": 175309.015,
+   "accel_us": 408.722,
+   "base_rows": 2,
+   "accel_rows": 2,
+   "match": true
+  },
+  {
+   "args": "'UNITED KINGDOM', 'EUROPE', 'LARGE ANODIZED TIN'",
+   "base_us": 174049.826,
+   "accel_us": 394.273,
+   "base_rows": 2,
+   "accel_rows": 2,
+   "match": true
+  }
+ ],
+ "wall_s": 48.9,
+ "query": 8,
+ "system": "cpp",
+ "rep": 1,
+ "seed": 632608727,
+ "note": "",
+ "counts_cover_all_draws": true
+}

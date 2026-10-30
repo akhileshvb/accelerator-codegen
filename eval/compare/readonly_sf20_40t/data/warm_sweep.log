@@ -1,0 +1,23 @@
+Q1 profile loop: 1200 calls, median 441.3 us
+Q2 profile loop: 1200 calls, median 378.6 us
+Q3 profile loop: 1200 calls, median 293.4 us
+Q4 profile loop: 1200 calls, median 256.7 us
+Q5 profile loop: 1200 calls, median 250.6 us
+Q6 profile loop: 1200 calls, median 247.2 us
+Q7 profile loop: 1200 calls, median 252.7 us
+Q8 profile loop: 1200 calls, median 236.3 us
+Q9 profile loop: 1200 calls, median 287.3 us
+Q10 profile loop: 1200 calls, median 316.2 us
+Q11 profile loop: 1200 calls, median 749.0 us
+Q12 profile loop: 1200 calls, median 381.6 us
+Q13 profile loop: 1200 calls, median 226.7 us
+Q14 profile loop: 1200 calls, median 295.6 us
+Q15 profile loop: 1200 calls, median 262.0 us
+Q16 profile loop: 1200 calls, median 3564.8 us
+Q17 profile loop: 1200 calls, median 236.2 us
+Q18 profile loop: 600 calls, median 362.7 us
+Q19 profile loop: 1200 calls, median 218.9 us
+Q20 profile loop: 1200 calls, median 2134.9 us
+Q21 profile loop: 1200 calls, median 249.9 us
+Q22 profile loop: 1200 calls, median 252.1 us
+DONE

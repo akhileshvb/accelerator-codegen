@@ -1,0 +1,88 @@
+{
+ "mode": "read",
+ "accel": "tpch:17",
+ "function": "accel_tpch_q17_aux",
+ "store": "cpp",
+ "build_ms": 53289.6,
+ "state_mb": 2318.18,
+ "rss_mb_settled_after": 3099.64,
+ "rss_mb_settled_freed": 781.469,
+ "rss_mb_peak_build": 16950.9,
+ "speedup_geomean": 3620.7420601450426,
+ "mismatches": 0,
+ "hits": 0,
+ "fallbacks": 0,
+ "cases": [
+  {
+   "args": "'Brand#41', 'SM CASE'",
+   "base_us": 1604490.403,
+   "accel_us": 438.301,
+   "base_rows": 1,
+   "accel_rows": 1,
+   "match": true
+  },
+  {
+   "args": "'Brand#43', 'WRAP PACK'",
+   "base_us": 1612318.045,
+   "accel_us": 434.702,
+   "base_rows": 1,
+   "accel_rows": 1,
+   "match": true
+  },
+  {
+   "args": "'Brand#52', 'SM JAR'",
+   "base_us": 1604192.789,
+   "accel_us": 449.185,
+   "base_rows": 1,
+   "accel_rows": 1,
+   "match": true
+  },
+  {
+   "args": "'Brand#13', 'WRAP DRUM'",
+   "base_us": 1594638.491,
+   "accel_us": 445.445,
+   "base_rows": 1,
+   "accel_rows": 1,
+   "match": true
+  },
+  {
+   "args": "'Brand#34', 'LG PACK'",
+   "base_us": 1602321.91,
+   "accel_us": 449.925,
+   "base_rows": 1,
+   "accel_rows": 1,
+   "match": true
+  },
+  {
+   "args": "'Brand#22', 'WRAP BOX'",
+   "base_us": 1607657.938,
+   "accel_us": 441.035,
+   "base_rows": 1,
+   "accel_rows": 1,
+   "match": true
+  },
+  {
+   "args": "'Brand#34', 'MED PACK'",
+   "base_us": 1671821.302,
+   "accel_us": 480.656,
+   "base_rows": 1,
+   "accel_rows": 1,
+   "match": true
+  },
+  {
+   "args": "'Brand#35', 'WRAP DRUM'",
+   "base_us": 1633396.92,
+   "accel_us": 433.431,
+   "base_rows": 1,
+   "accel_rows": 1,
+   "match": true
+  }
+ ],
+ "wall_s": 445.9,
+ "query": 17,
+ "system": "cpp",
+ "rep": 1,
+ "seed": 632608727,
+ "note": "",
+ "counts_cover_all_draws": true
+}

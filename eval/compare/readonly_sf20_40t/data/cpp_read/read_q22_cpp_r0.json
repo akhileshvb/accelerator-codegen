@@ -1,0 +1,88 @@
+{
+ "mode": "read",
+ "accel": "tpch:22",
+ "function": "accel_tpch_q22_aux",
+ "store": "cpp",
+ "build_ms": 1404.07,
+ "state_mb": 120.25,
+ "rss_mb_settled_after": 668.41,
+ "rss_mb_settled_freed": 548.16,
+ "rss_mb_peak_build": 2343.27,
+ "speedup_geomean": 361.81117070093774,
+ "mismatches": 0,
+ "hits": 240,
+ "fallbacks": 0,
+ "cases": [
+  {
+   "args": "'14', '28', '24', '27', '12', '23', '25'",
+   "base_us": 169048.786,
+   "accel_us": 469.78,
+   "base_rows": 7,
+   "accel_rows": 7,
+   "match": true
+  },
+  {
+   "args": "'10', '26', '25', '17', '12', '18', '11'",
+   "base_us": 171146.417,
+   "accel_us": 447.584,
+   "base_rows": 7,
+   "accel_rows": 7,
+   "match": true
+  },
+  {
+   "args": "'16', '10', '28', '14', '34', '24', '32'",
+   "base_us": 167773.139,
+   "accel_us": 462.634,
+   "base_rows": 7,
+   "accel_rows": 7,
+   "match": true
+  },
+  {
+   "args": "'11', '17', '28', '10', '14', '26', '21'",
+   "base_us": 166809.786,
+   "accel_us": 476.733,
+   "base_rows": 7,
+   "accel_rows": 7,
+   "match": true
+  },
+  {
+   "args": "'12', '34', '29', '31', '20', '10', '14'",
+   "base_us": 165226.992,
+   "accel_us": 441.636,
+   "base_rows": 7,
+   "accel_rows": 7,
+   "match": true
+  },
+  {
+   "args": "'14', '25', '34', '24', '18', '30', '31'",
+   "base_us": 167497.785,
+   "accel_us": 459.103,
+   "base_rows": 7,
+   "accel_rows": 7,
+   "match": true
+  },
+  {
+   "args": "'23', '12', '21', '28', '30', '24', '19'",
+   "base_us": 166951.837,
+   "accel_us": 480.086,
+   "base_rows": 7,
+   "accel_rows": 7,
+   "match": true
+  },
+  {
+   "args": "'12', '10', '25', '24', '11', '20', '14'",
+   "base_us": 167996.324,
+   "accel_us": 474.104,
+   "base_rows": 7,
+   "accel_rows": 7,
+   "match": true
+  }
+ ],
+ "wall_s": 41.8,
+ "query": 22,
+ "system": "cpp",
+ "rep": 0,
+ "seed": 632608726,
+ "note": "",
+ "counts_cover_all_draws": true
+}

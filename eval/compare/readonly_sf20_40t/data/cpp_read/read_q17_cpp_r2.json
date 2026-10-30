@@ -1,0 +1,88 @@
+{
+ "mode": "read",
+ "accel": "tpch:17",
+ "function": "accel_tpch_q17_aux",
+ "store": "cpp",
+ "build_ms": 53289.6,
+ "state_mb": 2318.18,
+ "rss_mb_settled_after": 3099.64,
+ "rss_mb_settled_freed": 781.469,
+ "rss_mb_peak_build": 16950.9,
+ "speedup_geomean": 3591.821012868164,
+ "mismatches": 0,
+ "hits": 0,
+ "fallbacks": 0,
+ "cases": [
+  {
+   "args": "'Brand#22', 'LG CASE'",
+   "base_us": 1622400.228,
+   "accel_us": 448.221,
+   "base_rows": 1,
+   "accel_rows": 1,
+   "match": true
+  },
+  {
+   "args": "'Brand#21', 'WRAP CAN'",
+   "base_us": 1618894.459,
+   "accel_us": 438.912,
+   "base_rows": 1,
+   "accel_rows": 1,
+   "match": true
+  },
+  {
+   "args": "'Brand#32', 'SM DRUM'",
+   "base_us": 1603313.045,
+   "accel_us": 454.308,
+   "base_rows": 1,
+   "accel_rows": 1,
+   "match": true
+  },
+  {
+   "args": "'Brand#53', 'SM CASE'",
+   "base_us": 1611737.241,
+   "accel_us": 445.336,
+   "base_rows": 1,
+   "accel_rows": 1,
+   "match": true
+  },
+  {
+   "args": "'Brand#45', 'JUMBO BAG'",
+   "base_us": 1616436.522,
+   "accel_us": 431.122,
+   "base_rows": 1,
+   "accel_rows": 1,
+   "match": true
+  },
+  {
+   "args": "'Brand#21', 'JUMBO PACK'",
+   "base_us": 1609044.157,
+   "accel_us": 462.217,
+   "base_rows": 1,
+   "accel_rows": 1,
+   "match": true
+  },
+  {
+   "args": "'Brand#54', 'MED BAG'",
+   "base_us": 1649507.797,
+   "accel_us": 490.701,
+   "base_rows": 1,
+   "accel_rows": 1,
+   "match": true
+  },
+  {
+   "args": "'Brand#13', 'SM CASE'",
+   "base_us": 1620211.77,
+   "accel_us": 437.576,
+   "base_rows": 1,
+   "accel_rows": 1,
+   "match": true
+  }
+ ],
+ "wall_s": 445.9,
+ "query": 17,
+ "system": "cpp",
+ "rep": 2,
+ "seed": 632608728,
+ "note": "",
+ "counts_cover_all_draws": true
+}

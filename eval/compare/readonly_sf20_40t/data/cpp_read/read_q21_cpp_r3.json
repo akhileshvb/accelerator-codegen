@@ -1,0 +1,88 @@
+{
+ "mode": "read",
+ "accel": "tpch:21",
+ "function": "accel_tpch_q21_aux",
+ "store": "cpp",
+ "build_ms": 8532.77,
+ "state_mb": 248.184,
+ "rss_mb_settled_after": 951.945,
+ "rss_mb_settled_freed": 703.762,
+ "rss_mb_peak_build": 7600.32,
+ "speedup_geomean": 1018.0863740064174,
+ "mismatches": 0,
+ "hits": 0,
+ "fallbacks": 0,
+ "cases": [
+  {
+   "args": "'PERU'",
+   "base_us": 526266.704,
+   "accel_us": 518.753,
+   "base_rows": 100,
+   "accel_rows": 100,
+   "match": true
+  },
+  {
+   "args": "'BRAZIL'",
+   "base_us": 510772.852,
+   "accel_us": 496.772,
+   "base_rows": 100,
+   "accel_rows": 100,
+   "match": true
+  },
+  {
+   "args": "'JORDAN'",
+   "base_us": 499787.404,
+   "accel_us": 485.267,
+   "base_rows": 100,
+   "accel_rows": 100,
+   "match": true
+  },
+  {
+   "args": "'MOROCCO'",
+   "base_us": 518116.3,
+   "accel_us": 500.967,
+   "base_rows": 100,
+   "accel_rows": 100,
+   "match": true
+  },
+  {
+   "args": "'IRAQ'",
+   "base_us": 522100.295,
+   "accel_us": 496.897,
+   "base_rows": 100,
+   "accel_rows": 100,
+   "match": true
+  },
+  {
+   "args": "'CHINA'",
+   "base_us": 520798.638,
+   "accel_us": 510.548,
+   "base_rows": 100,
+   "accel_rows": 100,
+   "match": true
+  },
+  {
+   "args": "'RUSSIA'",
+   "base_us": 496726.334,
+   "accel_us": 515.621,
+   "base_rows": 100,
+   "accel_rows": 100,
+   "match": true
+  },
+  {
+   "args": "'UNITED KINGDOM'",
+   "base_us": 506440.717,
+   "accel_us": 503.382,
+   "base_rows": 100,
+   "accel_rows": 100,
+   "match": true
+  }
+ ],
+ "wall_s": 132.6,
+ "query": 21,
+ "system": "cpp",
+ "rep": 3,
+ "seed": 632608729,
+ "note": "",
+ "counts_cover_all_draws": true
+}

@@ -1,0 +1,88 @@
+{
+ "mode": "read",
+ "accel": "tpch:20",
+ "function": "accel_tpch_q20_aux",
+ "store": "cpp",
+ "build_ms": 19015.6,
+ "state_mb": 1598.92,
+ "rss_mb_settled_after": 4030.13,
+ "rss_mb_settled_freed": 2431.21,
+ "rss_mb_peak_build": 9333.34,
+ "speedup_geomean": 133.9271580950253,
+ "mismatches": 0,
+ "hits": 0,
+ "fallbacks": 0,
+ "cases": [
+  {
+   "args": "DATE '1996-01-01', 'pink%', 'ALGERIA'",
+   "base_us": 396491.495,
+   "accel_us": 2929.11,
+   "base_rows": 3508,
+   "accel_rows": 3508,
+   "match": true
+  },
+  {
+   "args": "DATE '1996-01-01', 'turquoise%', 'JORDAN'",
+   "base_us": 399865.726,
+   "accel_us": 2946.62,
+   "base_rows": 3454,
+   "accel_rows": 3454,
+   "match": true
+  },
+  {
+   "args": "DATE '1993-01-01', 'royal%', 'MOROCCO'",
+   "base_us": 384170.917,
+   "accel_us": 2899.089,
+   "base_rows": 3685,
+   "accel_rows": 3685,
+   "match": true
+  },
+  {
+   "args": "DATE '1995-01-01', 'misty%', 'JAPAN'",
+   "base_us": 396057.946,
+   "accel_us": 2862.946,
+   "base_rows": 3511,
+   "accel_rows": 3511,
+   "match": true
+  },
+  {
+   "args": "DATE '1995-01-01', 'chartreuse%', 'RUSSIA'",
+   "base_us": 390177.198,
+   "accel_us": 2955.011,
+   "base_rows": 3543,
+   "accel_rows": 3543,
+   "match": true
+  },
+  {
+   "args": "DATE '1996-01-01', 'snow%', 'UNITED STATES'",
+   "base_us": 377479.897,
+   "accel_us": 2923.955,
+   "base_rows": 3564,
+   "accel_rows": 3564,
+   "match": true
+  },
+  {
+   "args": "DATE '1997-01-01', 'floral%', 'ALGERIA'",
+   "base_us": 390101.477,
+   "accel_us": 2954.311,
+   "base_rows": 3547,
+   "accel_rows": 3547,
+   "match": true
+  },
+  {
+   "args": "DATE '1995-01-01', 'slate%', 'EGYPT'",
+   "base_us": 394441.541,
+   "accel_us": 2888.534,
+   "base_rows": 3574,
+   "accel_rows": 3574,
+   "match": true
+  }
+ ],
+ "wall_s": 114.0,
+ "query": 20,
+ "system": "cpp",
+ "rep": 1,
+ "seed": 632608727,
+ "note": "",
+ "counts_cover_all_draws": true
+}

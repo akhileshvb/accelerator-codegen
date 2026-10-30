@@ -1,0 +1,88 @@
+{
+ "mode": "read",
+ "accel": "tpch:17",
+ "function": "accel_tpch_q17_aux",
+ "store": "cpp",
+ "build_ms": 53289.6,
+ "state_mb": 2318.18,
+ "rss_mb_settled_after": 3099.64,
+ "rss_mb_settled_freed": 781.469,
+ "rss_mb_peak_build": 16950.9,
+ "speedup_geomean": 3651.341548222809,
+ "mismatches": 0,
+ "hits": 0,
+ "fallbacks": 0,
+ "cases": [
+  {
+   "args": "'Brand#44', 'SM BOX'",
+   "base_us": 1611268.016,
+   "accel_us": 437.248,
+   "base_rows": 1,
+   "accel_rows": 1,
+   "match": true
+  },
+  {
+   "args": "'Brand#35', 'SM JAR'",
+   "base_us": 1600219.824,
+   "accel_us": 431.733,
+   "base_rows": 1,
+   "accel_rows": 1,
+   "match": true
+  },
+  {
+   "args": "'Brand#32', 'WRAP BOX'",
+   "base_us": 1578886.424,
+   "accel_us": 424.201,
+   "base_rows": 1,
+   "accel_rows": 1,
+   "match": true
+  },
+  {
+   "args": "'Brand#23', 'WRAP DRUM'",
+   "base_us": 1599897.261,
+   "accel_us": 446.575,
+   "base_rows": 1,
+   "accel_rows": 1,
+   "match": true
+  },
+  {
+   "args": "'Brand#11', 'SM DRUM'",
+   "base_us": 1605251.634,
+   "accel_us": 435.704,
+   "base_rows": 1,
+   "accel_rows": 1,
+   "match": true
+  },
+  {
+   "args": "'Brand#44', 'LG BOX'",
+   "base_us": 1651532.483,
+   "accel_us": 474.104,
+   "base_rows": 1,
+   "accel_rows": 1,
+   "match": true
+  },
+  {
+   "args": "'Brand#21', 'LG BOX'",
+   "base_us": 1640184.223,
+   "accel_us": 439.623,
+   "base_rows": 1,
+   "accel_rows": 1,
+   "match": true
+  },
+  {
+   "args": "'Brand#35', 'LG BOX'",
+   "base_us": 1602111.113,
+   "accel_us": 442.213,
+   "base_rows": 1,
+   "accel_rows": 1,
+   "match": true
+  }
+ ],
+ "wall_s": 445.9,
+ "query": 17,
+ "system": "cpp",
+ "rep": 3,
+ "seed": 632608729,
+ "note": "",
+ "counts_cover_all_draws": true
+}

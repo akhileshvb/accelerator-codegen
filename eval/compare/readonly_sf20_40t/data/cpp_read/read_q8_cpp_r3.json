@@ -1,0 +1,88 @@
+{
+ "mode": "read",
+ "accel": "tpch:8",
+ "function": "accel_tpch_q8_aux",
+ "store": "cpp",
+ "build_ms": 5911.55,
+ "state_mb": 338.754,
+ "rss_mb_settled_after": 1754.55,
+ "rss_mb_settled_freed": 1415.8,
+ "rss_mb_peak_build": 4120.48,
+ "speedup_geomean": 426.07368678032265,
+ "mismatches": 0,
+ "hits": 0,
+ "fallbacks": 0,
+ "cases": [
+  {
+   "args": "'KENYA', 'AFRICA', 'SMALL BRUSHED NICKEL'",
+   "base_us": 181130.152,
+   "accel_us": 432.843,
+   "base_rows": 2,
+   "accel_rows": 2,
+   "match": true
+  },
+  {
+   "args": "'UNITED KINGDOM', 'EUROPE', 'PROMO PLATED BRASS'",
+   "base_us": 175527.197,
+   "accel_us": 421.583,
+   "base_rows": 2,
+   "accel_rows": 2,
+   "match": true
+  },
+  {
+   "args": "'UNITED STATES', 'AMERICA', 'ECONOMY BRUSHED STEEL'",
+   "base_us": 178129.673,
+   "accel_us": 414.802,
+   "base_rows": 2,
+   "accel_rows": 2,
+   "match": true
+  },
+  {
+   "args": "'ARGENTINA', 'AMERICA', 'SMALL ANODIZED STEEL'",
+   "base_us": 178690.563,
+   "accel_us": 414.011,
+   "base_rows": 2,
+   "accel_rows": 2,
+   "match": true
+  },
+  {
+   "args": "'UNITED STATES', 'AMERICA', 'ECONOMY BURNISHED COPPER'",
+   "base_us": 181361.031,
+   "accel_us": 418.214,
+   "base_rows": 2,
+   "accel_rows": 2,
+   "match": true
+  },
+  {
+   "args": "'ROMANIA', 'EUROPE', 'LARGE BURNISHED TIN'",
+   "base_us": 178799.473,
+   "accel_us": 417.32,
+   "base_rows": 2,
+   "accel_rows": 2,
+   "match": true
+  },
+  {
+   "args": "'ARGENTINA', 'AMERICA', 'STANDARD BRUSHED NICKEL'",
+   "base_us": 181767.659,
+   "accel_us": 424.378,
+   "base_rows": 2,
+   "accel_rows": 2,
+   "match": true
+  },
+  {
+   "args": "'IRAQ', 'MIDDLE EAST', 'ECONOMY BRUSHED TIN'",
+   "base_us": 176250.308,
+   "accel_us": 417.028,
+   "base_rows": 2,
+   "accel_rows": 2,
+   "match": true
+  }
+ ],
+ "wall_s": 48.9,
+ "query": 8,
+ "system": "cpp",
+ "rep": 3,
+ "seed": 632608729,
+ "note": "",
+ "counts_cover_all_draws": true
+}

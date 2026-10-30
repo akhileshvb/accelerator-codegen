@@ -1,0 +1,88 @@
+{
+ "mode": "read",
+ "accel": "tpch:20",
+ "function": "accel_tpch_q20_aux",
+ "store": "cpp",
+ "build_ms": 19015.6,
+ "state_mb": 1598.92,
+ "rss_mb_settled_after": 4030.13,
+ "rss_mb_settled_freed": 2431.21,
+ "rss_mb_peak_build": 9333.34,
+ "speedup_geomean": 133.24795986082165,
+ "mismatches": 0,
+ "hits": 0,
+ "fallbacks": 0,
+ "cases": [
+  {
+   "args": "DATE '1993-01-01', 'puff%', 'ARGENTINA'",
+   "base_us": 388549.899,
+   "accel_us": 2808.794,
+   "base_rows": 3575,
+   "accel_rows": 3575,
+   "match": true
+  },
+  {
+   "args": "DATE '1994-01-01', 'saddle%', 'CANADA'",
+   "base_us": 380816.901,
+   "accel_us": 2923.958,
+   "base_rows": 3662,
+   "accel_rows": 3662,
+   "match": true
+  },
+  {
+   "args": "DATE '1996-01-01', 'royal%', 'MOROCCO'",
+   "base_us": 385115.304,
+   "accel_us": 3043.38,
+   "base_rows": 3692,
+   "accel_rows": 3692,
+   "match": true
+  },
+  {
+   "args": "DATE '1997-01-01', 'salmon%', 'VIETNAM'",
+   "base_us": 384059.172,
+   "accel_us": 2958.109,
+   "base_rows": 3549,
+   "accel_rows": 3549,
+   "match": true
+  },
+  {
+   "args": "DATE '1994-01-01', 'sienna%', 'INDONESIA'",
+   "base_us": 391868.687,
+   "accel_us": 2868.46,
+   "base_rows": 3608,
+   "accel_rows": 3608,
+   "match": true
+  },
+  {
+   "args": "DATE '1996-01-01', 'deep%', 'ALGERIA'",
+   "base_us": 395417.928,
+   "accel_us": 2884.563,
+   "base_rows": 3481,
+   "accel_rows": 3481,
+   "match": true
+  },
+  {
+   "args": "DATE '1995-01-01', 'lime%', 'IRAN'",
+   "base_us": 396403.633,
+   "accel_us": 2929.348,
+   "base_rows": 3628,
+   "accel_rows": 3628,
+   "match": true
+  },
+  {
+   "args": "DATE '1994-01-01', 'cornsilk%', 'ALGERIA'",
+   "base_us": 376525.563,
+   "accel_us": 2842.073,
+   "base_rows": 3568,
+   "accel_rows": 3568,
+   "match": true
+  }
+ ],
+ "wall_s": 114.0,
+ "query": 20,
+ "system": "cpp",
+ "rep": 2,
+ "seed": 632608728,
+ "note": "",
+ "counts_cover_all_draws": true
+}

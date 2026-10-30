@@ -1,0 +1,88 @@
+{
+ "mode": "read",
+ "accel": "tpch:7",
+ "function": "accel_tpch_q7_aux",
+ "store": "cpp",
+ "build_ms": 4117.1,
+ "state_mb": 669.812,
+ "rss_mb_settled_after": 1578.49,
+ "rss_mb_settled_freed": 908.68,
+ "rss_mb_peak_build": 3711.75,
+ "speedup_geomean": 263.67312148499525,
+ "mismatches": 0,
+ "hits": 0,
+ "fallbacks": 0,
+ "cases": [
+  {
+   "args": "'INDIA', 'JAPAN'",
+   "base_us": 126569.586,
+   "accel_us": 489.246,
+   "base_rows": 4,
+   "accel_rows": 4,
+   "match": true
+  },
+  {
+   "args": "'MOROCCO', 'CANADA'",
+   "base_us": 128912.095,
+   "accel_us": 504.178,
+   "base_rows": 4,
+   "accel_rows": 4,
+   "match": true
+  },
+  {
+   "args": "'GERMANY', 'CANADA'",
+   "base_us": 133667.058,
+   "accel_us": 500.582,
+   "base_rows": 4,
+   "accel_rows": 4,
+   "match": true
+  },
+  {
+   "args": "'UNITED KINGDOM', 'INDONESIA'",
+   "base_us": 136870.912,
+   "accel_us": 494.884,
+   "base_rows": 4,
+   "accel_rows": 4,
+   "match": true
+  },
+  {
+   "args": "'MOROCCO', 'VIETNAM'",
+   "base_us": 130525.746,
+   "accel_us": 499.618,
+   "base_rows": 4,
+   "accel_rows": 4,
+   "match": true
+  },
+  {
+   "args": "'JORDAN', 'GERMANY'",
+   "base_us": 125870.366,
+   "accel_us": 496.772,
+   "base_rows": 4,
+   "accel_rows": 4,
+   "match": true
+  },
+  {
+   "args": "'EGYPT', 'ALGERIA'",
+   "base_us": 128980.428,
+   "accel_us": 483.615,
+   "base_rows": 4,
+   "accel_rows": 4,
+   "match": true
+  },
+  {
+   "args": "'VIETNAM', 'INDONESIA'",
+   "base_us": 134505.821,
+   "accel_us": 496.514,
+   "base_rows": 4,
+   "accel_rows": 4,
+   "match": true
+  }
+ ],
+ "wall_s": 36.8,
+ "query": 7,
+ "system": "cpp",
+ "rep": 1,
+ "seed": 632608727,
+ "note": "",
+ "counts_cover_all_draws": true
+}

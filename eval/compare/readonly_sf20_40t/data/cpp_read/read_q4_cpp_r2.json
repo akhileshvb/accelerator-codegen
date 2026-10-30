@@ -1,0 +1,88 @@
+{
+ "mode": "read",
+ "accel": "tpch:4",
+ "function": "accel_tpch_q4_aux",
+ "store": "cpp",
+ "build_ms": 3659.85,
+ "state_mb": 902.312,
+ "rss_mb_settled_after": 1523.73,
+ "rss_mb_settled_freed": 621.418,
+ "rss_mb_peak_build": 2782.36,
+ "speedup_geomean": 357.8261146251351,
+ "mismatches": 0,
+ "hits": 0,
+ "fallbacks": 0,
+ "cases": [
+  {
+   "args": "DATE '1994-10-01'",
+   "base_us": 189715.48,
+   "accel_us": 529.451,
+   "base_rows": 5,
+   "accel_rows": 5,
+   "match": true
+  },
+  {
+   "args": "DATE '1995-03-01'",
+   "base_us": 194084.723,
+   "accel_us": 551.332,
+   "base_rows": 5,
+   "accel_rows": 5,
+   "match": true
+  },
+  {
+   "args": "DATE '1996-11-01'",
+   "base_us": 190690.49,
+   "accel_us": 536.256,
+   "base_rows": 5,
+   "accel_rows": 5,
+   "match": true
+  },
+  {
+   "args": "DATE '1993-11-01'",
+   "base_us": 191244.735,
+   "accel_us": 531.415,
+   "base_rows": 5,
+   "accel_rows": 5,
+   "match": true
+  },
+  {
+   "args": "DATE '1996-04-01'",
+   "base_us": 195505.589,
+   "accel_us": 545.151,
+   "base_rows": 5,
+   "accel_rows": 5,
+   "match": true
+  },
+  {
+   "args": "DATE '1996-10-01'",
+   "base_us": 193539.359,
+   "accel_us": 545.826,
+   "base_rows": 5,
+   "accel_rows": 5,
+   "match": true
+  },
+  {
+   "args": "DATE '1994-11-01'",
+   "base_us": 192248.295,
+   "accel_us": 536.18,
+   "base_rows": 5,
+   "accel_rows": 5,
+   "match": true
+  },
+  {
+   "args": "DATE '1995-01-01'",
+   "base_us": 192894.494,
+   "accel_us": 528.227,
+   "base_rows": 5,
+   "accel_rows": 5,
+   "match": true
+  }
+ ],
+ "wall_s": 50.4,
+ "query": 4,
+ "system": "cpp",
+ "rep": 2,
+ "seed": 632608728,
+ "note": "",
+ "counts_cover_all_draws": true
+}

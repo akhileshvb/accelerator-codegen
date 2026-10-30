@@ -1,0 +1,88 @@
+{
+ "mode": "read",
+ "accel": "tpch:16",
+ "function": "accel_tpch_q16_aux",
+ "store": "cpp",
+ "build_ms": 4120.43,
+ "state_mb": 260.559,
+ "rss_mb_settled_after": 965.672,
+ "rss_mb_settled_freed": 705.113,
+ "rss_mb_peak_build": 1672.13,
+ "speedup_geomean": 45.984145654320365,
+ "mismatches": 0,
+ "hits": 0,
+ "fallbacks": 0,
+ "cases": [
+  {
+   "args": "'Brand#22', 'PROMO ANODIZED%', 22, 50, 32, 2, 7, 5, 27, 39",
+   "base_us": 195776.52,
+   "accel_us": 4238.485,
+   "base_rows": 27840,
+   "accel_rows": 27840,
+   "match": true
+  },
+  {
+   "args": "'Brand#42', 'MEDIUM PLATED%', 44, 9, 14, 33, 6, 28, 50, 49",
+   "base_us": 198875.692,
+   "accel_us": 4318.052,
+   "base_rows": 27840,
+   "accel_rows": 27840,
+   "match": true
+  },
+  {
+   "args": "'Brand#11', 'LARGE BURNISHED%', 37, 41, 42, 35, 49, 31, 33, 23",
+   "base_us": 197294.65,
+   "accel_us": 4339.492,
+   "base_rows": 27840,
+   "accel_rows": 27840,
+   "match": true
+  },
+  {
+   "args": "'Brand#35', 'SMALL ANODIZED%', 5, 7, 47, 15, 27, 33, 36, 30",
+   "base_us": 194211.198,
+   "accel_us": 4236.342,
+   "base_rows": 27840,
+   "accel_rows": 27840,
+   "match": true
+  },
+  {
+   "args": "'Brand#42', 'ECONOMY BRUSHED%', 12, 4, 42, 15, 38, 3, 45, 47",
+   "base_us": 190131.779,
+   "accel_us": 4222.215,
+   "base_rows": 27840,
+   "accel_rows": 27840,
+   "match": true
+  },
+  {
+   "args": "'Brand#53', 'SMALL BRUSHED%', 29, 24, 33, 22, 41, 17, 13, 12",
+   "base_us": 196802.007,
+   "accel_us": 4201.08,
+   "base_rows": 27840,
+   "accel_rows": 27840,
+   "match": true
+  },
+  {
+   "args": "'Brand#35', 'PROMO BRUSHED%', 4, 7, 42, 31, 11, 32, 46, 43",
+   "base_us": 195096.559,
+   "accel_us": 4167.227,
+   "base_rows": 27840,
+   "accel_rows": 27840,
+   "match": true
+  },
+  {
+   "args": "'Brand#31', 'STANDARD BRUSHED%', 31, 35, 14, 37, 21, 16, 13, 17",
+   "base_us": 190765.556,
+   "accel_us": 4178.533,
+   "base_rows": 27840,
+   "accel_rows": 27840,
+   "match": true
+  }
+ ],
+ "wall_s": 57.5,
+ "query": 16,
+ "system": "cpp",
+ "rep": 4,
+ "seed": 632608730,
+ "note": "",
+ "counts_cover_all_draws": true
+}

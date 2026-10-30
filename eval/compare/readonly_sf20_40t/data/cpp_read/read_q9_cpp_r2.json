@@ -1,0 +1,88 @@
+{
+ "mode": "read",
+ "accel": "tpch:9",
+ "function": "accel_tpch_q9_aux",
+ "store": "cpp",
+ "build_ms": 19107.7,
+ "state_mb": 4369.59,
+ "rss_mb_settled_after": 5160.26,
+ "rss_mb_settled_freed": 790.672,
+ "rss_mb_peak_build": 12453.3,
+ "speedup_geomean": 1683.7887047173333,
+ "mismatches": 0,
+ "hits": 0,
+ "fallbacks": 0,
+ "cases": [
+  {
+   "args": "'ivory'",
+   "base_us": 910595.126,
+   "accel_us": 558.704,
+   "base_rows": 175,
+   "accel_rows": 175,
+   "match": true
+  },
+  {
+   "args": "'almond'",
+   "base_us": 909608.977,
+   "accel_us": 560.499,
+   "base_rows": 175,
+   "accel_rows": 175,
+   "match": true
+  },
+  {
+   "args": "'gainsboro'",
+   "base_us": 910558.229,
+   "accel_us": 521.623,
+   "base_rows": 175,
+   "accel_rows": 175,
+   "match": true
+  },
+  {
+   "args": "'salmon'",
+   "base_us": 914755.134,
+   "accel_us": 536.452,
+   "base_rows": 175,
+   "accel_rows": 175,
+   "match": true
+  },
+  {
+   "args": "'rosy'",
+   "base_us": 907384.773,
+   "accel_us": 547.546,
+   "base_rows": 175,
+   "accel_rows": 175,
+   "match": true
+  },
+  {
+   "args": "'steel'",
+   "base_us": 908886.148,
+   "accel_us": 548.401,
+   "base_rows": 175,
+   "accel_rows": 175,
+   "match": true
+  },
+  {
+   "args": "'deep'",
+   "base_us": 914525.244,
+   "accel_us": 525.817,
+   "base_rows": 175,
+   "accel_rows": 175,
+   "match": true
+  },
+  {
+   "args": "'coral'",
+   "base_us": 907995.5,
+   "accel_us": 528.536,
+   "base_rows": 175,
+   "accel_rows": 175,
+   "match": true
+  }
+ ],
+ "wall_s": 241.9,
+ "query": 9,
+ "system": "cpp",
+ "rep": 2,
+ "seed": 632608728,
+ "note": "",
+ "counts_cover_all_draws": true
+}

@@ -1,0 +1,88 @@
+{
+ "mode": "read",
+ "accel": "tpch:20",
+ "function": "accel_tpch_q20_aux",
+ "store": "cpp",
+ "build_ms": 19015.6,
+ "state_mb": 1598.92,
+ "rss_mb_settled_after": 4030.13,
+ "rss_mb_settled_freed": 2431.21,
+ "rss_mb_peak_build": 9333.34,
+ "speedup_geomean": 132.86301945677465,
+ "mismatches": 0,
+ "hits": 240,
+ "fallbacks": 0,
+ "cases": [
+  {
+   "args": "DATE '1994-01-01', 'aquamarine%', 'CHINA'",
+   "base_us": 390443.801,
+   "accel_us": 2907.225,
+   "base_rows": 3566,
+   "accel_rows": 3566,
+   "match": true
+  },
+  {
+   "args": "DATE '1993-01-01', 'salmon%', 'JORDAN'",
+   "base_us": 378419.289,
+   "accel_us": 2744.042,
+   "base_rows": 3483,
+   "accel_rows": 3483,
+   "match": true
+  },
+  {
+   "args": "DATE '1995-01-01', 'drab%', 'IRAN'",
+   "base_us": 379338.199,
+   "accel_us": 2961.794,
+   "base_rows": 3612,
+   "accel_rows": 3612,
+   "match": true
+  },
+  {
+   "args": "DATE '1993-01-01', 'slate%', 'ARGENTINA'",
+   "base_us": 388115.457,
+   "accel_us": 2978.642,
+   "base_rows": 3660,
+   "accel_rows": 3660,
+   "match": true
+  },
+  {
+   "args": "DATE '1994-01-01', 'papaya%', 'MOROCCO'",
+   "base_us": 388165.818,
+   "accel_us": 2964.999,
+   "base_rows": 3677,
+   "accel_rows": 3677,
+   "match": true
+  },
+  {
+   "args": "DATE '1993-01-01', 'olive%', 'MOROCCO'",
+   "base_us": 385568.247,
+   "accel_us": 2829.616,
+   "base_rows": 3524,
+   "accel_rows": 3524,
+   "match": true
+  },
+  {
+   "args": "DATE '1994-01-01', 'frosted%', 'VIETNAM'",
+   "base_us": 388713.503,
+   "accel_us": 2937.473,
+   "base_rows": 3618,
+   "accel_rows": 3618,
+   "match": true
+  },
+  {
+   "args": "DATE '1997-01-01', 'turquoise%', 'UNITED KINGDOM'",
+   "base_us": 395465.019,
+   "accel_us": 2971.489,
+   "base_rows": 3547,
+   "accel_rows": 3547,
+   "match": true
+  }
+ ],
+ "wall_s": 114.0,
+ "query": 20,
+ "system": "cpp",
+ "rep": 0,
+ "seed": 632608726,
+ "note": "",
+ "counts_cover_all_draws": true
+}

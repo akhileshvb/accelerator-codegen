@@ -1,0 +1,24 @@
+query,stateless_speedup,stateless_pg_ms,stateless_pg_config,stateless_accel_ms,stateless_other_pg_config_ms,stateless_source,stateful_speedup_median,stateful_speedup_min,stateful_speedup_max,stateful_pg_ms,stateful_accel_ms,stateful_build_s,stateful_pg_plan
+Q1,3.741,4369.4,forced 39 ref/default,1168.1,12131.6,40v40 sweep (accel_pg_sf20r),16968.7,14716.2,19538.9,4430,0.25,6.8,forced/default (40)
+Q2,13.934,4026.3,own (4 wk) ref/zero,289.0,6710.1,40v40 sweep (accel_pg_sf20r),818.5,800.4,841.3,4557,5.79,6.6,"own/zero (4,2)"
+Q3,1.859,3019.8,forced 39 ref/default,1624.8,,"re-timed after rework, same box (accel_pg_sf20, 10 params)",3256.7,2839.0,3470.3,2070,0.63,44.7,forced/zero (40)
+Q4,1.610,1100.8,forced 39 ref/zero,683.7,,"re-timed after rework, same box (accel_pg_sf20, 10 params)",7790.6,6732.8,8500.7,1073,0.14,3.7,forced/zero (40)
+Q5,1.136,1623.3,forced 39 ref/zero,1429.3,,"re-timed after rework, same box (accel_pg_sf20, 10 params)",9824.1,8571.0,10328.9,1471,0.15,5.0,forced/zero (40)
+Q6,1.173,1147.2,forced 39 ref/default,977.6,,"re-timed after rework, same box (accel_pg_sf20, 10 params)",6108.1,5070.6,6359.0,846,0.14,17.9,forced/zero (40)
+Q7,2.460,4882.3,own (8 wk) ref/default,1984.5,,"re-timed after rework, same box (accel_pg_sf20, 10 params)",5067.8,4813.8,6000.9,4234,0.87,18.3,own/zero (8)
+Q8,1.279,2913.6,forced 39 ref/zero,2277.9,,"re-timed after rework, same box (accel_pg_sf20, 10 params)",4211.2,4039.9,5168.8,1046,0.22,45.7,forced/zero (40)
+Q9,5.591,24443.7,forced 39 ref/default,4371.7,29777.9,40v40 sweep (accel_pg_sf20r),20215.5,19408.2,23497.5,25914,1.28,106.3,"forced/zero (40,40)"
+Q10,2.572,5109.7,forced 39 ref/default,1986.8,7258.7,40v40 sweep (accel_pg_sf20r),33.7,31.8,35.3,5804,170.96,14.7,forced/default (40)
+Q11,2.514,1216.7,forced 39 ref/default,484.1,1282.3,40v40 sweep (accel_pg_sf20r),16.0,14.6,17.8,1298,82.38,2.0,"forced/default (40,40)"
+Q12,1.181,1247.3,forced 39 ref/zero,1056.1,2840.8,40v40 sweep (accel_pg_sf20r),7321.5,5873.0,7502.7,1245,0.17,3.5,forced/zero (40)
+Q13,5.746,8584.0,own (6 wk) ref/zero,1494.0,10406.1,40v40 sweep (accel_pg_sf20r),28882.4,28094.6,31061.9,9703,0.32,13.9,own/zero (6)
+Q14,2.257,3057.8,own (4 wk) ref/default,1354.7,4195.4,40v40 sweep (accel_pg_sf20r),17021.3,14996.1,17473.0,3345,0.21,4.1,own/zero (4)
+Q15,1.965,3461.9,own (8 wk) ref/default,1761.4,3851.9,40v40 sweep (accel_pg_sf20r),2782.1,2637.6,2983.7,7341,2.69,8.6,"forced/default (40,40)"
+Q16,3.067,2487.4,own (7 wk) ref/default,811.0,10222.9,40v40 sweep (accel_pg_sf20r),20.8,18.8,22.7,2702,139.31,8.4,own/default (7)
+Q17,10.628,7991.8,own (4/8 wk) official/zero,751.9,8730.6,40v40 sweep (accel_pg_sf20r),174470.7,159656.6,184167.3,33541,0.20,35.0,"own/zero (8,5)"
+Q18,20.944,68333.1,own (8 wk) ref/zero,3262.6,68846.5,40v40 sweep (accel_pg_sf20r),26578.7,25744.0,31985.9,69455,2.54,82.7,"own/zero (8,6,8)"
+Q19,1.046,205.1,forced 39 ref/zero,196.1,,"re-timed after rework, same box (accel_pg_sf20, 10 params)",1730.2,1652.7,1777.3,215,0.12,1.8,forced/zero (40)
+Q20,10.396,31892.4,own (8 wk) ref/zero,3067.9,32361.6,40v40 sweep (accel_pg_sf20r),506.1,465.7,515.1,32222,65.05,32.7,"forced/zero (40,40,40)"
+Q21,3.401,8824.1,own (8 wk) ref/default,2594.5,,"re-timed after rework, same box (accel_pg_sf20, 10 params)",11190.0,9849.6,13830.8,4361,0.42,8.3,own/default (8)
+Q22,1.047,441.9,forced 39 ref/zero,421.9,,"re-timed after rework, same box (accel_pg_sf20, 10 params)",4144.0,3858.0,4455.2,872,0.21,2.4,"own/default (4,4)"
+geomean,2.931,,,,,,3258.2,,,,,,

@@ -1,0 +1,88 @@
+{
+ "mode": "read",
+ "accel": "tpch:13",
+ "function": "accel_tpch_q13_aux",
+ "store": "cpp",
+ "build_ms": 21763.5,
+ "state_mb": 2657.98,
+ "rss_mb_settled_after": 3348.45,
+ "rss_mb_settled_freed": 690.469,
+ "rss_mb_peak_build": 19853.8,
+ "speedup_geomean": 1124.6110098805882,
+ "mismatches": 0,
+ "hits": 0,
+ "fallbacks": 0,
+ "cases": [
+  {
+   "args": "'%unusual%deposits%'",
+   "base_us": 540290.879,
+   "accel_us": 482.97,
+   "base_rows": 45,
+   "accel_rows": 45,
+   "match": true
+  },
+  {
+   "args": "'%special%requests%'",
+   "base_us": 537009.499,
+   "accel_us": 472.449,
+   "base_rows": 45,
+   "accel_rows": 45,
+   "match": true
+  },
+  {
+   "args": "'%pending%packages%'",
+   "base_us": 542565.951,
+   "accel_us": 464.106,
+   "base_rows": 45,
+   "accel_rows": 45,
+   "match": true
+  },
+  {
+   "args": "'%pending%requests%'",
+   "base_us": 533019.133,
+   "accel_us": 477.512,
+   "base_rows": 45,
+   "accel_rows": 45,
+   "match": true
+  },
+  {
+   "args": "'%pending%accounts%'",
+   "base_us": 537840.368,
+   "accel_us": 485.987,
+   "base_rows": 45,
+   "accel_rows": 45,
+   "match": true
+  },
+  {
+   "args": "'%special%accounts%'",
+   "base_us": 542278.294,
+   "accel_us": 477.091,
+   "base_rows": 45,
+   "accel_rows": 45,
+   "match": true
+  },
+  {
+   "args": "'%special%deposits%'",
+   "base_us": 545269.009,
+   "accel_us": 483.918,
+   "base_rows": 44,
+   "accel_rows": 44,
+   "match": true
+  },
+  {
+   "args": "'%unusual%accounts%'",
+   "base_us": 537489.221,
+   "accel_us": 494.047,
+   "base_rows": 45,
+   "accel_rows": 45,
+   "match": true
+  }
+ ],
+ "wall_s": 153.7,
+ "query": 13,
+ "system": "cpp",
+ "rep": 1,
+ "seed": 632608727,
+ "note": "",
+ "counts_cover_all_draws": true
+}

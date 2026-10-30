@@ -1,0 +1,88 @@
+{
+ "mode": "read",
+ "accel": "tpch:8",
+ "function": "accel_tpch_q8_aux",
+ "store": "cpp",
+ "build_ms": 5911.55,
+ "state_mb": 338.754,
+ "rss_mb_settled_after": 1754.55,
+ "rss_mb_settled_freed": 1415.8,
+ "rss_mb_peak_build": 4120.48,
+ "speedup_geomean": 423.43898801553223,
+ "mismatches": 0,
+ "hits": 0,
+ "fallbacks": 0,
+ "cases": [
+  {
+   "args": "'CANADA', 'AMERICA', 'SMALL BURNISHED STEEL'",
+   "base_us": 177569.02,
+   "accel_us": 435.746,
+   "base_rows": 2,
+   "accel_rows": 2,
+   "match": true
+  },
+  {
+   "args": "'IRAQ', 'MIDDLE EAST', 'SMALL PLATED NICKEL'",
+   "base_us": 178252.046,
+   "accel_us": 408.366,
+   "base_rows": 2,
+   "accel_rows": 2,
+   "match": true
+  },
+  {
+   "args": "'IRAN', 'MIDDLE EAST', 'PROMO PLATED STEEL'",
+   "base_us": 175327.557,
+   "accel_us": 414.437,
+   "base_rows": 2,
+   "accel_rows": 2,
+   "match": true
+  },
+  {
+   "args": "'BRAZIL', 'AMERICA', 'ECONOMY ANODIZED STEEL'",
+   "base_us": 178339.131,
+   "accel_us": 422.494,
+   "base_rows": 2,
+   "accel_rows": 2,
+   "match": true
+  },
+  {
+   "args": "'INDIA', 'ASIA', 'LARGE BRUSHED NICKEL'",
+   "base_us": 173853.916,
+   "accel_us": 412.579,
+   "base_rows": 2,
+   "accel_rows": 2,
+   "match": true
+  },
+  {
+   "args": "'BRAZIL', 'AMERICA', 'LARGE PLATED TIN'",
+   "base_us": 178873.067,
+   "accel_us": 419.371,
+   "base_rows": 2,
+   "accel_rows": 2,
+   "match": true
+  },
+  {
+   "args": "'GERMANY', 'EUROPE', 'ECONOMY POLISHED COPPER'",
+   "base_us": 176655.925,
+   "accel_us": 422.05,
+   "base_rows": 2,
+   "accel_rows": 2,
+   "match": true
+  },
+  {
+   "args": "'GERMANY', 'EUROPE', 'PROMO ANODIZED COPPER'",
+   "base_us": 176578.921,
+   "accel_us": 408.26,
+   "base_rows": 2,
+   "accel_rows": 2,
+   "match": true
+  }
+ ],
+ "wall_s": 48.9,
+ "query": 8,
+ "system": "cpp",
+ "rep": 4,
+ "seed": 632608730,
+ "note": "",
+ "counts_cover_all_draws": true
+}

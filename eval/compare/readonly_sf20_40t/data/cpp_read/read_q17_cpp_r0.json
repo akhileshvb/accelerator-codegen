@@ -1,0 +1,88 @@
+{
+ "mode": "read",
+ "accel": "tpch:17",
+ "function": "accel_tpch_q17_aux",
+ "store": "cpp",
+ "build_ms": 53289.6,
+ "state_mb": 2318.18,
+ "rss_mb_settled_after": 3099.64,
+ "rss_mb_settled_freed": 781.469,
+ "rss_mb_peak_build": 16950.9,
+ "speedup_geomean": 3604.679091574065,
+ "mismatches": 0,
+ "hits": 240,
+ "fallbacks": 0,
+ "cases": [
+  {
+   "args": "'Brand#15', 'JUMBO BAG'",
+   "base_us": 1628392.747,
+   "accel_us": 438.211,
+   "base_rows": 1,
+   "accel_rows": 1,
+   "match": true
+  },
+  {
+   "args": "'Brand#22', 'MED PKG'",
+   "base_us": 1625612.991,
+   "accel_us": 434.73,
+   "base_rows": 1,
+   "accel_rows": 1,
+   "match": true
+  },
+  {
+   "args": "'Brand#22', 'SM DRUM'",
+   "base_us": 1606623.669,
+   "accel_us": 441.951,
+   "base_rows": 1,
+   "accel_rows": 1,
+   "match": true
+  },
+  {
+   "args": "'Brand#53', 'JUMBO BAG'",
+   "base_us": 1616097.314,
+   "accel_us": 442.21,
+   "base_rows": 1,
+   "accel_rows": 1,
+   "match": true
+  },
+  {
+   "args": "'Brand#24', 'SM PACK'",
+   "base_us": 1625560.569,
+   "accel_us": 429.277,
+   "base_rows": 1,
+   "accel_rows": 1,
+   "match": true
+  },
+  {
+   "args": "'Brand#21', 'WRAP CASE'",
+   "base_us": 1646843.461,
+   "accel_us": 482.08,
+   "base_rows": 1,
+   "accel_rows": 1,
+   "match": true
+  },
+  {
+   "args": "'Brand#11', 'WRAP JAR'",
+   "base_us": 1659444.648,
+   "accel_us": 506.177,
+   "base_rows": 1,
+   "accel_rows": 1,
+   "match": true
+  },
+  {
+   "args": "'Brand#53', 'SM PACK'",
+   "base_us": 1607136.176,
+   "accel_us": 441.399,
+   "base_rows": 1,
+   "accel_rows": 1,
+   "match": true
+  }
+ ],
+ "wall_s": 445.9,
+ "query": 17,
+ "system": "cpp",
+ "rep": 0,
+ "seed": 632608726,
+ "note": "",
+ "counts_cover_all_draws": true
+}
