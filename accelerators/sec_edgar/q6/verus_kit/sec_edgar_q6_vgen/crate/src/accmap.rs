@@ -22,6 +22,7 @@ pub struct AccEnt {
     pub plabel: Option<Vec<u8>>,
     pub cnt: Wide,
     pub sum: Wide,
+    pub abs: Wide,
 }
 
 impl AccEnt {
@@ -56,6 +57,15 @@ pub open spec fn acc_c(a: Index<AccEnt>, k: GK) -> int {
 
 pub open spec fn acc_s(a: Index<AccEnt>, k: GK) -> int {
     match a.at(fkey(k)) { Some(e) => e.sum@, None => 0 }
+}
+
+pub open spec fn acc_a(a: Index<AccEnt>, k: GK) -> int {
+    match a.at(fkey(k)) { Some(e) => e.abs@, None => 0 }
+}
+
+/// The sum stream (sel false) or the sum of absolute values (sel true).
+pub open spec fn acc_v(a: Index<AccEnt>, k: GK, sel: bool) -> int {
+    if sel { acc_a(a, k) } else { acc_s(a, k) }
 }
 
 pub fn copy_bytes(b: &[u8]) -> (r: Vec<u8>)
@@ -98,7 +108,7 @@ pub fn fkey_of(fy: i64, stmt: &[u8], uom: &[u8], name: &Option<Vec<u8>>, tag: &[
 }
 
 /// Adds (dc, ds) to the group's entry.
-pub fn acc_add(acc: &mut Index<AccEnt>, fy: i64, stmt: &[u8], uom: &[u8], name: &Option<Vec<u8>>, tag: &[u8], plabel: &Option<Vec<u8>>, dc: &Wide, ds: &Wide)
+pub fn acc_add(acc: &mut Index<AccEnt>, fy: i64, stmt: &[u8], uom: &[u8], name: &Option<Vec<u8>>, tag: &[u8], plabel: &Option<Vec<u8>>, dc: &Wide, ds: &Wide, da: &Wide)
     requires acc_ok(*old(acc)),
     ensures
         acc_ok(*final(acc)),
@@ -108,27 +118,29 @@ pub fn acc_add(acc: &mut Index<AccEnt>, fy: i64, stmt: &[u8], uom: &[u8], name: 
                 acc_c(*final(acc), k2) == acc_c(*old(acc), k2) + if k2 == k { dc@ } else { 0 }
             &&& forall|k2: GK| #![trigger acc_s(*final(acc), k2)]
                 acc_s(*final(acc), k2) == acc_s(*old(acc), k2) + if k2 == k { ds@ } else { 0 }
+            &&& forall|k2: GK| #![trigger acc_a(*final(acc), k2)]
+                acc_a(*final(acc), k2) == acc_a(*old(acc), k2) + if k2 == k { da@ } else { 0 }
         }),
 {
     let ghost k = GK { fy: fy as int, stmt: stmt@, uom: uom@, name: ov(*name), tag: tag@, plabel: ov(*plabel) };
     let key = fkey_of(fy, stmt, uom, name, tag, plabel);
     let ghost old_acc = *acc;
-    let (cnt, sum) = match acc.get(&key) {
-        Some(e) => (e.cnt.add(dc), e.sum.add(ds)),
-        None => (dc.dup(), ds.dup()),
+    let (cnt, sum, abs) = match acc.get(&key) {
+        Some(e) => (e.cnt.add(dc), e.sum.add(ds), e.abs.add(da)),
+        None => (dc.dup(), ds.dup(), da.dup()),
     };
     proof {
-        assert(cnt@ == acc_c(old_acc, k) + dc@ && sum@ == acc_s(old_acc, k) + ds@);
+        assert(cnt@ == acc_c(old_acc, k) + dc@ && sum@ == acc_s(old_acc, k) + ds@ && abs@ == acc_a(old_acc, k) + da@);
     }
-    let ghost (cv, sv) = (cnt@, sum@);
-    let ent = AccEnt { fy, stmt: copy_bytes(stmt), uom: copy_bytes(uom), name: copy_opt(name), tag: copy_bytes(tag), plabel: copy_opt(plabel), cnt, sum };
+    let ghost (cv, sv, av) = (cnt@, sum@, abs@);
+    let ent = AccEnt { fy, stmt: copy_bytes(stmt), uom: copy_bytes(uom), name: copy_opt(name), tag: copy_bytes(tag), plabel: copy_opt(plabel), cnt, sum, abs };
     proof { assert(ent.gk() == k); }
     let ghost kv = key.view();
     acc.put(key, Arc::new(ent));
     proof {
         assert(kv == fkey(k));
         assert(acc.at(fkey(k)) is Some);
-        assert(acc.at(fkey(k))->0.cnt@ == cv && acc.at(fkey(k))->0.sum@ == sv);
+        assert(acc.at(fkey(k))->0.cnt@ == cv && acc.at(fkey(k))->0.sum@ == sv && acc.at(fkey(k))->0.abs@ == av);
         assert forall|kv2: KeyView| #![trigger acc.at(kv2)] acc.at(kv2) is Some implies kv2 == fkey(acc.at(kv2)->0.gk()) by {
             if kv2 != fkey(k) { assert(acc.at(kv2) == old_acc.at(kv2)); }
             else { assert(acc.at(kv2)->0.gk() == k); }
@@ -142,6 +154,13 @@ pub fn acc_add(acc: &mut Index<AccEnt>, fy: i64, stmt: &[u8], uom: &[u8], name: 
         }
         assert forall|k2: GK| #![trigger acc_s(*acc, k2)]
             acc_s(*acc, k2) == acc_s(old_acc, k2) + if k2 == k { ds@ } else { 0 } by {
+            if k2 != k {
+                if fkey(k2) == fkey(k) { lemma_fkey_inj(k2, k); }
+                assert(acc.at(fkey(k2)) == old_acc.at(fkey(k2)));
+            }
+        }
+        assert forall|k2: GK| #![trigger acc_a(*acc, k2)]
+            acc_a(*acc, k2) == acc_a(old_acc, k2) + if k2 == k { da@ } else { 0 } by {
             if k2 != k {
                 if fkey(k2) == fkey(k) { lemma_fkey_inj(k2, k); }
                 assert(acc.at(fkey(k2)) == old_acc.at(fkey(k2)));

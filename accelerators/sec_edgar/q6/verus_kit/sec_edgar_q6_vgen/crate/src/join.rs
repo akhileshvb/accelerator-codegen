@@ -48,8 +48,8 @@ pub fn emit_one(tab: &Pow2Tab, acc: &mut Index<AccEnt>, n: &NumRt, s: &SubRt, p:
         acc_ok(*final(acc)),
         forall|k: GK| #![trigger acc_c(*final(acc), k)]
             acc_c(*final(acc), k) == acc_c(*old(acc), k) + w * icnt(k)(num_rt_view(*n), sub_rt_view(*s), pre_rt_view(*p)),
-        forall|k: GK| #![trigger acc_s(*final(acc), k)]
-            acc_s(*final(acc), k) == acc_s(*old(acc), k) + w * ival(k)(num_rt_view(*n), sub_rt_view(*s), pre_rt_view(*p)),
+        forall|k: GK, sel: bool| #![trigger acc_v(*final(acc), k, sel)]
+            acc_v(*final(acc), k, sel) == acc_v(*old(acc), k, sel) + w * iv(k, sel)(num_rt_view(*n), sub_rt_view(*s), pre_rt_view(*p)),
 {
     let ghost (nv, sv, pv) = (num_rt_view(*n), sub_rt_view(*s), pre_rt_view(*p));
     if s.fy__null != 0 || p.stmt__null != 0 {
@@ -60,10 +60,10 @@ pub fn emit_one(tab: &Pow2Tab, acc: &mut Index<AccEnt>, n: &NumRt, s: &SubRt, p:
                 assert(icnt(k)(nv, sv, pv) == 0);
                 assert(w * 0 == 0);
             }
-            assert forall|k: GK| #![trigger acc_s(*acc, k)]
-                acc_s(*acc, k) == acc_s(*old(acc), k) + w * ival(k)(nv, sv, pv) by {
+            assert forall|k: GK, sel: bool| #![trigger acc_v(*acc, k, sel)]
+                acc_v(*acc, k, sel) == acc_v(*old(acc), k, sel) + w * iv(k, sel)(nv, sv, pv) by {
                 assert(!jk(nv, sv, pv));
-                assert(ival(k)(nv, sv, pv) == 0);
+                assert(iv(k, sel)(nv, sv, pv) == 0);
                 assert(w * 0 == 0);
             }
         }
@@ -71,67 +71,55 @@ pub fn emit_one(tab: &Pow2Tab, acc: &mut Index<AccEnt>, n: &NumRt, s: &SubRt, p:
     }
     let dc = Wide::from_i128(w as i128);
     let wv = wide_of_bits(tab, n.value);
+    let av = if wv.is_neg() { wv.neg() } else { wv.dup() };
+    let da = if w == 1 { av } else { av.neg() };
     let ds = if w == 1 { wv } else { wv.neg() };
     let name: Option<Vec<u8>> = if s.name__null != 0 { None } else { Some(copy_bytes(s.name.as_slice())) };
     let plabel: Option<Vec<u8>> = if p.plabel__null != 0 { None } else { Some(copy_bytes(p.plabel.as_slice())) };
-    acc_add(acc, s.fy, p.stmt.as_slice(), n.uom.as_slice(), &name, n.tag.as_slice(), &plabel, &dc, &ds);
+    acc_add(acc, s.fy, p.stmt.as_slice(), n.uom.as_slice(), &name, n.tag.as_slice(), &plabel, &dc, &ds, &da);
     proof {
         assert(jk(nv, sv, pv));
         let key = GK { fy: s.fy as int, stmt: p.stmt@, uom: n.uom@, name: ov(name), tag: n.tag@, plabel: ov(plabel) };
         assert(key == key_of(nv, sv, pv));
         assert(ds@ == w * f64_val(n.value));
+        assert(da@ == w * abs(f64_val(n.value)));
         assert forall|k: GK| #![trigger acc_c(*acc, k)]
             acc_c(*acc, k) == acc_c(*old(acc), k) + w * icnt(k)(nv, sv, pv) by {
             if k == key { assert(icnt(k)(nv, sv, pv) == 1); } else { assert(icnt(k)(nv, sv, pv) == 0); }
         }
-        assert forall|k: GK| #![trigger acc_s(*acc, k)]
-            acc_s(*acc, k) == acc_s(*old(acc), k) + w * ival(k)(nv, sv, pv) by {
+        assert forall|k: GK, sel: bool| #![trigger acc_v(*acc, k, sel)]
+            acc_v(*acc, k, sel) == acc_v(*old(acc), k, sel) + w * iv(k, sel)(nv, sv, pv) by {
             if k == key {
-                assert(ival(k)(nv, sv, pv) == nv.value->0);
-                assert(acc_s(*acc, key) == acc_s(*old(acc), key) + ds@);
+                assert(iv(k, sel)(nv, sv, pv) == if sel { abs(nv.value->0) } else { nv.value->0 });
+                assert(acc_v(*acc, key, sel) == acc_v(*old(acc), key, sel) + if sel { da@ } else { ds@ });
                 assert(nv.value->0 == f64_val(n.value));
-                assert(ds@ == w * nv.value->0);
-            } else { assert(ival(k)(nv, sv, pv) == 0); }
+                assert(ds@ == w * nv.value->0 && da@ == w * abs(nv.value->0));
+            } else { assert(iv(k, sel)(nv, sv, pv) == 0); }
         }
         assert(nv == num_rt_view(*n) && sv == sub_rt_view(*s) && pv == pre_rt_view(*p));
         assert(acc_ok(*acc));
         assert forall|k: GK| #![trigger acc_c(*acc, k)]
             acc_c(*acc, k) == acc_c(*old(acc), k) + w * icnt(k)(num_rt_view(*n), sub_rt_view(*s), pre_rt_view(*p)) by {}
-        assert forall|k: GK| #![trigger acc_s(*acc, k)]
-            acc_s(*acc, k) == acc_s(*old(acc), k) + w * ival(k)(num_rt_view(*n), sub_rt_view(*s), pre_rt_view(*p)) by {}
+        assert forall|k: GK, sel: bool| #![trigger acc_v(*acc, k, sel)]
+            acc_v(*acc, k, sel) == acc_v(*old(acc), k, sel) + w * iv(k, sel)(num_rt_view(*n), sub_rt_view(*s), pre_rt_view(*p)) by {}
     }
 }
 
-pub open spec fn acc_delta(base: Index<AccEnt>, cur: Index<AccEnt>, dc: spec_fn(GK) -> int, ds: spec_fn(GK) -> int) -> bool {
+pub open spec fn acc_delta(base: Index<AccEnt>, cur: Index<AccEnt>, dc: spec_fn(GK) -> int, ds: spec_fn(GK, bool) -> int) -> bool {
     &&& acc_ok(cur)
     &&& forall|k: GK| #![trigger acc_c(cur, k)] acc_c(cur, k) == acc_c(base, k) + dc(k)
-    &&& forall|k: GK| #![trigger acc_s(cur, k)] acc_s(cur, k) == acc_s(base, k) + ds(k)
+    &&& forall|k: GK, sel: bool| #![trigger acc_v(cur, k, sel)] acc_v(cur, k, sel) == acc_v(base, k, sel) + ds(k, sel)
 }
 
-pub open spec fn dsum(d1: spec_fn(GK) -> int, d2: spec_fn(GK) -> int) -> spec_fn(GK) -> int {
-    |k: GK| d1(k) + d2(k)
-}
-
-pub proof fn lemma_acc_delta_trans(a: Index<AccEnt>, b: Index<AccEnt>, c: Index<AccEnt>,
-    d1c: spec_fn(GK) -> int, d1s: spec_fn(GK) -> int, d2c: spec_fn(GK) -> int, d2s: spec_fn(GK) -> int)
-    requires acc_delta(a, b, d1c, d1s), acc_delta(b, c, d2c, d2s),
-    ensures acc_delta(a, c, dsum(d1c, d2c), dsum(d1s, d2s)),
-{}
-
-pub proof fn lemma_acc_delta_ext(a: Index<AccEnt>, b: Index<AccEnt>, dc: spec_fn(GK) -> int, ds: spec_fn(GK) -> int, ec: spec_fn(GK) -> int, es: spec_fn(GK) -> int)
-    requires acc_delta(a, b, dc, ds), forall|k: GK| #[trigger] dc(k) == ec(k), forall|k: GK| #[trigger] ds(k) == es(k),
+pub proof fn lemma_acc_delta_ext(a: Index<AccEnt>, b: Index<AccEnt>, dc: spec_fn(GK) -> int, ds: spec_fn(GK, bool) -> int, ec: spec_fn(GK) -> int, es: spec_fn(GK, bool) -> int)
+    requires acc_delta(a, b, dc, ds), forall|k: GK| #[trigger] dc(k) == ec(k), forall|k: GK, sel: bool| #[trigger] ds(k, sel) == es(k, sel),
     ensures acc_delta(a, b, ec, es),
 {}
 
-pub proof fn lemma_acc_delta_zero(a: Index<AccEnt>, dc: spec_fn(GK) -> int, ds: spec_fn(GK) -> int)
-    requires acc_ok(a), forall|k: GK| #[trigger] dc(k) == 0, forall|k: GK| #[trigger] ds(k) == 0,
+pub proof fn lemma_acc_delta_zero(a: Index<AccEnt>, dc: spec_fn(GK) -> int, ds: spec_fn(GK, bool) -> int)
+    requires acc_ok(a), forall|k: GK| #[trigger] dc(k) == 0, forall|k: GK, sel: bool| #[trigger] ds(k, sel) == 0,
     ensures acc_delta(a, a, dc, ds),
 {}
-
-/// The contribution of (n, s) rows with the pre positions qs, scaled by m.
-pub open spec fn pq(vp: Seq<(PreRow, int)>, qs: Seq<int>, n: NumRow, s: SubRow, m: int, cnt: bool) -> spec_fn(GK) -> int {
-    if cnt { |k: GK| m * bsum(vp, qs, pf(icnt(k), n, s)) } else { |k: GK| m * bsum(vp, qs, pf(ival(k), n, s)) }
-}
 
 pub proof fn lemma_pos_member<R>(l: Seq<(R, int)>, m: spec_fn(R) -> bool, i: int)
     requires 0 <= i < pos_where(l, m).len(),
@@ -155,8 +143,8 @@ pub open spec fn pq_c(vp: Seq<(PreRow, int)>, qs: Seq<int>, n: NumRow, s: SubRow
     |k: GK| m * bsum(vp, qs, pf(icnt(k), n, s))
 }
 
-pub open spec fn pq_s(vp: Seq<(PreRow, int)>, qs: Seq<int>, n: NumRow, s: SubRow, m: int) -> spec_fn(GK) -> int {
-    |k: GK| m * bsum(vp, qs, pf(ival(k), n, s))
+pub open spec fn pq_s(vp: Seq<(PreRow, int)>, qs: Seq<int>, n: NumRow, s: SubRow, m: int) -> spec_fn(GK, bool) -> int {
+    |k: GK, sel: bool| m * bsum(vp, qs, pf(iv(k, sel), n, s))
 }
 
 pub proof fn lemma_bsum_push<R>(l: Seq<(R, int)>, pos: Seq<int>, t: int, f: spec_fn(R) -> int)
@@ -223,13 +211,13 @@ pub fn emit_pre_bucket(tab: &Pow2Tab, acc: &mut Index<AccEnt>, n: &NumRt, s: &Su
                 assert(w as int == (m as int) * sg);
                 assert((m as int) * (a + sg * x) == (m as int) * a + ((m as int) * sg) * x) by (nonlinear_arith);
             }
-            assert forall|k: GK| #![trigger acc_s(*acc, k)]
-                acc_s(*acc, k) == acc_s(*old(acc), k) + pq_s(vp, ints.take(t as int + 1), nv, sv, m as int)(k) by {
-                lemma_bsum_push(vp, ints, t as int, pf(ival(k), nv, sv));
-                let a = bsum(vp, ints.take(t as int), pf(ival(k), nv, sv));
-                let x = ival(k)(nv, sv, pvq);
+            assert forall|k: GK, sel: bool| #![trigger acc_v(*acc, k, sel)]
+                acc_v(*acc, k, sel) == acc_v(*old(acc), k, sel) + pq_s(vp, ints.take(t as int + 1), nv, sv, m as int)(k, sel) by {
+                lemma_bsum_push(vp, ints, t as int, pf(iv(k, sel), nv, sv));
+                let a = bsum(vp, ints.take(t as int), pf(iv(k, sel), nv, sv));
+                let x = iv(k, sel)(nv, sv, pvq);
                 let sg = lp@[q as int].sign as int;
-                assert(acc_s(*acc, k) == acc_s(before, k) + w * x);
+                assert(acc_v(*acc, k, sel) == acc_v(before, k, sel) + w * x);
                 assert(w as int == (m as int) * sg);
                 assert((m as int) * (a + sg * x) == (m as int) * a + ((m as int) * sg) * x) by (nonlinear_arith);
             }
@@ -244,16 +232,16 @@ pub open spec fn sj_c(vs: Seq<(SubRow, int)>, vp: Seq<(PreRow, int)>, bs: Seq<in
     |k: GK| m * bsum(vs, bs, fp(vp, icnt(k), n))
 }
 
-pub open spec fn sj_s(vs: Seq<(SubRow, int)>, vp: Seq<(PreRow, int)>, bs: Seq<int>, n: NumRow, m: int) -> spec_fn(GK) -> int {
-    |k: GK| m * bsum(vs, bs, fp(vp, ival(k), n))
+pub open spec fn sj_s(vs: Seq<(SubRow, int)>, vp: Seq<(PreRow, int)>, bs: Seq<int>, n: NumRow, m: int) -> spec_fn(GK, bool) -> int {
+    |k: GK, sel: bool| m * bsum(vs, bs, fp(vp, iv(k, sel), n))
 }
 
 pub open spec fn ls_c(vs: Seq<(SubRow, int)>, vp: Seq<(PreRow, int)>, n: NumRow, m: int) -> spec_fn(GK) -> int {
     |k: GK| m * lvl_s(vs, vp, icnt(k), n)
 }
 
-pub open spec fn ls_s(vs: Seq<(SubRow, int)>, vp: Seq<(PreRow, int)>, n: NumRow, m: int) -> spec_fn(GK) -> int {
-    |k: GK| m * lvl_s(vs, vp, ival(k), n)
+pub open spec fn ls_s(vs: Seq<(SubRow, int)>, vp: Seq<(PreRow, int)>, n: NumRow, m: int) -> spec_fn(GK, bool) -> int {
+    |k: GK, sel: bool| m * lvl_s(vs, vp, iv(k, sel), n)
 }
 
 pub open spec fn sub_key(a: Seq<u8>) -> KeyView {
@@ -308,10 +296,6 @@ pub open spec fn bs_pq(b: &[usize]) -> Seq<int> {
     b@.map_values(|x: usize| x as int)
 }
 
-pub open spec fn jbase_h(k: GK, cnt: bool) -> H3 {
-    if cnt { icnt(k) } else { ival(k) }
-}
-
 /// One num row of the list against the indexed sub and pre lists.
 pub fn process_num(tab: &Pow2Tab, acc: &mut Index<AccEnt>, row: &NumRt, ls: &Vec<SubDelta>, lp: &Vec<PreDelta>,
     sidx: &Index<Bucket>, pidx: &Index<Bucket>, m: i64)
@@ -340,9 +324,9 @@ pub fn process_num(tab: &Pow2Tab, acc: &mut Index<AccEnt>, row: &NumRt, ls: &Vec
                 lemma_lvl_zero(vs, vp, icnt(k), nr);
                 assert((m as int) * 0 == 0);
             }
-            assert forall|k: GK| #[trigger] ls_s(vs, vp, nr, m as int)(k) == 0 by {
-                assert forall|s: SubRow, p: PreRow| #[trigger] ival(k)(nr, s, p) == 0 by {}
-                lemma_lvl_zero(vs, vp, ival(k), nr);
+            assert forall|k: GK, sel: bool| #[trigger] ls_s(vs, vp, nr, m as int)(k, sel) == 0 by {
+                assert forall|s: SubRow, p: PreRow| #[trigger] iv(k, sel)(nr, s, p) == 0 by {}
+                lemma_lvl_zero(vs, vp, iv(k, sel), nr);
                 assert((m as int) * 0 == 0);
             }
             lemma_acc_delta_zero(*acc, ls_c(vs, vp, nr, m as int), ls_s(vs, vp, nr, m as int));
@@ -361,19 +345,19 @@ pub fn process_num(tab: &Pow2Tab, acc: &mut Index<AccEnt>, row: &NumRt, ls: &Vec
     proof {
         assert(skey.view() == sub_key(a));
         assert(pkey.view() == pre_key3(a, t, v));
-        assert forall|k: GK, s: SubRow, p: PreRow| (icnt(k)(nr, s, p) != 0 ==> s.adsh == a && pre_bk(p) == Some(pre_key3(a, t, v)))
-            && (ival(k)(nr, s, p) != 0 ==> s.adsh == a && pre_bk(p) == Some(pre_key3(a, t, v))) by {}
+        assert forall|k: GK, sel: bool, s: SubRow, p: PreRow| (icnt(k)(nr, s, p) != 0 ==> s.adsh == a && pre_bk(p) == Some(pre_key3(a, t, v)))
+            && (iv(k, sel)(nr, s, p) != 0 ==> s.adsh == a && pre_bk(p) == Some(pre_key3(a, t, v))) by {}
         assert forall|k: GK| #![trigger lvl_s(vs, vp, icnt(k), nr)] lvl_s(vs, vp, icnt(k), nr) == bsum(vs, pos_where(vs, m_sub(sub_key(a))), fp(vp, icnt(k), nr)) by {
             lemma_lvl_bucket(vs, vp, icnt(k), nr, a, t, v);
         }
-        assert forall|k: GK| #![trigger lvl_s(vs, vp, ival(k), nr)] lvl_s(vs, vp, ival(k), nr) == bsum(vs, pos_where(vs, m_sub(sub_key(a))), fp(vp, ival(k), nr)) by {
-            lemma_lvl_bucket(vs, vp, ival(k), nr, a, t, v);
+        assert forall|k: GK, sel: bool| #![trigger lvl_s(vs, vp, iv(k, sel), nr)] lvl_s(vs, vp, iv(k, sel), nr) == bsum(vs, pos_where(vs, m_sub(sub_key(a))), fp(vp, iv(k, sel), nr)) by {
+            lemma_lvl_bucket(vs, vp, iv(k, sel), nr, a, t, v);
         }
         assert forall|k: GK, s: SubRow| #![trigger lvl_p(vp, icnt(k), nr, s)] lvl_p(vp, icnt(k), nr, s) == bsum(vp, pos_where(vp, m_pre(pre_key3(a, t, v))), pf(icnt(k), nr, s)) by {
             lemma_lvl_bucket(vs, vp, icnt(k), nr, a, t, v);
         }
-        assert forall|k: GK, s: SubRow| #![trigger lvl_p(vp, ival(k), nr, s)] lvl_p(vp, ival(k), nr, s) == bsum(vp, pos_where(vp, m_pre(pre_key3(a, t, v))), pf(ival(k), nr, s)) by {
-            lemma_lvl_bucket(vs, vp, ival(k), nr, a, t, v);
+        assert forall|k: GK, sel: bool, s: SubRow| #![trigger lvl_p(vp, iv(k, sel), nr, s)] lvl_p(vp, iv(k, sel), nr, s) == bsum(vp, pos_where(vp, m_pre(pre_key3(a, t, v))), pf(iv(k, sel), nr, s)) by {
+            lemma_lvl_bucket(vs, vp, iv(k, sel), nr, a, t, v);
         }
     }
     let sb = sidx.get(&skey);
@@ -410,9 +394,9 @@ pub fn process_num(tab: &Pow2Tab, acc: &mut Index<AccEnt>, row: &NumRt, ls: &Vec
             forall|i: int| 0 <= i < bs.len() ==> 0 <= #[trigger] bs[i] < vs.len(),
             forall|i: int| 0 <= i < bp.len() ==> 0 <= #[trigger] bp[i] < vp.len(),
             forall|k: GK| #![trigger lvl_s(vs, vp, icnt(k), nr)] lvl_s(vs, vp, icnt(k), nr) == bsum(vs, bs, fp(vp, icnt(k), nr)),
-            forall|k: GK| #![trigger lvl_s(vs, vp, ival(k), nr)] lvl_s(vs, vp, ival(k), nr) == bsum(vs, bs, fp(vp, ival(k), nr)),
+            forall|k: GK, sel: bool| #![trigger lvl_s(vs, vp, iv(k, sel), nr)] lvl_s(vs, vp, iv(k, sel), nr) == bsum(vs, bs, fp(vp, iv(k, sel), nr)),
             forall|k: GK, s: SubRow| #![trigger lvl_p(vp, icnt(k), nr, s)] lvl_p(vp, icnt(k), nr, s) == bsum(vp, bp, pf(icnt(k), nr, s)),
-            forall|k: GK, s: SubRow| #![trigger lvl_p(vp, ival(k), nr, s)] lvl_p(vp, ival(k), nr, s) == bsum(vp, bp, pf(ival(k), nr, s)),
+            forall|k: GK, sel: bool, s: SubRow| #![trigger lvl_p(vp, iv(k, sel), nr, s)] lvl_p(vp, iv(k, sel), nr, s) == bsum(vp, bp, pf(iv(k, sel), nr, s)),
             acc_delta(acc0, *acc, sj_c(vs, vp, bs.take(jj as int), nr, m as int), sj_s(vs, vp, bs.take(jj as int), nr, m as int)),
         decreases bsl.len() - jj,
     {
@@ -473,15 +457,15 @@ pub fn process_num(tab: &Pow2Tab, acc: &mut Index<AccEnt>, row: &NumRt, ls: &Vec
                 assert(fp(vp, icnt(k), nr)(sj) == lp_);
                 assert((m as int) * (a0 + sg * lp_) == (m as int) * a0 + ((m as int) * sg) * lp_) by (nonlinear_arith);
             }
-            assert forall|k: GK| #![trigger acc_s(*acc, k)]
-                acc_s(*acc, k) == acc_s(acc0, k) + sj_s(vs, vp, bs.take(jj as int + 1), nr, m as int)(k) by {
-                lemma_bsum_push(vs, bs, jj as int, fp(vp, ival(k), nr));
-                let a0 = bsum(vs, bs.take(jj as int), fp(vp, ival(k), nr));
-                let lp_ = lvl_p(vp, ival(k), nr, sj);
-                assert(pq_s(vp, bs_pq(bpl), nr, sj, m2 as int)(k) == (m2 as int) * bsum(vp, bp, pf(ival(k), nr, sj)));
-                assert(acc_s(*acc, k) == acc_s(before, k) + (m2 as int) * bsum(vp, bp, pf(ival(k), nr, sj)));
-                assert(bsum(vp, bp, pf(ival(k), nr, sj)) == lp_);
-                assert(fp(vp, ival(k), nr)(sj) == lp_);
+            assert forall|k: GK, sel: bool| #![trigger acc_v(*acc, k, sel)]
+                acc_v(*acc, k, sel) == acc_v(acc0, k, sel) + sj_s(vs, vp, bs.take(jj as int + 1), nr, m as int)(k, sel) by {
+                lemma_bsum_push(vs, bs, jj as int, fp(vp, iv(k, sel), nr));
+                let a0 = bsum(vs, bs.take(jj as int), fp(vp, iv(k, sel), nr));
+                let lp_ = lvl_p(vp, iv(k, sel), nr, sj);
+                assert(pq_s(vp, bs_pq(bpl), nr, sj, m2 as int)(k, sel) == (m2 as int) * bsum(vp, bp, pf(iv(k, sel), nr, sj)));
+                assert(acc_v(*acc, k, sel) == acc_v(before, k, sel) + (m2 as int) * bsum(vp, bp, pf(iv(k, sel), nr, sj)));
+                assert(bsum(vp, bp, pf(iv(k, sel), nr, sj)) == lp_);
+                assert(fp(vp, iv(k, sel), nr)(sj) == lp_);
                 assert((m as int) * (a0 + sg * lp_) == (m as int) * a0 + ((m as int) * sg) * lp_) by (nonlinear_arith);
             }
         }
@@ -489,7 +473,8 @@ pub fn process_num(tab: &Pow2Tab, acc: &mut Index<AccEnt>, row: &NumRt, ls: &Vec
     }
     proof {
         assert(bs.take(jj as int) =~= bs);
-        assert forall|k: GK| #[trigger] sj_c(vs, vp, bs, nr, m as int)(k) == ls_c(vs, vp, nr, m as int)(k) && sj_s(vs, vp, bs, nr, m as int)(k) == ls_s(vs, vp, nr, m as int)(k) by {}
+        assert forall|k: GK| #[trigger] sj_c(vs, vp, bs, nr, m as int)(k) == ls_c(vs, vp, nr, m as int)(k) by {}
+        assert forall|k: GK, sel: bool| #[trigger] sj_s(vs, vp, bs, nr, m as int)(k, sel) == ls_s(vs, vp, nr, m as int)(k, sel) by {}
         lemma_acc_delta_ext(acc0, *acc, sj_c(vs, vp, bs, nr, m as int), sj_s(vs, vp, bs, nr, m as int), ls_c(vs, vp, nr, m as int), ls_s(vs, vp, nr, m as int));
     }
 }
@@ -499,8 +484,8 @@ pub open spec fn nn_c(vn: Seq<(NumRow, int)>, vs: Seq<(SubRow, int)>, vp: Seq<(P
     |k: GK| m * wsum(vn, fs(vs, vp, icnt(k)))
 }
 
-pub open spec fn nn_s(vn: Seq<(NumRow, int)>, vs: Seq<(SubRow, int)>, vp: Seq<(PreRow, int)>, m: int) -> spec_fn(GK) -> int {
-    |k: GK| m * wsum(vn, fs(vs, vp, ival(k)))
+pub open spec fn nn_s(vn: Seq<(NumRow, int)>, vs: Seq<(SubRow, int)>, vp: Seq<(PreRow, int)>, m: int) -> spec_fn(GK, bool) -> int {
+    |k: GK, sel: bool| m * wsum(vn, fs(vs, vp, iv(k, sel)))
 }
 
 pub proof fn lemma_wsum_push<R>(l: Seq<(R, int)>, i: int, f: spec_fn(R) -> int)
@@ -569,12 +554,12 @@ pub fn join_lists(tab: &Pow2Tab, acc: &mut Index<AccEnt>, ln: &Vec<NumDelta>, ls
                 assert(fs(vs, vp, icnt(k))(nr) == x);
                 assert((mult as int) * (a0 + sg * x) == (mult as int) * a0 + ((mult as int) * sg) * x) by (nonlinear_arith);
             }
-            assert forall|k: GK| #![trigger acc_s(*acc, k)]
-                acc_s(*acc, k) == acc_s(acc0, k) + nn_s(vn.take(i as int + 1), vs, vp, mult as int)(k) by {
-                lemma_wsum_push(vn, i as int, fs(vs, vp, ival(k)));
-                let a0 = wsum(vn.take(i as int), fs(vs, vp, ival(k)));
-                let x = lvl_s(vs, vp, ival(k), nr);
-                assert(fs(vs, vp, ival(k))(nr) == x);
+            assert forall|k: GK, sel: bool| #![trigger acc_v(*acc, k, sel)]
+                acc_v(*acc, k, sel) == acc_v(acc0, k, sel) + nn_s(vn.take(i as int + 1), vs, vp, mult as int)(k, sel) by {
+                lemma_wsum_push(vn, i as int, fs(vs, vp, iv(k, sel)));
+                let a0 = wsum(vn.take(i as int), fs(vs, vp, iv(k, sel)));
+                let x = lvl_s(vs, vp, iv(k, sel), nr);
+                assert(fs(vs, vp, iv(k, sel))(nr) == x);
                 assert((mult as int) * (a0 + sg * x) == (mult as int) * a0 + ((mult as int) * sg) * x) by (nonlinear_arith);
             }
         }
@@ -630,12 +615,12 @@ pub fn join_scan(tab: &Pow2Tab, acc: &mut Index<AccEnt>, nums: &Vec<NumRt>, ls: 
                 let x = lvl_s(vs, vp, icnt(k), nr);
                 assert(fs(vs, vp, icnt(k))(nr) == x);
             }
-            assert forall|k: GK| #![trigger acc_s(*acc, k)]
-                acc_s(*acc, k) == acc_s(acc0, k) + nn_s(vn.take(i as int + 1), vs, vp, 1)(k) by {
-                lemma_wsum_push(vn, i as int, fs(vs, vp, ival(k)));
-                let a0 = wsum(vn.take(i as int), fs(vs, vp, ival(k)));
-                let x = lvl_s(vs, vp, ival(k), nr);
-                assert(fs(vs, vp, ival(k))(nr) == x);
+            assert forall|k: GK, sel: bool| #![trigger acc_v(*acc, k, sel)]
+                acc_v(*acc, k, sel) == acc_v(acc0, k, sel) + nn_s(vn.take(i as int + 1), vs, vp, 1)(k, sel) by {
+                lemma_wsum_push(vn, i as int, fs(vs, vp, iv(k, sel)));
+                let a0 = wsum(vn.take(i as int), fs(vs, vp, iv(k, sel)));
+                let x = lvl_s(vs, vp, iv(k, sel), nr);
+                assert(fs(vs, vp, iv(k, sel))(nr) == x);
             }
         }
         i += 1;

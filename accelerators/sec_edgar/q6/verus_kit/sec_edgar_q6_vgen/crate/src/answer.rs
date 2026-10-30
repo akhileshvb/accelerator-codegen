@@ -16,7 +16,7 @@ pub open spec fn row_of_group(p: Params, k: GK, v: int, cnt: int) -> OutRow {
 }
 
 /// The spec's group aggregate with weight f is the state-side sum when f agrees with it on the group's triples.
-proof fn lemma_agg(db: Db, p: Params, k: GK, f: spec_fn(Tuple) -> int, hk: H3)
+pub proof fn lemma_agg(db: Db, p: Params, k: GK, f: spec_fn(Tuple) -> int, hk: H3)
     requires
         k_params(k) == p,
         forall|n: NumRow, s: SubRow, pp: PreRow| jk(n, s, pp) && key_of(n, s, pp) == k ==> f(Tuple { n, s_: s, p: pp }) == hk(n, s, pp),

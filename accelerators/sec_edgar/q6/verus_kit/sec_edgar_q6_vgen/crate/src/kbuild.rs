@@ -86,19 +86,21 @@ pub proof fn lemma_scan_sub_has(db: Db, subs: Seq<SubRt>, a: Seq<u8>, fy: int, n
 
 /// The empty database has no group.
 pub proof fn lemma_empty_groups(k: GK)
-    ensures cntk(empty_db(), k) == 0, sumk(empty_db(), k) == 0,
+    ensures cntk(empty_db(), k) == 0, sumk(empty_db(), k) == 0, absk(empty_db(), k) == 0,
 {
     let db0 = empty_db();
     lemma_gdb2(db0, icnt(k));
     lemma_gdb2(db0, ival(k));
+    lemma_gdb2(db0, iabs(k));
     lemma_sum_empty(db0.num, |n: NumRow| s_lvl(db0.sub, db0.pre, icnt(k), n));
     lemma_sum_empty(db0.num, |n: NumRow| s_lvl(db0.sub, db0.pre, ival(k), n));
+    lemma_sum_empty(db0.num, |n: NumRow| s_lvl(db0.sub, db0.pre, iabs(k), n));
 }
 
 /// A unit none of whose sub rows is in the database has no group.
 pub proof fn lemma_absent_unit(db: Db, k: GK)
     requires forall|s: SubRow| db.sub.contains(s) ==> !in_unit(s, k.fy, k.name),
-    ensures cntk(db, k) == 0, sumk(db, k) == 0,
+    ensures cntk(db, k) == 0, sumk(db, k) == 0, absk(db, k) == 0,
 {
     let z = |n: NumRow, s: SubRow, p: PreRow| 0int;
     assert forall|n: NumRow, s: SubRow, p: PreRow| db.num.contains(n) && db.sub.contains(s) && db.pre.contains(p) implies icnt(k)(n, s, p) == z(n, s, p) by {
@@ -107,8 +109,12 @@ pub proof fn lemma_absent_unit(db: Db, k: GK)
     assert forall|n: NumRow, s: SubRow, p: PreRow| db.num.contains(n) && db.sub.contains(s) && db.pre.contains(p) implies ival(k)(n, s, p) == z(n, s, p) by {
         assert(!in_unit(s, k.fy, k.name));
     }
+    assert forall|n: NumRow, s: SubRow, p: PreRow| db.num.contains(n) && db.sub.contains(s) && db.pre.contains(p) implies iabs(k)(n, s, p) == z(n, s, p) by {
+        assert(!in_unit(s, k.fy, k.name));
+    }
     lemma_gdb_ext_mem(db, icnt(k), z);
     lemma_gdb_ext_mem(db, ival(k), z);
+    lemma_gdb_ext_mem(db, iabs(k), z);
     lemma_gdb2(db, z);
     assert forall|n: NumRow, s: SubRow| #[trigger] p_lvl(db.pre, z, n, s) == 0 by { lemma_sum_zero(db.pre, |p: PreRow| z(n, s, p)); }
     assert forall|n: NumRow| #[trigger] s_lvl(db.sub, db.pre, z, n) == 0 by { lemma_sum_zero(db.sub, |s: SubRow| p_lvl(db.pre, z, n, s)); }

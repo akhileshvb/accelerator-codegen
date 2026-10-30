@@ -33,7 +33,7 @@ pub proof fn lemma_frame_units(db: Db, db2: Db, dn: Seq<NumDelta>, dp: Seq<PreDe
     let kall = all_keys(dn, dp, ds);
     lemma_keys_cover(dn, dp, ds);
     let (vn, vp, vs) = (num_delta_seq_view(dn), pre_delta_seq_view(dp), sub_delta_seq_view(ds));
-    assert forall|k: GK| !u_has(u, k.fy, k.name) implies cntk(db2, k) == cntk(db, k) && sumk(db2, k) == sumk(db, k) by {
+    assert forall|k: GK| !u_has(u, k.fy, k.name) implies cntk(db2, k) == cntk(db, k) && sumk(db2, k) == sumk(db, k) && absk(db2, k) == absk(db, k) by {
         assert forall|i: int| 0 <= i < vn.len() && (#[trigger] vn[i]).0.adsh is Some implies kall.contains(vn[i].0.adsh->0) by {
             assert(vn[i].0 == num_rt_view(dn[i].row));
             assert(dn[i].row.adsh__null == 0);
@@ -64,6 +64,7 @@ pub proof fn lemma_frame_units(db: Db, db2: Db, dn: Seq<NumDelta>, dp: Seq<PreDe
         }
         lemma_frame(db, db2, vn, vs, vp, kall, k, icnt(k));
         lemma_frame(db, db2, vn, vs, vp, kall, k, ival(k));
+        lemma_frame(db, db2, vn, vs, vp, kall, k, iabs(k));
     }
 }
 

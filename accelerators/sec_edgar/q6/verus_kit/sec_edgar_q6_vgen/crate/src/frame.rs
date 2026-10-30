@@ -41,7 +41,7 @@ pub proof fn lemma_unit_abs(db2: Db, keys: Seq<Seq<u8>>, rn: Seq<NumRow>, rs: Se
     requires
         restr(unit_l(rn), db2.num, cnum(keys)), restr(unit_l(rs), db2.sub, csub(keys)), restr(unit_l(rp), db2.pre, cpre(keys)),
         forall|s: SubRow| db2.sub.contains(s) && in_unit(s, k.fy, k.name) ==> keys.contains(s.adsh),
-        h == icnt(k) || h == ival(k),
+        h == icnt(k) || h == ival(k) || h == iabs(k),
     ensures
         gs(unit_l(rn), unit_l(rs), unit_l(rp), h) == gdb(db2, h),
 {
@@ -78,7 +78,7 @@ pub proof fn lemma_frame(db: Db, db2: Db, dn: Seq<(NumRow, int)>, ds: Seq<(SubRo
         forall|i: int| 0 <= i < ds.len() ==> keys.contains((#[trigger] ds[i]).0.adsh),
         forall|i: int| 0 <= i < dp.len() && (#[trigger] dp[i]).0.adsh is Some ==> keys.contains(dp[i].0.adsh->0),
         forall|s: SubRow| (db.sub.contains(s) || db2.sub.contains(s)) && in_unit(s, k.fy, k.name) ==> !keys.contains(s.adsh),
-        h == icnt(k) || h == ival(k),
+        h == icnt(k) || h == ival(k) || h == iabs(k),
     ensures
         gdb(db2, h) == gdb(db, h),
 {
