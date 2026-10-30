@@ -407,7 +407,6 @@ void ApplyPhaseLimits(runtime::ThreadBudget &threads) {
           runtime->Pump();
         }
       }
-      bool again = host.EndDeferredCommits(); // a member waited for the commit that just ended
       if ((arrived || lost) && epoch && !again) {
         if (exact_versions) {
           shared::PublishCatchingUp(index, !all_synced());
