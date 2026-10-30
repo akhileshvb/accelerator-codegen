@@ -37,7 +37,7 @@ pub fn core_update(cls0: &Index<ClassRec>, u: &Index<UnitRef>, ct: &Index<ClassR
     requires
         cls_ok(db, *cls0), plan_ok(*cls0, *u, *ct, *w, *cw), cset_ok(*tc), frame_ok(db, db2, *u),
         tab.ok(), rep_db(db2), acc_ok(*acc),
-        forall|k: GK| #![trigger acc_c(*acc, k)] u_has(*w, k.fy, k.name) ==> acc_c(*acc, k) == cntk(db2, k) && acc_s(*acc, k) == sumk(db2, k),
+        forall|k: GK| #![trigger acc_c(*acc, k)] u_has(*w, k.fy, k.name) ==> acc_c(*acc, k) == cntk(db2, k) && acc_s(*acc, k) == sumk(db2, k) && acc_a(*acc, k) == absk(db2, k),
     ensures cls_ok(db2, t),
 {
     let (mut t, kept) = evict_all(cls0, cw, ct, u, w);

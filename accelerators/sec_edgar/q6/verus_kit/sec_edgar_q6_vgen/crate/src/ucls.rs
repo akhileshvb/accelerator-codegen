@@ -76,7 +76,7 @@ pub proof fn lemma_unit_cls(db: Db, cls: Index<ClassRec>, uc: Index<ClsSet>)
             assert(ukey(k.fy, k.name) == (c.fy as int, nk.1));
         } else if c.hp.at(nk) is Some {
             assert(has_cand(db, c, nk, true));
-            let k = choose|k: GK| #![trigger cntk(db, k)] cntk(db, k) > 0 && in_class(c, k) && nkey_v(k.name) == nk && sumk(db, k) > max_val();
+            let k = choose|k: GK| #![trigger cntk(db, k)] cntk(db, k) > 0 && in_class(c, k) && nkey_v(k.name) == nk && bad_g(sumk(db, k), absk(db, k));
             assert(okey(k.fy, k.stmt, k.uom) == ok);
             assert(ukey(k.fy, k.name) == (c.fy as int, nk.1));
         } else {

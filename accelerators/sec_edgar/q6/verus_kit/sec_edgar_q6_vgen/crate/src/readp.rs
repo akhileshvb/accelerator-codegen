@@ -16,6 +16,7 @@ use crate::accmap::*;
 use crate::f64bits::*;
 use crate::grp::*;
 use crate::inv::*;
+use crate::engine::*;
 use crate::ordx::*;
 use crate::sortx::*;
 use crate::cands::*;
@@ -118,7 +119,7 @@ pub open spec fn rest_row(db: Db, p: Params, c: ClassRec, k: GK) -> OutRow {
 pub proof fn lemma_rest_row(db: Db, p: Params, c: ClassRec, k: GK)
     requires
         crec_struct(c), crec_sem(db, c), cls_key(c) == okey(p.p1, p.p2, p.p3),
-        is_cand(db, p, k), covered_in(c, k, sumk(db, k), cntk(db, k)), !r_has(c, k),
+        is_cand(db, p, k), covered_in(c, k, sumk(db, k), cntk(db, k), absk(db, k)), !r_has(c, k), !unsafe_a(absk(db, k)),
     ensures
         row_ok(db, p, rest_row(db, p, c, k)),
         crow(rest_row(db, p, c, k)),
@@ -222,6 +223,7 @@ proof fn lemma_rest_keys(c: ClassRec, kl: Seq<GK>) -> (rk: Seq<GK>)
 /// A listing that holds every group once, in order, with admissible rows, is a full answer.
 pub proof fn lemma_full_from(db: Db, p: Params, full: Seq<OutRow>)
     requires
+        eng_safe(db, p),
         forall|i: int| 0 <= i < full.len() ==> row_ok(db, p, #[trigger] full[i]),
         rows_sorted(full), rows_distinct(full),
         forall|k: GK| is_cand(db, p, k) ==> exists|i: int| 0 <= i < full.len() && (#[trigger] full[i]).name == k.name
@@ -271,13 +273,13 @@ pub open spec fn rest_rows(db: Db, p: Params, c: ClassRec, rk: Seq<GK>) -> Seq<O
 /// The classes of the state cover every group; none is above the double range when hp is empty.
 proof fn lemma_cover_all(db: Db, cls: Index<ClassRec>, p: Params, c: ClassRec)
     requires cls_ok(db, cls), cls.at(okey(p.p1, p.p2, p.p3)) == Some(c), c.hp.entries().len() == 0,
-    ensures forall|k: GK| is_cand(db, p, k) ==> covered_in(c, k, sumk(db, k), cntk(db, k)) && sumk(db, k) <= max_val(),
+    ensures forall|k: GK| is_cand(db, p, k) ==> covered_in(c, k, sumk(db, k), cntk(db, k), absk(db, k)) && sumk(db, k) <= max_val() && !unsafe_a(absk(db, k)),
 {
     let ok = okey(p.p1, p.p2, p.p3);
-    assert forall|k: GK| is_cand(db, p, k) implies covered_in(c, k, sumk(db, k), cntk(db, k)) && sumk(db, k) <= max_val() by {
+    assert forall|k: GK| is_cand(db, p, k) implies covered_in(c, k, sumk(db, k), cntk(db, k), absk(db, k)) && sumk(db, k) <= max_val() && !unsafe_a(absk(db, k)) by {
         assert(okey(k.fy, k.stmt, k.uom) == ok);
         assert(covered(db, cls, k));
-        if sumk(db, k) > max_val() { lemma_nonempty(c.hp, nkey_v(k.name)); }
+        if bad_g(sumk(db, k), absk(db, k)) { lemma_nonempty(c.hp, nkey_v(k.name)); }
     }
 }
 
@@ -288,7 +290,7 @@ proof fn lemma_rest_ok(db: Db, p: Params, c: ClassRec, kl: Seq<GK>, rk: Seq<GK>)
         no_dups(rk),
         forall|i: int| 0 <= i < rk.len() ==> kl.contains(#[trigger] rk[i]) && !r_has(c, rk[i]),
         forall|i: int| 0 <= i < kl.len() ==> is_cand(db, p, #[trigger] kl[i]),
-        forall|k: GK| is_cand(db, p, k) ==> covered_in(c, k, sumk(db, k), cntk(db, k)) && sumk(db, k) <= max_val(),
+        forall|k: GK| is_cand(db, p, k) ==> covered_in(c, k, sumk(db, k), cntk(db, k), absk(db, k)) && sumk(db, k) <= max_val() && !unsafe_a(absk(db, k)),
     ensures
         all_crow(rest_rows(db, p, c, rk)),
         forall|i: int| 0 <= i < rk.len() ==> row_ok(db, p, #[trigger] rest_rows(db, p, c, rk)[i]),
@@ -314,7 +316,7 @@ proof fn lemma_assemble(db: Db, p: Params, c: ClassRec, kl: Seq<GK>, rk: Seq<GK>
         no_dups(rk),
         forall|i: int| 0 <= i < rk.len() ==> kl.contains(#[trigger] rk[i]) && !r_has(c, rk[i]),
         forall|i: int| 0 <= i < kl.len() ==> is_cand(db, p, #[trigger] kl[i]),
-        forall|k: GK| is_cand(db, p, k) ==> covered_in(c, k, sumk(db, k), cntk(db, k)) && sumk(db, k) <= max_val(),
+        forall|k: GK| is_cand(db, p, k) ==> covered_in(c, k, sumk(db, k), cntk(db, k), absk(db, k)) && sumk(db, k) <= max_val() && !unsafe_a(absk(db, k)),
         rows_sorted(t), rows_distinct(t),
         forall|i: int| 0 <= i < t.len() ==> rest_rows(db, p, c, rk).contains(#[trigger] t[i]),
     ensures
@@ -389,6 +391,7 @@ pub proof fn lemma_read_full(db: Db, cls: Index<ClassRec>, p: Params, c: ClassRe
     let kl = lemma_cand_list(db, p);
     let rk = lemma_rest_keys(c, kl);
     lemma_cover_all(db, cls, p, c);
+    lemma_safe_all(db, p);
     lemma_rest_ok(db, p, c, kl, rk);
     let rest = rest_rows(db, p, c, rk);
     let t = lemma_sort_rows(rest);
@@ -451,7 +454,7 @@ proof fn lemma_rest_below(db: Db, cls: Index<ClassRec>, p: Params, c: ClassRec, 
         let q = choose|q: int| 0 <= q < kl.len() && kl[q] == k;
         assert(is_cand(db, p, k));
         if sumk(db, k) >= -max_val() {
-            assert(covered_in(c, k, sumk(db, k), cntk(db, k)));
+            assert(covered_in(c, k, sumk(db, k), cntk(db, k), absk(db, k)));
             assert(c.fb.at(nkey_v(k.name)) is Some);
             let g = c.fb.at(nkey_v(k.name))->0;
             assert(c.f.at(rkey(g)) == c.fb.at(nkey_v(k.name)));
@@ -524,6 +527,7 @@ pub proof fn lemma_read_none(db: Db, cls: Index<ClassRec>, p: Params)
         assert(okey(k.fy, k.stmt, k.uom) == okey(p.p1, p.p2, p.p3));
         assert(covered(db, cls, k));
     }
+    lemma_safe_all(db, p);
     lemma_full_from(db, p, full);
     assert(limit_rows(full, 200) =~= Seq::<OutRow>::empty());
 }
@@ -536,13 +540,26 @@ pub proof fn lemma_read_unfit_p(db: Db, cls: Index<ClassRec>, p: Params, c: Clas
     let ok = okey(p.p1, p.p2, p.p3);
     assert(ok == cls_key(c) && crec_struct(c) && crec_sem(db, c));
     lemma_okey_inj(c.fy as int, c.stmt@, c.uom@, p.p1, p.p2, p.p3);
+    let nk = lemma_some_entry(c.hp);
+    assert(has_cand(db, c, nk, true));
+    let k0 = choose|k: GK| #![trigger cntk(db, k)] cntk(db, k) > 0 && in_class(c, k) && nkey_v(k.name) == nk && bad_g(sumk(db, k), absk(db, k));
+    assert(k_params(k0) == p);
+    assert(is_cand(db, p, k0));
+    if unsafe_a(absk(db, k0)) {
+        lemma_unsafe_undefined(db, p, k0);
+        return;
+    }
+    assert(sumk(db, k0) > max_val());
+    lemma_over_range(db, p, k0);
+    assert(eng_safe(db, p));
+    assert forall|k: GK| is_cand(db, p, k) implies !unsafe_a(absk(db, k)) by { lemma_safe_each(db, p, k); }
     let es = c.r.entries();
     let rr = r_rows(p.p2, es);
     c.r.model();
     lemma_r_rows(db, p, c);
     let kl = lemma_cand_list(db, p);
     let rk = lemma_rest_keys(c, kl);
-    assert forall|k: GK| is_cand(db, p, k) implies covered_in(c, k, sumk(db, k), cntk(db, k)) by {
+    assert forall|k: GK| is_cand(db, p, k) implies covered_in(c, k, sumk(db, k), cntk(db, k), absk(db, k)) by {
         assert(okey(k.fy, k.stmt, k.uom) == ok);
         assert(covered(db, cls, k));
     }
@@ -607,11 +624,6 @@ pub proof fn lemma_read_unfit_p(db: Db, cls: Index<ClassRec>, p: Params, c: Clas
     }
     lemma_full_from(db, p, t);
     // the group above the range
-    let nk = lemma_some_entry(c.hp);
-    assert(has_cand(db, c, nk, true));
-    let k0 = choose|k: GK| #![trigger cntk(db, k)] cntk(db, k) > 0 && in_class(c, k) && nkey_v(k.name) == nk && sumk(db, k) > max_val();
-    assert(k_params(k0) == p);
-    assert(is_cand(db, p, k0));
     assert(kl.contains(k0));
     if r_has(c, k0) {
         let i = lemma_r_has_entry(c, k0);

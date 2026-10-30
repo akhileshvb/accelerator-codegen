@@ -200,7 +200,7 @@ pub fn apply(
     proof {
         let (rn, rs, rp) = (num_rt_seq_view(nums_by_filing_rows@), sub_rt_seq_view(subs_by_filing_rows@), pre_rt_seq_view(pres_by_filing_rows@));
         assert(sub_delta_seq_view(ls@) == unit_l(rs) && pre_delta_seq_view(lp@) == unit_l(rp));
-        assert forall|k: GK| u_has(plan.w, k.fy, k.name) implies #[trigger] acc_c(acc, k) == cntk(db2, k) && acc_s(acc, k) == sumk(db2, k) by {
+        assert forall|k: GK| u_has(plan.w, k.fy, k.name) implies #[trigger] acc_c(acc, k) == cntk(db2, k) && acc_s(acc, k) == sumk(db2, k) && acc_a(acc, k) == absk(db2, k) by {
             assert forall|s2: SubRow| db2.sub.contains(s2) && in_unit(s2, k.fy, k.name) implies keys.contains(s2.adsh) by {
                 let q = choose|q: int| 0 <= q < db2.sub.len() && db2.sub[q] == s2;
                 assert(sub_has(db2, s2.adsh, k.fy, k.name));
@@ -208,8 +208,12 @@ pub fn apply(
             }
             lemma_unit_abs(db2, keys, rn, rs, rp, k, icnt(k));
             lemma_unit_abs(db2, keys, rn, rs, rp, k, ival(k));
+            lemma_unit_abs(db2, keys, rn, rs, rp, k, iabs(k));
             assert(acc_c(acc, k) == acc_c(acc0, k) + nn_c(unit_l(rn), unit_l(rs), unit_l(rp), 1)(k));
-            assert(acc_s(acc, k) == acc_s(acc0, k) + nn_s(unit_l(rn), unit_l(rs), unit_l(rp), 1)(k));
+            assert(acc_v(acc, k, false) == acc_v(acc0, k, false) + nn_s(unit_l(rn), unit_l(rs), unit_l(rp), 1)(k, false));
+            assert(acc_s(acc, k) == acc_s(acc0, k) + nn_s(unit_l(rn), unit_l(rs), unit_l(rp), 1)(k, false));
+            assert(acc_v(acc, k, true) == acc_v(acc0, k, true) + nn_s(unit_l(rn), unit_l(rs), unit_l(rp), 1)(k, true));
+            assert(acc_a(acc, k) == acc_a(acc0, k) + nn_s(unit_l(rn), unit_l(rs), unit_l(rp), 1)(k, true));
         }
     }
     let uc2 = uc_update(&s.uc, &plan.u, &acc);
@@ -290,7 +294,7 @@ pub fn build(
             assert(subset_u(u, u));
             assert forall|ok: KeyView| ct.at(ok) is Some implies cw.at(ok) is Some by { assert(cls0.at(ok) is Some); }
         }
-        assert forall|k: GK| !u_has(u, k.fy, k.name) implies cntk(db, k) == cntk(db0, k) && sumk(db, k) == sumk(db0, k) by {
+        assert forall|k: GK| !u_has(u, k.fy, k.name) implies cntk(db, k) == cntk(db0, k) && sumk(db, k) == sumk(db0, k) && absk(db, k) == absk(db0, k) by {
             assert forall|s2: SubRow| db.sub.contains(s2) implies !in_unit(s2, k.fy, k.name) by {
                 if in_unit(s2, k.fy, k.name) {
                     let q = choose|q: int| 0 <= q < db.sub.len() && db.sub[q] == s2;
@@ -304,12 +308,16 @@ pub fn build(
             lemma_empty_groups(k);
         }
         assert(frame_ok(db0, db, u));
-        assert forall|k: GK| u_has(u, k.fy, k.name) implies #[trigger] acc_c(acc, k) == cntk(db, k) && acc_s(acc, k) == sumk(db, k) by {
+        assert forall|k: GK| u_has(u, k.fy, k.name) implies #[trigger] acc_c(acc, k) == cntk(db, k) && acc_s(acc, k) == sumk(db, k) && acc_a(acc, k) == absk(db, k) by {
             lemma_diag_k(k);
             lemma_build_identity(db, nums@, subs_v, pres_v, icnt(k));
             lemma_build_identity(db, nums@, subs_v, pres_v, ival(k));
+            lemma_build_identity(db, nums@, subs_v, pres_v, iabs(k));
             assert(acc_c(acc, k) == acc_c(acc0, k) + nn_c(unit_l(num_rt_seq_view(nums@)), sub_delta_seq_view(ls@), pre_delta_seq_view(lp@), 1)(k));
-            assert(acc_s(acc, k) == acc_s(acc0, k) + nn_s(unit_l(num_rt_seq_view(nums@)), sub_delta_seq_view(ls@), pre_delta_seq_view(lp@), 1)(k));
+            assert(acc_v(acc, k, false) == acc_v(acc0, k, false) + nn_s(unit_l(num_rt_seq_view(nums@)), sub_delta_seq_view(ls@), pre_delta_seq_view(lp@), 1)(k, false));
+            assert(acc_s(acc, k) == acc_s(acc0, k) + nn_s(unit_l(num_rt_seq_view(nums@)), sub_delta_seq_view(ls@), pre_delta_seq_view(lp@), 1)(k, false));
+            assert(acc_v(acc, k, true) == acc_v(acc0, k, true) + nn_s(unit_l(num_rt_seq_view(nums@)), sub_delta_seq_view(ls@), pre_delta_seq_view(lp@), 1)(k, true));
+            assert(acc_a(acc, k) == acc_a(acc0, k) + nn_s(unit_l(num_rt_seq_view(nums@)), sub_delta_seq_view(ls@), pre_delta_seq_view(lp@), 1)(k, true));
         }
     }
     let uc0: Index<ClsSet> = Index::new();
