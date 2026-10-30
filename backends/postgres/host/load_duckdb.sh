@@ -17,7 +17,7 @@ psql_in() { docker exec -i -e PGOPTIONS="-c client_min_messages=warning" "${NAME
 
 psql_in -c 'DROP SCHEMA public CASCADE; CREATE SCHEMA public'
 "${DUCKDB_CLI}" -readonly "${DB_FILE}" -noheader -list -c "SELECT sql FROM duckdb_tables() ORDER BY table_name" |
-  sed -E 's/\bVARCHAR([,)])/VARCHAR(1)\1/g' | sed -E -f "${HERE}/schema_to_pg.sed" | psql_in -f -
+  sed -E 's/\bVARCHAR(( PRIMARY KEY)?[,)])/VARCHAR(1)\1/g' | sed -E -f "${HERE}/schema_to_pg.sed" | psql_in -f -
 for table in $("${DUCKDB_CLI}" -readonly "${DB_FILE}" -noheader -list -c "SELECT table_name FROM duckdb_tables()"); do
   "${DUCKDB_CLI}" -readonly "${DB_FILE}" -c "COPY \"${table}\" TO '${SCRATCH}/${table}.csv' (FORMAT csv, DELIMITER '|', HEADER false)"
   psql_in -c "COPY \"${table}\" FROM STDIN WITH (FORMAT csv, DELIMITER '|', NULL '')" <"${SCRATCH}/${table}.csv"
