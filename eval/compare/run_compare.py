@@ -36,11 +36,14 @@ the C++ Q18 accelerator keeps LIMIT 100 and the C++ Q21 accelerator drops it, so
 their answers are compared as sets and may report a row-count mismatch.
 
   python3 eval/compare/run_compare.py read --queries "1 3 6" --sets 4
+  python3 eval/compare/run_compare.py read --workload sec_edgar --db <sec_edgar_sf3.duckdb> --systems cpp --queries "1 2 3 4 6 24"
   python3 eval/compare/run_compare.py refresh --queries "1 3" --sf 20 --pairs 2
   python3 eval/compare/run_compare.py concurrent --readers 8 --seconds 60 --wps 5
   python3 eval/compare/run_compare.py multi --readers 8 --seconds 120 --wps 5
   python3 eval/compare/run_compare.py tpch --streams 3 --runs 3 --systems "cpp verus"
   python3 eval/compare/run_compare.py summary <out_dir>
+read also runs the SEC-EDGAR accelerators (--workload sec_edgar, systems cpp and verus): parameters from
+eval/bench/sec_edgar/params, baseline text from eval/compare/sec_edgar_params.py.
 Env defaults: DB=<repo>/../accelerator-codegen-duckdb/tpch_sf20.duckdb  WORK=/flash1/akhilvb/tpch/work (each run works on a copy of DB in WORK)
 """
 import argparse
@@ -52,6 +55,8 @@ import subprocess
 import sys
 import time
 
+import sec_edgar_params
+
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 HERE = os.path.join(ROOT, "eval", "compare")
 # verus: the one Verus world store for every accelerator; verus_kit: the same
@@ -62,7 +67,9 @@ SYSTEMS = {"cpp": {}, "verus": {"ACCEL_AUX_STORE": "verus_global"}, "verus_kit":
 # stateless: the query's stateless kernel (accel_tpch_qN, no maintained state); concurrent and multi modes
 
 
-def params(sets, seed, sf=20):
+def params(sets, seed, sf=20, workload="tpch", queries=()):
+    if workload == "sec_edgar":
+        return {str(q): sec_edgar_params.draw(q, sets, seed) for q in queries}
     out = subprocess.run([sys.executable, os.path.join(HERE, "gen_tpch_params.py"), str(sets), str(seed), str(sf)],
                          check=True, capture_output=True, text=True).stdout
     return json.loads(out)["queries"]
@@ -73,7 +80,8 @@ def draws(a):
     --seed or a fresh random one, recorded in <out>/seeds.json.  Within a repetition every system
     gets the same draw (paired); across repetitions the draws differ."""
     base = a.seed if a.seed is not None else int.from_bytes(os.urandom(4), "little")
-    out = [(k, base + k, params(a.sets, base + k, a.sf)) for k in range(a.repeats)]
+    workload, queries = getattr(a, "workload", "tpch"), getattr(a, "queries", ())
+    out = [(k, base + k, params(a.sets, base + k, a.sf, workload, queries)) for k in range(a.repeats)]
     os.makedirs(a.out, exist_ok=True)
     with open(os.path.join(a.out, "seeds.json"), "w") as f:
         json.dump({"base_seed": base, "repeats": a.repeats, "sets": a.sets, "sf": a.sf,
@@ -91,14 +99,14 @@ def cases_file(work, q, system, spec, rep=0):
     return path
 
 
-def env_for(system, q, sf=20):
+def env_for(system, q, sf=20, workload="tpch"):
     """The environment of a process for one query's accelerator: its store, and the cost model calibrated at this
     scale (config[/verus]/q<N>_aux_cost_model_sf<SF>.json) when there is one, else the runtime's default."""
     env = dict(os.environ)
     env.pop("ACCEL_AUX_STORE", None)
     env.update(SYSTEMS.get(system, {}))
     env["ACCEL_AUX_DIAG"] = "0"  # no per-read diagnostics sampling
-    model = os.path.join(ROOT, "accelerators", "tpch", f"q{q}", "config", *(["verus"] if system.startswith("verus") else []),
+    model = os.path.join(ROOT, "accelerators", workload, f"q{q}", "config", *(["verus"] if system.startswith("verus") else []),
                          f"q{q}_aux_cost_model_sf{sf:g}.json")
     if os.path.exists(model):
         env["ACCELERATOR_CODEGEN_DUCKDB_AUX_COST_MODEL"] = model
@@ -145,10 +153,10 @@ def drop(path):
             os.remove(p)
 
 
-def ids(q, system, sql_dir=None):
+def ids(q, system, sql_dir=None, workload="tpch"):
     """The accelerator and the baseline of query q; the baseline is its Verus kit's text, or sql_dir/q<N>.sql."""
-    base = os.path.join(sql_dir, f"q{q}.sql") if sql_dir else f"tpch_q{q}_vgen"
-    return (f"tpch:{q}" if system in ("cpp", "stateless") else f"tpch_q{q}_vgen"), base
+    base = os.path.join(sql_dir, f"q{q}.sql") if sql_dir else f"{workload}_q{q}_vgen"
+    return (f"{workload}:{q}" if system in ("cpp", "stateless") else f"{workload}_q{q}_vgen"), base
 
 
 def cmd_read(a):
@@ -157,9 +165,12 @@ def cmd_read(a):
     one record per repetition, with its own geomean speedup, under read_q<N>_<system>_r<k>.json."""
     log = os.path.join(a.out, "read.log")
     reps = draws(a)
+    sql_dir = a.baseline_sql_dir
+    if a.workload == "sec_edgar":  # the baseline text is generated from the parameter specs
+        sql_dir = sec_edgar_params.write_baselines(os.path.join(a.work, "sec_edgar_baseline"), a.queries)
     for q in a.queries:
         for system in a.systems:
-            accel, base = ids(q, system, a.baseline_sql_dir)
+            accel, base = ids(q, system, sql_dir, a.workload)
             path = os.path.join(a.work, f"cases_q{q}_{system}_all.tsv")
             spans = []  # (rep, seed, first case, number of cases)
             with open(path, "w") as f:
@@ -171,7 +182,7 @@ def cmd_read(a):
             # reads do not write; one copy per run keeps the WAL and catalog untouched
             db = fresh_copy(a.db, a.work, f"cmp_read_q{q}_{system}.duckdb") if a.copy else a.db
             print(f"read q{q} {system} ({len(reps)} draws) {time.strftime('%T')}", flush=True)
-            r = run([a.bin, "read", db, accel, base, path, str(a.reps)], env_for(system, q, a.sf), log, a.timeout)
+            r = run([a.bin, "read", db, accel, base, path, str(a.reps)], env_for(system, q, a.sf, a.workload), log, a.timeout)
             if a.copy:
                 drop(db)
             for k, seed, first, n in spans:
@@ -717,6 +728,8 @@ def main():
     t.add_argument("--no-check", dest="check", action="store_false",
                    help="do not compare the power test's accelerator answers with DuckDB's (untimed)")
     t.set_defaults(timeout=12 * 3600)
+    sub.choices["read"].add_argument("--workload", choices=("tpch", "sec_edgar"), default="tpch",
+                                     help="sec_edgar: --db is the SEC-EDGAR database; --baseline-sql-dir is ignored")
     s = sub.add_parser("summary")
     s.add_argument("out")
     a = ap.parse_args()

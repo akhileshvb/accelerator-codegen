@@ -2,7 +2,7 @@
 # Runs inside the instance container: build the extension (+ requested targets) and
 # install it into the server's libdir. Mounts: /accel-src (repo), /accel-duckdb (DuckDB
 # source, ro), /accel-build (ACCEL_BUILD_DIR). Env: ACCEL_PG_TARGETS, ACCEL_BUILD_JOBS,
-# ACCEL_VERUS_LIB_DIR (the Verus kit libraries, relative to the repo), ACCEL_HOST_UID/GID (owner of /accel-build), ACCEL_DUCKDB_SEED (prebuilt DuckDB, optional).
+# ACCEL_VERUS_LIB_DIR (the Verus kit libraries, relative to the repo), ACCEL_HOST_UID/GID (owner of /accel-build), ACCEL_DUCKDB_SEED (prebuilt DuckDB, optional), ACCEL_CMAKE_EXTRA (more cmake options).
 set -euo pipefail
 
 JOBS="${ACCEL_BUILD_JOBS:-$(nproc)}"
@@ -42,7 +42,8 @@ cmake /accel-src -G Ninja -DCMAKE_BUILD_TYPE=Release \
   -DACCEL_CALIBRATE_AT_BUILD=OFF \
   ${ACCEL_VERUS_LIB_DIR:+-DACCEL_VERUS_LIB_DIR=/accel-src/${ACCEL_VERUS_LIB_DIR}} \
   -DPG_CONFIG="${PG_CONFIG}" \
-  -DACCEL_PG_BINDIR="$(pg_config --bindir)"
+  -DACCEL_PG_BINDIR="$(pg_config --bindir)" \
+  ${ACCEL_CMAKE_EXTRA:-}
 
 ninja accelerator_codegen accelerator_codegen_pg -j"${JOBS}"
 
