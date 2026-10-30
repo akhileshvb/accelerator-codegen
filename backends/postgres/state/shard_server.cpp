@@ -8,6 +8,7 @@
 
 #include <pthread.h>
 
+#include "backends/postgres/api/verus_host.hpp"
 #include "backends/postgres/state/shared.hpp"
 #include "substrate/aux/core/aux_execute_stats.hpp"
 
@@ -240,11 +241,16 @@ void ShardServer::Serve(const std::string &message) {
           response.cause = stopping ? "worker_stopping" : "declined";
         }
       }
+    } catch (const HostOffMainThread &) { // a kit's decline, answered from SQL by the reader's backend
+      response = ReadResponse{};
+      response.cause = core::TakeLastAuxFallbackCause();
+      if (response.cause.empty())
+        response.cause = "declined";
     } catch (const std::exception &e) {
       segment.stats.errors++;
       segment.SetText(ShardSegment::kLastError, e.what());
       response = ReadResponse{};
-      response.cause = "worker_error";
+      response.cause = std::string("worker_error: ") + std::string(e.what()).substr(0, 120);
     }
     (response.served ? segment.stats.served : segment.stats.fallback)++;
     std::string reply;

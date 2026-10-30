@@ -106,7 +106,7 @@ private:
   static void Run(const std::string &sql, const std::vector<Oid> &types, const std::vector<Datum> &values,
                   const std::vector<char> &nulls, const verus_kit::RowFn &row) {
     if (!pthread_equal(pthread_self(), g_main_thread))
-      throw std::runtime_error("Postgres is called from the main thread only");
+      throw HostOffMainThread();
     if (SPI_connect() != SPI_OK_CONNECT)
       throw std::runtime_error("SPI_connect failed");
     struct Spi {
