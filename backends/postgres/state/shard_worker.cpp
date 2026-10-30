@@ -298,7 +298,7 @@ void ApplyPhaseLimits(runtime::ThreadBudget &threads) {
        members.size(), index, static_cast<unsigned>(MyDatabaseId));
 
   Diagnostics diagnostics(*segment, runtimes);
-  // A verified store: writers wait while a build is under way and readers wait for the state.
+  // A verified store: its writers wait while a build is under way and a reader waits (shared.cpp AwaitCatchUp).
   const bool exact_versions = std::any_of(members.begin(), members.end(), [](auto *m) { return m->Stores() != nullptr; });
   const auto applied_through = [&] {
     runtime::Epoch through = std::numeric_limits<runtime::Epoch>::max();
@@ -364,8 +364,6 @@ void ApplyPhaseLimits(runtime::ThreadBudget &threads) {
       }
       if (exact_versions) {
         shared::PublishCatchingUp(index, !all_synced());
-      }
-      if (exact_versions) {
         shared::PublishApplied(index, arrived && epoch && !again && applied_through() >= *epoch ? *epoch : 0);
       }
       if (again || !arrived) {

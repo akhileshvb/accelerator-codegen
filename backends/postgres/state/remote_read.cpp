@@ -11,9 +11,9 @@
 #include "backends/postgres/api/pg_sink.hpp"
 #include "backends/postgres/engine/accelerator_tables.hpp"
 #include "backends/postgres/state/messages.hpp"
-#include "substrate/aux/core/aux_execute_stats.hpp"
 #include "backends/postgres/state/shard_gucs.hpp"
 #include "backends/postgres/state/shared.hpp"
+#include "substrate/aux/core/aux_execute_stats.hpp"
 
 extern "C" {
 #include <funcapi.h>
