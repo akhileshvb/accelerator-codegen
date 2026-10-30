@@ -1,5 +1,0 @@
-   Read-only: geomean 2.2x, faster on 14/22, reps [0], achieved rows/s mv [0] accel [0], valid mv [True] accel [True]
-1,252 rows/s: geomean 2.6x, faster on 16/22, reps [0], achieved rows/s mv [335] accel [1169], valid mv [True] accel [True]
-2,505 rows/s: geomean 2.9x, faster on 16/22, reps [0], achieved rows/s mv [335] accel [2503], valid mv [True] accel [True]
-5,010 rows/s: geomean 2.4x, faster on 16/22, reps [0], achieved rows/s mv [335] accel [5008], valid mv [True] accel [True]
-wrote /spinning/akhilvb/pg40/results/speedup_vs_mv_40t.png

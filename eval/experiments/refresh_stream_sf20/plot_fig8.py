@@ -9,8 +9,9 @@
     "none"; fixed on fix/conc-decision-log). Timings, write streams and answers are unaffected (rerun of T=5s,
     same seed: same writes, reader QPS ratio median 1.004); only invalidating_writes, maintenance,
     maintenance_by_kind and slowest_commit changed.
-(B) JetStream vs pg_ivm MVs, (C) PG memory: ../pg_ivm_sf20/data/paper_sweep/{write_rate_sweep,mem_footprint}.csv
-    (GM rows, column workload_speedup; Total row stacked on the 35.5 GB of base tables).
+(B) JetStream vs pg_ivm MVs: ../pg_ivm_sf20/data/mvcmp_sf20_speedups.csv (GM rows, column workload_speedup; written by
+    ../pg_ivm_sf20/plot.py). (C) PG memory: ../pg_ivm_sf20/data/mem_footprint.csv (Total row stacked on the 35.5 GB of
+    base tables).
 Colors follow each sweep's own figure: blues from plot_rf_interval_sweep.py, purple read-only + greens from the
 mvcmp combined plot; stateful navy from plot_memory_footprint.py.
 
@@ -33,7 +34,7 @@ from plot_fig1 import read_only_geomeans  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
 DUCK_SWEEP = HERE / "data" / "writerate" / "rf_interval_summary.csv"
-PG_SWEEP = HERE.parent / "pg_ivm_sf20" / "data" / "paper_sweep"
+PG_DATA = HERE.parent / "pg_ivm_sf20" / "data"
 READ_ONLY_COLOR = "#4b2a7b"
 DUCK_RAMP = ["#86b6ef", "#5598e7", "#2a78d6", "#1c5cab", "#0d366b"]
 STATEFUL_COLOR = "#1A2654"
@@ -63,7 +64,7 @@ def duckdb_points():
 
 def pg_points():
     pts = []
-    for r in csv.DictReader(open(PG_SWEEP / "write_rate_sweep.csv")):
+    for r in csv.DictReader(open(PG_DATA / "mvcmp_sf20_speedups.csv")):
         if r["query"] == "GM":
             rate = r["rate"].replace(" rows/s", "").replace(",", "")
             pts.append(("RO" if rate == "Read-only" else short_rate(float(rate)), float(r["workload_speedup"])))
@@ -71,7 +72,7 @@ def pg_points():
 
 
 def pg_memory_gb():
-    total = next(r for r in csv.DictReader(open(PG_SWEEP / "mem_footprint.csv")) if r["query"] == "Total")
+    total = next(r for r in csv.DictReader(open(PG_DATA / "mem_footprint.csv")) if r["query"] == "Total")
     return float(total["mv_gb"]), float(total["accel_gb"])
 
 

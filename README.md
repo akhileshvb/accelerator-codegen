@@ -31,7 +31,7 @@ The drivers name their inputs (databases, refresh sets, builds) through env vars
 | Fig. 5, §6.5 | `readonly_sf20` | `plot_fig5.py` | `run_cpp_read_40t_pk.sh`, `run_stateless_40t_pk.sh`, `run_both_pk.sh`, `run_socket0_40t.sh` (GenDB, Bespoke OLAP) |
 | Fig. 7 | `sec_edgar_sf3` | `plot_fig7.py` | `drive_duckdb_read.sh`, `drive_pg_read.sh` |
 | Fig. 8A | `refresh_stream_sf20` | `plot_fig8.py` | `drive_writerate.sh` |
-| Fig. 8B/C, §6.3 pg_ivm | `pg_ivm_sf20` (`data/paper_sweep/`) | `refresh_stream_sf20/plot_fig8.py` | `sweep.sh`, `accel_phase.sh` |
+| Fig. 8B/C, §6.3 pg_ivm | `pg_ivm_sf20` | `plot.py` (panel-B CSV), then `refresh_stream_sf20/plot_fig8.py` | `finish_mv.sh`, `mv_prep.sh`, `phase1.sh`, `sweep_accel.sh`, `ro_rerun.sh` |
 | Table 3 (SF=30) | `qphh` | `summarize.py` | `run_sf30.sh` |
 | Fig. 9 | `q1_maintenance` | `plot_fig9.py` | `run.sh` |
 | Fig. 10 | `ablation` | `plot_fig10.py` | |
