@@ -23,7 +23,7 @@ verus! {
 
 /// Units outside u keep their groups: db2 has the groups db has.
 pub open spec fn frame_ok(db: Db, db2: Db, u: Index<UnitRef>) -> bool {
-    forall|k: GK| #![trigger cntk(db2, k)] !u_has(u, k.fy, k.name) ==> cntk(db2, k) == cntk(db, k) && sumk(db2, k) == sumk(db, k)
+    forall|k: GK| #![trigger cntk(db2, k)] !u_has(u, k.fy, k.name) ==> cntk(db2, k) == cntk(db, k) && sumk(db2, k) == sumk(db, k) && absk(db2, k) == absk(db, k)
 }
 
 /// Every record's groups are of units outside u.
@@ -53,11 +53,11 @@ pub proof fn lemma_sem_switch(db: Db, db2: Db, c: ClassRec, u: Index<UnitRef>)
     }
     assert forall|nk: KeyView| c.hp.at(nk) is Some implies has_cand(db2, c, nk, true) by {
         assert(has_cand(db, c, nk, true));
-        let k = choose|k: GK| #![trigger cntk(db, k)] cntk(db, k) > 0 && in_class(c, k) && nkey_v(k.name) == nk && sumk(db, k) > max_val();
+        let k = choose|k: GK| #![trigger cntk(db, k)] cntk(db, k) > 0 && in_class(c, k) && nkey_v(k.name) == nk && bad_g(sumk(db, k), absk(db, k));
         assert(k.fy == c.fy as int);
         assert(!u_has(u, k.fy, k.name)) by { assert(wn(u, c.fy as int, nk) == u_has(u, k.fy, k.name)); }
         assert(!u_has(u, k.fy, k.name) ==> cntk(db2, k) == cntk(db, k) && sumk(db2, k) == sumk(db, k));
-        assert(cntk(db2, k) > 0 && sumk(db2, k) > max_val());
+        assert(cntk(db2, k) > 0 && bad_g(sumk(db2, k), absk(db2, k)));
     }
     assert forall|nk: KeyView| c.hn.at(nk) is Some implies has_cand(db2, c, nk, false) by {
         assert(has_cand(db, c, nk, false));
@@ -245,8 +245,8 @@ pub proof fn lemma_bridge(db: Db, db2: Db, cls0: Index<ClassRec>, t: Index<Class
         &&& forall|q: KeyView| #![trigger n.f.at(q)] n.f.at(q) is Some ==> !wn(w, n.fy as int, nkey_v(ov(n.f.at(q)->0.name)))
         &&& forall|q: KeyView| #![trigger n.r.at(q)] n.r.at(q) is Some ==> !wn(u, n.fy as int, nkey_v(ov(n.r.at(q)->0.name)))
         &&& forall|q: KeyView| #![trigger n.r.at(q)] n.r.at(q) is Some && wn(w, n.fy as int, nkey_v(ov(n.r.at(q)->0.name))) ==> gm_at(kept, ok, n.r.at(q)->0.ik()) == n.r.at(q)
-        &&& forall|k: GK| #![trigger covered_in(n, k, sumk(db, k), cntk(db, k))]
-            in_class(cls0.at(ok)->0, k) && cntk(db, k) > 0 && covered_in(cls0.at(ok)->0, k, sumk(db, k), cntk(db, k)) && !u_has(w, k.fy, k.name) ==> covered_in(n, k, sumk(db, k), cntk(db, k))
+        &&& forall|k: GK| #![trigger covered_in(n, k, sumk(db, k), cntk(db, k), absk(db, k))]
+            in_class(cls0.at(ok)->0, k) && cntk(db, k) > 0 && covered_in(cls0.at(ok)->0, k, sumk(db, k), cntk(db, k), absk(db, k)) && !u_has(w, k.fy, k.name) ==> covered_in(n, k, sumk(db, k), cntk(db, k), absk(db, k))
     }) by {
         assert(cls0.at(ok) is Some);
         let c0 = cls0.at(ok)->0;

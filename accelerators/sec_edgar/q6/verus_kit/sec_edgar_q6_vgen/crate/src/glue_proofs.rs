@@ -12,10 +12,11 @@ use crate::algebra::*;
 verus! {
 
 pub proof fn lemma_diag_k(k: GK)
-    ensures diag(icnt(k)), diag(ival(k)),
+    ensures diag(icnt(k)), diag(ival(k)), diag(iabs(k)),
 {
     assert forall|n: NumRow, s: SubRow, p: PreRow| #[trigger] icnt(k)(n, s, p) != 0 implies n.adsh == Some(s.adsh) && p.adsh == n.adsh && n.value is Some by {}
     assert forall|n: NumRow, s: SubRow, p: PreRow| #[trigger] ival(k)(n, s, p) != 0 implies n.adsh == Some(s.adsh) && p.adsh == n.adsh && n.value is Some by {}
+    assert forall|n: NumRow, s: SubRow, p: PreRow| #[trigger] iabs(k)(n, s, p) != 0 implies n.adsh == Some(s.adsh) && p.adsh == n.adsh && n.value is Some by {}
 }
 
 pub open spec fn seq_bytes(keys: Seq<Vec<u8>>) -> Seq<Seq<u8>> {

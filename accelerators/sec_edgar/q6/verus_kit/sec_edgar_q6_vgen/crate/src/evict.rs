@@ -590,8 +590,8 @@ pub proof fn lemma_evict_ok(db: Db, c: ClassRec, n: ClassRec, u: Index<UnitRef>,
             forall|k: KeyView| vsel(c.f.entries(), c.fy as int, u).contains(k) ==> wn(w, c.fy as int, nkey_v(ov(c.f.at(k)->0.name))),
     ensures
         crec_struct(n), crec_sem(db, n),
-        forall|k: GK, s: int, m: int| #![trigger covered_in(n, k, s, m)]
-            in_class(c, k) && covered_in(c, k, s, m) && !u_has(w, k.fy, k.name) ==> covered_in(n, k, s, m),
+        forall|k: GK, s: int, m: int, a: int| #![trigger covered_in(n, k, s, m, a)]
+            in_class(c, k) && covered_in(c, k, s, m, a) && !u_has(w, k.fy, k.name) ==> covered_in(n, k, s, m, a),
 {
     lemma_pick_facts(c, u, w, refill);
     let pk = pick_of(c, u, refill);
@@ -659,7 +659,7 @@ pub proof fn lemma_evict_ok(db: Db, c: ClassRec, n: ClassRec, u: Index<UnitRef>,
     assert forall|q: KeyView| n.f.at(q) is Some implies exact_g(db, n, n.f.at(q)->0) by { assert(c.f.at(q) is Some); }
     assert forall|nk: KeyView| n.hp.at(nk) is Some implies has_cand(db, n, nk, true) by { assert(c.hp.at(nk) is Some); }
     assert forall|nk: KeyView| n.hn.at(nk) is Some implies has_cand(db, n, nk, false) by { assert(c.hn.at(nk) is Some); }
-    assert forall|k: GK, s: int, m: int| in_class(c, k) && covered_in(c, k, s, m) && !u_has(w, k.fy, k.name) implies #[trigger] covered_in(n, k, s, m) by {
+    assert forall|k: GK, s: int, m: int, a: int| in_class(c, k) && covered_in(c, k, s, m, a) && !u_has(w, k.fy, k.name) implies #[trigger] covered_in(n, k, s, m, a) by {
         assert(wn(w, c.fy as int, nkey_v(k.name)) == u_has(w, k.fy, k.name));
         assert(!u_has(u, k.fy, k.name));
         if s <= max_val() && s >= -max_val() && r_has(c, k) {

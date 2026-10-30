@@ -3,6 +3,7 @@
 
 pub mod gen_spec;
 pub mod gen_obligations;
+pub mod engine;
 pub mod kernel;
 pub mod gen_world;
 pub mod gen_ffi;

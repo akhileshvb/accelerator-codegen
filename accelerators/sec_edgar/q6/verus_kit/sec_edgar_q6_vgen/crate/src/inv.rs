@@ -13,6 +13,7 @@ use crate::esc::*;
 use crate::accmap::*;
 use crate::f64bits::*;
 use crate::grp::*;
+use crate::engine::*;
 
 verus! {
 
@@ -66,6 +67,7 @@ pub open spec fn exact_g(db: Db, c: ClassRec, g: Grp) -> bool {
     &&& g.cnt@ > 0
     &&& f64_in_range(g.sum@)
     &&& bits_ok(g)
+    &&& !unsafe_a(absk(db, k))
 }
 
 pub open spec fn crec_struct(c: ClassRec) -> bool {
@@ -88,9 +90,14 @@ pub open spec fn crec_struct(c: ClassRec) -> bool {
     &&& forall|nk: KeyView| #![trigger c.hn.at(nk)] c.hn.at(nk) is Some ==> nk.0 == 0
 }
 
+/// A group the answer cannot have: its sum is above the double range, or the engine would raise on it.
+pub open spec fn bad_g(s: int, a: int) -> bool {
+    s > max_val() || unsafe_a(a)
+}
+
 pub open spec fn has_cand(db: Db, c: ClassRec, nk: KeyView, above: bool) -> bool {
     exists|k: GK| #![trigger cntk(db, k)] cntk(db, k) > 0 && in_class(c, k) && nkey_v(k.name) == nk
-        && (if above { sumk(db, k) > max_val() } else { sumk(db, k) < -max_val() })
+        && (if above { bad_g(sumk(db, k), absk(db, k)) } else { sumk(db, k) < -max_val() })
 }
 
 pub open spec fn crec_sem(db: Db, c: ClassRec) -> bool {
@@ -110,8 +117,8 @@ pub open spec fn r_has(c: ClassRec, k: GK) -> bool {
 }
 
 /// Group k (sum s, count n) is accounted for in its class: kept, or bounded by its unit's frontier group.
-pub open spec fn covered_in(c: ClassRec, k: GK, s: int, n: int) -> bool {
-    if s > max_val() { c.hp.at(nkey_v(k.name)) is Some }
+pub open spec fn covered_in(c: ClassRec, k: GK, s: int, n: int, a: int) -> bool {
+    if bad_g(s, a) { c.hp.at(nkey_v(k.name)) is Some }
     else if s < -max_val() { c.hn.at(nkey_v(k.name)) is Some }
     else {
         r_has(c, k) || exists|b: u64| #![trigger okbits(b, s, n)] okbits(b, s, n) && c.fb.at(nkey_v(k.name)) is Some
@@ -121,7 +128,7 @@ pub open spec fn covered_in(c: ClassRec, k: GK, s: int, n: int) -> bool {
 
 pub open spec fn covered(db: Db, cls: Index<ClassRec>, k: GK) -> bool {
     match cls.at(okey(k.fy, k.stmt, k.uom)) {
-        Some(c) => covered_in(c, k, sumk(db, k), cntk(db, k)),
+        Some(c) => covered_in(c, k, sumk(db, k), cntk(db, k), absk(db, k)),
         None => false,
     }
 }

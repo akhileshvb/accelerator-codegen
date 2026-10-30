@@ -22,8 +22,8 @@ verus! {
 
 /// Every group of db accounted for in c is accounted for in n.
 pub open spec fn cov_db(db: Db, c: ClassRec, n: ClassRec) -> bool {
-    forall|k: GK| #![trigger covered_in(n, k, sumk(db, k), cntk(db, k))]
-        cntk(db, k) > 0 && in_class(c, k) && covered_in(c, k, sumk(db, k), cntk(db, k)) ==> covered_in(n, k, sumk(db, k), cntk(db, k))
+    forall|k: GK| #![trigger covered_in(n, k, sumk(db, k), cntk(db, k), absk(db, k))]
+        cntk(db, k) > 0 && in_class(c, k) && covered_in(c, k, sumk(db, k), cntk(db, k), absk(db, k)) ==> covered_in(n, k, sumk(db, k), cntk(db, k), absk(db, k))
 }
 
 proof fn lemma_pos<V>(ix: Index<V>, q: KeyView) -> (pos: int)
@@ -80,8 +80,8 @@ pub fn trim_step(c: &ClassRec, rk: &Key, g: &Arc<Grp>, Ghost(db): Ghost<Db>) -> 
                 lemma_f_put_ok(db, n1, n, gv);
                 assert(n.f.at(rkey(gv)) is Some);
                 lemma_some_len(n.f, rkey(gv));
-                assert forall|k: GK| cntk(db, k) > 0 && in_class(*c, k) && covered_in(*c, k, sumk(db, k), cntk(db, k)) implies covered_in(n, k, sumk(db, k), cntk(db, k)) by {
-                    if k == k0 { assert(sumk(db, k) == gv.sum@ && cntk(db, k) == gv.cnt@); assert(cls_gk(n, gv) == k0); } else { assert(covered_in(n1, k, sumk(db, k), cntk(db, k))); }
+                assert forall|k: GK| cntk(db, k) > 0 && in_class(*c, k) && covered_in(*c, k, sumk(db, k), cntk(db, k), absk(db, k)) implies covered_in(n, k, sumk(db, k), cntk(db, k), absk(db, k)) by {
+                    if k == k0 { assert(sumk(db, k) == gv.sum@ && cntk(db, k) == gv.cnt@); assert(cls_gk(n, gv) == k0); } else { assert(covered_in(n1, k, sumk(db, k), cntk(db, k), absk(db, k))); }
                 }
             }
             n
@@ -112,8 +112,8 @@ pub fn trim_step(c: &ClassRec, rk: &Key, g: &Arc<Grp>, Ghost(db): Ghost<Db>) -> 
                     }
                     lemma_f_swap_ok(db, n1, n, bv, gv);
                     lemma_some_len(n.f, rkey(gv));
-                    assert forall|k: GK| cntk(db, k) > 0 && in_class(*c, k) && covered_in(*c, k, sumk(db, k), cntk(db, k)) implies covered_in(n, k, sumk(db, k), cntk(db, k)) by {
-                        if k == k0 { assert(sumk(db, k) == gv.sum@ && cntk(db, k) == gv.cnt@); assert(cls_gk(n, gv) == k0); } else { assert(covered_in(n1, k, sumk(db, k), cntk(db, k))); }
+                    assert forall|k: GK| cntk(db, k) > 0 && in_class(*c, k) && covered_in(*c, k, sumk(db, k), cntk(db, k), absk(db, k)) implies covered_in(n, k, sumk(db, k), cntk(db, k), absk(db, k)) by {
+                        if k == k0 { assert(sumk(db, k) == gv.sum@ && cntk(db, k) == gv.cnt@); assert(cls_gk(n, gv) == k0); } else { assert(covered_in(n1, k, sumk(db, k), cntk(db, k), absk(db, k))); }
                     }
                 }
                 n
@@ -126,9 +126,9 @@ pub fn trim_step(c: &ClassRec, rk: &Key, g: &Arc<Grp>, Ghost(db): Ghost<Db>) -> 
                     lemma_some_len(n1.f, rkey(bv));
                     assert(okbits(gv.bits, gv.sum@, gv.cnt@));
                     assert(rkey_gk(gv.bits, k0) == rkey(gv));
-                    assert(covered_in(n1, k0, gv.sum@, gv.cnt@));
-                    assert forall|k: GK| cntk(db, k) > 0 && in_class(*c, k) && covered_in(*c, k, sumk(db, k), cntk(db, k)) implies covered_in(n1, k, sumk(db, k), cntk(db, k)) by {
-                        if k == k0 { assert(sumk(db, k) == gv.sum@ && cntk(db, k) == gv.cnt@); } else { assert(covered_in(n1, k, sumk(db, k), cntk(db, k))); }
+                    assert(covered_in(n1, k0, gv.sum@, gv.cnt@, absk(db, k0)));
+                    assert forall|k: GK| cntk(db, k) > 0 && in_class(*c, k) && covered_in(*c, k, sumk(db, k), cntk(db, k), absk(db, k)) implies covered_in(n1, k, sumk(db, k), cntk(db, k), absk(db, k)) by {
+                        if k == k0 { assert(sumk(db, k) == gv.sum@ && cntk(db, k) == gv.cnt@); } else { assert(covered_in(n1, k, sumk(db, k), cntk(db, k), absk(db, k))); }
                     }
                 }
                 n1
@@ -209,8 +209,8 @@ pub fn trim_class(c: &ClassRec, Ghost(db): Ghost<Db>) -> (r: Option<ClassRec>)
                 if q == es[k as int].0 {} else {}
             }
             assert(cov_db(db, *c, n)) by {
-                assert forall|kk: GK| cntk(db, kk) > 0 && in_class(*c, kk) && covered_in(*c, kk, sumk(db, kk), cntk(db, kk)) implies covered_in(n, kk, sumk(db, kk), cntk(db, kk)) by {
-                    assert(covered_in(n0, kk, sumk(db, kk), cntk(db, kk)));
+                assert forall|kk: GK| cntk(db, kk) > 0 && in_class(*c, kk) && covered_in(*c, kk, sumk(db, kk), cntk(db, kk), absk(db, kk)) implies covered_in(n, kk, sumk(db, kk), cntk(db, kk), absk(db, kk)) by {
+                    assert(covered_in(n0, kk, sumk(db, kk), cntk(db, kk), absk(db, kk)));
                     assert(in_class(n0, kk));
                 }
             }
@@ -276,7 +276,7 @@ pub fn trim_all(t: &mut Index<ClassRec>, tcls: &Index<ClassRef>, Ghost(db2): Gho
                                 if ok2 == key.view() {
                                     lemma_okey_inj(k.fy, k.stmt, k.uom, cv.fy as int, cv.stmt@, cv.uom@);
                                     assert(in_class(cv, k));
-                                    assert(covered_in(cv, k, sumk(db2, k), cntk(db2, k)));
+                                    assert(covered_in(cv, k, sumk(db2, k), cntk(db2, k), absk(db2, k)));
                                 }
                             }
                         }

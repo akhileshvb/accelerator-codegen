@@ -51,6 +51,11 @@ pub open spec fn iabs(k: GK) -> H3 {
 }
 
 /// Σ h over the join of the three tables.
+/// The sum stream (sel false) or the stream of absolute values (sel true).
+pub open spec fn iv(k: GK, sel: bool) -> H3 {
+    if sel { iabs(k) } else { ival(k) }
+}
+
 pub open spec fn gdb(db: Db, h: H3) -> int {
     sum(db.num, |n: NumRow| sum(db.sub, |s: SubRow| sum(db.pre, |p: PreRow| h(n, s, p))))
 }

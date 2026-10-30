@@ -21,6 +21,7 @@ use crate::evict::*;
 use crate::cnt::*;
 use crate::wideval::*;
 use crate::rep::*;
+use crate::engine::*;
 
 verus! {
 
@@ -60,9 +61,9 @@ pub open spec fn mid_ok(db2: Db, t: Index<ClassRec>, kept: GMap, u: Index<UnitRe
 }
 
 /// What placing the group k does to the class record c, giving n.
-pub open spec fn step_ok(db2: Db, c: ClassRec, n: ClassRec, k: GK, s: int, m: int) -> bool {
+pub open spec fn step_ok(db2: Db, c: ClassRec, n: ClassRec, k: GK) -> bool {
     &&& crec_struct(n) && crec_sem(db2, n) && crec_full(n) && crec_head(c, n) && cov_mono(c, n)
-    &&& covered_in(n, k, s, m)
+    &&& covered_in(n, k, sumk(db2, k), cntk(db2, k), absk(db2, k))
     &&& forall|q: KeyView| #![trigger n.f.at(q)] n.f.at(q) is Some ==> c.f.at(q) == n.f.at(q) || cls_gk(c, n.f.at(q)->0) == k
     &&& forall|q: KeyView| #![trigger n.r.at(q)] n.r.at(q) is Some ==> c.r.at(q) == n.r.at(q) || cls_gk(c, n.r.at(q)->0) == k
     &&& forall|q: KeyView| #![trigger c.r.at(q)] c.r.at(q) is Some ==> n.r.at(q) == c.r.at(q)
@@ -76,7 +77,7 @@ pub proof fn lemma_place_mid(db2: Db, t: Index<ClassRec>, t2: Index<ClassRec>, c
         cntk(db2, k) > 0, k.fy == c.fy as int && k.stmt == c.stmt@ && k.uom == c.uom@,
         t.at(cls_key(c)) is Some ==> t.at(cls_key(c))->0 == c,
         t.at(cls_key(c)) is None ==> crec_is_empty(c),
-        step_ok(db2, c, n, k, sumk(db2, k), cntk(db2, k)),
+        step_ok(db2, c, n, k),
         t2.wf(), forall|q: KeyView| #![trigger t2.at(q)] t2.at(q) == if q == cls_key(c) { Some(n) } else { t.at(q) },
         cls_key(n) == cls_key(c),
         wn(w, c.fy as int, nkey_v(k.name)),
@@ -96,12 +97,12 @@ pub proof fn lemma_place_mid(db2: Db, t: Index<ClassRec>, t2: Index<ClassRec>, c
             lemma_okey_inj(k2.fy, k2.stmt, k2.uom, c.fy as int, c.stmt@, c.uom@);
             assert(in_class(c, k2));
             if k2 == k {
-                assert(covered_in(n, k2, sumk(db2, k2), cntk(db2, k2)));
+                assert(covered_in(n, k2, sumk(db2, k2), cntk(db2, k2), absk(db2, k2)));
             } else {
                 assert(mid_cov(w, done)(k2));
                 assert(covered(db2, t, k2));
                 assert(t.at(ok) is Some);
-                assert(covered_in(c, k2, sumk(db2, k2), cntk(db2, k2)));
+                assert(covered_in(c, k2, sumk(db2, k2), cntk(db2, k2), absk(db2, k2)));
             }
         } else {
             assert(k2 != k);
@@ -161,8 +162,8 @@ pub fn step_h(c: &ClassRec, e: &AccEnt, above: bool, Ghost(db2): Ghost<Db>) -> (
     requires
         crec_struct(*c), crec_sem(db2, *c), crec_full(*c),
         cntk(db2, e.gk()) > 0, in_class(*c, e.gk()),
-        above ==> sumk(db2, e.gk()) > max_val(), !above ==> sumk(db2, e.gk()) < -max_val(),
-    ensures step_ok(db2, *c, n, e.gk(), sumk(db2, e.gk()), cntk(db2, e.gk())),
+        above ==> bad_g(sumk(db2, e.gk()), absk(db2, e.gk())), !above ==> sumk(db2, e.gk()) < -max_val() && !bad_g(sumk(db2, e.gk()), absk(db2, e.gk())),
+    ensures step_ok(db2, *c, n, e.gk()),
 {
     let nk = nkey_of(&e.name);
     proof { assert(has_cand(db2, *c, nk.view(), above)) by { let k = e.gk(); assert(cntk(db2, k) > 0 && in_class(*c, k) && nkey_v(k.name) == nk.view()); } }
@@ -171,7 +172,7 @@ pub fn step_h(c: &ClassRec, e: &AccEnt, above: bool, Ghost(db2): Ghost<Db>) -> (
         proof {
             lemma_hp_put_ok(db2, *c, n, nk.view());
             lemma_ix_same_len(n.r, c.r); lemma_ix_same_len(n.f, c.f);
-            assert(covered_in(n, e.gk(), sumk(db2, e.gk()), cntk(db2, e.gk())));
+            assert(covered_in(n, e.gk(), sumk(db2, e.gk()), cntk(db2, e.gk()), absk(db2, e.gk())));
         }
         n
     } else {
@@ -180,7 +181,7 @@ pub fn step_h(c: &ClassRec, e: &AccEnt, above: bool, Ghost(db2): Ghost<Db>) -> (
             lemma_hn_put_ok(db2, *c, n, nk.view());
             lemma_ix_same_len(n.r, c.r); lemma_ix_same_len(n.f, c.f);
             lemma_max_pos();
-            assert(covered_in(n, e.gk(), sumk(db2, e.gk()), cntk(db2, e.gk())));
+            assert(covered_in(n, e.gk(), sumk(db2, e.gk()), cntk(db2, e.gk()), absk(db2, e.gk())));
         }
         n
     }
@@ -192,7 +193,7 @@ pub fn step_r(c: &ClassRec, x: Grp, Ghost(db2): Ghost<Db>) -> (n: ClassRec)
         crec_struct(*c), crec_sem(db2, *c), crec_full(*c), exact_g(db2, *c, x),
         forall|q: KeyView| #![trigger c.f.at(q)] c.f.at(q) is Some ==> key_lt(rkey(x), q) && c.f.at(q)->0.ik() != x.ik(),
         forall|q: KeyView| #![trigger c.r.at(q)] c.r.at(q) is Some ==> c.r.at(q)->0.ik() != x.ik(),
-    ensures step_ok(db2, *c, n, cls_gk(*c, x), x.sum@, x.cnt@),
+    ensures step_ok(db2, *c, n, cls_gk(*c, x)),
 {
     let ghost xv = x;
     let n = crec_r_put(c, Arc::new(x));
@@ -201,7 +202,7 @@ pub fn step_r(c: &ClassRec, x: Grp, Ghost(db2): Ghost<Db>) -> (n: ClassRec)
         lemma_len_le(c.r, n.r);
         lemma_ix_same_len(n.f, c.f);
         lemma_max_pos();
-        assert(covered_in(n, cls_gk(*c, xv), xv.sum@, xv.cnt@));
+        assert(covered_in(n, cls_gk(*c, xv), xv.sum@, xv.cnt@, absk(db2, cls_gk(*c, xv))));
         assert(cls_gk(n, xv) == cls_gk(*c, xv));
     }
     n
@@ -214,7 +215,7 @@ pub fn step_f_new(c: &ClassRec, x: Grp, Ghost(db2): Ghost<Db>) -> (n: ClassRec)
         c.f.entries().len() > 0,
         c.fb.at(nkey_v(ov(x.name))) is None,
         forall|q: KeyView| #![trigger c.r.at(q)] c.r.at(q) is Some ==> key_lt(q, rkey(x)) && c.r.at(q)->0.ik() != x.ik(),
-    ensures step_ok(db2, *c, n, cls_gk(*c, x), x.sum@, x.cnt@),
+    ensures step_ok(db2, *c, n, cls_gk(*c, x)),
 {
     let ghost xv = x;
     let n = crec_f_put(c, Arc::new(x));
@@ -233,7 +234,7 @@ pub fn step_f_swap(c: &ClassRec, x: Grp, b: &Arc<Grp>, Ghost(db2): Ghost<Db>) ->
         crec_struct(*c), crec_sem(db2, *c), crec_full(*c), exact_g(db2, *c, x),
         c.fb.at(nkey_v(ov(x.name))) == Some(**b), key_lt(rkey(x), rkey(**b)),
         forall|q: KeyView| #![trigger c.r.at(q)] c.r.at(q) is Some ==> key_lt(q, rkey(x)) && c.r.at(q)->0.ik() != x.ik(),
-    ensures step_ok(db2, *c, n, cls_gk(*c, x), x.sum@, x.cnt@),
+    ensures step_ok(db2, *c, n, cls_gk(*c, x)),
 {
     let ghost xv = x;
     let ghost bv = arc_val(b);
@@ -341,7 +342,7 @@ pub fn place(t: &mut Index<ClassRec>, e: &AccEnt, kept: &GMap, u: &Index<UnitRef
     requires
         mid_ok(db2, *old(t), *kept, *u, *w, done), uset_ok(*u), uset_ok(*w), subset_u(*u, *w), nm_ok(*kept),
         tab.ok(), maxv@ == max_val(), minv@ == -max_val(), rep_db(db2),
-        e.cnt@ == cntk(db2, e.gk()), e.sum@ == sumk(db2, e.gk()), e.cnt@ > 0,
+        e.cnt@ == cntk(db2, e.gk()), e.sum@ == sumk(db2, e.gk()), e.abs@ == absk(db2, e.gk()), e.cnt@ > 0,
         wn(*w, e.fy as int, nkey_v(ov(e.name))), !done(e.gk()),
     ensures mid_ok(db2, *final(t), *kept, *u, *w, ins(done, e.gk())),
 {
@@ -361,7 +362,7 @@ pub fn place(t: &mut Index<ClassRec>, e: &AccEnt, kept: &GMap, u: &Index<UnitRef
             assert(cls_gk(c, g) == k);
             assert(exact_g(db2, c, g));
             assert(r_has(c, k));
-            assert(covered_in(c, k, sumk(db2, k), cntk(db2, k)));
+            assert(covered_in(c, k, sumk(db2, k), cntk(db2, k), absk(db2, k)));
             assert forall|k2: GK| cntk(db2, k2) > 0 && mid_cov(*w, ins(done, k))(k2) implies #[trigger] covered(db2, t0, k2) by {
                 if k2 == k { assert(covered(db2, t0, k)) by { assert(okey(k.fy, k.stmt, k.uom) == ok_key.view()); } }
                 else { assert(mid_cov(*w, done)(k2)); }
@@ -378,13 +379,13 @@ pub fn place(t: &mut Index<ClassRec>, e: &AccEnt, kept: &GMap, u: &Index<UnitRef
         else { lemma_empty_ok(db2, cv); assert(cls_key(cv) == ok_key.view()); }
         assert(in_class(cv, k));
     }
-    let b = grp_bits(tab, maxv, minv, &e.cnt, &e.sum, Ghost(db2), Ghost(k));
+    let bad = maxv.lt(&e.sum) || exec_unsafe(maxv, &e.abs);
+    let b = if bad { None } else { grp_bits(tab, maxv, minv, &e.cnt, &e.sum, Ghost(db2), Ghost(k)) };
     let n: ClassRec;
     match b {
         None => {
-            let above = maxv.lt(&e.sum);
-            proof { assert(e.sum@ > max_val() || e.sum@ < -max_val()); }
-            n = step_h(&c, e, above, Ghost(db2));
+            proof { assert(e.sum@ > max_val() || bad_g(e.sum@, e.abs@) || e.sum@ < -max_val()); }
+            n = step_h(&c, e, bad, Ghost(db2));
         }
         Some(bits) => {
             let x = Grp { name: copy_opt(&e.name), tag: copy_bytes(e.tag.as_slice()), plabel: copy_opt(&e.plabel), cnt: e.cnt.dup(), sum: e.sum.dup(), bits };
@@ -451,13 +452,13 @@ pub fn place(t: &mut Index<ClassRec>, e: &AccEnt, kept: &GMap, u: &Index<UnitRef
                                 assert(cv.fb.at(nkey_v(k.name)) == Some(bv));
                                 assert(okbits(xv.bits, xv.sum@, xv.cnt@));
                                 assert(rkey_gk(xv.bits, k) == rkey(xv));
-                                assert(covered_in(cv, k, xv.sum@, xv.cnt@));
+                                assert(covered_in(cv, k, xv.sum@, xv.cnt@, absk(db2, k)));
                             }
                             proof {
-                                assert(step_ok(db2, cv, cv, k, sumk(db2, k), cntk(db2, k))) by {
-                                    assert(covered_in(cv, k, xv.sum@, xv.cnt@));
+                                assert(step_ok(db2, cv, cv, k)) by {
+                                    assert(covered_in(cv, k, xv.sum@, xv.cnt@, absk(db2, k)));
                                     assert(crec_head(cv, cv)) ;
-                                    assert(forall|k1: GK, s1: int, m1: int| covered_in(cv, k1, s1, m1) ==> covered_in(cv, k1, s1, m1));
+                                    assert(forall|k1: GK, s1: int, m1: int, a1: int| covered_in(cv, k1, s1, m1, a1) ==> covered_in(cv, k1, s1, m1, a1));
                                 }
                                 lemma_place_mid(db2, t0, t0, cv, cv, *kept, *u, *w, done, k);
                                 assert(*t == t0);
@@ -469,7 +470,7 @@ pub fn place(t: &mut Index<ClassRec>, e: &AccEnt, kept: &GMap, u: &Index<UnitRef
             }
         }
     }
-    proof { assert(step_ok(db2, cv, n, k, sumk(db2, k), cntk(db2, k))); }
+    proof { assert(step_ok(db2, cv, n, k)); }
     let ghost n0 = n;
     cls_store(t, n);
     proof { lemma_place_mid(db2, t0, *t, cv, n0, *kept, *u, *w, done, k); }
@@ -500,7 +501,7 @@ pub fn place_all(t: &mut Index<ClassRec>, acc: &Index<AccEnt>, kept: &GMap, u: &
     requires
         mid_ok(db2, *old(t), *kept, *u, *w, no_done()), uset_ok(*u), uset_ok(*w), subset_u(*u, *w), nm_ok(*kept),
         tab.ok(), rep_db(db2), acc_ok(*acc),
-        forall|k: GK| #![trigger acc_c(*acc, k)] u_has(*w, k.fy, k.name) ==> acc_c(*acc, k) == cntk(db2, k) && acc_s(*acc, k) == sumk(db2, k),
+        forall|k: GK| #![trigger acc_c(*acc, k)] u_has(*w, k.fy, k.name) ==> acc_c(*acc, k) == cntk(db2, k) && acc_s(*acc, k) == sumk(db2, k) && acc_a(*acc, k) == absk(db2, k),
     ensures
         ({ let es = acc.entries(); mid_ok(db2, *final(t), *kept, *u, *w, done_of(es, es.len() as int, *w)) }),
         forall|k: GK| u_has(*w, k.fy, k.name) && cntk(db2, k) > 0 ==> done_of(acc.entries(), acc.entries().len() as int, *w)(k),
@@ -524,7 +525,7 @@ pub fn place_all(t: &mut Index<ClassRec>, acc: &Index<AccEnt>, kept: &GMap, u: &
             ents@.map_values(|row: (Key, Arc<AccEnt>)| (row.0.view(), *row.1)) == es, es == acc.entries(),
             forall|pos: int| #![trigger es[pos]] 0 <= pos < es.len() ==> acc.at(es[pos].0) == Some(es[pos].1),
             forall|a: int, b: int| 0 <= a < b < es.len() ==> (#[trigger] es[a]).0 != (#[trigger] es[b]).0,
-            forall|k: GK| #![trigger acc_c(*acc, k)] u_has(*w, k.fy, k.name) ==> acc_c(*acc, k) == cntk(db2, k) && acc_s(*acc, k) == sumk(db2, k),
+            forall|k: GK| #![trigger acc_c(*acc, k)] u_has(*w, k.fy, k.name) ==> acc_c(*acc, k) == cntk(db2, k) && acc_s(*acc, k) == sumk(db2, k) && acc_a(*acc, k) == absk(db2, k),
             mid_ok(db2, *t, *kept, *u, *w, done_of(es, i as int, *w)),
         decreases ents.len() - i,
     {
