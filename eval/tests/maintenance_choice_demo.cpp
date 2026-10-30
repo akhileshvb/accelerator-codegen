@@ -28,12 +28,17 @@
 // choice, then each action forced), and on plain DuckDB (a separate copy, no
 // accelerator: the same writes, the reference query). Per (phase, strategy):
 // mean write ms (statement + commit, with maintenance) and mean read ms.
-// Env: ACCELERATOR_CODEGEN_DUCKDB_AUX_COST_MODEL (cost model JSON)
+// Env: ACCELERATOR_CODEGEN_DUCKDB_AUX_COST_MODEL (cost model JSON),
+// DEMO_WRITE_COLUMN (lineitem column the writes shift; default l_quantity),
+// PHASES_WRITES (writes per shape in phases mode; default 4),
+// PHASES_SKIP_PARTITION=1 (phases mode without forced RebuildPartition),
+// TRACE_SCHEDULE=contrast (trace mode: the phases described at the trace).
 #include <algorithm>
 #include <tuple>
 #include <utility>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <iostream>
 #include <string>
 #include <vector>
@@ -76,18 +81,38 @@ int64_t Scalar(duckdb::Connection &c, const std::string &sql) {
   return r->GetValue(0, 0).GetValue<int64_t>();
 }
 
+// The lineitem column every write shifts by +-1 (DEMO_WRITE_COLUMN, default
+// l_quantity: pick one the accelerator depends on).
+std::string WriteColumn() {
+  const char *col = std::getenv("DEMO_WRITE_COLUMN");
+  return col && *col ? col : "l_quantity";
+}
+
+std::string UpdateSql(int delta, const std::string &where) {
+  const auto col = WriteColumn();
+  return "UPDATE lineitem SET " + col + " = " + col + " + (" + std::to_string(delta) + ") WHERE " + where;
+}
+
 // One write of `shape` (+delta) as a captured transaction; returns its commit
 // time in ms.
 double Write(DuckdbRuntime &runtime, duckdb::Connection &c, const Shape &shape, int delta) {
   runtime.BeginWrite();
-  Exec(c, "UPDATE lineitem SET l_quantity = l_quantity + (" + std::to_string(delta) + ") WHERE " +
-              shape.where);
+  Exec(c, UpdateSql(delta, shape.where));
   const auto start = Clock::now();
   runtime.CommitWrite();
   return std::chrono::duration<double, std::milli>(Clock::now() - start).count();
 }
 
 const char *Name(mnt::MaintenanceAction a) { return mnt::MaintenanceActionName(a); }
+
+// The action the last commit's maintenance took. The decision is logged per
+// commit into the runtime's stats (not the global log); a commit that logged
+// none never consulted the cost model (a module's small-batch path applies
+// deltas directly): "small-batch".
+std::string CommitAction(const DuckdbRuntime &runtime) {
+  const auto decision = runtime.Stats().last_decision;
+  return decision && decision->valid ? Name(decision->selected) : "small-batch";
+}
 
 } // namespace
 
@@ -109,7 +134,9 @@ int main(int argc, char **argv) {
       {"1 day", "l_shipdate = DATE '1995-06-17'"},
       {"1 week", "l_shipdate BETWEEN DATE '1995-06-11' AND DATE '1995-06-17'"},
       {"1 month", "l_shipdate BETWEEN DATE '1995-06-01' AND DATE '1995-06-30'"},
+      {"1 quarter", "l_shipdate BETWEEN DATE '1995-04-01' AND DATE '1995-06-30'"},
       {"1 year", "l_shipdate BETWEEN DATE '1995-01-01' AND DATE '1995-12-31'"},
+      {"3 years", "l_shipdate BETWEEN DATE '1994-01-01' AND DATE '1996-12-31'"},
       {"all rows", "TRUE"},
   };
   const std::vector<double> reads_per_write = {0.1, 1.0, 10.0};
@@ -129,20 +156,40 @@ int main(int argc, char **argv) {
                  "AND l_discount BETWEEN 0.02 AND 0.04 AND l_quantity < 25"
                : accelerator_codegen::test_support::CrossAccelReferenceSql(q);
     const std::string point = "l_orderkey = 1 AND l_linenumber = 1";
-    const std::string bulk = "l_shipdate BETWEEN DATE '1995-01-01' AND DATE '1995-12-31'";
+    // TRACE_SCHEDULE=contrast: each fixed action loses one phase (A: a point
+    // write before every query; B: a 1-quarter bulk write every 40; C: both
+    // mixed, a point write every 2 and a bulk every 40; D: read-heavy, a point
+    // write every 25). Bulk is 1 quarter there, 1 year in the default schedule.
+    const char *schedule_env = std::getenv("TRACE_SCHEDULE");
+    const bool contrast = schedule_env && std::string(schedule_env) == "contrast";
+    const std::string bulk = contrast
+                                 ? "l_shipdate BETWEEN DATE '1995-04-01' AND DATE '1995-06-30'"
+                                 : "l_shipdate BETWEEN DATE '1995-01-01' AND DATE '1995-12-31'";
     struct Step {
       char phase;
       const char *kind; // "", "point", "bulk"
     };
     std::vector<Step> steps;
-    for (int i = 0; i < 150; ++i)
-      steps.push_back({'A', i % 10 == 9 ? "point" : ""});
-    for (int i = 0; i < 150; ++i)
-      steps.push_back({'B', i % 16 == 15 ? "bulk" : ""});
-    for (int i = 0; i < 150; ++i)
-      steps.push_back({'C', "point"});
-    for (int i = 0; i < 150; ++i)
-      steps.push_back({'D', i % 10 == 9 ? "point" : ""});
+    if (contrast) {
+      // Even counts per kind, so the +1/-1 writes leave the data as it was.
+      for (int i = 0; i < 150; ++i)
+        steps.push_back({'A', "point"});
+      for (int i = 0; i < 160; ++i)
+        steps.push_back({'B', i % 40 == 20 ? "bulk" : ""});
+      for (int i = 0; i < 160; ++i)
+        steps.push_back({'C', i % 40 == 20 ? "bulk" : i % 2 ? "point" : ""});
+      for (int i = 0; i < 150; ++i)
+        steps.push_back({'D', i % 25 == 12 ? "point" : ""});
+    } else {
+      for (int i = 0; i < 150; ++i)
+        steps.push_back({'A', i % 10 == 9 ? "point" : ""});
+      for (int i = 0; i < 150; ++i)
+        steps.push_back({'B', i % 16 == 15 ? "bulk" : ""});
+      for (int i = 0; i < 150; ++i)
+        steps.push_back({'C', "point"});
+      for (int i = 0; i < 150; ++i)
+        steps.push_back({'D', i % 10 == 9 ? "point" : ""});
+    }
     auto ms_since = [](Clock::time_point t) {
       return std::chrono::duration<double, std::milli>(Clock::now() - t).count();
     };
@@ -189,7 +236,7 @@ int main(int argc, char **argv) {
         run("base", [&](const std::string &where, int delta, std::string &) {
           const auto t = Clock::now();
           if (!where.empty())
-            Exec(b, "UPDATE lineitem SET l_quantity = l_quantity + (" + std::to_string(delta) + ") WHERE " + where);
+            Exec(b, UpdateSql(delta, where));
           const auto r = Clock::now();
           query(b, ref_sql);
           read_ms = ms_since(r);
@@ -206,11 +253,8 @@ int main(int argc, char **argv) {
         run(label, [&](const std::string &where, int delta, std::string &action) {
           const auto t = Clock::now();
           if (!where.empty()) {
-            core::ClearMaintenanceDecisionLog();
-            runtime.ApplyWrite("UPDATE lineitem SET l_quantity = l_quantity + (" + std::to_string(delta) +
-                               ") WHERE " + where);
-            const auto log = core::LastMaintenanceDecision();
-            action = log && log->valid ? Name(log->selected) : "";
+            runtime.ApplyWrite(UpdateSql(delta, where));
+            action = CommitAction(runtime);
           }
           const auto r = Clock::now();
           query(c, aux_sql);
@@ -226,7 +270,10 @@ int main(int argc, char **argv) {
   }
 
   if (argc > 5 && std::string(argv[3]) == "phases") {
-    constexpr int kWrites = 4, kReadsPerWrite = 10;
+    // PHASES_WRITES (default 4): writes per shape and strategy.
+    const char *writes_env = std::getenv("PHASES_WRITES");
+    const int kWrites = writes_env && *writes_env ? std::max(1, std::atoi(writes_env)) : 4;
+    constexpr int kReadsPerWrite = 10;
     const std::string aux_sql = accelerator_codegen::test_support::CrossAccelAuxSql(q);
     const std::string ref_sql = accelerator_codegen::test_support::CrossAccelReferenceSql(q);
     auto ms_since = [](Clock::time_point t) {
@@ -252,8 +299,7 @@ int main(int argc, char **argv) {
         double w = 0, rd = 0;
         for (int i = 0; i < kWrites; ++i) {
           const auto t = Clock::now();
-          Exec(b, "UPDATE lineitem SET l_quantity = l_quantity + (" + std::to_string(i % 2 ? -1 : 1) +
-                      ") WHERE " + shape.where);
+          Exec(b, UpdateSql(i % 2 ? -1 : 1, shape.where));
           w += ms_since(t);
           for (int k = 0; k < kReadsPerWrite; ++k)
             rd += read(b, ref_sql);
@@ -263,16 +309,18 @@ int main(int argc, char **argv) {
         std::fflush(out);
       }
     }
-    const std::vector<std::pair<std::string, std::string>> strategies = {
+    std::vector<std::pair<std::string, std::string>> strategies = {
         {"selected", ""}, {"ApplyDelta", "ApplyDelta"},
         {"RebuildPartition", "RebuildPartition"}, {"RebuildAll", "RebuildAll"}};
+    // PHASES_SKIP_PARTITION=1: leave out forced RebuildPartition.
+    if (const char *skip = std::getenv("PHASES_SKIP_PARTITION"); skip && *skip == '1')
+      strategies.erase(strategies.begin() + 2);
     runtime.SetExpectedQueriesBeforeNextWrite(kReadsPerWrite);
     // Warm-up (unrecorded): every phase once, so no strategy runs cold.
     for (const auto &shape : shapes) {
       for (int i = 0; i < 2; ++i) {
         runtime.BeginWrite();
-        Exec(c, "UPDATE lineitem SET l_quantity = l_quantity + (" + std::to_string(i % 2 ? -1 : 1) +
-                    ") WHERE " + shape.where);
+        Exec(c, UpdateSql(i % 2 ? -1 : 1, shape.where));
         runtime.CommitWrite();
         read(c, aux_sql);
       }
@@ -288,13 +336,10 @@ int main(int argc, char **argv) {
           core::ClearMaintenanceDecisionLog();
           const auto t = Clock::now();
           runtime.BeginWrite();
-          Exec(c, "UPDATE lineitem SET l_quantity = l_quantity + (" + std::to_string(i % 2 ? -1 : 1) +
-                      ") WHERE " + shape.where);
+          Exec(c, UpdateSql(i % 2 ? -1 : 1, shape.where));
           runtime.CommitWrite();
           w += ms_since(t);
-          const auto log = core::LastMaintenanceDecision();
-          if (log && log->valid)
-            chosen = Name(log->selected);
+          chosen = CommitAction(runtime);
           for (int k = 0; k < kReadsPerWrite; ++k)
             rd += read(c, aux_sql);
         }
