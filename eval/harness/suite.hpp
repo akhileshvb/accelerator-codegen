@@ -407,6 +407,7 @@ inline std::string RowsJson(const Rows &rows, std::size_t limit = 5) {
 struct Tally {
   int checks = 0, mismatches = 0, order_mismatches = 0;
   int reference_errors = 0; // DuckDB itself could not evaluate the query: nothing to compare
+  int reference_errors_accel_answered = 0, reference_errors_accel_declined = 0; // what the accelerator did there
   std::vector<std::string> examples;
   std::vector<std::string> fallback_examples, reference_error_examples;
   std::map<std::string, int> fallback_kinds; // kernel_none | param_outside_type | host_conversion
@@ -421,8 +422,16 @@ struct Tally {
       q = query();
     } catch (const std::exception &e) {
       ++reference_errors;
+      bool answered = false; // the accelerator's own call on a query the engine cannot evaluate
+      try {
+        accel();
+        answered = true;
+      } catch (const std::exception &) {
+      }
+      ++(answered ? reference_errors_accel_answered : reference_errors_accel_declined);
       if (reference_error_examples.size() < 8)
         reference_error_examples.push_back("{\"at\":" + Json(where) + ",\"params\":" + Json(tuple) +
+                                           ",\"accel\":" + Json(answered ? "answered" : "declined") +
                                            ",\"error\":" + Json(std::string(e.what()).substr(0, 300)) + "}");
       return;
     }
@@ -478,6 +487,8 @@ struct Tally {
       kinds += (kinds.size() > 1 ? "," : "") + Json(k) + ":" + std::to_string(n);
     return "\"fallback_kinds\":" + kinds + "},\"fallback_examples\":" + Array(fallback_examples) + ",\"reference_error_examples\":" +
            Array(reference_error_examples) + "," + "\"checks\":" + std::to_string(checks) + ",\"reference_errors\":" + std::to_string(reference_errors) +
+           ",\"reference_errors_accel_answered\":" + std::to_string(reference_errors_accel_answered) +
+           ",\"reference_errors_accel_declined\":" + std::to_string(reference_errors_accel_declined) +
            ",\"mismatches\":" + std::to_string(mismatches) +
            ",\"order_mismatches\":" + std::to_string(order_mismatches) + ",\"examples\":" + ex + "]";
   }
