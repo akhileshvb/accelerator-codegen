@@ -85,12 +85,23 @@ pub open spec fn onew() -> spec_fn((KeyView, Ent)) -> int {
     |row: (KeyView, Ent)| 1int
 }
 
-/// The state of one parameter set: its companies and groups, and the sum of the companies' rounded totals.
+pub open spec fn aw() -> spec_fn((KeyView, Ent)) -> int {
+    |row: (KeyView, Ent)| row.1.abs@
+}
+
+pub open spec fn nw() -> spec_fn((KeyView, Ent)) -> int {
+    |row: (KeyView, Ent)| row.1.count@
+}
+
+/// The state of one parameter set: its companies and groups, the sum of the companies' rounded totals,
+/// and the companies' total magnitude and tuple count (what the engine's float-overflow check reads).
 pub struct Class {
     pub cmap: Index<Ent>,
     pub omap: Index<Ent>,
     pub sr: Wide,
     pub k: Wide,
+    pub ia: Wide,
+    pub tn: Wide,
     pub ord: Index<Ent>,
     pub oor: Wide,
 }
@@ -100,6 +111,8 @@ pub open spec fn cls_ok(c: Class, db: Db, p: Params) -> bool {
     &&& tmap_ok_f(false, c.omap, tf_of(db, p, false))
     &&& c.sr@ == sum(c.cmap.entries(), cvw())
     &&& c.k@ == sum(c.cmap.entries(), onew())
+    &&& c.ia@ == sum(c.cmap.entries(), aw())
+    &&& c.tn@ == sum(c.cmap.entries(), nw())
     &&& ord_ok(c.omap, c.ord)
     &&& c.oor@ == sum(c.omap.entries(), oorw())
 }

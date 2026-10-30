@@ -112,7 +112,7 @@ proof fn lemma_merge_step(inner: bool, before: Index<Ent>, after: Index<Ent>, db
 
 /// Merge the batch's entries of one map into the state's.  With `track`, the map's rounded totals are summed.
 #[verifier::spinoff_prover]
-pub fn merge_map(inner: bool, track: bool, track_o: bool, m: &mut Index<Ent>, dm: &Index<Ent>, sr: &mut Wide, kk: &mut Wide, ord: &mut Index<Ent>, oor: &mut Wide, c: &Consts,
+pub fn merge_map(inner: bool, track: bool, track_o: bool, m: &mut Index<Ent>, dm: &Index<Ent>, sr: &mut Wide, kk: &mut Wide, ia: &mut Wide, tn: &mut Wide, ord: &mut Index<Ent>, oor: &mut Wide, c: &Consts,
     Ghost(db): Ghost<Db>, Ghost(db2): Ghost<Db>, Ghost(p): Ghost<Params>, Ghost(l): Ghost<Seq<Ct>>)
     requires
         consts_ok(*c),
@@ -121,11 +121,13 @@ pub fn merge_map(inner: bool, track: bool, track_o: bool, m: &mut Index<Ent>, dm
         ledger_ok(l, db, db2),
         nums_dbl(db),
         nums_dbl(db2),
-        track ==> old(sr)@ == sum(old(m).entries(), cvw()) && old(kk)@ == sum(old(m).entries(), onew()),
+        track ==> old(sr)@ == sum(old(m).entries(), cvw()) && old(kk)@ == sum(old(m).entries(), onew())
+            && old(ia)@ == sum(old(m).entries(), aw()) && old(tn)@ == sum(old(m).entries(), nw()),
         track_o ==> ord_ok(*old(m), *old(ord)) && old(oor)@ == sum(old(m).entries(), oorw()),
     ensures
         tmap_ok_f(inner, *final(m), tf_of(db2, p, inner)),
-        track ==> final(sr)@ == sum(final(m).entries(), cvw()) && final(kk)@ == sum(final(m).entries(), onew()),
+        track ==> final(sr)@ == sum(final(m).entries(), cvw()) && final(kk)@ == sum(final(m).entries(), onew())
+            && final(ia)@ == sum(final(m).entries(), aw()) && final(tn)@ == sum(final(m).entries(), nw()),
         track_o ==> ord_ok(*final(m), *final(ord)) && final(oor)@ == sum(final(m).entries(), oorw()),
         !track_o ==> *final(ord) == *old(ord) && final(oor)@ == old(oor)@,
 {
@@ -154,7 +156,8 @@ pub fn merge_map(inner: bool, track: bool, track_o: bool, m: &mut Index<Ent>, dm
             forall|a: int, b: int| 0 <= a < b < ents.len() ==> (#[trigger] ents[a]).0 != (#[trigger] ents[b]).0,
             forall|pos: int| #![trigger ents[pos]] 0 <= pos < ents.len() ==> dm.at(ents[pos].0) == Some(ents[pos].1),
             tmap_ok_f(inner, *m, tf_mid(db, db2, p, inner, ents, i as int)),
-            track ==> sr@ == sum(m.entries(), cvw()) && kk@ == sum(m.entries(), onew()),
+            track ==> sr@ == sum(m.entries(), cvw()) && kk@ == sum(m.entries(), onew())
+                && ia@ == sum(m.entries(), aw()) && tn@ == sum(m.entries(), nw()),
             track_o ==> ord_ok(*m, *ord) && oor@ == sum(m.entries(), oorw()),
             !track_o ==> *ord == *old(ord) && oor@ == old(oor)@,
         decreases rows.len() - i,
@@ -215,6 +218,8 @@ pub fn merge_map(inner: bool, track: bool, track_o: bool, m: &mut Index<Ent>, dm
                     if track {
                         *sr = sr.sub(&o.cv);
                         *kk = kk.sub(&one);
+                        *ia = ia.sub(&o.abs);
+                        *tn = tn.sub(&o.count);
                     }
                     if track_o {
                         proof { assert(before.at(key.view()) == Some(**o)); lemma_ent_finite(old_opt->0, t1); }
@@ -231,6 +236,8 @@ pub fn merge_map(inner: bool, track: bool, track_o: bool, m: &mut Index<Ent>, dm
                     if found is Some {
                         lemma_sum_remove(&before, &*m, key.view(), cvw());
                         lemma_sum_remove(&before, &*m, key.view(), onew());
+                        lemma_sum_remove(&before, &*m, key.view(), aw());
+                        lemma_sum_remove(&before, &*m, key.view(), nw());
                     } else {
                         assert(m.entries() == before.entries());
                     }
@@ -250,6 +257,8 @@ pub fn merge_map(inner: bool, track: bool, track_o: bool, m: &mut Index<Ent>, dm
         } else {
             let e = ent_make(if inner { None } else { copy_name(&d.name) }, d.cik, c0, s0, a0, c, Ghost(t2));
             let ecv = e.cv.dup();
+            let eabs = e.abs.dup();
+            let ecount = e.count.dup();
             let none_bits = e.bits.is_none();
             proof {
                 assert(opt_bytes(e.name) == (if inner { None::<Seq<u8>> } else { opt_bytes(d.name) }));
@@ -276,6 +285,12 @@ pub fn merge_map(inner: bool, track: bool, track_o: bool, m: &mut Index<Ent>, dm
                     None => sr.dup(),
                 };
                 *sr = base.add(&ecv);
+                let (abase, nbase) = match &found {
+                    Some(o) => (ia.sub(&o.abs), tn.sub(&o.count)),
+                    None => (ia.dup(), tn.dup()),
+                };
+                *ia = abase.add(&eabs);
+                *tn = nbase.add(&ecount);
                 if found.is_none() { *kk = kk.add(&one); }
             }
             proof {
@@ -283,7 +298,11 @@ pub fn merge_map(inner: bool, track: bool, track_o: bool, m: &mut Index<Ent>, dm
                 if track {
                     lemma_sum_put(&before, &*m, key.view(), newe, cvw());
                     lemma_sum_put(&before, &*m, key.view(), newe, onew());
+                    lemma_sum_put(&before, &*m, key.view(), newe, aw());
+                    lemma_sum_put(&before, &*m, key.view(), newe, nw());
                     assert(cvw()((key.view(), newe)) == newe.cv@);
+                    assert(aw()((key.view(), newe)) == newe.abs@);
+                    assert(nw()((key.view(), newe)) == newe.count@);
                 }
                 if track_o {
                     lemma_sum_put(&before, &*m, key.view(), newe, oorw());
@@ -374,9 +393,9 @@ pub fn merge_class(old: Option<Arc<Class>>, dc: &DCls, c: &Consts,
     ensures
         match r { Some(cl) => cls_ok(cl, db2, p), None => zero_p(db2, p) },
 {
-    let (mut cmap, mut omap, mut sr, mut kk, mut ord, mut oor) = match &old {
-        Some(oc) => (oc.cmap.share(), oc.omap.share(), oc.sr.dup(), oc.k.dup(), oc.ord.share(), oc.oor.dup()),
-        None => (Index::new(), Index::new(), Wide::zero(), Wide::zero(), Index::new(), Wide::zero()),
+    let (mut cmap, mut omap, mut sr, mut kk, mut ia, mut tn, mut ord, mut oor) = match &old {
+        Some(oc) => (oc.cmap.share(), oc.omap.share(), oc.sr.dup(), oc.k.dup(), oc.ia.dup(), oc.tn.dup(), oc.ord.share(), oc.oor.dup()),
+        None => (Index::new(), Index::new(), Wide::zero(), Wide::zero(), Wide::zero(), Wide::zero(), Index::new(), Wide::zero()),
     };
     proof {
         match &old {
@@ -392,16 +411,20 @@ pub fn merge_class(old: Option<Arc<Class>>, dc: &DCls, c: &Consts,
                 assert(cmap.entries() =~= Seq::<(KeyView, Ent)>::empty());
                 lemma_sum_empty(cmap.entries(), cvw());
                 lemma_sum_empty(cmap.entries(), onew());
+                lemma_sum_empty(cmap.entries(), aw());
+                lemma_sum_empty(cmap.entries(), nw());
                 assert(omap.entries() =~= Seq::<(KeyView, Ent)>::empty());
                 lemma_sum_empty(omap.entries(), oorw());
                 assert(ord_ok(omap, ord));
             },
         }
     }
-    merge_map(true, true, false, &mut cmap, &dc.cd, &mut sr, &mut kk, &mut ord, &mut oor, c, Ghost(db), Ghost(db2), Ghost(p), Ghost(l));
+    merge_map(true, true, false, &mut cmap, &dc.cd, &mut sr, &mut kk, &mut ia, &mut tn, &mut ord, &mut oor, c, Ghost(db), Ghost(db2), Ghost(p), Ghost(l));
     let mut d1 = Wide::zero();
     let mut d2 = Wide::zero();
-    merge_map(false, false, true, &mut omap, &dc.od, &mut d1, &mut d2, &mut ord, &mut oor, c, Ghost(db), Ghost(db2), Ghost(p), Ghost(l));
+    let mut d3 = Wide::zero();
+    let mut d4 = Wide::zero();
+    merge_map(false, false, true, &mut omap, &dc.od, &mut d1, &mut d2, &mut d3, &mut d4, &mut ord, &mut oor, c, Ghost(db), Ghost(db2), Ghost(p), Ghost(l));
     if cmap.is_empty() && omap.is_empty() {
         proof {
             lemma_no_entries(cmap);
@@ -413,7 +436,7 @@ pub fn merge_class(old: Option<Arc<Class>>, dc: &DCls, c: &Consts,
         }
         None
     } else {
-        Some(Class { cmap, omap, sr, k: kk, ord, oor })
+        Some(Class { cmap, omap, sr, k: kk, ia, tn, ord, oor })
     }
 }
 

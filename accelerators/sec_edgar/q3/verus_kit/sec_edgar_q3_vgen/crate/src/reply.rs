@@ -10,6 +10,8 @@ use verus_prooflib::wide::Wide;
 use crate::choice::*;
 use crate::ent::*;
 use crate::f64bits::*;
+use crate::engine::*;
+use crate::tot::*;
 use crate::fin::*;
 use crate::gen_obligations::*;
 use crate::gen_spec::*;
@@ -214,6 +216,7 @@ proof fn lemma_rows_ok(db: Db, p: Params, es: Seq<Ent>, os: Seq<Ent>, cvs: int, 
 pub proof fn lemma_full3(db: Db, p: Params, es: Seq<Ent>, os: Seq<Ent>,
     q: int, cvs: int, bits_s: Option<u64>, cands: Seq<Ent>, sorted: Seq<int>)
     requires
+        engine_safe(db, p),
         ients_ok(db, p, es),
         gents_ok(db, p, os),
         es.len() >= 1 ==> 2 * abs(q * es.len() as int - sum(es, |e: Ent| e.cv@)) <= es.len() as int,
@@ -227,6 +230,7 @@ pub proof fn lemma_full3(db: Db, p: Params, es: Seq<Ent>, os: Seq<Ent>,
     ensures
         full_result(db, p, sorted_rows(cands, sorted)),
 {
+    reveal(engine_safe);
     lemma_chosen(db, p, es, os, q, cvs, bits_s);
     lemma_rows_ok(db, p, es, os, cvs, cands, sorted);
     lemma_cand_order(cands, sorted);
@@ -360,10 +364,11 @@ pub fn cands_of_rows(rows: &Vec<(Key, Arc<Ent>)>, cvs: &Wide, Ghost(os): Ghost<S
 
 /// The answer of a class: the first 100 groups above the scalar in order of their totals, or None when one of
 /// them has a total that is no double.
-#[verifier::rlimit(200)]
+#[verifier::rlimit(1000)]
 pub fn finish_scan(cls: &Class, c: &Consts, Ghost(db): Ghost<Db>, Ghost(p): Ghost<Params>)
     -> (r: Option<Vec<Out>>)
     requires
+        engine_safe(db, p),
         cls_ok(*cls, db, p),
         nums_dbl(db),
         consts_ok(*c),
@@ -712,6 +717,7 @@ proof fn lemma_identity_sorted(cands: Seq<Ent>)
 #[verifier::rlimit(100)]
 pub proof fn lemma_fast_full(db: Db, p: Params, cls: Class, q: int, cvs: int, bits_s: Option<u64>)
     requires
+        engine_safe(db, p),
         cls_ok(cls, db, p),
         nums_dbl(db),
         cls.oor@ == 0,
@@ -747,6 +753,7 @@ pub proof fn lemma_fast_full(db: Db, p: Params, cls: Class, q: int, cvs: int, bi
 #[verifier::rlimit(100)]
 pub fn finish_fast(cls: &Class, c: &Consts, Ghost(db): Ghost<Db>, Ghost(p): Ghost<Params>) -> (r: Option<Vec<Out>>)
     requires
+        engine_safe(db, p),
         cls_ok(*cls, db, p),
         nums_dbl(db),
         consts_ok(*c),
@@ -857,6 +864,12 @@ pub fn finish(cls: &Class, c: &Consts, Ghost(db): Ghost<Db>, Ghost(p): Ghost<Par
         r matches Some(out) ==> forall|i: int| 0 <= i < out.len() ==> out_fits(#[trigger] out_view(out@)[i]),
         r is None ==> !answer_fits(db, p),
 {
+    proof { lemma_class_totals(db, p, *cls); }
+    if !tot_check(&cls.ia, &cls.tn, c) {
+        proof { lemma_tot_unsafe(db, p, cls.ia@, cls.tn@); }
+        return None;
+    }
+    proof { lemma_tot_safe(db, p, cls.ia@, cls.tn@); }
     if cls.oor.is_zero() { finish_fast(cls, c, Ghost(db), Ghost(p)) } else { finish_scan(cls, c, Ghost(db), Ghost(p)) }
 }
 
