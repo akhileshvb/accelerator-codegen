@@ -106,14 +106,22 @@ Rows RunQuery(PgConn &c, const std::string &query_sql, const std::string &tuple)
 
 float_bounds::Probe RunProbe(PgConn &c, const std::string &bounds_sql, const std::string &tuple) {
   auto r = c.Run(bounds_sql, tuple);
+  for (std::size_t j = 0; j < r.names.size(); ++j) // the judge reads booleans as DuckDB prints them
+    if (r.names[j] == "__may" || r.names[j] == "__must")
+      for (auto &row : r.rows)
+        row[j] = row[j] == "t" ? "true" : row[j] == "f" ? "false" : row[j];
   return {r.names, r.rows};
 }
 
 // The bounds queries' helpers (DuckDB's fsum, fl_delta macro): an exact sum of the DOUBLEs' shortest
-// decimal forms, which is within the bound's slack of their exact sum.
+// decimal forms, which is within the bound's slack of their exact sum.  fl_delta is computed in numeric:
+// Postgres float8 arithmetic raises on underflow where DuckDB's rounds to a denormal or 0.
 constexpr const char *kBoundsPrelude = R"SQL(
 CREATE OR REPLACE FUNCTION fl_delta(m double precision, a double precision) RETURNS double precision
-  LANGUAGE sql IMMUTABLE AS 'SELECT a * ((m * 1.1102230246251565e-16) / (1 - m * 1.1102230246251565e-16) + 4.4408920985006262e-16)';
+  LANGUAGE sql IMMUTABLE AS $$
+    SELECT CASE WHEN r < 2.2250738585072014e-308 THEN 0 ELSE r::double precision END
+    FROM (SELECT a::text::numeric * ((m::text::numeric * 1.1102230246251565e-16) /
+                                     (1 - m::text::numeric * 1.1102230246251565e-16) + 4.4408920985006262e-16) AS r) t $$;
 CREATE OR REPLACE FUNCTION fsum_step(s numeric, v double precision) RETURNS numeric
   LANGUAGE sql IMMUTABLE AS 'SELECT s + v::text::numeric';
 CREATE OR REPLACE FUNCTION fsum_final(s numeric) RETURNS double precision

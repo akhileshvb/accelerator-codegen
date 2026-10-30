@@ -158,7 +158,7 @@ in_container() { # binary args...
   for arg in "$@"; do args+=("${arg//${ACCEL_BUILD_DIR}//accel-build/accel}"); done
   docker exec "${NAME}" test -f "/accel-build/accel/${binary}" && binary="/accel-build/accel/${binary}"
   while IFS= read -r var; do flags+=(-e "${var}"); done < <(
-    env | grep -E '^(ACCEL_(PG_|SLOT_|FORCE_)|TPCH_|PGOPTIONS)' || true)
+    env | grep -E '^(ACCEL_(PG_|SLOT_|FORCE_)|TPCH_|VERUS_KIT_|PGOPTIONS)' || true)
   docker exec "${flags[@]}" \
     -e ACCEL_PG_DOCKER=1 -e PGHOST=127.0.0.1 -e PGPORT=5432 -e PGUSER=postgres -e PGPASSWORD="${PASSWORD}" \
     -e TPCH_PG_DB="${DB}" -e ACCEL_ENGINE_NAME=postgres -e ACCEL_WORKLOAD_KIND=aux_state \

@@ -10,8 +10,8 @@ WITH subs AS (
     WHERE n2.uom = $2 AND s2.fy = $1 AND n2.value IS NOT NULL
     GROUP BY s2.cik
 ), thr AS (
-    SELECT fsum(e) / COUNT(*) - fsum(d) / COUNT(*) - fl_delta(COUNT(*), SUM(ABS(e) + d)) / COUNT(*) AS lo,
-           fsum(e) / COUNT(*) + fsum(d) / COUNT(*) + fl_delta(COUNT(*), SUM(ABS(e) + d)) / COUNT(*) AS hi
+    SELECT fsum(e) / NULLIF(COUNT(*), 0) - fsum(d) / NULLIF(COUNT(*), 0) - fl_delta(COUNT(*), SUM(ABS(e) + d)) / NULLIF(COUNT(*), 0) AS lo,
+           fsum(e) / NULLIF(COUNT(*), 0) + fsum(d) / NULLIF(COUNT(*), 0) + fl_delta(COUNT(*), SUM(ABS(e) + d)) / NULLIF(COUNT(*), 0) AS hi
     FROM subs
 )
 SELECT s.name, s.cik, fsum(n.value) AS total_value,
