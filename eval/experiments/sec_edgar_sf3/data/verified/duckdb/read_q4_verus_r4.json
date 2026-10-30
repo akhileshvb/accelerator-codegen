@@ -1,0 +1,88 @@
+{
+ "mode": "read",
+ "accel": "sec_edgar_q4_vgen",
+ "function": "accel_sec_edgar_q4_vgen",
+ "store": "verus",
+ "build_ms": 1033550.0,
+ "state_mb": -396.102,
+ "rss_mb_settled_after": 4255.78,
+ "rss_mb_settled_freed": 4651.88,
+ "rss_mb_peak_build": 31142.4,
+ "speedup_geomean": 51.82064194643726,
+ "mismatches": 0,
+ "hits": 0,
+ "fallbacks": 0,
+ "cases": [
+  {
+   "args": "9000, 9999, 'EQ', 'pure'",
+   "base_us": 9603.209,
+   "accel_us": 458.551,
+   "base_rows": 0,
+   "accel_rows": 0,
+   "match": true
+  },
+  {
+   "args": "2000, 3999, 'CI', 'CAD'",
+   "base_us": 150697.044,
+   "accel_us": 966.384,
+   "base_rows": 2,
+   "accel_rows": 2,
+   "match": true
+  },
+  {
+   "args": "9000, 9999, 'EQ', 'EUR'",
+   "base_us": 9064.952,
+   "accel_us": 431.591,
+   "base_rows": 0,
+   "accel_rows": 0,
+   "match": true
+  },
+  {
+   "args": "7000, 8999, 'BS', 'CNY'",
+   "base_us": 193391.727,
+   "accel_us": 60784.393,
+   "base_rows": 500,
+   "accel_rows": 500,
+   "match": true
+  },
+  {
+   "args": "1500, 1799, 'IS', 'pure'",
+   "base_us": 115093.906,
+   "accel_us": 521.874,
+   "base_rows": 0,
+   "accel_rows": 0,
+   "match": true
+  },
+  {
+   "args": "6000, 6799, 'BS', 'pure'",
+   "base_us": 169848.105,
+   "accel_us": 3867.304,
+   "base_rows": 8,
+   "accel_rows": 8,
+   "match": true
+  },
+  {
+   "args": "5000, 5199, 'EQ', 'CNY'",
+   "base_us": 120684.644,
+   "accel_us": 554.296,
+   "base_rows": 0,
+   "accel_rows": 0,
+   "match": true
+  },
+  {
+   "args": "7000, 8999, 'BS', 'pure'",
+   "base_us": 132165.05,
+   "accel_us": 1169.678,
+   "base_rows": 1,
+   "accel_rows": 1,
+   "match": true
+  }
+ ],
+ "wall_s": 1096.0,
+ "query": 4,
+ "system": "verus",
+ "rep": 4,
+ "seed": 2440513244,
+ "note": "",
+ "counts_cover_all_draws": true
+}

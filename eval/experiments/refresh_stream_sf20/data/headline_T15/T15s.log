@@ -1,0 +1,159 @@
+parameter draws: 1 repetition(s) x 8 sets, seeds 2576330833..2576330833
+concurrent q1 base rep 0 11:41:04
+  qps 3.3  p50 1206.20ms p99 15046.70ms  writes 28 (0.5/s; 35 incl. warmup) commit p50 18.33ms p99 2262.70ms max 2262.7ms  slots 4 (0.0667/s) rows touched 600883 (10015/s)
+concurrent q1 stateless rep 0 11:42:43
+  qps 7.6  p50 1039.49ms p99 1167.44ms  writes 28 (0.5/s; 35 incl. warmup) commit p50 6.88ms p99 892.22ms max 892.2ms  slots 4 (0.0667/s) rows touched 600883 (10015/s)
+concurrent q1 verus rep 0 11:44:29
+  qps 14887.0  p50 0.50ms p99 0.75ms  writes 28 (0.5/s; 35 incl. warmup) commit p50 8.93ms p99 1936.42ms max 1936.4ms  slots 4 (0.0667/s) rows touched 600883 (10015/s)  invalidating 0  maint {'none': 35}  hits 1116657 fallbacks 0  slowest commit: rf1: none
+concurrent q2 base rep 0 11:47:01
+  qps 36.3  p50 207.29ms p99 378.63ms  writes 28 (0.5/s; 35 incl. warmup) commit p50 12.53ms p99 1130.03ms max 1130.0ms  slots 4 (0.0667/s) rows touched 600883 (10015/s)
+concurrent q2 stateless rep 0 11:48:37
+  qps 41.2  p50 189.90ms p99 286.35ms  writes 28 (0.5/s; 35 incl. warmup) commit p50 7.93ms p99 861.78ms max 861.8ms  slots 4 (0.0667/s) rows touched 600883 (10015/s)
+concurrent q2 verus rep 0 11:50:16
+  qps 295.1  p50 26.97ms p99 44.24ms  writes 28 (0.5/s; 35 incl. warmup) commit p50 24.79ms p99 709.61ms max 709.6ms  slots 4 (0.0667/s) rows touched 600883 (10015/s)  invalidating 0  maint {'none': 35}  hits 22332 fallbacks 0  slowest commit: rf1: none
+concurrent q3 base rep 0 11:54:15
+  qps 6.9  p50 860.33ms p99 5063.85ms  writes 28 (0.5/s; 35 incl. warmup) commit p50 18.48ms p99 1404.60ms max 1404.6ms  slots 4 (0.0667/s) rows touched 600883 (10015/s)
+concurrent q3 stateless rep 0 11:55:53
+  qps 7.7  p50 999.93ms p99 1186.19ms  writes 28 (0.5/s; 35 incl. warmup) commit p50 5.35ms p99 888.27ms max 888.3ms  slots 4 (0.0667/s) rows touched 600883 (10015/s)
+concurrent q3 verus rep 0 11:57:38
+  qps 7352.9  p50 0.85ms p99 2.09ms  writes 28 (0.5/s; 35 incl. warmup) commit p50 7.67ms p99 2772.65ms max 2772.7ms  slots 4 (0.0667/s) rows touched 600883 (10015/s)  invalidating 0  maint {'none': 35}  hits 551674 fallbacks 0  slowest commit: rf1: none
+concurrent q4 base rep 0 12:05:56
+  qps 7.6  p50 851.67ms p99 2825.07ms  writes 28 (0.5/s; 35 incl. warmup) commit p50 17.08ms p99 1718.31ms max 1718.3ms  slots 4 (0.0667/s) rows touched 600883 (10015/s)
+concurrent q4 stateless rep 0 12:07:39
+  qps 9.1  p50 873.55ms p99 935.42ms  writes 28 (0.5/s; 35 incl. warmup) commit p50 6.89ms p99 778.80ms max 778.8ms  slots 4 (0.0667/s) rows touched 600883 (10015/s)
+concurrent q4 verus rep 0 12:09:23
+  qps 18479.0  p50 0.41ms p99 0.58ms  writes 28 (0.5/s; 35 incl. warmup) commit p50 6.40ms p99 1153.74ms max 1153.7ms  slots 4 (0.0667/s) rows touched 600883 (10015/s)  invalidating 0  maint {'none': 35}  hits 1386941 fallbacks 0  slowest commit: rf1: none
+concurrent q5 base rep 0 12:12:00
+  qps 6.3  p50 943.12ms p99 5050.08ms  writes 28 (0.5/s; 35 incl. warmup) commit p50 21.76ms p99 1575.36ms max 1575.4ms  slots 4 (0.0667/s) rows touched 600883 (10015/s)
+concurrent q5 stateless rep 0 12:13:38
+  qps 6.2  p50 1264.77ms p99 1316.59ms  writes 28 (0.5/s; 35 incl. warmup) commit p50 6.49ms p99 846.44ms max 846.4ms  slots 4 (0.0667/s) rows touched 600883 (10015/s)
+concurrent q5 verus rep 0 12:15:24
+  qps 13501.5  p50 0.51ms p99 0.85ms  writes 28 (0.5/s; 35 incl. warmup) commit p50 33.63ms p99 1644.42ms max 1644.4ms  slots 4 (0.0667/s) rows touched 600883 (10015/s)  invalidating 0  maint {'none': 35}  hits 1010953 fallbacks 0  slowest commit: rf1: none
+concurrent q6 base rep 0 12:17:30
+  qps 19.1  p50 211.15ms p99 2592.09ms  writes 28 (0.5/s; 35 incl. warmup) commit p50 20.07ms p99 1742.80ms max 1742.8ms  slots 4 (0.0667/s) rows touched 600883 (10015/s)
+concurrent q6 stateless rep 0 12:19:05
+  qps 14.2  p50 566.34ms p99 651.02ms  writes 28 (0.5/s; 35 incl. warmup) commit p50 7.52ms p99 820.59ms max 820.6ms  slots 4 (0.0667/s) rows touched 600883 (10015/s)
+concurrent q6 verus rep 0 12:20:44
+  qps 9672.2  p50 0.73ms p99 1.39ms  writes 28 (0.5/s; 35 incl. warmup) commit p50 7.52ms p99 976.71ms max 976.7ms  slots 4 (0.0667/s) rows touched 600883 (10015/s)  invalidating 0  maint {'none': 35}  hits 721233 fallbacks 0  slowest commit: rf1: none
+concurrent q7 base rep 0 12:22:54
+  qps 8.4  p50 689.43ms p99 3773.25ms  writes 28 (0.5/s; 35 incl. warmup) commit p50 18.09ms p99 1652.88ms max 1652.9ms  slots 4 (0.0667/s) rows touched 600883 (10015/s)
+concurrent q7 stateless rep 0 12:24:31
+  qps 4.3  p50 1838.21ms p99 1881.21ms  writes 28 (0.5/s; 35 incl. warmup) commit p50 7.03ms p99 841.52ms max 841.5ms  slots 4 (0.0667/s) rows touched 600883 (10015/s)
+concurrent q7 verus rep 0 12:26:18
+  qps 14970.3  p50 0.41ms p99 0.58ms  writes 28 (0.5/s; 35 incl. warmup) commit p50 26.76ms p99 4051.48ms max 4051.5ms  slots 4 (0.0667/s) rows touched 600883 (10015/s)  invalidating 0  maint {'none': 35}  hits 1118874 fallbacks 0  slowest commit: rf1: none
+concurrent q8 base rep 0 12:28:47
+  qps 8.1  p50 799.59ms p99 3390.25ms  writes 28 (0.5/s; 35 incl. warmup) commit p50 18.02ms p99 1889.13ms max 1889.1ms  slots 4 (0.0667/s) rows touched 600883 (10015/s)
+concurrent q8 stateless rep 0 12:30:24
+  qps 6.8  p50 1138.04ms p99 1233.07ms  writes 28 (0.5/s; 35 incl. warmup) commit p50 5.57ms p99 878.43ms max 878.4ms  slots 4 (0.0667/s) rows touched 600883 (10015/s)
+concurrent q8 verus rep 0 12:32:09
+  qps 17997.6  p50 0.40ms p99 0.56ms  writes 28 (0.5/s; 35 incl. warmup) commit p50 38.77ms p99 1824.38ms max 1824.4ms  slots 4 (0.0667/s) rows touched 600883 (10015/s)  invalidating 0  maint {'none': 35}  hits 1350034 fallbacks 0  slowest commit: rf1: none
+concurrent q9 base rep 0 12:36:16
+  qps 1.6  p50 2624.35ms p99 24818.80ms  writes 28 (0.5/s; 35 incl. warmup) commit p50 21.03ms p99 1368.07ms max 1368.1ms  slots 4 (0.0667/s) rows touched 600883 (10015/s)
+concurrent q9 stateless rep 0 12:38:02
+  qps 3.8  p50 2020.28ms p99 2119.58ms  writes 28 (0.5/s; 35 incl. warmup) commit p50 5.41ms p99 744.91ms max 744.9ms  slots 4 (0.0667/s) rows touched 600883 (10015/s)
+concurrent q9 verus rep 0 12:39:58
+  qps 8638.2  p50 0.62ms p99 1.80ms  writes 28 (0.5/s; 35 incl. warmup) commit p50 37.47ms p99 4097.81ms max 4097.8ms  slots 4 (0.0667/s) rows touched 600883 (10015/s)  invalidating 0  maint {'none': 35}  hits 638012 fallbacks 0  slowest commit: rf1: none
+concurrent q10 base rep 0 12:48:20
+  qps 4.0  p50 1367.28ms p99 8295.24ms  writes 28 (0.5/s; 35 incl. warmup) commit p50 20.65ms p99 2129.83ms max 2129.8ms  slots 4 (0.0667/s) rows touched 600883 (10015/s)
+concurrent q10 stateless rep 0 12:49:59
+  qps 8.4  p50 931.65ms p99 1024.20ms  writes 28 (0.5/s; 35 incl. warmup) commit p50 7.07ms p99 783.08ms max 783.1ms  slots 4 (0.0667/s) rows touched 600883 (10015/s)
+concurrent q10 verus rep 0 12:51:45
+  qps 9548.6  p50 0.65ms p99 1.26ms  writes 28 (0.5/s; 35 incl. warmup) commit p50 10.58ms p99 3647.74ms max 3647.7ms  slots 4 (0.0667/s) rows touched 600883 (10015/s)  invalidating 0  maint {'none': 35}  hits 720478 fallbacks 0  slowest commit: rf1: none
+concurrent q11 base rep 0 13:01:12
+  qps 52.0  p50 110.48ms p99 644.25ms  writes 28 (0.5/s; 35 incl. warmup) commit p50 14.64ms p99 1206.94ms max 1206.9ms  slots 4 (0.0667/s) rows touched 600883 (10015/s)
+concurrent q11 stateless rep 0 13:02:47
+  qps 53.5  p50 146.05ms p99 225.76ms  writes 28 (0.5/s; 35 incl. warmup) commit p50 5.10ms p99 736.24ms max 736.2ms  slots 4 (0.0667/s) rows touched 600883 (10015/s)
+concurrent q11 verus rep 0 13:04:24
+  qps 1677.0  p50 3.86ms p99 14.34ms  writes 28 (0.5/s; 35 incl. warmup) commit p50 10.36ms p99 1037.67ms max 1037.7ms  slots 4 (0.0667/s) rows touched 600883 (10015/s)  invalidating 0  maint {'none': 35}  hits 125826 fallbacks 0  slowest commit: rf1: none
+concurrent q12 base rep 0 13:09:12
+  qps 9.0  p50 553.87ms p99 5338.35ms  writes 28 (0.5/s; 35 incl. warmup) commit p50 23.27ms p99 1607.45ms max 1607.5ms  slots 4 (0.0667/s) rows touched 600883 (10015/s)
+concurrent q12 stateless rep 0 13:10:48
+  qps 6.4  p50 1230.23ms p99 1331.20ms  writes 28 (0.5/s; 35 incl. warmup) commit p50 5.64ms p99 835.96ms max 836.0ms  slots 4 (0.0667/s) rows touched 600883 (10015/s)
+concurrent q12 verus rep 0 13:12:33
+  qps 15355.5  p50 0.49ms p99 0.74ms  writes 28 (0.5/s; 35 incl. warmup) commit p50 6.42ms p99 1202.75ms max 1202.8ms  slots 4 (0.0667/s) rows touched 600883 (10015/s)  invalidating 0  maint {'none': 35}  hits 1145972 fallbacks 0  slowest commit: rf1: none
+concurrent q13 base rep 0 13:14:21
+  qps 2.1  p50 2440.99ms p99 9527.17ms  writes 28 (0.5/s; 35 incl. warmup) commit p50 24.90ms p99 1659.54ms max 1659.5ms  slots 4 (0.0667/s) rows touched 600883 (10015/s)
+concurrent q13 stateless rep 0 13:16:05
+  qps 2.5  p50 3036.51ms p99 3218.65ms  writes 28 (0.5/s; 35 incl. warmup) commit p50 7.75ms p99 757.18ms max 757.2ms  slots 4 (0.0667/s) rows touched 600883 (10015/s)
+concurrent q13 verus rep 0 13:18:03
+  qps 17597.5  p50 0.42ms p99 0.62ms  writes 28 (0.5/s; 35 incl. warmup) commit p50 6.55ms p99 1519.02ms max 1519.0ms  slots 4 (0.0667/s) rows touched 600883 (10015/s)  invalidating 0  maint {'none': 35}  hits 1319467 fallbacks 0  slowest commit: rf1: none
+concurrent q14 base rep 0 13:20:33
+  qps 10.7  p50 562.85ms p99 3154.03ms  writes 28 (0.5/s; 35 incl. warmup) commit p50 19.29ms p99 1617.53ms max 1617.5ms  slots 4 (0.0667/s) rows touched 600883 (10015/s)
+concurrent q14 stateless rep 0 13:22:09
+  qps 12.9  p50 614.15ms p99 754.72ms  writes 28 (0.5/s; 35 incl. warmup) commit p50 6.97ms p99 670.77ms max 670.8ms  slots 4 (0.0667/s) rows touched 600883 (10015/s)
+concurrent q14 verus rep 0 13:23:48
+  qps 18268.1  p50 0.39ms p99 0.54ms  writes 28 (0.5/s; 35 incl. warmup) commit p50 9.91ms p99 2394.14ms max 2394.1ms  slots 4 (0.0667/s) rows touched 600883 (10015/s)  invalidating 0  maint {'none': 35}  hits 1381864 fallbacks 0  slowest commit: rf1: none
+concurrent q15 base rep 0 13:36:28
+  qps 12.2  p50 584.99ms p99 1919.40ms  writes 28 (0.5/s; 35 incl. warmup) commit p50 20.76ms p99 1485.84ms max 1485.8ms  slots 4 (0.0667/s) rows touched 600883 (10015/s)
+concurrent q15 stateless rep 0 13:38:04
+  qps 10.0  p50 791.36ms p99 844.15ms  writes 28 (0.5/s; 35 incl. warmup) commit p50 7.46ms p99 945.35ms max 945.4ms  slots 4 (0.0667/s) rows touched 600883 (10015/s)
+concurrent q15 verus rep 0 13:39:44
+  qps 34.9  p50 228.56ms p99 1453.96ms  writes 28 (0.5/s; 35 incl. warmup) commit p50 9.98ms p99 2038.20ms max 2038.2ms  slots 4 (0.0667/s) rows touched 600883 (10015/s)  invalidating 0  maint {'none': 35}  hits 2608 fallbacks 0  slowest commit: rf1: none
+concurrent q16 base rep 0 13:42:34
+  qps 11.0  p50 584.54ms p99 1955.45ms  writes 28 (0.5/s; 35 incl. warmup) commit p50 16.55ms p99 1548.80ms max 1548.8ms  slots 4 (0.0667/s) rows touched 600883 (10015/s)
+concurrent q16 stateless rep 0 13:44:13
+  qps 27.2  p50 291.60ms p99 341.48ms  writes 28 (0.5/s; 35 incl. warmup) commit p50 5.50ms p99 935.74ms max 935.7ms  slots 4 (0.0667/s) rows touched 600883 (10015/s)
+concurrent q16 verus rep 0 13:45:53
+  qps 222.2  p50 30.92ms p99 81.94ms  writes 28 (0.5/s; 35 incl. warmup) commit p50 54.38ms p99 992.94ms max 992.9ms  slots 4 (0.0667/s) rows touched 600883 (10015/s)  invalidating 0  maint {'none': 35}  hits 16674 fallbacks 0  slowest commit: rf1: none
+concurrent q17 base rep 0 13:50:34
+  qps 1.0  p50 4104.38ms p99 25511.20ms  writes 28 (0.5/s; 35 incl. warmup) commit p50 23.63ms p99 961.64ms max 1109.8ms  slots 4 (0.0667/s) rows touched 600883 (10015/s)
+concurrent q17 stateless rep 0 13:52:30
+  qps 11.7  p50 668.34ms p99 729.10ms  writes 28 (0.5/s; 35 incl. warmup) commit p50 6.78ms p99 849.27ms max 849.3ms  slots 4 (0.0667/s) rows touched 600883 (10015/s)
+concurrent q17 verus rep 0 13:54:25
+  qps 13897.4  p50 0.37ms p99 0.53ms  writes 29 (0.5/s; 35 incl. warmup) commit p50 10.97ms p99 6713.99ms max 6714.0ms  slots 4 (0.0667/s) rows touched 600887 (10015/s)  invalidating 0  maint {'none': 35}  hits 844861 fallbacks 0  slowest commit: rf1: none
+concurrent q18 base rep 0 13:57:17
+  qps 2.2  p50 3336.65ms p99 3906.83ms  writes 28 (0.5/s; 35 incl. warmup) commit p50 8.68ms p99 920.64ms max 920.6ms  slots 4 (0.0667/s) rows touched 600883 (10015/s)
+concurrent q18 stateless rep 0 13:58:57
+  qps 7.5  p50 1043.56ms p99 1095.33ms  writes 28 (0.5/s; 35 incl. warmup) commit p50 8.68ms p99 810.61ms max 810.6ms  slots 4 (0.0667/s) rows touched 600883 (10015/s)
+concurrent q18 verus rep 0 14:00:38
+  qps 7922.1  p50 0.76ms p99 2.55ms  writes 28 (0.5/s; 35 incl. warmup) commit p50 6.44ms p99 1405.05ms max 1405.0ms  slots 4 (0.0667/s) rows touched 600883 (10015/s)  invalidating 0  maint {'none': 35}  hits 597463 fallbacks 0  slowest commit: rf1: none
+concurrent q19 base rep 0 14:04:43
+  qps 4.9  p50 1103.86ms p99 8873.95ms  writes 28 (0.5/s; 35 incl. warmup) commit p50 20.38ms p99 2063.27ms max 2063.3ms  slots 4 (0.0667/s) rows touched 600883 (10015/s)
+concurrent q19 stateless rep 0 14:06:21
+  qps 4.2  p50 1859.47ms p99 2001.65ms  writes 28 (0.5/s; 35 incl. warmup) commit p50 7.44ms p99 782.08ms max 782.1ms  slots 4 (0.0667/s) rows touched 600883 (10015/s)
+concurrent q19 verus rep 0 14:08:11
+  qps 13721.2  p50 0.50ms p99 0.93ms  writes 28 (0.5/s; 35 incl. warmup) commit p50 8.33ms p99 923.28ms max 923.3ms  slots 4 (0.0667/s) rows touched 600883 (10015/s)  invalidating 0  maint {'none': 35}  hits 1029223 fallbacks 0  slowest commit: rf1: none
+concurrent q20 base rep 0 14:09:49
+  qps 3.9  p50 1185.11ms p99 8079.68ms  writes 28 (0.5/s; 35 incl. warmup) commit p50 22.21ms p99 2182.47ms max 2182.5ms  slots 4 (0.0667/s) rows touched 600883 (10015/s)
+concurrent q20 stateless rep 0 14:11:28
+  qps 5.4  p50 1440.40ms p99 1553.86ms  writes 28 (0.5/s; 35 incl. warmup) commit p50 6.83ms p99 907.68ms max 907.7ms  slots 4 (0.0667/s) rows touched 600883 (10015/s)
+concurrent q20 verus rep 0 14:13:16
+  qps 123.8  p50 51.09ms p99 89.56ms  writes 28 (0.5/s; 35 incl. warmup) commit p50 14.11ms p99 3243.95ms max 3243.9ms  slots 4 (0.0667/s) rows touched 600883 (10015/s)  invalidating 0  maint {'none': 35}  hits 9360 fallbacks 0  slowest commit: rf1: none
+concurrent q21 base rep 0 14:17:51
+  qps 2.1  p50 3221.48ms p99 7180.24ms  writes 28 (0.5/s; 35 incl. warmup) commit p50 21.10ms p99 1262.68ms max 1262.7ms  slots 4 (0.0667/s) rows touched 600883 (10015/s)
+concurrent q21 stateless rep 0 14:19:33
+  ERROR exit 1 (see /flash1/akhilvb/perf/headline_T15_20261020/T15s/concurrent.log)
+concurrent q21 verus rep 0 14:19:40
+  qps 3479.7  p50 1.87ms p99 4.45ms  writes 28 (0.5/s; 35 incl. warmup) commit p50 7.68ms p99 2472.55ms max 2472.6ms  slots 4 (0.0667/s) rows touched 600883 (10015/s)  invalidating 0  maint {'none': 35}  hits 260972 fallbacks 0  slowest commit: rf1: none
+concurrent q22 base rep 0 14:21:50
+  qps 13.5  p50 519.42ms p99 1321.15ms  writes 28 (0.5/s; 35 incl. warmup) commit p50 15.88ms p99 1485.27ms max 1485.3ms  slots 4 (0.0667/s) rows touched 600883 (10015/s)
+concurrent q22 stateless rep 0 14:23:27
+  qps 45.3  p50 176.70ms p99 232.13ms  writes 28 (0.5/s; 35 incl. warmup) commit p50 6.89ms p99 787.46ms max 787.5ms  slots 4 (0.0667/s) rows touched 600883 (10015/s)
+concurrent q22 verus rep 0 14:25:05
+  qps 11279.0  p50 0.61ms p99 1.23ms  writes 28 (0.5/s; 35 incl. warmup) commit p50 6.02ms p99 1188.54ms max 1188.5ms  slots 4 (0.0667/s) rows touched 600883 (10015/s)  invalidating 0  maint {'none': 35}  hits 842937 fallbacks 0  slowest commit: rf1: none
+
+concurrent readers + writer: medians over repetitions -- reader QPS (p99 ms), commit p50 ms (slowest commit s), invalidating writes (summed)
+   q         base qps          cpp qps        verus qps     cpp commit   verus commit  cpp inv  verus inv
+   1      3 (15046.7)                -      14887 (0.8)              -     8.93 (1.9)        -          0
+   2       36 (378.6)                -       295 (44.2)              -    24.79 (0.7)        -          0
+   3       7 (5063.9)                -       7353 (2.1)              -     7.67 (2.8)        -          0
+   4       8 (2825.1)                -      18479 (0.6)              -     6.40 (1.2)        -          0
+   5       6 (5050.1)                -      13502 (0.8)              -    33.63 (1.6)        -          0
+   6      19 (2592.1)                -       9672 (1.4)              -     7.52 (1.0)        -          0
+   7       8 (3773.2)                -      14970 (0.6)              -    26.76 (4.1)        -          0
+   8       8 (3390.2)                -      17998 (0.6)              -    38.77 (1.8)        -          0
+   9      2 (24818.8)                -       8638 (1.8)              -    37.47 (4.1)        -          0
+  10       4 (8295.2)                -       9549 (1.3)              -    10.58 (3.6)        -          0
+  11       52 (644.2)                -      1677 (14.3)              -    10.36 (1.0)        -          0
+  12       9 (5338.4)                -      15356 (0.7)              -     6.42 (1.2)        -          0
+  13       2 (9527.2)                -      17598 (0.6)              -     6.55 (1.5)        -          0
+  14      11 (3154.0)                -      18268 (0.5)              -     9.91 (2.4)        -          0
+  15      12 (1919.4)                -      35 (1454.0)              -     9.98 (2.0)        -          0
+  16      11 (1955.5)                -       222 (81.9)              -    54.38 (1.0)        -          0
+  17      1 (25511.2)                -      13897 (0.5)              -    10.97 (6.7)        -          0
+  18       2 (3906.8)                -       7922 (2.5)              -     6.44 (1.4)        -          0
+  19       5 (8874.0)                -      13721 (0.9)              -     8.33 (0.9)        -          0
+  20       4 (8079.7)                -       124 (89.6)              -    14.11 (3.2)        -          0
+  21       2 (7180.2)                -       3480 (4.5)              -     7.68 (2.5)        -          0
+  22      14 (1321.2)                -      11279 (1.2)              -     6.02 (1.2)        -          0
+NOT INVALIDATED (no write made the accelerator maintain): q1 verus, q2 verus, q3 verus, q4 verus, q5 verus, q6 verus, q7 verus, q8 verus, q9 verus, q10 verus, q11 verus, q12 verus, q13 verus, q14 verus, q15 verus, q16 verus, q17 verus, q18 verus, q19 verus, q20 verus, q21 verus, q22 verus

@@ -1,0 +1,24 @@
+$ /flash1/akhilvb/sf3000-qphh/build-release/aux_compare tpch /flash1/akhilvb/tpch/work/cmp_tpch_base.duckdb base /flash1/akhilvb/tpch/work/tpch_base.tsv 4 3 30 1
+$ /flash1/akhilvb/sf3000-qphh/build-release/aux_compare tpch /flash1/akhilvb/tpch/work/cmp_tpch_cpp.duckdb accel /flash1/akhilvb/tpch/work/tpch_cpp.tsv 4 3 30 1
+built tpch:1 in 0.655655s, rss 2.2918 GB
+built tpch:2 in 3.59125s, rss 4.94746 GB
+built tpch:3 in 14.7807s, rss 17.6796 GB
+built tpch:4 in 3.48186s, rss 13.5224 GB
+built tpch:5 in 5.42344s, rss 16.7858 GB
+built tpch:6 in 1.03856s, rss 16.843 GB
+built tpch:7 in 4.87356s, rss 18.0533 GB
+built tpch:8 in 5.59455s, rss 18.8301 GB
+built tpch:9 in 25.4322s, rss 29.6877 GB
+built tpch:10 in 15.0455s, rss 30.1004 GB
+built tpch:11 in 6.64462s, rss 34.6252 GB
+built tpch:12 in 1.51358s, rss 34.6747 GB
+built tpch:13 in 22.5906s, rss 60.3394 GB
+built tpch:14 in 1.11605s, rss 60.3875 GB
+built tpch:15 in 4.04001s, rss 44.8812 GB
+built tpch:16 in 5.74312s, rss 39.3516 GB
+built tpch:17 in 77.0157s, rss 60.6455 GB
+built tpch:18 in 11.3905s, rss 43.374 GB
+built tpch:19 in 0.379355s, rss 43.4303 GB
+built tpch:20 in 28.3815s, rss 44.5079 GB
+built tpch:21 in 12.0437s, rss 53.3242 GB
+built tpch:22 in 2.66761s, rss 44.9684 GB

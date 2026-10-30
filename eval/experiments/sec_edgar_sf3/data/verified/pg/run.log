@@ -1,0 +1,41 @@
+=== start verus 02:07:49 commit 24004a76 seed 2440513240 cores 0-39 container accel_pg_sec_edgar load 6.49
+accel_pg_sec_edgar
+parameter draws: 5 repetition(s) x 8 sets, seeds 2440513240..2440513244
+q1 kit served after 33.8s (ok)
+q2 kit served after 765.2s (ok)
+q3 kit served after 1277.1s (ok)
+q4 kit served after 2370.1s (ok)
+q6 kit served after 3577.4s (ok)
+q24 kit served after 3577.4s (ok)
+world built: requests=6 served=6 fallback=0 errors=0 commits=0 applied=0 builds=6 gaps=0 synced=6 members=6 workers=1 generation=1 pid=36 {'VmHWM': 38826.2, 'VmRSS': 34527.2}
+q1 rep 0 done 6s
+q1 rep 1 done 12s
+q1 rep 2 done 17s
+q1 rep 3 done 23s
+q1 rep 4 done 29s
+q2 rep 0 done 44s
+q2 rep 1 done 86s
+q2 rep 2 done 135s
+q2 rep 3 done 178s
+q2 rep 4 done 249s
+q3 rep 0 done 23s
+q3 rep 1 done 43s
+q3 rep 2 done 64s
+q3 rep 3 done 82s
+q3 rep 4 done 103s
+q4 rep 0 done 45s
+q4 rep 1 done 80s
+q4 rep 2 done 117s
+q4 rep 3 done 148s
+q4 rep 4 done 175s
+q6 rep 0 done 11s
+q6 rep 1 done 120s
+q6 rep 2 done 130s
+q6 rep 3 done 159s
+q6 rep 4 done 193s
+q24 rep 0 done 95s
+q24 rep 1 done 177s
+q24 rep 2 done 235s
+q24 rep 3 done 431s
+q24 rep 4 done 509s
+=== finished verus 03:29:47 rc=0

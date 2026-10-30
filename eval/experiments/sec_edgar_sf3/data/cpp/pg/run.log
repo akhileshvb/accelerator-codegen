@@ -1,0 +1,34 @@
+=== start 11:00:57 commit eb7177ff seed 91908945 cores 0-39 container accel_pg_sec_edgar load 1.49
+accel_pg_sec_edgar
+parameter draws: 5 repetition(s) x 8 sets, seeds 91908945..91908949
+q1 rep 0 done 30s
+q1 rep 1 done 44s
+q1 rep 2 done 60s
+q1 rep 3 done 75s
+q1 rep 4 done 89s
+q2 rep 0 done 66s
+q2 rep 1 done 164s
+q2 rep 2 done 266s
+q2 rep 3 done 281s
+q2 rep 4 done 301s
+q3 rep 0 done 27s
+q3 rep 1 done 49s
+q3 rep 2 done 70s
+q3 rep 3 done 89s
+q3 rep 4 done 110s
+q4 rep 0 done 139s
+q4 rep 1 done 159s
+q4 rep 2 done 178s
+q4 rep 3 done 194s
+q4 rep 4 done 221s
+q6 rep 0 done 93s
+q6 rep 1 done 105s
+q6 rep 2 done 115s
+q6 rep 3 done 132s
+q6 rep 4 done 147s
+q24 rep 0 done 30s
+q24 rep 1 done 43s
+q24 rep 2 done 106s
+q24 rep 3 done 119s
+q24 rep 4 done 131s
+=== finished 11:17:38 rc=0

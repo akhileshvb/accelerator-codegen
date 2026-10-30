@@ -1,0 +1,1 @@
+accel.build_threads=40 accel.maint_threads=40 accel.read_threads=40 accel.shard_read_threads=40 accel.threads=40 max_parallel_workers=40 max_parallel_workers_per_gather=40

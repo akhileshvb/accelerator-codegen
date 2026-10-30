@@ -1,4 +1,0 @@
-=== duckdb sec_edgar Q3 interval=1s ===
-engine,workload,query,write_interval_sec,mode,reads,writes,rows,read_p50_us,read_sum_us,write_p50_us,write_sum_us,build_us,workload_sum_us,workload_speedup_vs_base,workload_with_build_us,workload_with_build_speedup_vs_base
-duckdb,sec_edgar,3,1,base,8,3,100,2920041.73,23243298.33,132053.03,396494.16,0.00,23639792.48,1.00,23639792.48,1.00
-duckdb,sec_edgar,3,1,shared,8,3,100,5197.30,42454.02,141836.68,425767.02,58114215.01,468221.04,50.49,58582436.04,0.40

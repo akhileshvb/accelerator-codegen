@@ -1,1 +1,0 @@
-{"tc_accel_s": 25.222, "tc_base_s": 0.619, "tc_accel_rf_s": 22.842, "tc_accel_point_writes_s": 2.379, "intervals_s": [25.222, 50.443, 100.886], "rates": [0.039648, 0.019824, 0.009912], "seconds": [100.888, 201.772, 403.544], "warmup": [12.611, 25.221, 50.443], "commits": 4, "est_hours_per_rep": 0.4}

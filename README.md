@@ -9,6 +9,36 @@ engine backends and shared primitives it builds on are fixed or grow through
 gated tools. Verus accelerators (`--mode verus`) are the same idea with a
 formally verified kernel against a spec generated from the SQL.
 
+## Paper artifact
+
+Generated code:
+
+- Tested (C++) accelerators: `accelerators/<bench>/q<N>/<engine>/{base,aux}/` (base = stateless, aux = stateful)
+- Verified (Verus) accelerators: `accelerators/<bench>/q<N>/verus_kit/<crate>/`, plus each bench's global store in `accelerators/<bench>/verus_world/`
+- Engine backends (DuckDB, PostgreSQL, MySQL): `backends/<engine>/`
+- The fixed substrate they are built on: `substrate/aux/` (C++) and `substrate/verus/` (Verus store, host kit, `sql2verus`, which is QSem)
+
+Experiments: one directory per experiment under `eval/experiments/`, each with
+- `data/`: the paper run's results
+- a plot or summary script that regenerates the paper's numbers from `data/`
+- `scripts/`: the drivers that produced `data/`
+
+The drivers name their inputs (databases, refresh sets, builds) through env vars; each driver's header says what it needs and which commit the paper run used.
+
+| Paper | Directory | Regenerate | Run (in `scripts/`) |
+|---|---|---|---|
+| Fig. 1 | `refresh_stream_sf20` | `plot_fig1.py` | `drive_headline_T15.sh`, `drive_writerate.sh` (read-only panel: `readonly_sf20`) |
+| Fig. 5, §6.5 | `readonly_sf20` | `plot_fig5.py` | `run_cpp_read_40t_pk.sh`, `run_stateless_40t_pk.sh`, `run_both_pk.sh`, `run_socket0_40t.sh` (GenDB, Bespoke OLAP) |
+| Fig. 7 | `sec_edgar_sf3` | `plot_fig7.py` | `drive_duckdb_read.sh`, `drive_pg_read.sh` |
+| Fig. 8A | `refresh_stream_sf20` | `plot_fig8.py` | `drive_writerate.sh` |
+| Fig. 8B/C, §6.3 pg_ivm | `pg_ivm_sf20` (`data/paper_sweep/`) | `refresh_stream_sf20/plot_fig8.py` | `sweep.sh`, `accel_phase.sh` |
+| Table 3 (SF=30) | `qphh` | `summarize.py` | `run_sf30.sh` |
+| Fig. 9 | `q1_maintenance` | `plot_fig9.py` | `run.sh` |
+| Fig. 10 | `ablation` | `plot_fig10.py` | |
+| §6.2, 1 vs 40 threads | `threads_1v40` | `summarize.py` | `run.sh` |
+
+Plot scripts take an optional output directory, for example `python3 eval/experiments/readonly_sf20/plot_fig5.py /tmp/out`.
+
 ## Layers
 
 `substrate/` includes nothing from `backends/` or `accelerators/`, and `backends/` includes nothing from `accelerators/`
@@ -41,7 +71,7 @@ accelerators/<bench>/ common/, verus_world/, q<N>/
   q<N>/               cost_model.hpp  layout.hpp  <engine>/{base,aux}/  verus_kit/<crate>/
                       config/[verus/]  tests/  bench/
 workloads/<bench>/    schema.sql, q<N>.sql   (tpch, sec_edgar)
-eval/                 harness/ tests/ compare/ bench/
+eval/                 harness/ tests/ compare/ bench/, experiments/ (paper experiments)
 pipeline/             orchestrator/ config/ prompts/ gates/ templates/ verus/ clean_tree/
 scripts/              build, calibration, data-loading and layout-check scripts
 cmake/                CMake modules

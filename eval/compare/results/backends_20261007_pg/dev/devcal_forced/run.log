@@ -1,5 +1,0 @@
-parameter draws: 1 repetition(s) x 1 sets, seeds 3952341906..3952341906
-uncapped rep 0 base (RF: update sets, whole sets, 0 readers) 02:43:16
-   qps 0.0  read p50 0.0ms p99 0.0ms  timeouts 0  RF commits 5 (5.79e-05/s of -1) of 35 commits  commit p50 0.8ms max 6941ms  lag max 18.1s  errors read 0 write 0  NO READ COMPLETED IN THE WINDOW (reads take longer than it: lengthen the window)
-uncapped rep 0 accel (RF: update sets, whole sets, 0 readers) 02:44:26
-   qps 0.0  read p50 0.0ms p99 0.0ms  timeouts 0  RF commits 5 (5.79e-05/s of -1) of 35 commits  commit p50 190.2ms max 200606ms  lag max 445.5s  errors read 0 write 0  final-check mismatches [9, 21]  answers unchanged by writes [2, 3, 8, 10, 11, 14, 15, 18, 22]  worker: applies 35 as delta 360 not 0 rebuilds 0 declined 0 errors 0  NO READ COMPLETED IN THE WINDOW (reads take longer than it: lengthen the window)

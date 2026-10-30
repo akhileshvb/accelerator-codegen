@@ -1,0 +1,64 @@
+{
+ "mode": "read",
+ "accel": "sec_edgar_q1_vgen",
+ "function": "accel_sec_edgar_q1_vgen",
+ "store": "verus",
+ "build_ms": 27658.1,
+ "state_mb": -37.043,
+ "rss_mb_settled_after": 313.316,
+ "rss_mb_settled_freed": 350.359,
+ "rss_mb_peak_build": 2587.78,
+ "speedup_geomean": 55.45090269602599,
+ "mismatches": 0,
+ "hits": 150,
+ "fallbacks": 0,
+ "cases": [
+  {
+   "args": "'CI'",
+   "base_us": 35567.546,
+   "accel_us": 486.895,
+   "base_rows": 1,
+   "accel_rows": 1,
+   "match": true
+  },
+  {
+   "args": "'IS'",
+   "base_us": 36376.931,
+   "accel_us": 565.804,
+   "base_rows": 2,
+   "accel_rows": 2,
+   "match": true
+  },
+  {
+   "args": "'CF'",
+   "base_us": 34760.287,
+   "accel_us": 571.243,
+   "base_rows": 2,
+   "accel_rows": 2,
+   "match": true
+  },
+  {
+   "args": "'BS'",
+   "base_us": 33721.993,
+   "accel_us": 676.911,
+   "base_rows": 2,
+   "accel_rows": 2,
+   "match": true
+  },
+  {
+   "args": "'EQ'",
+   "base_us": 24830.516,
+   "accel_us": 674.319,
+   "base_rows": 2,
+   "accel_rows": 2,
+   "match": true
+  }
+ ],
+ "wall_s": 32.2,
+ "query": 1,
+ "system": "verus",
+ "rep": 0,
+ "seed": 2440513240,
+ "note": "",
+ "counts_cover_all_draws": true
+}

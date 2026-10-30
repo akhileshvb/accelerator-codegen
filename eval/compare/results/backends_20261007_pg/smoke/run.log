@@ -1,3 +1,0 @@
-parameter draws: 1 repetition(s) x 1 sets, seeds 1831103379..1831103379
-rep 0 q 1: speedup 123511.9x mismatches 0/1  states ['ok/ok']
-rep 0 q 6: speedup 18159.8x mismatches 0/1  states ['ok/ok']

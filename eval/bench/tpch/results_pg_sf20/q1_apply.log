@@ -1,5 +1,0 @@
-SELECT 3817
-CREATE INDEX
-CREATE INDEX
-CREATE FUNCTION
-applied matview SQL for Q1 (accel_tpch_q1_matview) into accel_pg_test/accel_tpch_sf20

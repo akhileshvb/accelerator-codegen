@@ -1,0 +1,1 @@
+$ build-verus-duckdb/aux_compare concurrent /flash1/akhilvb/perf/headline_T15_20261020/q21_rerun/work/cmp_conc_q21_stateless.duckdb tpch:21 tpch_q21_vgen /flash1/akhilvb/perf/headline_T15_20261020/q21_rerun/work/cases_q21_stateless_r0.tsv stateless 8 60.0 0.06666666666666667 2576330833 5

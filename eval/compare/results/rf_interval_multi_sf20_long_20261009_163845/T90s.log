@@ -1,3 +1,0 @@
-parameter draws: 5 repetition(s) x 8 sets, seeds 267713173..267713177
-multi base (22 accelerators, rotate readers, rates wps0.0111111, 5 repetition(s)) 16:38:47
-  cost models: config/qN_aux_cost_model_sf20.json (SF20)

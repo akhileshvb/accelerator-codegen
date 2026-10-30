@@ -1,0 +1,11 @@
+accel.build_threads=40
+accel.maint_threads=40
+accel.read_threads=40
+accel.shard_idle_exit_s=0
+accel.shard_read_threads=40
+accel.threads=40
+jit=on
+max_parallel_workers=40
+max_parallel_workers_per_gather=40
+shared_buffers=2097152
+work_mem=65536

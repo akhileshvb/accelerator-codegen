@@ -1,5 +1,0 @@
-[10:21:15] START orders_all
-Time: 30046206.925 ms (08:20:46.207)
-ERROR:  canceling statement due to user request
-Time: 22022.131 ms (00:22.022)
-[18:42:24] END orders_all rc=3 elapsed=30069s

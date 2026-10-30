@@ -1,2 +1,0 @@
-query,build_s,maint_rf1_slot_s,maint_rf2_slot_s,points_rf1_slot_s,points_rf2_slot_s,duckdb_rf1_s,duckdb_rf2_s,accel_read_s,duckdb_read_s,actions,mismatches,speedup_T300,speedup_T120,speedup_T60,keeps_up_T300,keeps_up_T120,keeps_up_T60
-13,14.4013124235,3.3979160342499997,1.4576330593125,0.044231675875,0.044686456562500004,0.6339341734999999,0.04559962275,0.0002355945,0.518292552,"{""rf1"": {""ApplyDelta"": 8}, ""rf2"": {""ApplyDelta"": 8}}",0,2182.1328339113825,2155.429803528258,2110.9247528897167,True,True,True

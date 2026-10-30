@@ -1,0 +1,115 @@
+parameter draws: 1 repetition(s) x 8 sets, seeds 3191671686..3191671686
+concurrent q1 base rep 0 00:11:45
+  qps 3.6  p50 1124.55ms p99 13782.10ms  writes 21 (0.1/s; 28 incl. warmup) commit p50 15.04ms p99 1506.26ms max 1506.3ms  slots 3 (0.0167/s) rows touched 451135 (2506/s)
+concurrent q1 cpp rep 0 00:16:08
+  qps 17604.8  p50 0.45ms p99 0.66ms  writes 21 (0.1/s; 28 incl. warmup) commit p50 5.33ms p99 1007.18ms max 1007.2ms  slots 3 (0.0167/s) rows touched 451135 (2506/s)  invalidating 4  maint {'ApplyDelta': 4, 'none': 24}  hits 4222866 fallbacks 0  slowest commit: rf1: ApplyDelta
+concurrent q2 base rep 0 00:20:31
+  qps 36.9  p50 204.97ms p99 372.01ms  writes 21 (0.1/s; 28 incl. warmup) commit p50 14.76ms p99 1220.62ms max 1220.6ms  slots 3 (0.0167/s) rows touched 451135 (2506/s)
+concurrent q2 cpp rep 0 00:24:52
+  qps 13442.6  p50 0.55ms p99 1.05ms  writes 21 (0.1/s; 28 incl. warmup) commit p50 7.77ms p99 944.09ms max 944.1ms  slots 3 (0.0167/s) rows touched 451135 (2506/s)  invalidating 24  maint {'ApplyDelta': 24, 'none': 4}  hits 3226126 fallbacks 0  slowest commit: rf1: none
+concurrent q3 base rep 0 00:29:15
+  qps 7.2  p50 857.33ms p99 5154.73ms  writes 21 (0.1/s; 28 incl. warmup) commit p50 18.25ms p99 1600.67ms max 1600.7ms  slots 3 (0.0167/s) rows touched 451135 (2506/s)
+concurrent q3 cpp rep 0 00:33:38
+  qps 17780.2  p50 0.44ms p99 0.63ms  writes 21 (0.1/s; 28 incl. warmup) commit p50 10.32ms p99 992.22ms max 992.2ms  slots 3 (0.0167/s) rows touched 451135 (2506/s)  invalidating 4  maint {'ApplyDelta': 4, 'none': 24}  hits 4256748 fallbacks 0  slowest commit: rf1: ApplyDelta
+concurrent q4 base rep 0 00:38:11
+  qps 8.2  p50 782.75ms p99 3378.56ms  writes 21 (0.1/s; 28 incl. warmup) commit p50 15.90ms p99 1281.82ms max 1281.8ms  slots 3 (0.0167/s) rows touched 451135 (2506/s)
+concurrent q4 cpp rep 0 00:42:32
+  qps 20341.7  p50 0.38ms p99 0.54ms  writes 21 (0.1/s; 28 incl. warmup) commit p50 22.14ms p99 1305.92ms max 1305.9ms  slots 3 (0.0167/s) rows touched 451135 (2506/s)  invalidating 4  maint {'ApplyDelta': 4, 'none': 24}  hits 4869617 fallbacks 0  slowest commit: rf1: ApplyDelta
+concurrent q5 base rep 0 00:46:56
+  qps 6.4  p50 934.96ms p99 5550.33ms  writes 21 (0.1/s; 28 incl. warmup) commit p50 20.23ms p99 1592.49ms max 1592.5ms  slots 3 (0.0167/s) rows touched 451135 (2506/s)
+concurrent q5 cpp rep 0 00:51:18
+  qps 19964.3  p50 0.39ms p99 0.55ms  writes 21 (0.1/s; 28 incl. warmup) commit p50 6.67ms p99 1058.47ms max 1058.5ms  slots 3 (0.0167/s) rows touched 451135 (2506/s)  invalidating 12  maint {'ApplyDelta': 12, 'NoOp': 4, 'none': 12}  hits 4791638 fallbacks 0  slowest commit: rf1: ApplyDelta
+concurrent q6 base rep 0 00:55:46
+  qps 19.3  p50 209.42ms p99 2683.19ms  writes 21 (0.1/s; 28 incl. warmup) commit p50 17.69ms p99 1921.46ms max 1921.5ms  slots 3 (0.0167/s) rows touched 451135 (2506/s)
+concurrent q6 cpp rep 0 01:00:05
+  qps 20647.2  p50 0.38ms p99 0.53ms  writes 21 (0.1/s; 28 incl. warmup) commit p50 8.05ms p99 936.78ms max 936.8ms  slots 3 (0.0167/s) rows touched 451135 (2506/s)  invalidating 4  maint {'ApplyDelta': 4, 'none': 24}  hits 4959639 fallbacks 0  slowest commit: rf1: ApplyDelta
+concurrent q7 base rep 0 01:04:25
+  qps 8.6  p50 660.02ms p99 4667.40ms  writes 21 (0.1/s; 28 incl. warmup) commit p50 15.40ms p99 1963.60ms max 1963.6ms  slots 3 (0.0167/s) rows touched 451135 (2506/s)
+concurrent q7 cpp rep 0 01:08:46
+  qps 19161.7  p50 0.40ms p99 0.59ms  writes 21 (0.1/s; 28 incl. warmup) commit p50 8.96ms p99 1094.74ms max 1094.7ms  slots 3 (0.0167/s) rows touched 451135 (2506/s)  invalidating 12  maint {'ApplyDelta': 12, 'NoOp': 4, 'none': 12}  hits 4605852 fallbacks 0  slowest commit: rf1: ApplyDelta
+concurrent q8 base rep 0 01:13:10
+  qps 8.3  p50 806.80ms p99 3239.73ms  writes 21 (0.1/s; 28 incl. warmup) commit p50 16.76ms p99 1440.01ms max 1440.0ms  slots 3 (0.0167/s) rows touched 451135 (2506/s)
+concurrent q8 cpp rep 0 01:17:31
+  qps 20710.8  p50 0.38ms p99 0.54ms  writes 21 (0.1/s; 28 incl. warmup) commit p50 12.04ms p99 1423.36ms max 1423.4ms  slots 3 (0.0167/s) rows touched 451135 (2506/s)  invalidating 24  maint {'ApplyDelta': 24, 'none': 4}  hits 4977291 fallbacks 0  slowest commit: rf1: ApplyDelta
+concurrent q9 base rep 0 01:21:58
+  qps 1.7  p50 2968.55ms p99 26814.40ms  writes 21 (0.1/s; 28 incl. warmup) commit p50 17.01ms p99 1490.70ms max 1490.7ms  slots 3 (0.0167/s) rows touched 451135 (2506/s)
+concurrent q9 cpp rep 0 01:26:29
+  qps 17921.1  p50 0.42ms p99 0.66ms  writes 21 (0.1/s; 28 incl. warmup) commit p50 14.79ms p99 1104.00ms max 1104.0ms  slots 3 (0.0167/s) rows touched 451135 (2506/s)  invalidating 24  maint {'ApplyDelta': 24, 'NoOp': 4}  hits 4300236 fallbacks 0  slowest commit: rf1: ApplyDelta
+concurrent q10 base rep 0 01:31:14
+  qps 4.1  p50 1358.27ms p99 9375.68ms  writes 21 (0.1/s; 28 incl. warmup) commit p50 21.13ms p99 1214.24ms max 1214.2ms  slots 3 (0.0167/s) rows touched 451135 (2506/s)
+concurrent q10 cpp rep 0 01:35:38
+  qps 16187.8  p50 0.47ms p99 0.73ms  writes 21 (0.1/s; 28 incl. warmup) commit p50 5.62ms p99 1076.84ms max 1076.8ms  slots 3 (0.0167/s) rows touched 451135 (2506/s)  invalidating 4  maint {'ApplyDelta': 4, 'none': 24}  hits 3887996 fallbacks 0  slowest commit: rf2: ApplyDelta
+concurrent q11 base rep 0 01:40:10
+  qps 52.4  p50 109.64ms p99 634.25ms  writes 21 (0.1/s; 28 incl. warmup) commit p50 15.93ms p99 1069.97ms max 1070.0ms  slots 3 (0.0167/s) rows touched 451135 (2506/s)
+concurrent q11 cpp rep 0 01:44:30
+  qps 6667.0  p50 0.94ms p99 3.17ms  writes 21 (0.1/s; 28 incl. warmup) commit p50 9.91ms p99 943.73ms max 943.7ms  slots 3 (0.0167/s) rows touched 451135 (2506/s)  invalidating 20  maint {'ApplyDelta': 20, 'NoOp': 4, 'none': 4}  hits 1599830 fallbacks 0  slowest commit: rf1: none
+concurrent q12 base rep 0 01:48:56
+  qps 9.2  p50 552.64ms p99 5364.90ms  writes 21 (0.1/s; 28 incl. warmup) commit p50 17.53ms p99 2036.61ms max 2036.6ms  slots 3 (0.0167/s) rows touched 451135 (2506/s)
+concurrent q12 cpp rep 0 01:53:16
+  qps 19325.7  p50 0.40ms p99 0.58ms  writes 21 (0.1/s; 28 incl. warmup) commit p50 5.28ms p99 884.70ms max 884.7ms  slots 3 (0.0167/s) rows touched 451135 (2506/s)  invalidating 4  maint {'ApplyDelta': 4, 'none': 24}  hits 4637434 fallbacks 0  slowest commit: rf1: ApplyDelta
+concurrent q13 base rep 0 01:57:38
+  qps 2.2  p50 2430.97ms p99 18619.00ms  writes 21 (0.1/s; 28 incl. warmup) commit p50 18.34ms p99 1767.60ms max 1767.6ms  slots 3 (0.0167/s) rows touched 451135 (2506/s)
+concurrent q13 cpp rep 0 02:02:05
+  qps 21315.9  p50 0.37ms p99 0.53ms  writes 21 (0.1/s; 28 incl. warmup) commit p50 7.68ms p99 1050.62ms max 1050.6ms  slots 3 (0.0167/s) rows touched 451135 (2506/s)  invalidating 4  maint {'ApplyDelta': 4, 'none': 24}  hits 5129527 fallbacks 0  slowest commit: rf1: ApplyDelta
+concurrent q14 base rep 0 02:06:46
+  qps 10.8  p50 563.62ms p99 3307.01ms  writes 21 (0.1/s; 28 incl. warmup) commit p50 16.98ms p99 1204.01ms max 1204.0ms  slots 3 (0.0167/s) rows touched 451135 (2506/s)
+concurrent q14 cpp rep 0 02:11:06
+  qps 21580.1  p50 0.37ms p99 0.51ms  writes 21 (0.1/s; 28 incl. warmup) commit p50 9.19ms p99 1014.94ms max 1014.9ms  slots 3 (0.0167/s) rows touched 451135 (2506/s)  invalidating 12  maint {'ApplyDelta': 12, 'none': 16}  hits 5193978 fallbacks 0  slowest commit: rf1: ApplyDelta
+concurrent q15 base rep 0 02:15:28
+  qps 12.6  p50 575.35ms p99 1942.94ms  writes 21 (0.1/s; 28 incl. warmup) commit p50 24.47ms p99 1666.37ms max 1666.4ms  slots 3 (0.0167/s) rows touched 451135 (2506/s)
+concurrent q15 cpp rep 0 02:19:48
+  qps 18725.0  p50 0.41ms p99 0.61ms  writes 21 (0.1/s; 28 incl. warmup) commit p50 5.78ms p99 752.17ms max 752.2ms  slots 3 (0.0167/s) rows touched 451135 (2506/s)  invalidating 12  maint {'ApplyDelta': 12, 'NoOp': 4, 'none': 12}  hits 4486285 fallbacks 0  slowest commit: rf1: ApplyDelta
+concurrent q16 base rep 0 02:24:11
+  qps 11.1  p50 580.33ms p99 2116.15ms  writes 21 (0.1/s; 28 incl. warmup) commit p50 20.47ms p99 1156.09ms max 1156.1ms  slots 3 (0.0167/s) rows touched 451135 (2506/s)
+concurrent q16 cpp rep 0 02:28:34
+  qps 1695.0  p50 4.50ms p99 15.95ms  writes 21 (0.1/s; 28 incl. warmup) commit p50 13.40ms p99 863.05ms max 863.1ms  slots 3 (0.0167/s) rows touched 451135 (2506/s)  invalidating 16  maint {'ApplyDelta': 16, 'NoOp': 8, 'none': 4}  hits 406726 fallbacks 0  slowest commit: rf1: none
+concurrent q17 base rep 0 02:32:59
+  qps 1.0  p50 4286.80ms p99 35431.80ms  writes 21 (0.1/s; 28 incl. warmup) commit p50 23.15ms p99 2176.80ms max 2176.8ms  slots 3 (0.0167/s) rows touched 451135 (2506/s)
+concurrent q17 cpp rep 0 02:37:40
+  qps 21850.9  p50 0.36ms p99 0.51ms  writes 21 (0.1/s; 28 incl. warmup) commit p50 8.39ms p99 937.16ms max 937.2ms  slots 3 (0.0167/s) rows touched 451135 (2506/s)  invalidating 12  maint {'ApplyDelta': 12, 'none': 16}  hits 5251882 fallbacks 0  slowest commit: rf1: ApplyDelta
+concurrent q18 base rep 0 02:43:05
+  qps 2.3  p50 3345.44ms p99 3831.46ms  writes 21 (0.1/s; 28 incl. warmup) commit p50 5.61ms p99 1235.22ms max 1235.2ms  slots 3 (0.0167/s) rows touched 451135 (2506/s)
+concurrent q18 cpp rep 0 02:47:29
+  qps 12727.6  p50 0.56ms p99 1.26ms  writes 21 (0.1/s; 28 incl. warmup) commit p50 5.76ms p99 958.15ms max 958.2ms  slots 3 (0.0167/s) rows touched 451135 (2506/s)  invalidating 1  maint {'ApplyDelta': 1, 'NoOp': 3, 'none': 24}  hits 3050146 fallbacks 0  slowest commit: rf1: NoOp
+concurrent q19 base rep 0 02:51:57
+  qps 5.0  p50 1107.11ms p99 9043.13ms  writes 21 (0.1/s; 28 incl. warmup) commit p50 17.04ms p99 1385.13ms max 1385.1ms  slots 3 (0.0167/s) rows touched 451135 (2506/s)
+concurrent q19 cpp rep 0 02:56:19
+  qps 21439.1  p50 0.37ms p99 0.52ms  writes 21 (0.1/s; 28 incl. warmup) commit p50 7.92ms p99 1028.07ms max 1028.1ms  slots 3 (0.0167/s) rows touched 451135 (2506/s)  invalidating 6  maint {'ApplyDelta': 6, 'NoOp': 6, 'none': 16}  hits 5128833 fallbacks 0  slowest commit: rf1: ApplyDelta
+concurrent q20 base rep 0 03:00:41
+  qps 4.0  p50 1180.54ms p99 7840.72ms  writes 21 (0.1/s; 28 incl. warmup) commit p50 22.31ms p99 1554.14ms max 1554.1ms  slots 3 (0.0167/s) rows touched 451135 (2506/s)
+concurrent q20 cpp rep 0 03:05:04
+  qps 2627.9  p50 2.92ms p99 7.21ms  writes 21 (0.1/s; 28 incl. warmup) commit p50 4.87ms p99 858.95ms max 858.9ms  slots 3 (0.0167/s) rows touched 451135 (2506/s)  invalidating 28  maint {'ApplyDelta': 28}  hits 624571 fallbacks 0  slowest commit: rf1: ApplyDelta
+concurrent q21 base rep 0 03:09:39
+  qps 2.2  p50 3196.85ms p99 7961.17ms  writes 21 (0.1/s; 28 incl. warmup) commit p50 17.85ms p99 1595.31ms max 1595.3ms  slots 3 (0.0167/s) rows touched 451135 (2506/s)
+concurrent q21 cpp rep 0 03:14:05
+  qps 19506.7  p50 0.40ms p99 0.59ms  writes 21 (0.1/s; 28 incl. warmup) commit p50 7.05ms p99 972.83ms max 972.8ms  slots 3 (0.0167/s) rows touched 451135 (2506/s)  invalidating 12  maint {'ApplyDelta': 12, 'NoOp': 4, 'none': 12}  hits 4677878 fallbacks 0  slowest commit: rf1: ApplyDelta
+concurrent q22 base rep 0 03:18:38
+  qps 13.7  p50 513.74ms p99 1420.80ms  writes 21 (0.1/s; 28 incl. warmup) commit p50 17.29ms p99 1592.29ms max 1592.3ms  slots 3 (0.0167/s) rows touched 451135 (2506/s)
+concurrent q22 cpp rep 0 03:22:59
+  qps 19305.4  p50 0.40ms p99 0.59ms  writes 21 (0.1/s; 28 incl. warmup) commit p50 8.12ms p99 1057.84ms max 1057.8ms  slots 3 (0.0167/s) rows touched 451135 (2506/s)  invalidating 4  maint {'ApplyDelta': 4, 'none': 24}  hits 4631565 fallbacks 0  slowest commit: rf1: ApplyDelta
+
+concurrent readers + writer: medians over repetitions -- reader QPS (p99 ms), commit p50 ms (slowest commit s), invalidating writes (summed)
+   q         base qps          cpp qps        verus qps     cpp commit   verus commit  cpp inv  verus inv
+   1      4 (13782.1)      17605 (0.7)                -     5.33 (1.0)              -        4          -
+   2       37 (372.0)      13443 (1.0)                -     7.77 (0.9)              -       24          -
+   3       7 (5154.7)      17780 (0.6)                -    10.32 (1.0)              -        4          -
+   4       8 (3378.6)      20342 (0.5)                -    22.14 (1.3)              -        4          -
+   5       6 (5550.3)      19964 (0.5)                -     6.67 (1.1)              -       12          -
+   6      19 (2683.2)      20647 (0.5)                -     8.05 (0.9)              -        4          -
+   7       9 (4667.4)      19162 (0.6)                -     8.96 (1.1)              -       12          -
+   8       8 (3239.7)      20711 (0.5)                -    12.04 (1.4)              -       24          -
+   9      2 (26814.4)      17921 (0.7)                -    14.79 (1.1)              -       24          -
+  10       4 (9375.7)      16188 (0.7)                -     5.62 (1.1)              -        4          -
+  11       52 (634.2)       6667 (3.2)                -     9.91 (0.9)              -       20          -
+  12       9 (5364.9)      19326 (0.6)                -     5.28 (0.9)              -        4          -
+  13      2 (18619.0)      21316 (0.5)                -     7.68 (1.1)              -        4          -
+  14      11 (3307.0)      21580 (0.5)                -     9.19 (1.0)              -       12          -
+  15      13 (1942.9)      18725 (0.6)                -     5.78 (0.8)              -       12          -
+  16      11 (2116.2)      1695 (15.9)                -    13.40 (0.9)              -       16          -
+  17      1 (35431.8)      21851 (0.5)                -     8.39 (0.9)              -       12          -
+  18       2 (3831.5)      12728 (1.3)                -     5.76 (1.0)              -        1          -
+  19       5 (9043.1)      21439 (0.5)                -     7.92 (1.0)              -        6          -
+  20       4 (7840.7)       2628 (7.2)                -     4.87 (0.9)              -       28          -
+  21       2 (7961.2)      19507 (0.6)                -     7.05 (1.0)              -       12          -
+  22      14 (1420.8)      19305 (0.6)                -     8.12 (1.1)              -        4          -
+every accelerator run saw at least one invalidating write

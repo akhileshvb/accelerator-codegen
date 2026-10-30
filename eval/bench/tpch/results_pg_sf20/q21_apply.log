@@ -1,2 +1,0 @@
-NOTICE:  materialized view "accel_tpch_q21_matview" does not exist, skipping
-ERROR:  relation "accel_tpch_q21_matview" does not exist

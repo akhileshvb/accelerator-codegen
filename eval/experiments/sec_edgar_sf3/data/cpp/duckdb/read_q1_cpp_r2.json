@@ -1,0 +1,32 @@
+{
+ "mode": "read",
+ "accel": "sec_edgar:1",
+ "function": "accel_sec_edgar_q1_aux",
+ "store": "cpp",
+ "build_ms": 131.897,
+ "state_mb": 41.3789,
+ "rss_mb_settled_after": 276.574,
+ "rss_mb_settled_freed": 235.195,
+ "rss_mb_peak_build": 403.516,
+ "speedup_geomean": 122.42821607428176,
+ "mismatches": 0,
+ "hits": 0,
+ "fallbacks": 0,
+ "cases": [
+  {
+   "args": "",
+   "base_us": 59307.411,
+   "accel_us": 484.426,
+   "base_rows": 14,
+   "accel_rows": 14,
+   "match": true
+  }
+ ],
+ "wall_s": 2.1,
+ "query": 1,
+ "system": "cpp",
+ "rep": 2,
+ "seed": 14332491,
+ "note": "",
+ "counts_cover_all_draws": true
+}

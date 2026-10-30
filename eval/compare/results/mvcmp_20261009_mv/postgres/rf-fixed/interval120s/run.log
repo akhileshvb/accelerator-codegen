@@ -1,4 +1,0 @@
-# --pg-workers 9: max_parallel_workers_per_gather = 9 for every session; table parallel_workers already 9
-parameter draws: 3 repetition(s) x 4 sets, seeds 35489017..35489019
-cps0.008333 rep 0 mv (RF: update sets, whole sets, 8 readers) 19:43:27
-   qps 4.3  read p50 56.3ms p99 31078.0ms  timeouts 0  RF commits 0 (0/s of 0.008333) of 0 commits  commit p50 0.0ms max 0ms  lag max 0.0s  rows/s 0 (RF 0)  errors read 0 write 0  refresh 0.0s in window (post-restore 22.4s)  final-check mismatches none  answers unchanged by writes [2, 3, 8, 10, 11, 15, 18, 19, 22]

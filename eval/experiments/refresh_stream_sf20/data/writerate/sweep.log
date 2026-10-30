@@ -1,0 +1,41 @@
+mode=concurrent out=/flash1/akhilvb/perf/sf20_20261017/full/new/writerate sf=20 intervals=[60 30 15 10 5] readers=8 systems=cpp repeats=1 sets=8 seed=3191671686 cores=0-39 budget=40 commit=29ed49f7 start=Sun Oct 18 12:11:43 AM EDT 2026
+=== T=60s (wps=0.016666666666666666, 180s per run) start 00:11:43 load 0.08
+=== T=60s exit 0 03:27:21
+=== T=30s (wps=0.03333333333333333, 90s per run) start 03:27:21 load 14.22
+=== T=30s exit 0 05:14:50
+=== T=15s (wps=0.06666666666666667, 60s per run) start 05:14:50 load 15.99
+=== T=15s exit 0 06:29:37
+=== T=10s (wps=0.1, 60s per run) start 06:29:37 load 19.06
+=== T=10s exit 0 07:41:27
+=== T=5s (wps=0.2, 60s per run) start 07:41:27 load 17.53
+=== T=5s exit 0 08:51:08
+
+cpp vs DuckDB, median over repetitions: reader-QPS speedup / workload speedup (! = the writer fell behind the refresh interval)
+   q                    T=60s                    T=30s                    T=15s                    T=10s                     T=5s
+   1             4890x / 765x             4970x / 361x             4968x / 153x             4900x / 104x              4607x / 54x
+   2              364x / 275x              364x / 225x              363x / 132x              361x / 101x               360x / 59x
+   3             2479x / 624x             2461x / 337x             2414x / 142x              2368x / 93x              2228x / 52x
+   4             2479x / 483x             2482x / 324x             2413x / 129x              2387x / 91x              2233x / 48x
+   5             3103x / 580x             3070x / 281x             3038x / 129x              2966x / 89x              2747x / 45x
+   6             1067x / 524x             1061x / 355x             1049x / 162x             1028x / 119x              1006x / 64x
+   7             2221x / 523x             2225x / 345x             2193x / 144x              2137x / 95x              1995x / 47x
+   8             2502x / 465x             2492x / 288x             2387x / 105x              2352x / 72x              2195x / 38x
+   9            10825x / 672x            10849x / 343x            10828x / 143x             10653x / 87x             10133x / 39x
+  10             3916x / 433x             3852x / 169x             3805x / 107x              3721x / 71x              3164x / 30x
+  11              127x / 114x              126x / 103x               126x / 79x               127x / 68x               125x / 45x
+  12             2108x / 719x             2101x / 403x             2078x / 173x             2062x / 136x              1966x / 66x
+  13             9738x / 787x             9807x / 412x             9971x / 144x             9421x / 107x              9153x / 53x
+  14             1996x / 669x             2014x / 417x             1998x / 172x             1966x / 126x              1903x / 67x
+  15             1488x / 644x             1475x / 364x             1444x / 157x             1446x / 117x              1379x / 64x
+  16              153x / 135x              153x / 122x               153x / 90x               154x / 75x               152x / 51x
+  17            21260x / 801x            23175x / 327x            23219x / 103x             22858x / 79x             22365x / 36x
+  18             5442x / 912x             5535x / 452x             5589x / 201x             5611x / 140x              5303x / 67x
+  19             4274x / 773x             4244x / 442x             4212x / 175x             4166x / 114x              4041x / 65x
+  20              665x / 402x              670x / 291x              657x / 152x              636x / 104x               576x / 56x
+  21             8778x / 885x             8990x / 441x             9122x / 173x             8703x / 113x              8363x / 58x
+  22             1411x / 599x             1413x / 392x             1395x / 180x             1396x / 143x              1346x / 69x
+  gm             2219x / 522x             2230x / 307x             2210x / 139x             2176x / 100x              2070x / 52x
+rows              2506 rows/s              5013 rows/s             10015 rows/s             15018 rows/s             30046 rows/s
+
+wrote /flash1/akhilvb/perf/sf20_20261017/full/new/writerate/rf_interval_summary.csv
+wrote /flash1/akhilvb/perf/sf20_20261017/full/new/writerate/rf_interval_workload.png and /flash1/akhilvb/perf/sf20_20261017/full/new/writerate/rf_interval_workload.pdf

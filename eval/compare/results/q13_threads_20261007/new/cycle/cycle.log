@@ -1,4 +1,0 @@
-$ build-verus-duckdb/aux_compare cycle /flash1/akhilvb/tpch/work/cmp_cycle_base.duckdb tpch:13 tpch_q13_vgen /flash1/akhilvb/tpch/work/cases_q13_cpp_r0.tsv base 4 16 4078830627
-$ build-verus-duckdb/aux_compare cycle /flash1/akhilvb/tpch/work/cmp_cycle_accel.duckdb tpch:13 tpch_q13_vgen /flash1/akhilvb/tpch/work/cases_q13_cpp_r0.tsv accel 4 100 4078830627
-$ build-verus-duckdb/aux_compare cycle /flash1/akhilvb/tpch/work/cmp_cycle_base.duckdb tpch:13 tpch_q13_vgen /flash1/akhilvb/tpch/work/cases_q13_cpp_r1.tsv base 4 16 4078830628
-$ build-verus-duckdb/aux_compare cycle /flash1/akhilvb/tpch/work/cmp_cycle_accel.duckdb tpch:13 tpch_q13_vgen /flash1/akhilvb/tpch/work/cases_q13_cpp_r1.tsv accel 4 100 4078830628

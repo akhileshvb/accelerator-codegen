@@ -1,2 +1,0 @@
-experiment,query_num,write_interval_sec,writes_per_sec,effective_write_pct,readers,duration_sec,aggregate_reader_qps,reader_queries,baseline_writer_commits,accel_writer_commits,baseline_read_sum_us,accel_read_sum_us,baseline_write_us,accel_write_us,workload_speedup,read_speedup_p50,read_speedup_p95,baseline_read_p50_us,accel_read_p50_us,baseline_read_p95_us,accel_read_p95_us,accel_hit_rate
-write_interval,24,24,0,0,0,0,4,60,499.878,29994,0,0,2.49315e+08,2.80492e+07,0,0,8.8885,4938.66,4752.45,4.78556e+06,969,4.89027e+06,1029,1

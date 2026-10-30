@@ -168,6 +168,7 @@ drop:
   - pipeline/clean_tree/leakage_baseline.json
   - pipeline/orchestrator/tests/test_clean_tree.py
   # results data and caches
+  - eval/experiments/**
   - eval/**/results/**
   - eval/**/results_*/**
   - eval/**/results_*.log

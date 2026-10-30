@@ -1,0 +1,6 @@
+tree=/flash1/akhilvb/verus_compat commit=29ed49f7 bin=/flash1/akhilvb/verus_compat/build-verus-duckdb/aux_compare cores=0-39 budget=40
+ACCEL_AUX_BUILD_THREADS=40
+ACCEL_AUX_MAINT_THREADS=40
+ACCEL_AUX_READ_THREADS=40
+ACCEL_AUX_THREADS=40
+ACCEL_COMPARE_DUCKDB_THREADS=40

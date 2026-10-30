@@ -1,143 +1,0 @@
-=== TPC-H Postgres matview vs aux WRITE-MIX sweep ===
-db=accel_tpch_sf3000 queries=6 write_pcts=0,1,10,50 ops=100 warmup=1 samples=2
-lineitem_rows=18000048362
-=== ensure mutation triggers ===
-installing missing per-query lineitem mutation triggers on accel_tpch_sf3000
-CREATE FUNCTION
-psql:/home/akhilvb/accelerator-codegen/scripts/postgres_accel_mutation_triggers.sql:57: NOTICE:  relation "num" does not exist, skipping
-DROP TRIGGER
-psql:/home/akhilvb/accelerator-codegen/scripts/postgres_accel_mutation_triggers.sql:58: NOTICE:  relation "num" does not exist, skipping
-DROP TRIGGER
-psql:/home/akhilvb/accelerator-codegen/scripts/postgres_accel_mutation_triggers.sql:59: NOTICE:  relation "num" does not exist, skipping
-DROP TRIGGER
-psql:/home/akhilvb/accelerator-codegen/scripts/postgres_accel_mutation_triggers.sql:60: NOTICE:  relation "num" does not exist, skipping
-DROP TRIGGER
-psql:/home/akhilvb/accelerator-codegen/scripts/postgres_accel_mutation_triggers.sql:61: NOTICE:  relation "num" does not exist, skipping
-DROP TRIGGER
-psql:/home/akhilvb/accelerator-codegen/scripts/postgres_accel_mutation_triggers.sql:62: NOTICE:  relation "num" does not exist, skipping
-DROP TRIGGER
-psql:/home/akhilvb/accelerator-codegen/scripts/postgres_accel_mutation_triggers.sql:63: NOTICE:  relation "num" does not exist, skipping
-DROP TRIGGER
-psql:/home/akhilvb/accelerator-codegen/scripts/postgres_accel_mutation_triggers.sql:64: NOTICE:  relation "num" does not exist, skipping
-DROP TRIGGER
-psql:/home/akhilvb/accelerator-codegen/scripts/postgres_accel_mutation_triggers.sql:65: NOTICE:  relation "num" does not exist, skipping
-DROP TRIGGER
-psql:/home/akhilvb/accelerator-codegen/scripts/postgres_accel_mutation_triggers.sql:66: NOTICE:  relation "num" does not exist, skipping
-DROP TRIGGER
-psql:/home/akhilvb/accelerator-codegen/scripts/postgres_accel_mutation_triggers.sql:67: NOTICE:  relation "num" does not exist, skipping
-DROP TRIGGER
-psql:/home/akhilvb/accelerator-codegen/scripts/postgres_accel_mutation_triggers.sql:68: NOTICE:  relation "num" does not exist, skipping
-DROP TRIGGER
-psql:/home/akhilvb/accelerator-codegen/scripts/postgres_accel_mutation_triggers.sql:69: NOTICE:  relation "num" does not exist, skipping
-DROP TRIGGER
-psql:/home/akhilvb/accelerator-codegen/scripts/postgres_accel_mutation_triggers.sql:70: NOTICE:  relation "num" does not exist, skipping
-DROP TRIGGER
-psql:/home/akhilvb/accelerator-codegen/scripts/postgres_accel_mutation_triggers.sql:71: NOTICE:  relation "num" does not exist, skipping
-DROP TRIGGER
-psql:/home/akhilvb/accelerator-codegen/scripts/postgres_accel_mutation_triggers.sql:72: NOTICE:  relation "num" does not exist, skipping
-DROP TRIGGER
-psql:/home/akhilvb/accelerator-codegen/scripts/postgres_accel_mutation_triggers.sql:73: NOTICE:  relation "num" does not exist, skipping
-DROP TRIGGER
-psql:/home/akhilvb/accelerator-codegen/scripts/postgres_accel_mutation_triggers.sql:74: NOTICE:  relation "num" does not exist, skipping
-DROP TRIGGER
-psql:/home/akhilvb/accelerator-codegen/scripts/postgres_accel_mutation_triggers.sql:77: NOTICE:  skipping triggers for missing table: sub
- create_accel_mutation_triggers 
---------------------------------
- 
-(1 row)
-
-psql:/home/akhilvb/accelerator-codegen/scripts/postgres_accel_mutation_triggers.sql:78: NOTICE:  skipping triggers for missing table: pre
- create_accel_mutation_triggers 
---------------------------------
- 
-(1 row)
-
-psql:/home/akhilvb/accelerator-codegen/scripts/postgres_accel_mutation_triggers.sql:79: NOTICE:  skipping triggers for missing table: num
- create_accel_mutation_triggers 
---------------------------------
- 
-(1 row)
-
-psql:/home/akhilvb/accelerator-codegen/scripts/postgres_accel_mutation_triggers.sql:80: NOTICE:  skipping triggers for missing table: tag
- create_accel_mutation_triggers 
---------------------------------
- 
-(1 row)
-
- create_accel_mutation_triggers 
---------------------------------
- 
-(1 row)
-
- create_accel_mutation_triggers 
---------------------------------
- 
-(1 row)
-
- create_accel_mutation_triggers 
---------------------------------
- 
-(1 row)
-
- create_accel_mutation_triggers 
---------------------------------
- 
-(1 row)
-
- create_accel_mutation_triggers 
---------------------------------
- 
-(1 row)
-
- create_accel_mutation_triggers 
---------------------------------
- 
-(1 row)
-
- create_accel_mutation_triggers 
---------------------------------
- 
-(1 row)
-
- create_accel_mutation_triggers 
---------------------------------
- 
-(1 row)
-
-=== ensure pg_ivm ===
-[pg_ivm] installing postgresql-17-pg-ivm in accel_pg_test
-Selecting previously unselected package postgresql-17-pg-ivm.
-(Reading database ... (Reading database ... 5%(Reading database ... 10%(Reading database ... 15%(Reading database ... 20%(Reading database ... 25%(Reading database ... 30%(Reading database ... 35%(Reading database ... 40%(Reading database ... 45%(Reading database ... 50%(Reading database ... 55%(Reading database ... 60%(Reading database ... 65%(Reading database ... 70%(Reading database ... 75%(Reading database ... 80%(Reading database ... 85%(Reading database ... 90%(Reading database ... 95%(Reading database ... 100%(Reading database ... 31030 files and directories currently installed.)
-Preparing to unpack .../postgresql-17-pg-ivm_1.15-2.pgdg13+1_amd64.deb ...
-Unpacking postgresql-17-pg-ivm (1.15-2.pgdg13+1) ...
-Setting up postgresql-17-pg-ivm (1.15-2.pgdg13+1) ...
-Processing triggers for postgresql-common (293.pgdg13+1) ...
-Building PostgreSQL dictionaries from installed myspell/hunspell packages...
-Removing obsolete dictionary files:
-CREATE EXTENSION
-[pg_ivm] ready in accel_tpch_sf3000
-=== Q6: apply matview ===
-=== Q6: apply IMMV (pg_ivm; may skip) ===
-=== Q6: write-mix bench pcts=0,1,10,50 ===
-Traceback (most recent call last):
-  File "/home/akhilvb/accelerator-codegen/scripts/tpch_pg_matview_vs_aux_bench.py", line 814, in <module>
-    raise SystemExit(main())
-                     ~~~~^^
-  File "/home/akhilvb/accelerator-codegen/scripts/tpch_pg_matview_vs_aux_bench.py", line 776, in main
-    components = measure_write_mix_components(
-        args.query,
-    ...<6 lines>...
-        refresh_samples=args.refresh_samples,
-    )
-  File "/home/akhilvb/accelerator-codegen/scripts/tpch_pg_matview_vs_aux_bench.py", line 591, in measure_write_mix_components
-    aux_build_ms = timed_exec(cur, f"SELECT COUNT(*) FROM ({aux_sql}) AS _a")
-  File "/home/akhilvb/accelerator-codegen/scripts/tpch_pg_matview_vs_aux_bench.py", line 382, in timed_exec
-    cur.execute(sql)
-    ~~~~~~~~~~~^^^^^
-psycopg2.OperationalError: server closed the connection unexpectedly
-	This probably means the server terminated abnormally
-	before or while processing the request.
-
-FAIL write-mix bench Q6
-=== summarize write-mix (aux/mv and aux/ivm) ===
-=== complete; csv=/home/akhilvb/accelerator-codegen/benchmarks/tpch/results_pg_sf3000_smoke/matview_vs_aux_write_mix.csv log=/home/akhilvb/accelerator-codegen/benchmarks/tpch/results_pg_sf3000_smoke/write_mix_sweep.log ===

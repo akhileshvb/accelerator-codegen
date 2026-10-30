@@ -1,0 +1,3 @@
+waiting for a quiet machine Tue Oct 20 11:33:32 AM EDT 2026
+mode=concurrent T=15s systems=base,stateless,verus readers=8 seconds=60 sets=8 repeats=1 seed=2576330833 start=Tue Oct 20 11:41:02 AM EDT 2026 load=1.74
+exit 0 Tue Oct 20 02:34:43 PM EDT 2026

@@ -1,1 +1,0 @@
-$ /home/akhilvb/accelerator-codegen/build-verus-duckdb/aux_compare multi /flash1/akhilvb/tpch/work/cmp_multi_base.duckdb base /flash1/akhilvb/tpch/work/multi_base.tsv 8 360.0 0.0111111 267713173 5 rotate

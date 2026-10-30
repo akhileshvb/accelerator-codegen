@@ -1,3 +1,0 @@
-# query=6 benchmark=tpch suite=lineitem_only write_intervals_sec=0,10
-tpch_q6_aux_bench: write_mode=rf rf_chunk_orders=1 vary_args=1 arg_pool=32 arg_seed=1
-tpch_q6_aux_bench: build_threads=80 (ACCEL_DUCKDB_BUILD_THREADS; aux timed path stays threads=1)

@@ -1,3 +1,0 @@
-# query=15 benchmark=tpch suite=lineitem_only write_intervals_sec=0
-tpch_q15_aux_bench: write_mode=point vary_args=1 arg_pool=32 arg_seed=1
-tpch_q15_aux_bench: skipping write probes (read-only)

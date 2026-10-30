@@ -1,8 +1,0 @@
-[10:21:15] START small_tables
-Time: 1.797 ms
-Time: 4411320.865 ms (01:13:31.321)
-Time: 2389862.645 ms (39:49.863)
-Time: 10990.264 ms (00:10.990)
-ERROR:  canceling statement due to user request
-Time: 5200827.830 ms (01:26:40.828)
-[13:41:28] END small_tables rc=3 elapsed=12013s

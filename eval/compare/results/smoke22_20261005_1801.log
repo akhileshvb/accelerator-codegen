@@ -1,5 +1,0 @@
-Running as unit: run-p3164501-i11628675.scope; invocation ID: db35052c0f564e31b467f284c40c3f86
-multi base (22 accelerators, rotate readers, rates wps40) 18:01:29
-  build 0s
-      wps40: qps 4  writes 1069 (35.6/s of 40) commit p50 15.2ms p99 139.9ms max 619ms  errors read 0 write 0
-multi verus (22 accelerators, rotate readers, rates wps40) 18:03:27

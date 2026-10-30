@@ -1,0 +1,12 @@
+$ /flash1/akhilvb/vpg/bench/build-release/aux_compare read /dev/shm/bench_work/cmp_read_q1_cpp.duckdb sec_edgar:1 /dev/shm/bench_work/sec_edgar_baseline/q1.sql /dev/shm/bench_work/cases_q1_cpp_all.tsv 5
+$ /flash1/akhilvb/vpg/bench/build-release/aux_compare read /dev/shm/bench_work/cmp_read_q1_verus.duckdb sec_edgar_q1_vgen /dev/shm/bench_work/sec_edgar_baseline/q1.sql /dev/shm/bench_work/cases_q1_verus_all.tsv 5
+$ /flash1/akhilvb/vpg/bench/build-release/aux_compare read /dev/shm/bench_work/cmp_read_q2_cpp.duckdb sec_edgar:2 /dev/shm/bench_work/sec_edgar_baseline/q2.sql /dev/shm/bench_work/cases_q2_cpp_all.tsv 5
+$ /flash1/akhilvb/vpg/bench/build-release/aux_compare read /dev/shm/bench_work/cmp_read_q2_verus.duckdb sec_edgar_q2_vgen /dev/shm/bench_work/sec_edgar_baseline/q2.sql /dev/shm/bench_work/cases_q2_verus_all.tsv 5
+$ /flash1/akhilvb/vpg/bench/build-release/aux_compare read /dev/shm/bench_work/cmp_read_q3_cpp.duckdb sec_edgar:3 /dev/shm/bench_work/sec_edgar_baseline/q3.sql /dev/shm/bench_work/cases_q3_cpp_all.tsv 5
+$ /flash1/akhilvb/vpg/bench/build-release/aux_compare read /dev/shm/bench_work/cmp_read_q3_verus.duckdb sec_edgar_q3_vgen /dev/shm/bench_work/sec_edgar_baseline/q3.sql /dev/shm/bench_work/cases_q3_verus_all.tsv 5
+$ /flash1/akhilvb/vpg/bench/build-release/aux_compare read /dev/shm/bench_work/cmp_read_q4_cpp.duckdb sec_edgar:4 /dev/shm/bench_work/sec_edgar_baseline/q4.sql /dev/shm/bench_work/cases_q4_cpp_all.tsv 5
+$ /flash1/akhilvb/vpg/bench/build-release/aux_compare read /dev/shm/bench_work/cmp_read_q4_verus.duckdb sec_edgar_q4_vgen /dev/shm/bench_work/sec_edgar_baseline/q4.sql /dev/shm/bench_work/cases_q4_verus_all.tsv 5
+$ /flash1/akhilvb/vpg/bench/build-release/aux_compare read /dev/shm/bench_work/cmp_read_q6_cpp.duckdb sec_edgar:6 /dev/shm/bench_work/sec_edgar_baseline/q6.sql /dev/shm/bench_work/cases_q6_cpp_all.tsv 5
+$ /flash1/akhilvb/vpg/bench/build-release/aux_compare read /dev/shm/bench_work/cmp_read_q6_verus.duckdb sec_edgar_q6_vgen /dev/shm/bench_work/sec_edgar_baseline/q6.sql /dev/shm/bench_work/cases_q6_verus_all.tsv 5
+$ /flash1/akhilvb/vpg/bench/build-release/aux_compare read /dev/shm/bench_work/cmp_read_q24_cpp.duckdb sec_edgar:24 /dev/shm/bench_work/sec_edgar_baseline/q24.sql /dev/shm/bench_work/cases_q24_cpp_all.tsv 5
+$ /flash1/akhilvb/vpg/bench/build-release/aux_compare read /dev/shm/bench_work/cmp_read_q24_verus.duckdb sec_edgar_q24_vgen /dev/shm/bench_work/sec_edgar_baseline/q24.sql /dev/shm/bench_work/cases_q24_verus_all.tsv 5

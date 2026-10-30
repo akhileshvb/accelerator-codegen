@@ -1,3 +1,0 @@
-$ /home/akhilvb/accelerator-codegen/build-verus-duckdb/aux_compare multi /flash1/akhilvb/tpch/work/cmp_multi_base.duckdb base /flash1/akhilvb/tpch/work/multi_base.tsv 8 120.0 5.0 20261004 5
-$ /home/akhilvb/accelerator-codegen/build-verus-duckdb/aux_compare multi /flash1/akhilvb/tpch/work/cmp_multi_cpp.duckdb accel /flash1/akhilvb/tpch/work/multi_cpp.tsv 8 120.0 5.0 20261004 5
-$ /home/akhilvb/accelerator-codegen/build-verus-duckdb/aux_compare multi /flash1/akhilvb/tpch/work/cmp_multi_verus.duckdb accel /flash1/akhilvb/tpch/work/multi_verus.tsv 8 120.0 5.0 20261004 5

@@ -1,0 +1,88 @@
+{
+ "mode": "read",
+ "accel": "sec_edgar:3",
+ "function": "accel_sec_edgar_q3_aux",
+ "store": "cpp",
+ "build_ms": 493.302,
+ "state_mb": 899.664,
+ "rss_mb_settled_after": 2384.39,
+ "rss_mb_settled_freed": 1484.73,
+ "rss_mb_peak_build": 2385.47,
+ "speedup_geomean": 234.2838529977757,
+ "mismatches": 0,
+ "hits": 240,
+ "fallbacks": 0,
+ "cases": [
+  {
+   "args": "2023, 'CAD'",
+   "base_us": 101041.812,
+   "accel_us": 476.731,
+   "base_rows": 11,
+   "accel_rows": 11,
+   "match": true
+  },
+  {
+   "args": "2021, 'USD'",
+   "base_us": 167888.45,
+   "accel_us": 523.624,
+   "base_rows": 100,
+   "accel_rows": 100,
+   "match": true
+  },
+  {
+   "args": "2022, 'USD'",
+   "base_us": 262851.801,
+   "accel_us": 507.67,
+   "base_rows": 100,
+   "accel_rows": 100,
+   "match": true
+  },
+  {
+   "args": "2024, 'pure'",
+   "base_us": 101445.734,
+   "accel_us": 532.183,
+   "base_rows": 1,
+   "accel_rows": 1,
+   "match": true
+  },
+  {
+   "args": "2022, 'CNY'",
+   "base_us": 99046.36,
+   "accel_us": 516.602,
+   "base_rows": 3,
+   "accel_rows": 3,
+   "match": true
+  },
+  {
+   "args": "2021, 'CNY'",
+   "base_us": 97355.527,
+   "accel_us": 497.919,
+   "base_rows": 18,
+   "accel_rows": 18,
+   "match": true
+  },
+  {
+   "args": "2023, 'CNY'",
+   "base_us": 96122.706,
+   "accel_us": 507.414,
+   "base_rows": 26,
+   "accel_rows": 26,
+   "match": true
+  },
+  {
+   "args": "2022, 'pure'",
+   "base_us": 102305.866,
+   "accel_us": 536.835,
+   "base_rows": 9,
+   "accel_rows": 9,
+   "match": true
+  }
+ ],
+ "wall_s": 30.1,
+ "query": 3,
+ "system": "cpp",
+ "rep": 0,
+ "seed": 14332489,
+ "note": "",
+ "counts_cover_all_draws": true
+}

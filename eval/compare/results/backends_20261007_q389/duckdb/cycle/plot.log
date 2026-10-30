@@ -1,6 +1,0 @@
-  Q  build s RF1 maint s RF2 maint s  DuckDB RF1/2 s    Ra ms     Rd ms   read x |     T=300s     T=120s      T=60s | actions (RF1; RF2) mism
-  3     68.7        1.43        1.75    0.49/0.01        0.92     163.7      179 |    177.95     176.53     174.16  | ApplyDelta; ApplyDelta 0
-  8     67.6        1.34        1.02    0.50/0.01        0.23     203.2      884 |    880.87     875.66     866.98  | ApplyDelta; ApplyDelta 0
-  9    113.4        7.17        3.67    0.43/0.01        0.31     536.7     1759 |   1727.00    1679.35    1599.93  | ApplyDelta; ApplyDelta 0
-(* = a refresh commit takes longer than the interval: the accelerator cannot keep up; the interval stretches)
-wrote benchmarks/compare/results/backends_20261007_q389/duckdb/cycle/cycle_speedup.png and benchmarks/compare/results/backends_20261007_q389/duckdb/cycle/cycle_speedup.csv

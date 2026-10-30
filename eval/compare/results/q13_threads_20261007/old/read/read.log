@@ -1,1 +1,0 @@
-$ build-verus-duckdb/aux_compare read /home/akhilvb/accelerator-codegen-duckdb/tpch_sf20.duckdb tpch:13 tpch_q13_vgen /flash1/akhilvb/tpch/work/cases_q13_cpp_all.tsv 5

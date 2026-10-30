@@ -1,0 +1,42 @@
+TPC-H performance test: 3 run(s), power + throughput with 4 streams, parameter seeds 2959947443..2959947457
+tpch base 09:39:03
+  cost models: 0/22 calibrated at sf30 (accelerators/tpch/qN/config/qN_aux_cost_model_sf30.json), the rest default
+  run 0: Power@Size 432968 (rf1 0.25s rf2 0.01s, slowest query 1.68s)  Throughput@Size 259704 (Ts 36.6s: queries 36.6s, refresh 4.1s)  QphH@Size 335326
+  run 1: Power@Size 423264 (rf1 0.28s rf2 0.01s, slowest query 1.72s)  Throughput@Size 273703 (Ts 34.7s: queries 34.7s, refresh 3.7s)  QphH@Size 340365
+  run 2: Power@Size 386897 (rf1 1.74s rf2 0.02s, slowest query 1.69s)  Throughput@Size 262643 (Ts 36.2s: queries 36.2s, refresh 3.1s)  QphH@Size 318773
+tpch cpp 09:41:45
+  cost models: 0/22 calibrated at sf30 (accelerators/tpch/qN/config/qN_aux_cost_model_sf30.json), the rest default
+  build (load) 253s
+  run 0: Power@Size 60985600 (rf1 1.51s rf2 1.29s, slowest query 0.02s)  Throughput@Size 478553 (Ts 19.9s: queries 0.0s, refresh 19.9s)  QphH@Size 5402300
+  run 1: Power@Size 40734500 (rf1 3.48s rf2 2.31s, slowest query 0.01s)  Throughput@Size 477193 (Ts 19.9s: queries 0.2s, refresh 19.9s)  QphH@Size 4408880
+  run 2: Power@Size 37500700 (rf1 4.32s rf2 2.21s, slowest query 0.01s)  Throughput@Size 488041 (Ts 19.5s: queries 0.1s, refresh 19.5s)  QphH@Size 4278070
+
+TPC-H performance test, median [min-max] over 3 run(s); spec 5.4.3 reports the run with the lower QphH
+    system               Power@Size          Throughput@Size                QphH@Size  min QphH  RF1+RF2 s (power)             Ts s  load s
+      base   423264 [386897-432968]   262643 [259704-273703]   335326 [318773-340365]    318773      0.3 [0.3-1.8] 36.2 [34.7-36.6]       0
+       cpp 40734500 [37500700-60985600]   478553 [477193-488041] 4408880 [4278070-5402300]   4278070      5.8 [2.8-6.5] 19.9 [19.5-19.9]     253
+
+power test, per query s (median over runs):
+   q       base        cpp
+   1     0.4285     0.0006
+   2     0.1279     0.0026
+   3     0.2557     0.0009
+   4     0.2148     0.0036
+   5     0.2702     0.0015
+   6     0.0785     0.0007
+   7     0.2200     0.0006
+   8     0.2752     0.0005
+   9     0.9809     0.0008
+  10     0.4168     0.0007
+  11     0.0455     0.0019
+  12     0.1965     0.0006
+  13     0.8134     0.0006
+  14     0.2303     0.0014
+  15     0.1319     0.0012
+  16     0.2026     0.0048
+  17     1.6899     0.0006
+  18     0.6837     0.0034
+  19     0.3298     0.0009
+  20     0.4252     0.0059
+  21     0.7468     0.0006
+  22     0.1607     0.0015

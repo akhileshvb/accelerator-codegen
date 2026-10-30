@@ -1,7 +1,0 @@
-{
- "error": "exit 1 (see benchmarks/compare/results/rf_interval_sf20_T15_headline/T15s/concurrent.log)",
- "query": 21,
- "system": "stateless",
- "rep": 0,
- "seed": 694380215
-}

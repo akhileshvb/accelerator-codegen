@@ -1,4 +1,0 @@
-=== duckdb tpch Q12 interval=2s ===
-engine,workload,query,write_interval_sec,mode,reads,writes,rows,read_p50_us,read_sum_us,write_p50_us,write_sum_us,build_us,workload_sum_us,workload_speedup_vs_base,workload_with_build_us,workload_with_build_speedup_vs_base
-duckdb,tpch,12,2,base,8,1,2,128855.36,1028003.23,1970.58,1970.58,0.00,1029973.81,1.00,1029973.81,1.00
-duckdb,tpch,12,2,shared,8,1,2,582.34,4587.26,1899.09,1899.09,7347658.61,6486.35,158.79,7354144.96,0.14

@@ -1,5 +1,0 @@
-mode=multi out=benchmarks/compare/results/rf_interval_multi_sf20_long_20261009_163845 sf=20 intervals=[90 60 30] readers=8 systems=cpp verus_cpp verus repeats=5 sets=8 seed=267713173 rf_sets=40 start=Fri Oct  9 04:38:45 PM EDT 2026
-=== T=90s (wps=0.011111111111111112, 360s per run) start 16:38:45
-parameter draws: 5 repetition(s) x 8 sets, seeds 267713173..267713177
-multi base (22 accelerators, rotate readers, rates wps0.0111111, 5 repetition(s)) 16:38:47
-  cost models: config/qN_aux_cost_model_sf20.json (SF20)

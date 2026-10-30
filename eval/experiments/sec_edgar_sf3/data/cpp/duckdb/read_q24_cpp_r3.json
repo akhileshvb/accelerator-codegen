@@ -1,0 +1,88 @@
+{
+ "mode": "read",
+ "accel": "sec_edgar:24",
+ "function": "accel_sec_edgar_q24_aux",
+ "store": "cpp",
+ "build_ms": 5599.62,
+ "state_mb": -413.945,
+ "rss_mb_settled_after": 1767.32,
+ "rss_mb_settled_freed": 2181.27,
+ "rss_mb_peak_build": 1799.84,
+ "speedup_geomean": 193.32190129593144,
+ "mismatches": 0,
+ "hits": 0,
+ "fallbacks": 0,
+ "cases": [
+  {
+   "args": "2020, 'CNY'",
+   "base_us": 92777.292,
+   "accel_us": 461.495,
+   "base_rows": 0,
+   "accel_rows": 0,
+   "match": true
+  },
+  {
+   "args": "2023, 'pure'",
+   "base_us": 122529.181,
+   "accel_us": 465.203,
+   "base_rows": 0,
+   "accel_rows": 0,
+   "match": true
+  },
+  {
+   "args": "2019, 'CNY'",
+   "base_us": 74959.882,
+   "accel_us": 455.926,
+   "base_rows": 0,
+   "accel_rows": 0,
+   "match": true
+  },
+  {
+   "args": "2019, 'pure'",
+   "base_us": 57917.188,
+   "accel_us": 444.243,
+   "base_rows": 0,
+   "accel_rows": 0,
+   "match": true
+  },
+  {
+   "args": "2020, 'pure'",
+   "base_us": 66810.162,
+   "accel_us": 425.161,
+   "base_rows": 0,
+   "accel_rows": 0,
+   "match": true
+  },
+  {
+   "args": "2023, 'CAD'",
+   "base_us": 90935.276,
+   "accel_us": 429.836,
+   "base_rows": 0,
+   "accel_rows": 0,
+   "match": true
+  },
+  {
+   "args": "2020, 'EUR'",
+   "base_us": 86861.916,
+   "accel_us": 446.955,
+   "base_rows": 0,
+   "accel_rows": 0,
+   "match": true
+  },
+  {
+   "args": "2022, 'pure'",
+   "base_us": 121997.279,
+   "accel_us": 458.542,
+   "base_rows": 0,
+   "accel_rows": 0,
+   "match": true
+  }
+ ],
+ "wall_s": 29.7,
+ "query": 24,
+ "system": "cpp",
+ "rep": 3,
+ "seed": 14332492,
+ "note": "",
+ "counts_cover_all_draws": true
+}

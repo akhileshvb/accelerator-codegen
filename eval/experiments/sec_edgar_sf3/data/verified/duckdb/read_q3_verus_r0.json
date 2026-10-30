@@ -1,0 +1,88 @@
+{
+ "mode": "read",
+ "accel": "sec_edgar_q3_vgen",
+ "function": "accel_sec_edgar_q3_vgen",
+ "store": "verus",
+ "build_ms": 493506,
+ "state_mb": -376.602,
+ "rss_mb_settled_after": 1376.69,
+ "rss_mb_settled_freed": 1753.29,
+ "rss_mb_peak_build": 8109.68,
+ "speedup_geomean": 20.2393299005605,
+ "mismatches": 0,
+ "hits": 240,
+ "fallbacks": 0,
+ "cases": [
+  {
+   "args": "2023, 'shares'",
+   "base_us": 145510.143,
+   "accel_us": 5871.399,
+   "base_rows": 11,
+   "accel_rows": 11,
+   "match": true
+  },
+  {
+   "args": "2023, 'CAD'",
+   "base_us": 103781.319,
+   "accel_us": 5553.213,
+   "base_rows": 11,
+   "accel_rows": 11,
+   "match": true
+  },
+  {
+   "args": "2024, 'CAD'",
+   "base_us": 92192.931,
+   "accel_us": 5476.678,
+   "base_rows": 5,
+   "accel_rows": 5,
+   "match": true
+  },
+  {
+   "args": "2023, 'EUR'",
+   "base_us": 97609.208,
+   "accel_us": 5589.651,
+   "base_rows": 17,
+   "accel_rows": 17,
+   "match": true
+  },
+  {
+   "args": "2024, 'shares'",
+   "base_us": 120237.607,
+   "accel_us": 6026.813,
+   "base_rows": 14,
+   "accel_rows": 14,
+   "match": true
+  },
+  {
+   "args": "2023, 'CNY'",
+   "base_us": 97631.854,
+   "accel_us": 6112.657,
+   "base_rows": 26,
+   "accel_rows": 26,
+   "match": true
+  },
+  {
+   "args": "2023, 'USD'",
+   "base_us": 254003.06,
+   "accel_us": 6124.134,
+   "base_rows": 100,
+   "accel_rows": 100,
+   "match": true
+  },
+  {
+   "args": "2021, 'CAD'",
+   "base_us": 97680.429,
+   "accel_us": 6242.52,
+   "base_rows": 21,
+   "accel_rows": 21,
+   "match": true
+  }
+ ],
+ "wall_s": 524.8,
+ "query": 3,
+ "system": "verus",
+ "rep": 0,
+ "seed": 2440513240,
+ "note": "",
+ "counts_cover_all_draws": true
+}

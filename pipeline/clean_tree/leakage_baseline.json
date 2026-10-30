@@ -15,79 +15,21 @@
  "cmake/BaseQuery.cmake": {
   "engine": 2
  },
- "eval/bench/comparison/plot_gendb_bespoke_comparison.py": {
-  "engine": 9
- },
  "eval/bench/sec_edgar/generate_ground_truth.py": {
   "engine": 5
  },
  "eval/bench/sec_edgar/load_data.py": {
   "engine": 9
  },
- "eval/bench/sec_edgar/plot_aux_memory_overhead.py": {
-  "engine": 9
- },
- "eval/bench/sec_edgar/plot_aux_workload_write_interval_sweep.py": {
-  "engine": 1
- },
- "eval/bench/sec_edgar/plot_aux_write_freq_speedup.py": {
-  "engine": 3
- },
- "eval/bench/sec_edgar/plot_read_speedup_vs_gendb.py": {
-  "engine": 7
- },
- "eval/bench/sec_edgar/plot_speedup.py": {
-  "engine": 1
- },
  "eval/bench/sec_edgar/schema_reference.md": {
   "engine": 2,
   "symbol": 2
  },
- "eval/bench/tpch/plot_matview_vs_aux_write_mix.py": {
-  "engine": 8
- },
- "eval/bench/tpch/plot_parallel_speedup.py": {
-  "engine": 7
- },
- "eval/bench/tpch/plot_sf20_rf_workload_speedup.py": {
-  "engine": 3
- },
- "eval/bench/tpch/plot_stateless_geomean.py": {
-  "engine": 4
- },
- "eval/bench/tpch/plot_transient_state.py": {
-  "engine": 7
- },
  "eval/compare/plot_cycle.py": {
   "engine": 9
  },
- "eval/compare/plot_headline_speedup.py": {
-  "engine": 14
- },
  "eval/compare/plot_memory_footprint.py": {
   "engine": 1
- },
- "eval/compare/plot_read.py": {
-  "engine": 4
- },
- "eval/compare/plot_readonly_speedup.py": {
-  "engine": 30,
-  "target": 1
- },
- "eval/compare/plot_results.py": {
-  "engine": 16
- },
- "eval/compare/plot_rf_interval_sweep.py": {
-  "engine": 5
- },
- "eval/compare/plot_rf_multi_sweep.py": {
-  "engine": 8
- },
- "eval/compare/plot_tpch_perf.py": {
-  "engine": 11
- },
- "eval/compare/plotlib.py": {
-  "target": 1
  },
  "eval/compare/rf_intervals.py": {
   "engine": 2,
@@ -103,20 +45,12 @@
   "path": 3,
   "target": 3
  },
- "eval/compare/run_experiments.sh": {
-  "engine": 5,
-  "path": 1,
-  "target": 3
- },
  "eval/compare/run_rf_interval_sweep.sh": {
   "engine": 16,
   "target": 3
  },
  "eval/compare/summarize_rf_interval_sweep.py": {
   "engine": 7
- },
- "eval/compare/tpch_breakdown.py": {
-  "engine": 6
  },
  "eval/compare/workload.py": {
   "engine": 6,

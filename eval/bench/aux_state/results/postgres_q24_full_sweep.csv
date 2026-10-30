@@ -1,5 +1,0 @@
-engine,query,write_interval_sec,mode,reads,writes,rows,read_p50_us,read_sum_us,write_p50_us,write_sum_us,workload_sum_us,workload_speedup_vs_base
-postgres,24,0.0,base,8,0,3,82704723.91,671938539.15,0.00,0.00,671938539.15,1.0000
-postgres,24,0.0,shared,8,0,3,67195.22,539082.99,0.00,0.00,539082.99,1246.4473
-postgres,24,0.5,base,8,7,3,82477948.77,659745560.90,2924561.27,22889224.02,682634784.93,1.0000
-postgres,24,0.5,shared,8,7,3,65339.64,525613.06,2884532.16,20210592.19,20736205.25,32.9199

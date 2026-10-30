@@ -1,5 +1,0 @@
-# table parallel_workers now {'region': 9, 'nation': 9, 'customer': 9, 'supplier': 9, 'part': 9, 'partsupp': 9, 'orders': 9, 'lineitem': 9}
-=== rf-fixed postgres accel rep 0 interval=60s window=180s (min reads 3, max 900s) warmup=30s readers=8 seed=35489017 pg_workers=9 21:06:21
-# --pg-workers 9: max_parallel_workers_per_gather = 9 for every session; table parallel_workers already 9
-parameter draws: 3 repetition(s) x 4 sets, seeds 35489017..35489019
-cps0.016667 rep 0 accel (RF: update sets, whole sets, 8 readers) 21:06:21

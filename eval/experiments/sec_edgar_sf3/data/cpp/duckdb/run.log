@@ -1,0 +1,49 @@
+=== start 10:53:54 commit eb7177ff seed 14332489 db /flash1/akhilvb/sec_edgar_raw/sec_edgar_sf3.duckdb load 1.92
+parameter draws: 5 repetition(s) x 8 sets, seeds 14332489..14332493
+read q1 cpp (5 draws) 10:53:54
+  rep 0: build 0.1s  state 0.04GB  speedup(geomean) 161.1x  mismatches 0  hits 30 fallbacks 0
+  rep 1: build 0.1s  state 0.04GB  speedup(geomean) 155.3x  mismatches 0  hits 0 fallbacks 0
+  rep 2: build 0.1s  state 0.04GB  speedup(geomean) 122.4x  mismatches 0  hits 0 fallbacks 0
+  rep 3: build 0.1s  state 0.04GB  speedup(geomean) 138.5x  mismatches 0  hits 0 fallbacks 0
+  rep 4: build 0.1s  state 0.04GB  speedup(geomean) 129.1x  mismatches 0  hits 0 fallbacks 0
+read q2 cpp (5 draws) 10:53:57
+  rep 0: build 3.5s  state -0.13GB  speedup(geomean) 377.1x  mismatches 0  hits 240 fallbacks 0
+  rep 1: build 3.5s  state -0.13GB  speedup(geomean) 343.0x  mismatches 0  hits 0 fallbacks 0
+  rep 2: build 3.5s  state -0.13GB  speedup(geomean) 378.1x  mismatches 0  hits 0 fallbacks 0
+  rep 3: build 3.5s  state -0.13GB  speedup(geomean) 409.9x  mismatches 0  hits 0 fallbacks 0
+  rep 4: build 3.5s  state -0.13GB  speedup(geomean) 340.9x  mismatches 0  hits 0 fallbacks 0
+read q3 cpp (5 draws) 10:55:07
+  rep 0: build 0.5s  state 0.88GB  speedup(geomean) 234.3x  mismatches 0  hits 240 fallbacks 0
+  rep 1: build 0.5s  state 0.88GB  speedup(geomean) 201.9x  mismatches 0  hits 0 fallbacks 0
+  rep 2: build 0.5s  state 0.88GB  speedup(geomean) 235.5x  mismatches 0  hits 0 fallbacks 0
+  rep 3: build 0.5s  state 0.88GB  speedup(geomean) 178.5x  mismatches 0  hits 0 fallbacks 0
+  rep 4: build 0.5s  state 0.88GB  speedup(geomean) 235.4x  mismatches 0  hits 0 fallbacks 0
+read q4 cpp (5 draws) 10:55:38
+  rep 0: build 5.4s  state 0.20GB  speedup(geomean) 261.4x  mismatches 0  hits 240 fallbacks 0
+  rep 1: build 5.4s  state 0.20GB  speedup(geomean) 393.9x  mismatches 0  hits 0 fallbacks 0
+  rep 2: build 5.4s  state 0.20GB  speedup(geomean) 310.3x  mismatches 0  hits 0 fallbacks 0
+  rep 3: build 5.4s  state 0.20GB  speedup(geomean) 127.5x  mismatches 0  hits 0 fallbacks 0
+  rep 4: build 5.4s  state 0.20GB  speedup(geomean) 113.8x  mismatches 0  hits 0 fallbacks 0
+read q6 cpp (5 draws) 10:56:35
+  rep 0: build 9.5s  state 0.23GB  speedup(geomean) 199.5x  mismatches 0  hits 240 fallbacks 0
+  rep 1: build 9.5s  state 0.23GB  speedup(geomean) 173.3x  mismatches 0  hits 0 fallbacks 0
+  rep 2: build 9.5s  state 0.23GB  speedup(geomean) 234.0x  mismatches 0  hits 0 fallbacks 0
+  rep 3: build 9.5s  state 0.23GB  speedup(geomean) 228.7x  mismatches 0  hits 0 fallbacks 0
+  rep 4: build 9.5s  state 0.23GB  speedup(geomean) 170.4x  mismatches 0  hits 0 fallbacks 0
+read q24 cpp (5 draws) 10:57:27
+  rep 0: build 5.6s  state -0.40GB  speedup(geomean) 206.6x  mismatches 0  hits 240 fallbacks 0
+  rep 1: build 5.6s  state -0.40GB  speedup(geomean) 209.3x  mismatches 0  hits 0 fallbacks 0
+  rep 2: build 5.6s  state -0.40GB  speedup(geomean) 233.1x  mismatches 0  hits 0 fallbacks 0
+  rep 3: build 5.6s  state -0.40GB  speedup(geomean) 193.3x  mismatches 0  hits 0 fallbacks 0
+  rep 4: build 5.6s  state -0.40GB  speedup(geomean) 202.2x  mismatches 0  hits 0 fallbacks 0
+
+read-only: speedup over DuckDB (geomean over a draw's parameter sets), median [min-max] over 5 repetition(s) with different parameter draws; build s and state GB medians
+   q                    cpp                  verus  cpp build  verus build  cpp GB  verus GB  notes
+   1 138.5x [122.4x-161.1x]                      -        0.1            -    0.04         -  
+   2 377.1x [340.9x-409.9x]                      -        3.5            -   -0.13         -  
+   3 234.3x [178.5x-235.5x]                      -        0.5            -    0.88         -  
+   4 261.4x [113.8x-393.9x]                      -        5.4            -    0.20         -  
+   6 199.5x [170.4x-234.0x]                      -        9.5            -    0.23         -  
+  24 206.6x [193.3x-233.1x]                      -        5.6            -   -0.40         -  
+cpp: geomean speedup over queries, per repetition: 231x [185x-239x]
+=== finished 10:57:57 rc=0
