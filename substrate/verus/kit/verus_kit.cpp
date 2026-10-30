@@ -282,6 +282,13 @@ void NoteDecline() {
                                                   : "kit:host_conversion");
 }
 
+// The verified store's epoch 0 means "the newest" (as a reader's) and "current for every snapshot" (as a
+// version's), but an engine's epochs start at 0 (Postgres: the database before any commit).  The store is
+// given every engine epoch plus one.
+uint64_t StoreEpoch(uint64_t engine_epoch) {
+  return engine_epoch == std::numeric_limits<uint64_t>::max() ? engine_epoch : engine_epoch + 1;
+}
+
 // Reads the Verus store's version at `at` through `read(at, tries, &status)`.
 // A reader of a pending commit waits for the publish, or, with a bounded wait,
 // polls until it. Status: 0 state (returned), 1 invalid, 2 pending, 3 not visible.
@@ -289,8 +296,7 @@ template <class Read>
 const void *ReadAwaitingPublish(uint64_t pending_wait_micros, core::Version at, int32_t &status,
                                 const Read &read) {
   // The verified store's own "newest" is 0 (its engines' epochs are positive).
-  if (at == core::kNewestVersion || Fault() == "ignore_snapshot")
-    at = 0;
+  at = at == core::kNewestVersion || Fault() == "ignore_snapshot" ? 0 : StoreEpoch(at);
   const bool unbounded = pending_wait_micros == core::kWaitForPublish;
   const auto deadline = unbounded ? std::chrono::steady_clock::time_point::max()
                                   : std::chrono::steady_clock::now() + std::chrono::microseconds(pending_wait_micros);
@@ -411,7 +417,7 @@ public:
 
   void Install(std::vector<core::StateImage> images, const core::AcceleratorId &,
                Epoch from_epoch) override {
-    InstallUpdates(core::InvalidationPlan{}, images, from_epoch, false);
+    InstallUpdates(core::InvalidationPlan{}, images, StoreEpoch(from_epoch), false);
   }
 
   std::size_t ValidPartitionCount() const override {
@@ -429,8 +435,8 @@ public:
   std::size_t StaleInstalls() const override { return stale_installs; }
 
 private:
-  Epoch CurrentEpoch() const { return epoch ? epoch() : 0; }
-  Epoch CurrentFloor() const { return floor ? floor() : std::numeric_limits<Epoch>::max(); }
+  Epoch CurrentEpoch() const { return StoreEpoch(epoch ? epoch() : 0); }
+  Epoch CurrentFloor() const { return StoreEpoch(floor ? floor() : std::numeric_limits<Epoch>::max()); }
 
   // status: see ReadAwaitingPublish.
   std::shared_ptr<const KitImage> Resolve(core::Version at, int32_t &status) const {
@@ -761,13 +767,13 @@ public:
   }
 
   void AbortCommit(const core::AcceleratorId &) override { world.Abort(); }
-  void EndCommit(uint64_t epoch) override { world.End(epoch); }
+  void EndCommit(uint64_t epoch) override { world.End(StoreEpoch(epoch)); }
 
   void Install(std::vector<core::StateImage> images, const core::AcceleratorId &, Epoch from_epoch) override {
     bool set = false;
     const auto slot = Slot(core::InvalidationPlan{}, images, set);
     if (set)
-      world.InstallNow(kit, slot.get(), from_epoch, CurrentFloor());
+      world.InstallNow(kit, slot.get(), StoreEpoch(from_epoch), CurrentFloor());
   }
 
   std::size_t ValidPartitionCount() const override {
@@ -785,8 +791,8 @@ public:
   std::size_t StaleInstalls() const override { return world.stale; }
 
 private:
-  Epoch CurrentEpoch() const { return epoch ? epoch() : 0; }
-  Epoch CurrentFloor() const { return floor ? floor() : std::numeric_limits<Epoch>::max(); }
+  Epoch CurrentEpoch() const { return StoreEpoch(epoch ? epoch() : 0); }
+  Epoch CurrentFloor() const { return StoreEpoch(floor ? floor() : std::numeric_limits<Epoch>::max()); }
 
   // The slot's change: the last update's staged slot, or none (invalid); `set` false if
   // the commit leaves the slot as it is.
