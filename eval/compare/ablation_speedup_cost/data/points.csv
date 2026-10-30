@@ -1,0 +1,7 @@
+kind,arm,mean_cost_usd,geomean_speedup,correct
+cpp,raw,24.87,19.8,false
+cpp,cold,6.00,15.2,true
+cpp,warm,1.76,211.0,true
+verus,raw,36.12,67.1,true
+verus,cold,29.39,54.0,true
+verus,warm,33.85,64.7,true
