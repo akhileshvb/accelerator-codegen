@@ -92,11 +92,15 @@ ReadRequest DecodeRequest(std::string_view in) {
   return request;
 }
 
-// u8 served | rows (only when served)
+// u8 served | rows (served) or u8 length, cause (not served)
 void EncodeResponse(const ReadResponse &response, std::string &out) {
   Put<uint8_t>(out, response.served);
   if (response.served) {
     runtime::EncodeRows(response.rows, out);
+  } else {
+    const auto cause = response.cause.substr(0, 255);
+    Put<uint8_t>(out, static_cast<uint8_t>(cause.size()));
+    out += cause;
   }
 }
 
@@ -105,6 +109,13 @@ ReadResponse DecodeResponse(std::string_view in) {
   response.served = Get<uint8_t>(in) != 0;
   if (response.served) {
     response.rows = runtime::DecodeRows(in);
+  } else {
+    const size_t size = Get<uint8_t>(in);
+    if (in.size() < size) {
+      throw std::runtime_error("read response: short cause");
+    }
+    response.cause.assign(in.substr(0, size));
+    in.remove_prefix(size);
   }
   if (!in.empty()) {
     throw std::runtime_error("read response: trailing bytes");

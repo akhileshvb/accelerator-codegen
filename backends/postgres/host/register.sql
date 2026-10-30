@@ -33,6 +33,18 @@ RETURNS text
 AS 'accelerator_codegen_pg', 'accel_get_execute_counts'
 LANGUAGE C STRICT;
 
+DROP FUNCTION IF EXISTS accel_fallback_causes() CASCADE;
+CREATE FUNCTION accel_fallback_causes()
+RETURNS text
+AS 'accelerator_codegen_pg', 'accel_fallback_causes'
+LANGUAGE C STRICT;
+
+DROP FUNCTION IF EXISTS accel_reset_execute_counts() CASCADE;
+CREATE FUNCTION accel_reset_execute_counts()
+RETURNS void
+AS 'accelerator_codegen_pg', 'accel_reset_execute_counts'
+LANGUAGE C STRICT;
+
 DROP FUNCTION IF EXISTS accel_get_last_maintenance_action() CASCADE;
 CREATE FUNCTION accel_get_last_maintenance_action()
 RETURNS text

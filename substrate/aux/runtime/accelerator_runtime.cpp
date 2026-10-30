@@ -711,6 +711,11 @@ void AcceleratorRuntime::Pump(uint64_t gap_timeout_us) {
 
 // ---- builds ----
 
+Epoch AcceleratorRuntime::AppliedThrough() const {
+  std::lock_guard<std::mutex> lock(impl->state_mutex);
+  return impl->Synced() && impl->unserved_from == kNever ? impl->applier.AppliedEpoch() : 0;
+}
+
 bool AcceleratorRuntime::IsSynced() const {
   std::lock_guard<std::mutex> lock(impl->state_mutex);
   return impl->Synced() && impl->unserved_from == kNever;

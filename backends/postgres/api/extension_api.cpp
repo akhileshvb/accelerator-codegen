@@ -39,6 +39,24 @@ Datum accel_get_execute_counts(PG_FUNCTION_ARGS) {
   PG_RETURN_TEXT_P(cstring_to_text(text.c_str()));
 }
 
+// Why this backend's accelerator queries fell back ("cause=N,..."): reader-side
+// ("reader:", "worker:" = the worker declined) and, in the backend itself, the SQL path's own.
+PG_FUNCTION_INFO_V1(accel_fallback_causes);
+Datum accel_fallback_causes(PG_FUNCTION_ARGS) {
+  std::string text;
+  for (const auto &[cause, count] : accelerator_codegen::aux_state::core::ReadAuxFallbackCauses()) {
+    text += (text.empty() ? "" : ",") + cause + "=" + std::to_string(count);
+  }
+  PG_RETURN_TEXT_P(cstring_to_text(text.c_str()));
+}
+
+// Clears this backend's execute counts and fallback causes.
+PG_FUNCTION_INFO_V1(accel_reset_execute_counts);
+Datum accel_reset_execute_counts(PG_FUNCTION_ARGS) {
+  accelerator_codegen::aux_state::core::ResetAuxExecuteCounts();
+  PG_RETURN_VOID();
+}
+
 // The last maintenance decision a shard worker made
 // ("action=A rows=N partitions=M"; NULL if none), for calibration.
 PG_FUNCTION_INFO_V1(accel_get_last_maintenance_decision);

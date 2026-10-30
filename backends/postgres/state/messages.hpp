@@ -46,6 +46,7 @@ struct ReadRequest {
 // The reply: the rows, or that the reader must answer from SQL.
 struct ReadResponse {
   bool served = false;
+  std::string cause; // when not served: why the worker declined
   std::vector<core::AuxRow> rows;
 };
 

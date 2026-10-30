@@ -28,6 +28,8 @@ void ResetAuxExecuteCounts();
 // Why queries fell back (a short cause name per reason site; recorded only on fallbacks).
 void RecordAuxFallbackCause(const std::string &cause);
 std::map<std::string, uint64_t> ReadAuxFallbackCauses();
+// The calling thread's most recent cause, cleared by the call (empty: none since the last call).
+std::string TakeLastAuxFallbackCause();
 // "hit=H rebuilt_on_read=R fallback=F"
 std::string FormatAuxExecuteCounts(const AuxExecuteCounts &counts);
 

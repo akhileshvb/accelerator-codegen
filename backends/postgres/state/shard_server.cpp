@@ -9,6 +9,7 @@
 #include <pthread.h>
 
 #include "backends/postgres/state/shared.hpp"
+#include "substrate/aux/core/aux_execute_stats.hpp"
 
 namespace accelerator_codegen::aux_state::engine::postgres::shard {
 namespace {
@@ -225,11 +226,19 @@ void ShardServer::Serve(const std::string &message) {
     }
     ReadResponse response;
     try {
+      core::TakeLastAuxFallbackCause();
       response.served = runtime && ReadWithin(*runtime, request, deadline, response.rows);
+      if (!response.served) {
+        response.cause = runtime ? core::TakeLastAuxFallbackCause() : "no_member";
+        if (response.cause.empty()) {
+          response.cause = stopping ? "worker_stopping" : "declined";
+        }
+      }
     } catch (const std::exception &e) {
       segment.stats.errors++;
       segment.SetText(ShardSegment::kLastError, e.what());
       response = ReadResponse{};
+      response.cause = "worker_error";
     }
     (response.served ? segment.stats.served : segment.stats.fallback)++;
     std::string reply;
