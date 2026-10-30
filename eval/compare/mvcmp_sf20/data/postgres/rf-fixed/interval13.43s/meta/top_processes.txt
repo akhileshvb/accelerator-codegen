@@ -1,0 +1,25 @@
+    PID USER     %CPU %MEM     ELAPSED COMMAND
+3087087 998       8.7  0.2    09:48:42 bundle
+4019983 999       6.4  0.7  5-21:57:19 mysqld
+2621081 renjie    3.0  0.1  3-11:59:08 claude
+3371130 akhilvb   2.0  0.1    02:39:44 MainThread
+3156909 999       2.0  1.0    08:05:42 postgres
+3373026 akhilvb   1.9  0.0    02:39:33 claude
+3083357 992       1.9  0.0    09:49:45 prometheus
+3083351 997       1.7  0.0    09:49:45 redis-server
+3083383 998       1.6  0.0    09:49:45 gitlab-exporter
+3196921 996       1.6  0.0    07:09:49 postgres
+1764110 root      1.6  0.1 33-20:23:50 dockerd
+3777263 root      1.6  0.0       06:45 kworker/u321:2-writeback
+3083432 998       1.3  0.0    09:49:45 gitaly
+3156805 root      1.0  0.0    08:05:43 docker-proxy
+3084297 996       0.9  0.0    09:49:29 postgres
+3156696 999       0.9  0.0    08:05:43 postgres
+3087089 998       0.9  0.0    09:48:42 ruby
+3299368 akhilvb   0.8  0.0    04:05:38 claude
+1481319 akhilvb   0.7  0.0    14:34:08 claude
+2993330 102       0.6  0.3    10:33:51 java
+3751167 root      0.5  0.0       18:26 kworker/u321:0-flush-8:32
+1494006 akhilvb   0.5  0.0    14:25:49 claude
+2908754 104       0.5  0.0  3-09:43:08 mysqld
+3724601 root      0.5  0.0       29:41 kworker/u323:0-flush-8:32

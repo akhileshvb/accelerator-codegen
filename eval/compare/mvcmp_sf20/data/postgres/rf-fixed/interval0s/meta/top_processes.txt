@@ -1,0 +1,25 @@
+    PID USER     %CPU %MEM     ELAPSED COMMAND
+3087087 998       8.7  0.2    09:22:16 bundle
+4019983 999       6.4  0.7  5-21:30:53 mysqld
+2621081 renjie    3.0  0.1  3-11:32:42 claude
+3371130 akhilvb   2.4  0.1    02:13:18 MainThread
+3373026 akhilvb   2.1  0.0    02:13:07 claude
+3156909 999       1.9  1.0    07:39:16 postgres
+3083357 992       1.9  0.0    09:23:19 prometheus
+3083351 997       1.7  0.0    09:23:19 redis-server
+3083383 998       1.6  0.0    09:23:19 gitlab-exporter
+3196921 996       1.6  0.0    06:43:23 postgres
+1764110 root      1.6  0.1 33-19:57:24 dockerd
+3724601 root      1.6  0.0       03:15 kworker/u323:0-events_power_efficient
+3083432 998       1.3  0.0    09:23:19 gitaly
+3156805 root      1.0  0.0    07:39:17 docker-proxy
+3084297 996       0.9  0.0    09:23:03 postgres
+3087089 998       0.9  0.0    09:22:16 ruby
+3299368 akhilvb   0.8  0.0    03:39:12 claude
+3156696 999       0.8  0.0    07:39:17 postgres
+1481319 akhilvb   0.7  0.0    14:07:42 claude
+2993330 102       0.6  0.3    10:07:25 java
+1494006 akhilvb   0.5  0.0    13:59:23 claude
+3688669 root      0.5  0.0       21:15 kworker/u326:0-flush-8:32
+2908754 104       0.5  0.0  3-09:16:42 mysqld
+3646078 root      0.5  0.0       36:06 kworker/u323:4-kvfree_rcu_reclaim

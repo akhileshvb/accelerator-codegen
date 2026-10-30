@@ -1,0 +1,4 @@
+# --pg-workers 9: max_parallel_workers_per_gather and table parallel_workers = 9 for every session (tables' original reloptions {'region': None, 'nation': None, 'customer': None, 'supplier': None, 'part': None, 'partsupp': None, 'orders': None, 'lineitem': None}, restored on exit)
+parameter draws: 1 repetition(s) x 1 sets, seeds 20261018..20261018
+uncapped rep 0 mv (RF: update sets, 500, 0 readers) 04:53:40
+   qps 0.0  read p50 0.0ms p99 0.0ms  timeouts 0  RF commits 5 (5.79e-05/s of -1) of 35 commits  commit p50 13.7ms max 1458ms  lag max 3.7s  rows/s 0 (RF 0)  errors read 0 write 0  refresh 0.0s in window (post-restore 0.0s)  final-check mismatches none  answers unchanged by writes [2]  NO READ COMPLETED IN THE WINDOW (reads take longer than it: lengthen the window)

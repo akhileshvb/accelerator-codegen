@@ -1,0 +1,47 @@
+# table parallel_workers now {'region': 9, 'nation': 9, 'customer': 9, 'supplier': 9, 'part': 9, 'partsupp': 9, 'orders': 9, 'lineitem': 9}
+=== rf-fixed postgres accel rep 0 interval=2.686s window=300s (min reads 3, max 900s) warmup=30s readers=8 seed=20261018 pg_workers=9 03:34:04
+# --pg-workers 9: max_parallel_workers_per_gather = 9 for every session; table parallel_workers already 9
+parameter draws: 3 repetition(s) x 4 sets, seeds 20261018..20261020
+cps0.372301 rep 0 accel (RF: update sets, 500, 8 readers) 03:34:04
+   qps 66.8  read p50 2.3ms p99 637.2ms  timeouts 0  RF commits 115 (0.383/s of 0.372301) of 799 commits  commit p50 2.1ms max 11910ms  lag max 14.7s  rows/s 1024 (RF 959)  errors read 0 write 0  final-check mismatches none  answers unchanged by writes [2, 3, 8, 10, 14, 15, 18, 22]  workers: commits 8856 applied 8856 builds 0 gaps 0 fallback 109 errors 0
+=== rf-fixed postgres accel rep 0 interval=0.537s window=300s (min reads 3, max 900s) warmup=30s readers=8 seed=20261018 pg_workers=9 04:07:33
+# --pg-workers 9: max_parallel_workers_per_gather = 9 for every session; table parallel_workers already 9
+parameter draws: 3 repetition(s) x 4 sets, seeds 20261018..20261020
+cps1.8622 rep 0 accel (RF: update sets, 500, 8 readers) 04:07:33
+   qps 67.2  read p50 1.8ms p99 235.4ms  timeouts 0  RF commits 98 (0.326/s of 1.8622) of 685 commits  commit p50 2.3ms max 46892ms  lag max 241.5s  rows/s 874 (RF 818)  errors read 0 write 0  final-check mismatches none  answers unchanged by writes [2, 3, 8, 10, 14, 15, 18, 22]  workers: commits 9720 applied 9552 builds 7 gaps 0 fallback 75 errors 0  RUN INVALID (a worker rebuilt / lost a commit)
+=== rf-fixed postgres accel rep 0 interval=uncappeds window=300s (min reads 3, max 900s) warmup=30s readers=8 seed=20261018 pg_workers=9 04:24:38
+# --pg-workers 9: max_parallel_workers_per_gather = 9 for every session; table parallel_workers already 9
+parameter draws: 3 repetition(s) x 4 sets, seeds 20261018..20261020
+uncapped rep 0 accel (RF: update sets, 500, 8 readers) 04:24:38
+   qps 46.0  read p50 1.7ms p99 299.3ms  timeouts 0  RF commits 85 (0.283/s of -1) of 589 commits  commit p50 2.1ms max 32956ms  lag max 305.1s  rows/s 757 (RF 709)  errors read 0 write 0  final-check mismatches none  answers unchanged by writes [2, 3, 8, 10, 15, 18, 22]  workers: commits 7272 applied 7193 builds 7 gaps 0 fallback 71 errors 0  RUN INVALID (a worker rebuilt / lost a commit)
+=== rf-fixed postgres accel rep 1 interval=uncappeds window=300s (min reads 3, max 900s) warmup=30s readers=8 seed=20261018 pg_workers=9 04:42:26
+# --pg-workers 9: max_parallel_workers_per_gather = 9 for every session; table parallel_workers already 9
+parameter draws: 3 repetition(s) x 4 sets, seeds 20261018..20261020
+uncapped rep 1 accel (RF: update sets, 500, 8 readers) 04:42:26
+   qps 36.7  read p50 1.9ms p99 1562.4ms  timeouts 0  RF commits 186 (0.62/s of -1) of 1302 commits  commit p50 2.0ms max 13863ms  lag max 322.8s  rows/s 1660 (RF 1552)  errors read 0 write 0  final-check mismatches none  answers unchanged by writes [2, 3, 8, 10, 15, 18, 22]  workers: commits 14472 applied 14176 builds 12 gaps 0 fallback 90 errors 0  RUN INVALID (a worker rebuilt / lost a commit)
+=== rf-fixed postgres accel rep 1 interval=0.537s window=300s (min reads 3, max 900s) warmup=30s readers=8 seed=20261018 pg_workers=9 05:01:08
+# --pg-workers 9: max_parallel_workers_per_gather = 9 for every session; table parallel_workers already 9
+parameter draws: 3 repetition(s) x 4 sets, seeds 20261018..20261020
+cps1.8622 rep 1 accel (RF: update sets, 500, 8 readers) 05:01:08
+   qps 28.0  read p50 2.2ms p99 8005.1ms  timeouts 0  RF commits 284 (0.947/s of 1.8622) of 1988 commits  commit p50 2.4ms max 15924ms  lag max 163.9s  rows/s 2534 (RF 2370)  errors read 0 write 0  final-check mismatches none  answers unchanged by writes [2, 3, 8, 10, 15, 18, 22]  workers: commits 22104 applied 21746 builds 14 gaps 0 fallback 107 errors 0  RUN INVALID (a worker rebuilt / lost a commit)
+=== rf-fixed postgres accel rep 1 interval=2.686s window=300s (min reads 3, max 900s) warmup=30s readers=8 seed=20261018 pg_workers=9 05:35:51
+# --pg-workers 9: max_parallel_workers_per_gather = 9 for every session; table parallel_workers already 9
+parameter draws: 3 repetition(s) x 4 sets, seeds 20261018..20261020
+cps0.372301 rep 1 accel (RF: update sets, 500, 8 readers) 05:35:51
+   qps 58.7  read p50 2.1ms p99 307.5ms  timeouts 0  RF commits 110 (0.366/s of 0.372301) of 770 commits  commit p50 2.1ms max 8636ms  lag max 34.1s  rows/s 980 (RF 916)  errors read 0 write 0  final-check mismatches none  answers unchanged by writes [2, 3, 8, 10, 15, 18, 22]  workers: commits 8856 applied 8727 builds 11 gaps 0 fallback 93 errors 0  RUN INVALID (a worker rebuilt / lost a commit)
+=== rf-fixed postgres accel rep 2 interval=2.686s window=300s (min reads 3, max 900s) warmup=30s readers=8 seed=20261018 pg_workers=9 05:53:31
+# --pg-workers 9: max_parallel_workers_per_gather = 9 for every session; table parallel_workers already 9
+parameter draws: 3 repetition(s) x 4 sets, seeds 20261018..20261020
+cps0.372301 rep 2 accel (RF: update sets, 500, 8 readers) 05:53:31
+   qps 27.1  read p50 1.9ms p99 4184.0ms  timeouts 0  RF commits 118 (0.393/s of 0.372301) of 829 commits  commit p50 2.1ms max 14696ms  lag max 35.6s  rows/s 1052 (RF 984)  errors read 0 write 0  final-check mismatches none  answers unchanged by writes [2, 3, 8, 14, 18, 22]  workers: commits 8856 applied 8856 builds 0 gaps 0 fallback 72 errors 0
+=== rf-fixed postgres accel rep 2 interval=0.537s window=300s (min reads 3, max 900s) warmup=30s readers=8 seed=20261018 pg_workers=9 06:08:56
+# --pg-workers 9: max_parallel_workers_per_gather = 9 for every session; table parallel_workers already 9
+parameter draws: 3 repetition(s) x 4 sets, seeds 20261018..20261020
+cps1.8622 rep 2 accel (RF: update sets, 500, 8 readers) 06:08:56
+   qps 70.4  read p50 1.7ms p99 259.0ms  timeouts 0  RF commits 77 (0.257/s of 1.8622) of 533 commits  commit p50 2.5ms max 22491ms  lag max 274.5s  rows/s 686 (RF 642)  errors read 0 write 0  final-check mismatches none  answers unchanged by writes [2, 3, 8, 10, 14, 18, 22]  workers: commits 5832 applied 5828 builds 1 gaps 0 fallback 65 errors 0  RUN INVALID (a worker rebuilt / lost a commit)
+=== rf-fixed postgres accel rep 2 interval=uncappeds window=300s (min reads 3, max 900s) warmup=30s readers=8 seed=20261018 pg_workers=9 06:22:30
+# --pg-workers 9: max_parallel_workers_per_gather = 9 for every session; table parallel_workers already 9
+parameter draws: 3 repetition(s) x 4 sets, seeds 20261018..20261020
+uncapped rep 2 accel (RF: update sets, 500, 8 readers) 06:22:31
+   qps 55.0  read p50 2.1ms p99 1560.4ms  timeouts 0  RF commits 135 (0.45/s of -1) of 951 commits  commit p50 2.2ms max 9829ms  lag max 325.8s  rows/s 1204 (RF 1125)  errors read 0 write 0  final-check mismatches none  answers unchanged by writes [2, 3, 8, 14, 18, 22]  workers: commits 11160 applied 11083 builds 7 gaps 0 fallback 117 errors 0  RUN INVALID (a worker rebuilt / lost a commit)
+# table parallel_workers now {'region': None, 'nation': None, 'customer': None, 'supplier': None, 'part': None, 'partsupp': None, 'orders': None, 'lineitem': None}

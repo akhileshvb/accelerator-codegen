@@ -1,0 +1,1 @@
+accel.build_threads=80 accel.build_tuning=on accel.commit_ship_timeout_ms=600000 accel.force_fallback=off accel.maint_threads=80 accel.read_threads=10 accel.read_timeout_ms=60000 accel.read_wait_ms=5000 accel.shard_idle_exit_s=0 accel.shard_read_threads=64 accel.threads=80 jit=on max_parallel_workers=80 max_parallel_workers_per_gather=80 max_worker_processes=104
