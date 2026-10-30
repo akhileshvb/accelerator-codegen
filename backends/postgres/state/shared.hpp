@@ -104,6 +104,8 @@ void ReleaseHeldTokens(int index);
 // accel.commit_ship_timeout_ms: how long COMMIT waits to queue its commit
 // messages for a shard worker.
 std::chrono::milliseconds CommitShipTimeout();
+// accel.fault_drop_commit_every (a test fault): whether this commit message is dropped instead of shipped.
+bool FaultDropsCommit();
 
 // Defines accel.threads and accel.commit_ship_timeout_ms (call from _PG_init).
 void DefineGucs();

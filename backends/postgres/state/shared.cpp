@@ -193,6 +193,7 @@ bool SeesPreActivationWrites(int index, Snapshot snapshot) {
 int g_threads = 1;
 int g_ship_timeout_ms = 2000;
 int g_apply_wait_ms = 2000;
+int g_fault_drop_every = 0;
 
 class SharedTokens final : public runtime::TokenSource {
 public:
@@ -429,6 +430,11 @@ void ReleaseHeldTokens(int index) {
   pg_atomic_fetch_sub_u32(&registry.tokens_in_use, held);
 }
 
+bool FaultDropsCommit() {
+  static int shipped = 0;
+  return g_fault_drop_every > 0 && ++shipped % g_fault_drop_every == 0;
+}
+
 std::chrono::milliseconds CommitShipTimeout() { return std::chrono::milliseconds(g_ship_timeout_ms); }
 
 void DefineGucs() {
@@ -442,6 +448,10 @@ void DefineGucs() {
                           "gives up (the worker then rebuilds).",
                           nullptr, &g_ship_timeout_ms, g_ship_timeout_ms, 1, 600000, PGC_USERSET, 0, nullptr,
                           nullptr, nullptr);
+  DefineCustomIntVariable("accel.fault_drop_commit_every",
+                          "Test fault: every n-th commit message of this backend is not shipped, as if its queue timed out "
+                          "(0: off).",
+                          nullptr, &g_fault_drop_every, 0, 0, 1000000, PGC_USERSET, 0, nullptr, nullptr, nullptr);
   DefineCustomIntVariable("accel.commit_apply_wait_ms",
                           "How long a committing writer to a verified-store shard waits for its worker to have "
                           "applied the previous commit (one version per commit).",

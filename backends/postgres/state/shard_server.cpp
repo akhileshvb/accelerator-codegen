@@ -74,6 +74,11 @@ bool CommitArrivals::WaitThrough(runtime::Epoch epoch, Clock::time_point deadlin
   return arrived.wait_until(lock, deadline, [&] { return through >= epoch; });
 }
 
+runtime::Epoch CommitArrivals::Missing() {
+  std::lock_guard<std::mutex> lock(mutex);
+  return through + 1;
+}
+
 // ---- ShardServer ----
 
 ShardServer::ShardServer(ShardSegment &segment_p, uint32_t index_p,
