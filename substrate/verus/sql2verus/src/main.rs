@@ -234,6 +234,26 @@ struct Val {
     opt: bool,                        // code is an Option<..> (a GROUP BY key that may be NULL)
     nonlit_div: bool,                 // divides by a non-literal
     den_conds: Vec<String>,           // divisors that must be non-zero
+    totals: Option<Option<Totals>>,   // a column of a derived table: Some if it is a rounded float aggregate, then its totals if known
+}
+
+/// Σ|x| and the count of the values a rounded float aggregate sums, over all tuples of its block
+/// (an upper bound for any group of it).
+#[derive(Clone, Debug)]
+struct Totals {
+    abs: String,
+    n: String,
+}
+
+/// A float SUM / AVG that raises an error in the engine when a partial result overflows
+/// (`float_overflow` = error): its group, and the sum of absolute values and count it reads.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FloatSite {
+    prefix: String,
+    keys: Vec<(String, String)>, // (key variable, its type)
+    avg: bool,
+    abs: String,
+    n: String,
 }
 
 /// The group of a rounded float aggregate, for choosing its value.
@@ -242,6 +262,7 @@ struct Rounded {
     prefix: String,
     keys: Vec<(String, String)>, // (key variable, its type)
     nonempty: String, // the group has rows
+    totals: Option<Totals>,
 }
 
 impl Val {
@@ -262,6 +283,7 @@ impl Val {
             opt: false,
             nonlit_div: false,
             den_conds: vec![],
+            totals: None,
         }
     }
     fn int(v: i128, ty: Ty) -> Val {
@@ -569,6 +591,8 @@ struct Schema {
     engine: String,
     /// a zero divisor of an exact division gives +-infinity or NaN (else the query raises an error)
     div_ieee: bool,
+    /// a float SUM / AVG whose partial result overflows raises an error (else the result is +-infinity)
+    float_error: bool,
     col_ty: HashMap<(String, String), (Option<Ty>, bool)>,
     /// the inclusive value range of a numeric or date column's SQL type
     col_range: HashMap<(String, String), (i128, i128)>,
@@ -678,7 +702,7 @@ async fn load_schema(ctx: &SessionContext, ddl: &str, char_semantics: (&'static 
             other => bail!("schema: statement not supported: {}", other.to_string().lines().next().unwrap_or("")),
         }
     }
-    Ok(Schema { ddl_cols, char_cols, char_semantics, engine, div_ieee: false, col_ty, col_range })
+    Ok(Schema { ddl_cols, char_cols, char_semantics, engine, div_ieee: false, float_error: false, col_ty, col_range })
 }
 
 /// Verus names for a table: its Db field and its row struct.
@@ -699,6 +723,7 @@ struct RelInfo {
     row: String,                           // XRow
     cols: Vec<(String, String, Ty, bool, bool)>, // (sql name, field, ty, char, nullable)
     chs: Vec<Binder>,                            // the chosen floats its rows are built from
+    sums: Vec<Option<Option<Totals>>>,           // per column: see Val::totals
 }
 
 #[derive(Clone, Debug)]
@@ -881,6 +906,7 @@ struct Tr<'a> {
     perm: perm::Perm,
     ok_calls: Vec<String>, // the `name_ok(..)` of every chosen float
     guarded_vals: HashSet<String>, // blocks (prefixes) whose aggregates skip NULL values
+    float_sites: Vec<FloatSite>, // the float SUM / AVG that can overflow in the engine (float_overflow = error)
 }
 
 impl<'a> Tr<'a> {
@@ -1045,6 +1071,7 @@ impl<'a> Tr<'a> {
             Ctx::Row { tuple: Some(t) } if local => format!("{t}.{}", b.var),
             _ => b.var.clone(),
         };
+        let mut totals = None;
         let (field, ty, ch, nullable) = match &b.src {
             Src::Base(t) => {
                 let key = (t.clone(), c.name.clone());
@@ -1054,7 +1081,9 @@ impl<'a> Tr<'a> {
                 (sanitize(&key.1), ty, self.sch.char_cols.contains(&key), nullable)
             }
             Src::Rel(r) => {
-                let col = r.cols.iter().find(|x| x.0 == c.name).ok_or_else(|| format!("column {alias}.{} not found", c.name))?;
+                let i = r.cols.iter().position(|x| x.0 == c.name).ok_or_else(|| format!("column {alias}.{} not found", c.name))?;
+                let col = &r.cols[i];
+                totals = r.sums[i].clone();
                 (col.1.clone(), col.2, col.3, col.4)
             }
             Src::Choice(_) => unreachable!("a chosen float has no columns"),
@@ -1067,13 +1096,13 @@ impl<'a> Tr<'a> {
             let col = if b.optional { format!("{base}->0.{field}") } else { format!("{base}.{field}") };
             let guards: Vec<String> = [b.optional.then(|| format!("{base} is Some")), nullable.then(|| format!("{col} is Some"))].into_iter().flatten().collect();
             let code = if nullable { format!("{col}->0") } else { col };
-            return Ok(Val { guard: Some(guards.join(" && ")), char_col: ch, ..Val::atom(code, ty) });
+            return Ok(Val { guard: Some(guards.join(" && ")), char_col: ch, totals, ..Val::atom(code, ty) });
         }
         if ty == Ty::Rat {
             // a fraction column of a derived table (AVG, or division by a literal): den > 0
             return Ok(Val { den: Some(format!("{base}.{field}.den")), ..Val::atom(format!("{base}.{field}.num"), ty) });
         }
-        Ok(Val { char_col: ch, ..Val::atom(format!("{base}.{field}"), ty) })
+        Ok(Val { char_col: ch, totals, ..Val::atom(format!("{base}.{field}"), ty) })
     }
 
     fn literal(&self, s: &ScalarValue) -> Res<Val> {
@@ -1911,7 +1940,15 @@ impl<'a> Tr<'a> {
                         // rounded operations on a path: n - 1 additions + k per tuple (+ 1 division for AVG, added in row_ok)
                         let m = simplify_k(&format!("{n} - 1 + {k}"));
                         let keys = g.keys.iter().map(|(n, k)| (n.clone(), key_ty(k))).collect();
-                        let rounded = Some(Rounded { prefix: g.prefix.clone(), keys, nonempty: format!("{}) > 0", g.call("group_count")) });
+                        let (site_abs, site_n, totals) = self.float_totals(&v, g, &abs, &skip_null, &n, fname == "avg")?;
+                        let rounded = Some(Rounded { prefix: g.prefix.clone(), keys, nonempty: format!("{}) > 0", g.call("group_count")), totals });
+                        if let Some((abs_s, n_s)) = site_abs.zip(site_n) {
+                            let keys = rounded.as_ref().unwrap().keys.clone();
+                            let site = FloatSite { prefix: g.prefix.clone(), keys, avg: fname == "avg", abs: abs_s, n: n_s };
+                            if !self.float_sites.contains(&site) {
+                                self.float_sites.push(site);
+                            }
+                        }
                         let mut out = Val { approx: Some((sum(&abs), m)), rounded, ..Val::atom(sum(&v.code), Ty::Flt(p)) };
                         if fname == "avg" {
                             out.den = Some(n); // AVG: the value is about code / den
@@ -1944,6 +1981,38 @@ impl<'a> Tr<'a> {
         }
     }
 
+    /// The sum of absolute values and count a float SUM / AVG of `v` reads, when the engine raises an
+    /// error on overflow (else None): for its own group, and `totals` over all tuples of the block for
+    /// a derived table to read.  A column of a derived table that is itself a rounded aggregate
+    /// is bounded by twice the absolute sum under it.
+    fn float_totals(&self, v: &Val, g: &GroupCtx, abs: &str, skip_null: &dyn Fn(&str) -> String, n: &str, avg: bool) -> Res<(Option<String>, Option<String>, Option<Totals>)> {
+        if !self.sch.float_error {
+            return Ok((None, None, None));
+        }
+        let what = if avg { "AVG" } else { "SUM" };
+        if v.approx.is_some() {
+            bail!("{what} of a computed float: its intermediate results can overflow in {}", self.sch.engine);
+        }
+        if !g.keys.is_empty() && !g.outer_args.is_empty() {
+            bail!("{what} in a grouped block that reads rounded aggregates or the enclosing query");
+        }
+        let tuples = format!("{}tuples(db, params{})", g.prefix, g.outer_args);
+        let tt = &g.tuple_ty;
+        let totals = g.outer_args.is_empty().then(|| Totals {
+            abs: format!("sum({tuples}, |t: {tt}| {})", skip_null(abs)),
+            n: match &v.guard {
+                Some(gd) => format!("sum({tuples}, |t: {tt}| if {gd} {{ 1int }} else {{ 0 }})"),
+                None => format!("({tuples}.len() as int)"),
+            },
+        });
+        match &v.totals {
+            Some(Some(t)) => Ok((Some(format!("2 * ({})", t.abs)), Some(t.n.clone()), totals)),
+            Some(None) => bail!("{what} of a rounded float aggregate of a correlated subquery"),
+            None if !g.outer_args.is_empty() => bail!("{what} of a float in a correlated block or one reading rounded aggregates"),
+            None => Ok((Some(format!("{}, |t: {tt}| {})", g.call("group_sum"), skip_null(abs))), Some(n.to_string()), totals)),
+        }
+    }
+
     /// The value of a consumed rounded float aggregate: the number the engine
     /// picked for the group, `name(keys)`.  The same aggregate in a block is one number.
     fn choose(&mut self, exact: Val) -> Res<Val> {
@@ -1960,7 +2029,7 @@ impl<'a> Tr<'a> {
             self.frame().own.push(Choice { var, keys: r.keys, exact: exact.clone(), group });
         }
         let code = self.frame().own.iter().find(|c| c.of(&exact)).unwrap().call();
-        Ok(Val { guard: exact.guard, ..Val::atom(code, Ty::Flt(1)) })
+        Ok(Val { guard: exact.guard, totals: Some(r.totals), ..Val::atom(code, Ty::Flt(1)) })
     }
 
     // ── subqueries ──
@@ -2267,6 +2336,7 @@ impl<'a> Tr<'a> {
             func: format!("rel_{base}"),
             row: format!("{}Row", camel(&base)),
             cols: b.outs.iter().map(|o| (o.sql.clone(), o.field.clone(), o.val.ty, o.val.char_col, o.nullable)).collect(),
+            sums: b.outs.iter().map(|o| o.val.totals.clone()).collect(),
             chs: f.outer,
         };
         let mut w = String::new();
@@ -3247,8 +3317,15 @@ fn print(tr: &Tr, top: &Top, sql: &str, src_name: &str) -> String {
         }
         writeln!(w, "}}\n").unwrap();
     }
+    let floats = !tr.float_sites.is_empty();
+    if floats {
+        print_float_safe(w, &tr.float_sites);
+    }
     writeln!(w, "/// `out` is the full answer (before any LIMIT), sorted by ORDER BY (ties in any order){}.", if op.is_empty() { "" } else { ", for these values of the rounded float aggregates" }).unwrap();
     writeln!(w, "pub open spec fn {}(db: Db, params: Params{op}, out: Seq<OutRow>) -> bool {{", if op.is_empty() { "full_result" } else { "full_result_with" }).unwrap();
+    if floats {
+        writeln!(w, "    &&& float_safe(db, params)").unwrap();
+    }
     match b.shape {
         Shape::Grouped if !as_bag(b) => {
             writeln!(w, "    &&& forall|i: int| 0 <= i < out.len() ==> row_ok(db, params{oa}, #[trigger] out[i])").unwrap();
@@ -3311,9 +3388,10 @@ fn print(tr: &Tr, top: &Top, sql: &str, src_name: &str) -> String {
         writeln!(w, "}}\n").unwrap();
     }
     let avail = print_facts(w, top, approx, &defined);
-    print_defined(w, top, avail, &defined, tr.ieee_div);
+    assert!(!floats || avail == Facts::None, "a float aggregate that can overflow has no existence facts");
+    print_defined(w, top, avail, &defined, tr.ieee_div, floats);
     let tables: Vec<String> = tr.used.keys().map(|t| table_field(t)).collect();
-    tr.perm.print(w, &tables, top, &defined);
+    tr.perm.print(w, &tables, top, &defined, &tr.float_sites);
     writeln!(w, "}} // verus!").unwrap();
     o
 }
@@ -3392,6 +3470,60 @@ fn lex_lt_cols(cols: &[OrdCol]) -> String {
         expr = if expr == "false" { lt } else { format!("{lt} || ({eq} && {})", if expr.contains("||") { format!("({expr})") } else { expr }) };
     }
     expr
+}
+
+/// The group of a float site, as a function argument list: `, g_a: T, ..`
+fn site_params(keys: &[(String, String)]) -> String {
+    keys.iter().map(|(g, t)| format!(", {g}: {t}")).collect()
+}
+
+/// `float_safe`: no float SUM / AVG of any group of any block can overflow in any evaluation order
+/// (the engine raises an error then).  A group is every group the engine aggregates, whether or
+/// not HAVING keeps it.
+fn print_float_safe(w: &mut String, sites: &[FloatSite]) {
+    let mut prefixes: Vec<&str> = vec![];
+    for s in sites {
+        if !prefixes.contains(&s.prefix.as_str()) {
+            prefixes.push(&s.prefix);
+        }
+    }
+    for p in &prefixes {
+        let mine: Vec<&FloatSite> = sites.iter().filter(|s| s.prefix == *p).collect();
+        let keys = &mine[0].keys;
+        let (kp, ka): (String, String) = (site_params(keys), keys.iter().map(|(g, _)| format!(", {g}")).collect());
+        let conds: Vec<String> = mine
+            .iter()
+            .map(|s| if s.avg { format!("float8_avg_safe({}, {})", s.abs, s.n) } else { format!("float8_sum_safe({})", s.abs) })
+            .collect();
+        let block = if p.is_empty() { "the query".to_string() } else { format!("block {}", p.trim_end_matches('_')) };
+        if keys.is_empty() {
+            writeln!(w, "/// No float SUM / AVG of {block} can overflow in any evaluation order.").unwrap();
+            writeln!(w, "pub open spec fn {p}groups_float_safe(db: Db, params: Params) -> bool {{").unwrap();
+            for c in &conds {
+                writeln!(w, "    &&& {c}").unwrap();
+            }
+            writeln!(w, "}}\n").unwrap();
+            continue;
+        }
+        writeln!(w, "/// No float SUM / AVG of this group of {block} can overflow in any evaluation order.").unwrap();
+        writeln!(w, "pub open spec fn {p}group_float_safe(db: Db, params: Params{kp}) -> bool {{").unwrap();
+        for c in &conds {
+            writeln!(w, "    &&& {c}").unwrap();
+        }
+        writeln!(w, "}}\n").unwrap();
+        let q: Vec<String> = keys.iter().map(|(g, t)| format!("{g}: {t}")).collect();
+        writeln!(w, "/// ... in every non-empty group of {block}, those HAVING drops included (the engine aggregates them too).").unwrap();
+        writeln!(w, "pub open spec fn {p}groups_float_safe(db: Db, params: Params) -> bool {{").unwrap();
+        writeln!(w, "    forall|{}| #[trigger] {p}group_count(db, params{ka}) > 0 ==> {p}group_float_safe(db, params{ka})", q.join(", ")).unwrap();
+        writeln!(w, "}}\n").unwrap();
+    }
+    writeln!(w, "/// No float SUM / AVG of the query can overflow in any evaluation order, in any group: the").unwrap();
+    writeln!(w, "/// engine would raise an error.  The query has no answer unless this holds.").unwrap();
+    writeln!(w, "pub open spec fn float_safe(db: Db, params: Params) -> bool {{").unwrap();
+    for p in &prefixes {
+        writeln!(w, "    &&& {p}groups_float_safe(db, params)").unwrap();
+    }
+    writeln!(w, "}}\n").unwrap();
 }
 
 fn lex_lt(b: &Block, order: &[SortKey]) -> String {
@@ -3510,7 +3642,7 @@ fn print_facts(w: &mut String, top: &Top, approx: bool, defined: &[String]) -> F
 
 /// `defined`: the query's divisors are non-zero, so that it has an answer; with
 /// the lemmas that make `defined <==> exists an answer` a verified fact.
-fn print_defined(w: &mut String, top: &Top, facts: Facts, defined: &[String], ieee_div: bool) {
+fn print_defined(w: &mut String, top: &Top, facts: Facts, defined: &[String], ieee_div: bool, floats: bool) {
     let b = &top.block;
     let own = facts == Facts::Grouped && !defined.is_empty() && !as_bag(b);
     writeln!(w, "// ── The answer exists exactly when `defined` (verified by Verus, not trusted) ──\n").unwrap();
@@ -3520,22 +3652,39 @@ fn print_defined(w: &mut String, top: &Top, facts: Facts, defined: &[String], ie
             (true, true) => "Always: a zero divisor gives an infinity or NaN, not an undefined answer.",
             (true, false) => "No divisor of the query is zero (it has none).",
         };
+        let doc = match (floats, defined.is_empty()) {
+            (false, _) => doc.to_string(),
+            (true, true) => "No float SUM / AVG of the query can overflow, in any evaluation order (the engine raises an error).".to_string(),
+            (true, false) => "No divisor of the query is zero, and no float SUM / AVG can overflow in any evaluation order.".to_string(),
+        };
         writeln!(w, "/// {doc}").unwrap();
         writeln!(w, "pub open spec fn defined(db: Db, params: Params) -> bool {{").unwrap();
+        let mut body: Vec<String> = vec![];
         if defined.is_empty() {
-            writeln!(w, "    true").unwrap();
-        } else if b.shape == Shape::Scalar {
-            let conj: Vec<String> = b.outs.iter().flat_map(den_exprs).collect();
-            if b.having.is_empty() {
-                for e in &conj {
-                    writeln!(w, "    &&& {e}").unwrap();
+            body.push(if floats { "&&& float_safe(db, params)".to_string() } else { "true".to_string() });
+        } else {
+            if floats {
+                body.push("&&& float_safe(db, params)".to_string());
+            }
+            let mut part: Vec<String> = vec![];
+            if b.shape == Shape::Scalar {
+                let conj: Vec<String> = b.outs.iter().flat_map(den_exprs).collect();
+                if b.having.is_empty() {
+                    part.extend(conj.iter().map(|e| format!("&&& {e}")));
+                } else {
+                    let all: Vec<String> = conj.iter().map(|e| format!("({e})")).collect();
+                    part.push(format!("having(db, params) ==> ({})", all.join(" && ")));
                 }
             } else {
-                let all: Vec<String> = conj.iter().map(|e| format!("({e})")).collect();
-                writeln!(w, "    having(db, params) ==> ({})", all.join(" && ")).unwrap();
+                part.push(tuple_defined(b, defined));
             }
-        } else {
-            writeln!(w, "    {}", tuple_defined(b, defined)).unwrap();
+            if floats && !part[0].starts_with("&&& ") {
+                part[0] = format!("&&& ({})", part[0]);
+            }
+            body.extend(part);
+        }
+        for l in &body {
+            writeln!(w, "    {l}").unwrap();
         }
         writeln!(w, "}}\n").unwrap();
     }
@@ -3568,7 +3717,7 @@ fn print_defined(w: &mut String, top: &Top, facts: Facts, defined: &[String], ie
         writeln!(w, "// (No existence lemmas: see the facts above.)\n").unwrap();
         return;
     }
-    writeln!(w, "/// An answer exists only if the divisors are non-zero.").unwrap();
+    writeln!(w, "/// An answer exists only if the divisors are non-zero{}.", if floats { " and no float SUM / AVG can overflow" } else { "" }).unwrap();
     writeln!(w, "pub proof fn lemma_exists_defined(db: Db, params: Params)\n    ensures\n        (exists|o: Seq<OutRow>| #[trigger] query_result(db, params, o)) ==> defined(db, params),\n{{").unwrap();
     if !defined.is_empty() {
         writeln!(w, "    if exists|o: Seq<OutRow>| #[trigger] query_result(db, params, o) {{").unwrap();
@@ -3597,6 +3746,15 @@ fn print_defined(w: &mut String, top: &Top, facts: Facts, defined: &[String], ie
             writeln!(w, "                assert(row_ok(db, params, full[j]));\n                assert(row_ok(db, params, present_row(db, params)(t)));\n            }}\n        }}").unwrap();
         }
         writeln!(w, "        assert(defined(db, params));\n    }}").unwrap();
+    } else if floats {
+        writeln!(w, "    if exists|o: Seq<OutRow>| #[trigger] query_result(db, params, o) {{").unwrap();
+        writeln!(w, "        let o = choose|o: Seq<OutRow>| #[trigger] query_result(db, params, o);").unwrap();
+        if top.limit.is_some() || top.offset > 0 {
+            writeln!(w, "        let full = choose|full: Seq<OutRow>| #[trigger] full_result(db, params, full) && o == {};", cut(top, "full")).unwrap();
+        } else {
+            writeln!(w, "        let full = o;").unwrap();
+        }
+        writeln!(w, "        assert(full_result(db, params, full));\n        assert(float_safe(db, params));\n    }}").unwrap();
     }
     writeln!(w, "}}\n").unwrap();
 }
@@ -3839,12 +3997,13 @@ async fn run() -> Res<()> {
     let ctx = SessionContext::new_with_config(cfg);
     // CHAR(n) semantics of the target engine (the spec models the engine the accelerator runs on)
     let engine = opt0(&args, "--engine").unwrap_or_else(|| "duckdb".to_string());
-    // the engine's defaults: CHAR(n) semantics, and whether a zero divisor gives IEEE inf / NaN
-    // (DECIMAL / DECIMAL is a DOUBLE division) or an error
-    let (char_default, ieee_default): ((&'static str, &'static str), bool) = match engine.as_str() {
-        "duckdb" => (("bytes", "DuckDB: CHAR(n) is an alias of VARCHAR"), true),
-        "postgres" => (("padded", "Postgres bpchar; a parameter compared with it must bind as bpchar, not text"), false),
-        "mysql" => (("padded", "MySQL CHAR under a PAD SPACE collation"), false),
+    // the engine's defaults: CHAR(n) semantics, whether a zero divisor gives IEEE inf / NaN
+    // (DECIMAL / DECIMAL is a DOUBLE division) or an error, and whether a float SUM / AVG that
+    // overflows gives +-infinity or an error
+    let (char_default, ieee_default, float_default): ((&'static str, &'static str), bool, bool) = match engine.as_str() {
+        "duckdb" => (("bytes", "DuckDB: CHAR(n) is an alias of VARCHAR"), true, false),
+        "postgres" => (("padded", "Postgres bpchar; a parameter compared with it must bind as bpchar, not text"), false, true),
+        "mysql" => (("padded", "MySQL CHAR under a PAD SPACE collation"), false, true),
         e => return Err(format!("--engine: duckdb, postgres or mysql, not {e}")),
     };
     let char_semantics: (&'static str, &'static str) = match opt0(&args, "--char-semantics").as_deref() {
@@ -3859,8 +4018,15 @@ async fn run() -> Res<()> {
         Some(o) => return Err(format!("--div-zero: ieee or error, not {o}")),
         None => ieee_default,
     };
+    let float_error = match opt0(&args, "--float-overflow").as_deref() {
+        Some("error") => true,
+        Some("inf") => false,
+        Some(o) => return Err(format!("--float-overflow: error or inf, not {o}")),
+        None => float_default,
+    };
     let mut sch = load_schema(&ctx, &ddl, char_semantics, engine.clone()).await?;
     sch.div_ieee = div_ieee;
+    sch.float_error = float_error;
     if engine == "duckdb" {
         // DuckDB's strlen is the byte length
         ctx.register_udf(datafusion::functions::string::octet_length().as_ref().clone().with_aliases(["strlen"]));
@@ -3883,6 +4049,7 @@ async fn run() -> Res<()> {
         perm: perm::Perm::default(),
         ok_calls: vec![],
         guarded_vals: HashSet::new(),
+        float_sites: vec![],
     };
     let top = translate(&mut tr, &plan, &explicit_nulls(&sql)?)?;
     let src_name = std::path::Path::new(&query_path).file_name().unwrap().to_string_lossy().to_string();

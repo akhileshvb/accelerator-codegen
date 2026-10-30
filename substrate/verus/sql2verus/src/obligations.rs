@@ -1224,7 +1224,8 @@ pub(crate) async fn obligations(
     writeln!(w, "}}\n").unwrap();
     writeln!(w, "/// An answer row whose values fit the result's runtime types.").unwrap();
     writeln!(w, "pub open spec fn out_fits(r: OutRow) -> bool {{\n    {}\n}}\n", if out_fits.is_empty() { "true".to_string() } else { out_fits.iter().map(|f| if out_fits.len() > 1 && f.starts_with("match") { format!("({f})") } else { f.clone() }).collect::<Vec<_>>().join("\n    && ") }).unwrap();
-    writeln!(w, "/// A correct answer exists (`defined`: no divisor is zero; gen_spec.rs proves").unwrap();
+    let what = if ob.tr.float_sites.is_empty() { "no divisor is zero" } else { "no divisor is zero and no float SUM / AVG overflows: `float_safe`" };
+    writeln!(w, "/// A correct answer exists (`defined`: {what}; gen_spec.rs proves").unwrap();
     writeln!(w, "/// `defined <==> exists an answer`) and every correct answer fits: at most max_rows()").unwrap();
     writeln!(w, "/// rows, each in the result's runtime types.  A kernel that declines because no answer").unwrap();
     writeln!(w, "/// exists must prove").unwrap();

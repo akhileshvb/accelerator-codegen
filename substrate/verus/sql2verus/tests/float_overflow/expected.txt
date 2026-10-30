@@ -1,0 +1,11 @@
+# float SUM / AVG that raise on overflow in the engine (--engine postgres): float_safe in defined / full_result
+o01 ok
+o02 ok
+o03 ok
+o04 ok
+o05 ok
+o06 ok
+o07 ok
+o08 ok
+o09 refused intermediate results can overflow
+o10 ok

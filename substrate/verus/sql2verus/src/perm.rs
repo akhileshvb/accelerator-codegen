@@ -18,7 +18,7 @@
 // A construct without a lemma here (e.g. a join of several indexes inside
 // EXISTS) makes `skip` non-empty: the spec is then emitted without the
 // section, with a comment saying why.
-use crate::{as_bag, bool_code, camel, cut, key_cols, key_tuple_args, key_tuple_ty, key_tuple_val, key_ty, row_expr, Block, Shape, Top};
+use crate::{as_bag, bool_code, camel, cut, key_cols, key_tuple_args, key_tuple_ty, key_tuple_val, key_ty, row_expr, Block, FloatSite, Shape, Top};
 use std::fmt::Write;
 
 const HIDE: &str = "    /*HIDE*/\n";
@@ -177,6 +177,26 @@ impl Perm {
 }
 
 impl Perm {
+    /// The lemmas that `float_safe` does not depend on the order of the tables.
+    fn float_safe_lemmas(&mut self, keys: &[(String, crate::Val)], sites: &[FloatSite]) {
+        let kargs: Args = keys.iter().map(|(g, v)| (g.clone(), key_ty(v))).collect();
+        let (gq, ka) = (decl(&kargs), vals(&kargs));
+        let deps = sites.iter().map(|s| format!("{} {}", s.abs, s.n)).collect::<Vec<_>>().join(" ");
+        if kargs.is_empty() {
+            self.lemma("groups_float_safe", "", &vec![], Kind::Eq, "groups_float_safe(db, params)", &deps, "");
+        } else {
+            self.lemma("group_float_safe", "", &kargs, Kind::Eq, &format!("group_float_safe(db, params{ka})"), &deps, "");
+            let half = |a: &str, b: &str| {
+                format!(
+                    "    if groups_float_safe({a}, params) {{\n        assert forall|{gq}| #[trigger] group_count({b}, params{ka}) > 0 implies group_float_safe({b}, params{ka}) by {{\n            assert(group_count(db, params{ka}) == group_count(db2, params{ka}));\n            assert(group_float_safe(db, params{ka}) == group_float_safe(db2, params{ka}));\n        }}\n    }}\n"
+                )
+            };
+            let body = format!("{}{}", half("db", "db2"), half("db2", "db"));
+            self.lemma("groups_float_safe", "", &vec![], Kind::Eq, "groups_float_safe(db, params)", "group_float_safe( group_count(", &body);
+        }
+        self.lemma("float_safe", "", &vec![], Kind::Eq, "float_safe(db, params)", "groups_float_safe(", "");
+    }
+
     /// The lemmas for one translated query block (everything `emit_block` defines).
     pub fn block(&mut self, b: &Block, where_: &[String], top: bool) {
         if b.union_rows.is_some() {
@@ -405,11 +425,12 @@ impl Perm {
     }
 
     /// The final lemmas: the query's answers do not depend on the table order.
-    pub fn print(&self, w: &mut String, tables: &[String], top: &Top, defined: &[String]) {
+    pub fn print(&self, w: &mut String, tables: &[String], top: &Top, defined: &[String], sites: &[FloatSite]) {
         let mut me = self.clone();
         let me = &mut me;
         writeln!(w, "// ── Permutation invariance (verified by Verus, not trusted) ──────────────────").unwrap();
-        if let Some(why) = &self.skip {
+        let nested_floats = sites.iter().any(|s| !s.prefix.is_empty());
+        if let Some(why) = self.skip.as_deref().or(nested_floats.then_some("float aggregates of a nested block")) {
             writeln!(w, "// Not stated for this query: {why}.\n").unwrap();
             return;
         }
@@ -429,6 +450,9 @@ impl Perm {
                 me.lemma("row_ok", "", &vec![("r".to_string(), "OutRow".to_string())], Kind::Eq, "row_ok(db, params, r)", &format!("{rtext} {htext} group_count( having("), "");
             }
         }
+        if !sites.is_empty() {
+            me.float_safe_lemmas(keys, sites);
+        }
         w.push_str(&me.texts());
         let rtext: String = b.outs.iter().map(row_expr).collect::<Vec<_>>().join(" ");
         let htext: String = b.having.iter().map(bool_code).collect::<Vec<_>>().join(" ");
@@ -438,6 +462,7 @@ impl Perm {
             Shape::Plain | Shape::Grouped => format!("rows( tuples( {} {htext} {ktext}", defined.join(" ")),
             Shape::Scalar => "rows( row_ok(".to_string(),
         };
+        let need = if sites.is_empty() { need } else { format!("{need} float_safe(") };
         let _ = (&rtext, &htext);
         let hides: String = me.fns.iter().map(|f| format!("    hide({f});\n")).collect();
         let all_calls = format!("{hides}{}", me.calls(&need));

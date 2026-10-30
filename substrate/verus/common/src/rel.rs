@@ -263,4 +263,56 @@ pub open spec fn f64_in_range(v: int) -> bool {
     abs(v) <= (pow2(53) - 1) * pow2(2045)
 }
 
+/// No evaluation order of a float8 SUM overflows (an engine that raises on overflow, e.g. Postgres'
+/// float8pl): a = Σ|x| of the summed values at the spec's float scale.  Every partial sum, whatever
+/// the order, is at most a, and the rounded one at most 2a, so 2a in range suffices.
+pub open spec fn float8_sum_safe(a: int) -> bool {
+    2 * a <= (pow2(53) - 1) * pow2(2045)
+}
+
+/// No evaluation order of a float8 AVG overflows (Postgres float8_accum keeps the count, the sum
+/// Sx and the sum of squared deviations Sxx; Sxx <= 4 (n+1)^3 a^2 whatever the order): a = Σ|x| at
+/// the spec's float scale (2^1074 times the value), n the number of values.  In scaled ints
+/// 4 (n+1)^3 a^2 <= DBL_MAX * 2^1074, with DBL_MAX * 2^1074 = (2^53 - 1) * 2^2045 * 2^1074.
+pub open spec fn float8_avg_safe(a: int, n: int) -> bool {
+    4 * (n + 1) * (n + 1) * (n + 1) * a * a <= (pow2(53) - 1) * pow2(2045) * pow2(1074)
+}
+
+/// A smaller sum of absolute values stays safe: a kernel may check an upper bound for a.
+pub proof fn lemma_float8_sum_safe_le(a: int, b: int)
+    requires
+        a <= b,
+        float8_sum_safe(b),
+    ensures
+        float8_sum_safe(a),
+{
+}
+
+/// A smaller sum of absolute values and count stay safe: a kernel may check upper bounds.
+pub proof fn lemma_float8_avg_safe_le(a: int, n: int, b: int, m: int)
+    requires
+        0 <= a <= b,
+        0 <= n <= m,
+        float8_avg_safe(b, m),
+    ensures
+        float8_avg_safe(a, n),
+{
+    let c1 = (n + 1) * (n + 1) * (n + 1);
+    let c2 = (m + 1) * (m + 1) * (m + 1);
+    assert(c1 <= c2) by (nonlinear_arith)
+        requires
+            0 <= n <= m,
+            c1 == (n + 1) * (n + 1) * (n + 1),
+            c2 == (m + 1) * (m + 1) * (m + 1),
+    ;
+    assert(a * a <= b * b) by (nonlinear_arith)
+        requires 0 <= a <= b;
+    assert(c1 * (a * a) <= c2 * (b * b)) by (nonlinear_arith)
+        requires 0 <= c1 <= c2, 0 <= a * a <= b * b;
+    assert(4 * (n + 1) * (n + 1) * (n + 1) * a * a == 4 * (c1 * (a * a))) by (nonlinear_arith)
+        requires c1 == (n + 1) * (n + 1) * (n + 1);
+    assert(4 * (m + 1) * (m + 1) * (m + 1) * b * b == 4 * (c2 * (b * b))) by (nonlinear_arith)
+        requires c2 == (m + 1) * (m + 1) * (m + 1);
+}
+
 } // verus!

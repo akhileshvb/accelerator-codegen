@@ -13,7 +13,8 @@ kit) gets them written, with a kernel stub (kernel.rs) if it has no kernel, a mi
 engine's files live in crate/src; another engine's spec is crate/src/<engine>/gen_spec.rs, selected
 by crate/src/lib_<engine>.rs (lib.rs with that one module re-pointed; build_verus_crate.sh takes it
 as VERUS_CRATE_ROOT).  Everything else sql2verus generates must come out the same for every engine
-(obligations, world, ffi, header, glue); a difference is an error.
+(world, ffi, header, glue); a difference is an error.  The obligations differ only where the
+engine's spec has extra conditions (e.g. float_safe): then crate/src/<engine>/gen_obligations.rs too.
 
 --update: these kits' gen_spec.rs and gen_obligations.rs are rewritten too (a spec change approved
 on purpose: the kernel then has to be re-proved).  A query with workloads/<bench>/<q>.nullable-params
@@ -94,25 +95,34 @@ def main() -> int:
                 bad += 1
                 continue
             if own:
-                shared = {"gen_obligations.rs": src / "gen_obligations.rs", "gen_world.rs": src / "gen_world.rs",
+                shared = {"gen_world.rs": src / "gen_world.rs",
                           "gen_ffi.rs": src / "gen_ffi.rs", f"{name}_verus.h": kit / f"{name}_verus.h"}
                 off = [f for f, c in shared.items() if not c.exists() or not same(t / f, c)]
                 if off:
                     print(f"{q}: {', '.join(off)} differ between engines {DEFAULT_ENGINE} and {engine}; not written")
                     bad += 1
                     continue
-                spec = src / engine / "gen_spec.rs"
-                spec.parent.mkdir(exist_ok=True)
-                if (q in update or UPDATE_SPEC or not spec.exists()):
-                    shutil.copy2(t / "gen_spec.rs", spec)
-                elif not same(t / "gen_spec.rs", spec):
-                    print(f"{q}: {engine}/gen_spec.rs differs from the committed one; not written")
+                (src / engine).mkdir(exist_ok=True)
+                # the engine's own spec; its own obligations only where they differ from the default engine's
+                own_files = ["gen_spec.rs"]
+                if not same(t / "gen_obligations.rs", src / "gen_obligations.rs"):
+                    own_files.append("gen_obligations.rs")
+                stale = src / engine / "gen_obligations.rs"
+                if "gen_obligations.rs" not in own_files and stale.exists():
+                    stale.unlink()
+                off = [f for f in own_files if (src / engine / f).exists() and not same(t / f, src / engine / f)]
+                if off and not (q in update or UPDATE_SPEC):
+                    print(f"{q}: {', '.join(f'{engine}/{f}' for f in off)} differ from the committed ones; not written")
                     bad += 1
                     continue
-                lib = src / f"lib_{engine}.rs"
-                lib.write_text((src / "lib.rs").read_text().replace(
-                    "pub mod gen_spec;", f'#[path = "{engine}/gen_spec.rs"]\npub mod gen_spec;'))
-                print(f"{q}: ok ({engine})")
+                for f in own_files:
+                    shutil.copy2(t / f, src / engine / f)
+                lib = (src / "lib.rs").read_text()
+                for f in own_files:
+                    mod = f.removesuffix(".rs")
+                    lib = lib.replace(f"pub mod {mod};", f'#[path = "{engine}/{f}"]\npub mod {mod};')
+                (src / f"lib_{engine}.rs").write_text(lib)
+                print(f"{q}: ok ({engine}; own {', '.join(own_files)})")
                 continue
             src.mkdir(parents=True, exist_ok=True)
             fresh = [f for f in ("gen_spec.rs", "gen_obligations.rs") if not (src / f).exists()]

@@ -240,8 +240,26 @@ pub open spec fn row_lt(a: OutRow, b: OutRow) -> bool {
     ((a.total_value is None && b.total_value is Some) || (a.total_value is Some && b.total_value is Some && b.total_value->0 < a.total_value->0))
 }
 
+/// No float SUM / AVG of this group of the query can overflow in any evaluation order.
+pub open spec fn group_float_safe(db: Db, params: Params, g_sic: Option<int>, g_tlabel: Option<Seq<u8>>, g_stmt: Option<Seq<u8>>) -> bool {
+    &&& float8_sum_safe(group_sum(db, params, g_sic, g_tlabel, g_stmt, |t: Tuple| if t.n.value is Some { abs(t.n.value->0) } else { 0 }))
+    &&& float8_avg_safe(group_sum(db, params, g_sic, g_tlabel, g_stmt, |t: Tuple| if t.n.value is Some { abs(t.n.value->0) } else { 0 }), group_sum(db, params, g_sic, g_tlabel, g_stmt, |t: Tuple| if t.n.value is Some { 1int } else { 0 }))
+}
+
+/// ... in every non-empty group of the query, those HAVING drops included (the engine aggregates them too).
+pub open spec fn groups_float_safe(db: Db, params: Params) -> bool {
+    forall|g_sic: Option<int>, g_tlabel: Option<Seq<u8>>, g_stmt: Option<Seq<u8>>| #[trigger] group_count(db, params, g_sic, g_tlabel, g_stmt) > 0 ==> group_float_safe(db, params, g_sic, g_tlabel, g_stmt)
+}
+
+/// No float SUM / AVG of the query can overflow in any evaluation order, in any group: the
+/// engine would raise an error.  The query has no answer unless this holds.
+pub open spec fn float_safe(db: Db, params: Params) -> bool {
+    &&& groups_float_safe(db, params)
+}
+
 /// `out` is the full answer (before any LIMIT), sorted by ORDER BY (ties in any order).
 pub open spec fn full_result(db: Db, params: Params, out: Seq<OutRow>) -> bool {
+    &&& float_safe(db, params)
     &&& forall|i: int| 0 <= i < out.len() ==> row_ok(db, params, #[trigger] out[i])
     &&& forall|i: int, j: int| 0 <= i < j < out.len() ==>
         !same_group(#[trigger] out[i], #[trigger] out[j]) && !row_lt(out[j], out[i])
@@ -265,16 +283,22 @@ pub open spec fn query_result(db: Db, params: Params, out: Seq<OutRow>) -> bool 
 
 // ── The answer exists exactly when `defined` (verified by Verus, not trusted) ──
 
-/// No divisor of the query is zero (it has none).
+/// No float SUM / AVG of the query can overflow, in any evaluation order (the engine raises an error).
 pub open spec fn defined(db: Db, params: Params) -> bool {
-    true
+    &&& float_safe(db, params)
 }
 
-/// An answer exists only if the divisors are non-zero.
+/// An answer exists only if the divisors are non-zero and no float SUM / AVG can overflow.
 pub proof fn lemma_exists_defined(db: Db, params: Params)
     ensures
         (exists|o: Seq<OutRow>| #[trigger] query_result(db, params, o)) ==> defined(db, params),
 {
+    if exists|o: Seq<OutRow>| #[trigger] query_result(db, params, o) {
+        let o = choose|o: Seq<OutRow>| #[trigger] query_result(db, params, o);
+        let full = choose|full: Seq<OutRow>| #[trigger] full_result(db, params, full) && o == limit_rows(full, 500);
+        assert(full_result(db, params, full));
+        assert(float_safe(db, params));
+    }
 }
 
 // ── Permutation invariance (verified by Verus, not trusted) ──────────────────
@@ -305,6 +329,9 @@ proof fn lemma_perm_where_clause(db: Db, db2: Db, params: Params)
     hide(having);
     hide(rows);
     hide(row_ok);
+    hide(group_float_safe);
+    hide(groups_float_safe);
+    hide(float_safe);
 
     assert forall|n: NumRow, s_: SubRow, t_: TagRow, p: PreRow| #[trigger] where_clause(db, params, n, s_, t_, p) == where_clause(db2, params, n, s_, t_, p) by {
     }
@@ -327,6 +354,9 @@ proof fn lemma_perm_tuples_4(db: Db, db2: Db, params: Params)
     hide(having);
     hide(rows);
     hide(row_ok);
+    hide(group_float_safe);
+    hide(groups_float_safe);
+    hide(float_safe);
 
     lemma_perm_where_clause(db, db2, params);
     assert forall|n: NumRow, s_: SubRow, t_: TagRow, p: PreRow| #[trigger] bag_eq(tuples_4(db, params, n, s_, t_, p), tuples_4(db2, params, n, s_, t_, p)) by {
@@ -351,6 +381,9 @@ proof fn lemma_perm_tuples_3(db: Db, db2: Db, params: Params)
     hide(having);
     hide(rows);
     hide(row_ok);
+    hide(group_float_safe);
+    hide(groups_float_safe);
+    hide(float_safe);
 
     lemma_perm_tuples_4(db, db2, params);
     assert forall|n: NumRow, s_: SubRow, t_: TagRow| #[trigger] bag_eq(tuples_3(db, params, n, s_, t_), tuples_3(db2, params, n, s_, t_)) by {
@@ -378,6 +411,9 @@ proof fn lemma_perm_tuples_2(db: Db, db2: Db, params: Params)
     hide(having);
     hide(rows);
     hide(row_ok);
+    hide(group_float_safe);
+    hide(groups_float_safe);
+    hide(float_safe);
 
     lemma_perm_tuples_3(db, db2, params);
     assert forall|n: NumRow, s_: SubRow| #[trigger] bag_eq(tuples_2(db, params, n, s_), tuples_2(db2, params, n, s_)) by {
@@ -405,6 +441,9 @@ proof fn lemma_perm_tuples_1(db: Db, db2: Db, params: Params)
     hide(having);
     hide(rows);
     hide(row_ok);
+    hide(group_float_safe);
+    hide(groups_float_safe);
+    hide(float_safe);
 
     lemma_perm_tuples_2(db, db2, params);
     assert forall|n: NumRow| #[trigger] bag_eq(tuples_1(db, params, n), tuples_1(db2, params, n)) by {
@@ -432,6 +471,9 @@ proof fn lemma_perm_tuples(db: Db, db2: Db, params: Params)
     hide(having);
     hide(rows);
     hide(row_ok);
+    hide(group_float_safe);
+    hide(groups_float_safe);
+    hide(float_safe);
     lemma_perm_tuples_1(db, db2, params);
         let g1 = |n: NumRow| tuples_1(db, params, n);
         let g2 = |n: NumRow| tuples_1(db2, params, n);
@@ -456,6 +498,9 @@ proof fn lemma_perm_group_sum(db: Db, db2: Db, params: Params)
     hide(having);
     hide(rows);
     hide(row_ok);
+    hide(group_float_safe);
+    hide(groups_float_safe);
+    hide(float_safe);
 
     lemma_perm_tuples(db, db2, params);
     assert forall|g_sic: Option<int>, g_tlabel: Option<Seq<u8>>, g_stmt: Option<Seq<u8>>, f: spec_fn(Tuple) -> int| #[trigger] group_sum(db, params, g_sic, g_tlabel, g_stmt, f) == group_sum(db2, params, g_sic, g_tlabel, g_stmt, f) by {
@@ -485,6 +530,9 @@ proof fn lemma_perm_group_count(db: Db, db2: Db, params: Params)
     hide(having);
     hide(rows);
     hide(row_ok);
+    hide(group_float_safe);
+    hide(groups_float_safe);
+    hide(float_safe);
 
     lemma_perm_tuples(db, db2, params);
     assert forall|g_sic: Option<int>, g_tlabel: Option<Seq<u8>>, g_stmt: Option<Seq<u8>>| #[trigger] group_count(db, params, g_sic, g_tlabel, g_stmt) == group_count(db2, params, g_sic, g_tlabel, g_stmt) by {
@@ -515,6 +563,9 @@ proof fn lemma_perm_group_where_distinct_int(db: Db, db2: Db, params: Params)
     hide(having);
     hide(rows);
     hide(row_ok);
+    hide(group_float_safe);
+    hide(groups_float_safe);
+    hide(float_safe);
 
     lemma_perm_tuples(db, db2, params);
     assert forall|g_sic: Option<int>, g_tlabel: Option<Seq<u8>>, g_stmt: Option<Seq<u8>>, keep: spec_fn(Tuple) -> bool, f: spec_fn(Tuple) -> int| #[trigger] distinct_count(group_vals_where(db, params, g_sic, g_tlabel, g_stmt, keep, f)) == distinct_count(group_vals_where(db2, params, g_sic, g_tlabel, g_stmt, keep, f)) by {
@@ -545,6 +596,9 @@ proof fn lemma_perm_group_where_distinct_text(db: Db, db2: Db, params: Params)
     hide(having);
     hide(rows);
     hide(row_ok);
+    hide(group_float_safe);
+    hide(groups_float_safe);
+    hide(float_safe);
 
     lemma_perm_tuples(db, db2, params);
     assert forall|g_sic: Option<int>, g_tlabel: Option<Seq<u8>>, g_stmt: Option<Seq<u8>>, keep: spec_fn(Tuple) -> bool, f: spec_fn(Tuple) -> Seq<u8>| #[trigger] distinct_count(group_vals_where(db, params, g_sic, g_tlabel, g_stmt, keep, f)) == distinct_count(group_vals_where(db2, params, g_sic, g_tlabel, g_stmt, keep, f)) by {
@@ -574,6 +628,9 @@ proof fn lemma_perm_row_of(db: Db, db2: Db, params: Params)
     hide(having);
     hide(rows);
     hide(row_ok);
+    hide(group_float_safe);
+    hide(groups_float_safe);
+    hide(float_safe);
 
     lemma_perm_group_sum(db, db2, params);
     lemma_perm_group_where_distinct_int(db, db2, params);
@@ -599,6 +656,9 @@ proof fn lemma_perm_having(db: Db, db2: Db, params: Params)
     hide(row_of);
     hide(rows);
     hide(row_ok);
+    hide(group_float_safe);
+    hide(groups_float_safe);
+    hide(float_safe);
 
     lemma_perm_group_where_distinct_int(db, db2, params);
     lemma_perm_group_where_distinct_text(db, db2, params);
@@ -624,6 +684,9 @@ proof fn lemma_perm_rows_keys(db: Db, db2: Db, params: Params)
     hide(having);
     hide(rows);
     hide(row_ok);
+    hide(group_float_safe);
+    hide(groups_float_safe);
+    hide(float_safe);
     lemma_perm_tuples(db, db2, params);
     lemma_perm_having(db, db2, params);
         assert(bag_eq(tuples(db, params), tuples(db2, params)));
@@ -654,6 +717,9 @@ proof fn lemma_perm_rows(db: Db, db2: Db, params: Params)
     hide(row_of);
     hide(having);
     hide(row_ok);
+    hide(group_float_safe);
+    hide(groups_float_safe);
+    hide(float_safe);
     lemma_perm_row_of(db, db2, params);
     lemma_perm_rows_keys(db, db2, params);
         let rf1 = |k: (Option<int>, Option<Seq<u8>>, Option<Seq<u8>>)| row_of(db, params, k.0, k.1, k.2);
@@ -680,6 +746,9 @@ proof fn lemma_perm_row_ok(db: Db, db2: Db, params: Params)
     hide(row_of);
     hide(having);
     hide(rows);
+    hide(group_float_safe);
+    hide(groups_float_safe);
+    hide(float_safe);
 
     lemma_perm_group_sum(db, db2, params);
     lemma_perm_group_count(db, db2, params);
@@ -688,6 +757,91 @@ proof fn lemma_perm_row_ok(db: Db, db2: Db, params: Params)
     lemma_perm_having(db, db2, params);
     assert forall|r: OutRow| #[trigger] row_ok(db, params, r) == row_ok(db2, params, r) by {
     }
+}
+
+proof fn lemma_perm_group_float_safe(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        forall|g_sic: Option<int>, g_tlabel: Option<Seq<u8>>, g_stmt: Option<Seq<u8>>| #[trigger] group_float_safe(db, params, g_sic, g_tlabel, g_stmt) == group_float_safe(db2, params, g_sic, g_tlabel, g_stmt),
+{
+    hide(where_clause);
+    hide(tuples_4);
+    hide(tuples_3);
+    hide(tuples_2);
+    hide(tuples_1);
+    hide(tuples);
+    hide(group_sum);
+    hide(group_count);
+    hide(row_of);
+    hide(having);
+    hide(rows);
+    hide(row_ok);
+    hide(groups_float_safe);
+    hide(float_safe);
+
+    lemma_perm_group_sum(db, db2, params);
+    assert forall|g_sic: Option<int>, g_tlabel: Option<Seq<u8>>, g_stmt: Option<Seq<u8>>| #[trigger] group_float_safe(db, params, g_sic, g_tlabel, g_stmt) == group_float_safe(db2, params, g_sic, g_tlabel, g_stmt) by {
+    }
+}
+
+proof fn lemma_perm_groups_float_safe(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        groups_float_safe(db, params) == groups_float_safe(db2, params),
+{
+    hide(where_clause);
+    hide(tuples_4);
+    hide(tuples_3);
+    hide(tuples_2);
+    hide(tuples_1);
+    hide(tuples);
+    hide(group_sum);
+    hide(group_count);
+    hide(row_of);
+    hide(having);
+    hide(rows);
+    hide(row_ok);
+    hide(group_float_safe);
+    hide(float_safe);
+    lemma_perm_group_count(db, db2, params);
+    lemma_perm_group_float_safe(db, db2, params);
+    if groups_float_safe(db, params) {
+        assert forall|g_sic: Option<int>, g_tlabel: Option<Seq<u8>>, g_stmt: Option<Seq<u8>>| #[trigger] group_count(db2, params, g_sic, g_tlabel, g_stmt) > 0 implies group_float_safe(db2, params, g_sic, g_tlabel, g_stmt) by {
+            assert(group_count(db, params, g_sic, g_tlabel, g_stmt) == group_count(db2, params, g_sic, g_tlabel, g_stmt));
+            assert(group_float_safe(db, params, g_sic, g_tlabel, g_stmt) == group_float_safe(db2, params, g_sic, g_tlabel, g_stmt));
+        }
+    }
+    if groups_float_safe(db2, params) {
+        assert forall|g_sic: Option<int>, g_tlabel: Option<Seq<u8>>, g_stmt: Option<Seq<u8>>| #[trigger] group_count(db, params, g_sic, g_tlabel, g_stmt) > 0 implies group_float_safe(db, params, g_sic, g_tlabel, g_stmt) by {
+            assert(group_count(db, params, g_sic, g_tlabel, g_stmt) == group_count(db2, params, g_sic, g_tlabel, g_stmt));
+            assert(group_float_safe(db, params, g_sic, g_tlabel, g_stmt) == group_float_safe(db2, params, g_sic, g_tlabel, g_stmt));
+        }
+    }
+}
+
+proof fn lemma_perm_float_safe(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        float_safe(db, params) == float_safe(db2, params),
+{
+    hide(where_clause);
+    hide(tuples_4);
+    hide(tuples_3);
+    hide(tuples_2);
+    hide(tuples_1);
+    hide(tuples);
+    hide(group_sum);
+    hide(group_count);
+    hide(row_of);
+    hide(having);
+    hide(rows);
+    hide(row_ok);
+    hide(group_float_safe);
+    hide(groups_float_safe);
+    lemma_perm_groups_float_safe(db, db2, params);
 }
 
 proof fn lemma_full_result_perm(db: Db, db2: Db, params: Params, out: Seq<OutRow>)
@@ -709,9 +863,13 @@ proof fn lemma_full_result_perm(db: Db, db2: Db, params: Params, out: Seq<OutRow
     hide(having);
     hide(rows);
     hide(row_ok);
+    hide(group_float_safe);
+    hide(groups_float_safe);
+    hide(float_safe);
     lemma_perm_group_count(db, db2, params);
     lemma_perm_having(db, db2, params);
     lemma_perm_row_ok(db, db2, params);
+    lemma_perm_float_safe(db, db2, params);
     assert forall|i: int| 0 <= i < out.len() implies row_ok(db2, params, #[trigger] out[i]) by {
         assert(row_ok(db, params, out[i]) == row_ok(db2, params, out[i]));
     }

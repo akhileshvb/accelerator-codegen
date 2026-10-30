@@ -331,8 +331,42 @@ pub open spec fn chosen(db: Db, params: Params, ch_avg_sub_1: spec_fn(Option<int
     &&& ch_1_ok(db, params, ch_avg_sub_1, ch_scalar_1_1, ch_1)
 }
 
+/// No float SUM / AVG of this group of the query can overflow in any evaluation order.
+pub open spec fn group_float_safe(db: Db, params: Params, g_name: Option<Seq<u8>>, g_cik: Option<int>) -> bool {
+    &&& float8_sum_safe(group_sum(db, params, g_name, g_cik, |t: Tuple| if t.n.value is Some { abs(t.n.value->0) } else { 0 }))
+}
+
+/// ... in every non-empty group of the query, those HAVING drops included (the engine aggregates them too).
+pub open spec fn groups_float_safe(db: Db, params: Params) -> bool {
+    forall|g_name: Option<Seq<u8>>, g_cik: Option<int>| #[trigger] group_count(db, params, g_name, g_cik) > 0 ==> group_float_safe(db, params, g_name, g_cik)
+}
+
+/// No float SUM / AVG of this group of block avg_sub can overflow in any evaluation order.
+pub open spec fn avg_sub_group_float_safe(db: Db, params: Params, g_cik: Option<int>) -> bool {
+    &&& float8_sum_safe(avg_sub_group_sum(db, params, g_cik, |t: AvgSubTuple| if t.n2.value is Some { abs(t.n2.value->0) } else { 0 }))
+}
+
+/// ... in every non-empty group of block avg_sub, those HAVING drops included (the engine aggregates them too).
+pub open spec fn avg_sub_groups_float_safe(db: Db, params: Params) -> bool {
+    forall|g_cik: Option<int>| #[trigger] avg_sub_group_count(db, params, g_cik) > 0 ==> avg_sub_group_float_safe(db, params, g_cik)
+}
+
+/// No float SUM / AVG of block scalar_1 can overflow in any evaluation order.
+pub open spec fn scalar_1_groups_float_safe(db: Db, params: Params) -> bool {
+    &&& float8_avg_safe(2 * (sum(avg_sub_tuples(db, params), |t: AvgSubTuple| if t.n2.value is Some { abs(t.n2.value->0) } else { 0 })), sum(avg_sub_tuples(db, params), |t: AvgSubTuple| if t.n2.value is Some { 1int } else { 0 }))
+}
+
+/// No float SUM / AVG of the query can overflow in any evaluation order, in any group: the
+/// engine would raise an error.  The query has no answer unless this holds.
+pub open spec fn float_safe(db: Db, params: Params) -> bool {
+    &&& groups_float_safe(db, params)
+    &&& avg_sub_groups_float_safe(db, params)
+    &&& scalar_1_groups_float_safe(db, params)
+}
+
 /// `out` is the full answer (before any LIMIT), sorted by ORDER BY (ties in any order), for these values of the rounded float aggregates.
 pub open spec fn full_result_with(db: Db, params: Params, ch_avg_sub_1: spec_fn(Option<int>) -> int, ch_scalar_1_1: int, ch_1: spec_fn(Option<Seq<u8>>, Option<int>) -> int, out: Seq<OutRow>) -> bool {
+    &&& float_safe(db, params)
     &&& forall|i: int| 0 <= i < out.len() ==> row_ok(db, params, ch_avg_sub_1, ch_scalar_1_1, ch_1, #[trigger] out[i])
     &&& forall|i: int, j: int| 0 <= i < j < out.len() ==>
         !same_group(#[trigger] out[i], #[trigger] out[j]) && !row_lt(out[j], out[i])
@@ -360,16 +394,22 @@ pub open spec fn query_result(db: Db, params: Params, out: Seq<OutRow>) -> bool 
 
 // ── The answer exists exactly when `defined` (verified by Verus, not trusted) ──
 
-/// No divisor of the query is zero (it has none).
+/// No float SUM / AVG of the query can overflow, in any evaluation order (the engine raises an error).
 pub open spec fn defined(db: Db, params: Params) -> bool {
-    true
+    &&& float_safe(db, params)
 }
 
-/// An answer exists only if the divisors are non-zero.
+/// An answer exists only if the divisors are non-zero and no float SUM / AVG can overflow.
 pub proof fn lemma_exists_defined(db: Db, params: Params)
     ensures
         (exists|o: Seq<OutRow>| #[trigger] query_result(db, params, o)) ==> defined(db, params),
 {
+    if exists|o: Seq<OutRow>| #[trigger] query_result(db, params, o) {
+        let o = choose|o: Seq<OutRow>| #[trigger] query_result(db, params, o);
+        let full = choose|full: Seq<OutRow>| #[trigger] full_result(db, params, full) && o == limit_rows(full, 100);
+        assert(full_result(db, params, full));
+        assert(float_safe(db, params));
+    }
 }
 
 // ── Permutation invariance (verified by Verus, not trusted) ──────────────────
