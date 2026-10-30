@@ -1,0 +1,20 @@
+date: 2026-10-20T16:37:40-04:00
+cmd: /spinning/akhilvb/accel_sf20/accelerator-codegen/eval/compare/run_backends.sh /spinning/akhilvb/pg40/results/sweep_mv/postgres/rf-fixed/interval30s rf-fixed /spinning/akhilvb/pg40/results/sweep_mv
+sf: 20 repeats: 1 readers: 8 backends: postgres rf_dir: /spinning/akhilvb/pg40/refresh_sf20 batch_orders: whole sets
+update sets: 40, orders in set 1: 30000
+interval_mult: 1 2 4 n_commits: 4 queries: 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22
+git HEAD: 16f08bd646febbf421df166fc50bda235c8f65e2
+uncommitted files: 1
+nproc: 40
+Model name:                              Intel(R) Xeon(R) Gold 6230 CPU @ 2.10GHz
+Thread(s) per core:                      2
+Socket(s):                               2
+NUMA node(s):                            2
+load: 2.18 1.72 4.29 2/1425 2811590
+               total        used        free      shared  buff/cache   available
+Mem:             251         142          48         132         195         108
+Swap:              0           0           0
+accel_pg40 accel-pg40:17 127.0.0.1:5470->5432/tcp
+accel_pg_integ accel-pg-build:17 127.0.0.1:55450->5432/tcp
+dsg_container postgres 0.0.0.0:5432->5432/tcp, [::]:5432->5432/tcp
+pg_workers: 4 (per session, base and accel) seed: 35489017 phases: mv

@@ -1,0 +1,80 @@
+diff --git a/eval/compare/mv_defs.py b/eval/compare/mv_defs.py
+index b4daebcc..4f005506 100644
+--- a/eval/compare/mv_defs.py
++++ b/eval/compare/mv_defs.py
+@@ -296,6 +296,22 @@ IMMV_V2 = {
+     15: {"mv_q15w": (f"""SELECT {PK("w.ws - DATE '1970-01-01'", 'l_suppkey')} AS k, w.ws, l_suppkey, SUM(l_extendedprice * (1 - l_discount)) AS rev
+                         FROM lineitem, mv_win3 w WHERE l_shipdate >= w.ws AND l_shipdate < w.we
+                         GROUP BY {PK("w.ws - DATE '1970-01-01'", 'l_suppkey')}, w.ws, l_suppkey""", [["k"], ["ws", "rev DESC"]])},
++    # Q21 without a refreshed view: both (NOT) EXISTS tests depend only on (order, supplier), so per-order and
++    # per-(order, supplier) line / late-line counts decide them: another supplier exists <=> n(o) > n(o,s), no other
++    # supplier is late <=> late(o) = late(o,s); numwait(s) sums late(o,s).  Only 'F' orders can qualify, and every
++    # line of an order shares its status, so both views keep 'F' orders only.
++    21: {"mv_q21_os": (f"""SELECT {PK('l_orderkey', 'l_suppkey')} AS k, l_orderkey, l_suppkey, COUNT(*) AS n,
++                            SUM(CASE WHEN l_receiptdate > l_commitdate THEN 1 ELSE 0 END) AS late
++                          FROM lineitem, orders WHERE o_orderkey = l_orderkey AND o_orderstatus = 'F'
++                          GROUP BY {PK('l_orderkey', 'l_suppkey')}, l_orderkey, l_suppkey""",
++                       [["k"], "(l_suppkey) INCLUDE (l_orderkey, n, late) WHERE late > 0"]),
++         "mv_q21_o": ("""SELECT l_orderkey, COUNT(*) AS n, SUM(CASE WHEN l_receiptdate > l_commitdate THEN 1 ELSE 0 END) AS late
++                         FROM lineitem, orders WHERE o_orderkey = l_orderkey AND o_orderstatus = 'F'
++                         GROUP BY l_orderkey""", ["(l_orderkey) INCLUDE (n, late)"])},
++    # Q22 without a refreshed view: customers with orders as an IMMV (a group disappears with its last order);
++    # the read anti-joins customer to it
++    22: {"mv_q22_avg": IMMV[22]["mv_q22_avg"],
++         "mv_q22_cnt": ("SELECT o_custkey, COUNT(*) AS n FROM orders GROUP BY o_custkey", [])},
+ }
+ READ_V2 = {
+     2: """SELECT m.s_acctbal, m.s_name, m.n_name, m.p_partkey, m.p_mfgr, m.s_address, m.s_phone, m.s_comment
+@@ -310,6 +326,17 @@ READ_V2 = {
+            ORDER BY t.rev DESC, c_custkey LIMIT 20""",
+     15: """SELECT s_suppkey, s_name, s_address, s_phone, w.rev AS total_revenue FROM mv_q15w w JOIN supplier ON s_suppkey = w.l_suppkey
+            WHERE w.ws = $1 AND w.rev = (SELECT MAX(rev) FROM mv_q15w WHERE ws = $1) ORDER BY s_suppkey""",
++    21: """SELECT s_name, SUM(os.late) AS numwait
++           FROM nation JOIN supplier ON s_nationkey = n_nationkey
++             JOIN mv_q21_os os ON os.l_suppkey = s_suppkey AND os.late > 0
++             JOIN mv_q21_o o ON o.l_orderkey = os.l_orderkey AND o.n > os.n AND o.late = os.late
++           WHERE n_name = $1 GROUP BY s_name ORDER BY numwait DESC, s_name LIMIT 100""",
++    22: f"""WITH a AS (SELECT SUM(s) / SUM(n) AS avgbal FROM mv_q22_avg WHERE cntrycode IN ({IN7}))
++           SELECT SUBSTRING(c_phone FROM 1 FOR 2) AS cntrycode, COUNT(*) AS numcust, SUM(c_acctbal) AS totacctbal
++           FROM customer, a
++           WHERE SUBSTRING(c_phone FROM 1 FOR 2) IN ({IN7}) AND c_acctbal > a.avgbal
++             AND NOT EXISTS (SELECT 1 FROM mv_q22_cnt WHERE o_custkey = c_custkey)
++           GROUP BY 1 ORDER BY 1""",
+ }
+ V2_QUERIES = sorted(IMMV_V2)
+ 
+@@ -318,6 +345,7 @@ def _apply_design(design):
+     qs = set(V2_QUERIES) if design == "v2" else set() if design in ("", "v1") else {int(x) for x in design.split()}
+     for q in sorted(qs):
+         IMMV[q] = IMMV_V2[q]
++        FULL.pop(q, None)  # (Q21 / Q22 v2: incremental views replace the refreshed ones)
+         if q in READ_V2:
+             READ[q] = READ_V2[q]
+     for name, spec in AUX_V2.items():
+@@ -326,6 +354,7 @@ def _apply_design(design):
+     return sorted(qs)
+ 
+ 
++ALL_NAMES = ({n for d in (IMMV, IMMV_V2) for q in d for n in d[q]}, {n for q in FULL for n in FULL[q]})  # (immv, full), every design
+ DESIGN = _apply_design(os.environ.get("MV_DESIGN", "v1").strip())
+ 
+ 
+@@ -457,13 +486,11 @@ def cmd_create(a):
+ def cmd_drop(a):
+     _load_domains()
+     c, cur = connect(a, a.schema)
+-    for q in IMMV:
+-        for n in IMMV[q]:
+-            cur.execute(f"DROP TABLE IF EXISTS {a.schema}.{n} CASCADE")  # an IMMV is a table; dropping it drops its triggers
+-    for q in FULL:
+-        for n in FULL[q]:
+-            cur.execute(f"DROP MATERIALIZED VIEW IF EXISTS {a.schema}.{n} CASCADE")
+-    for n in AUX:
++    for n in sorted(ALL_NAMES[0]):  # every design's views, so switching designs leaves no stale triggers
++        cur.execute(f"DROP TABLE IF EXISTS {a.schema}.{n} CASCADE")  # an IMMV is a table; dropping it drops its triggers
++    for n in sorted(ALL_NAMES[1]):
++        cur.execute(f"DROP MATERIALIZED VIEW IF EXISTS {a.schema}.{n} CASCADE")
++    for n in {**AUX, **AUX_V2}:
+         cur.execute(f"DROP TABLE IF EXISTS {a.schema}.{n} CASCADE")
+     cur.execute("SELECT count(*) FROM pg_trigger t JOIN pg_class r ON r.oid = t.tgrelid JOIN pg_namespace s ON s.oid = r.relnamespace "
+                 "WHERE s.nspname = %s AND t.tgname LIKE 'IVM_trigger%%'", (a.schema,))

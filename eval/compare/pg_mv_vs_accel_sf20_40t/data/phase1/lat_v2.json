@@ -1,0 +1,225 @@
+{
+ "design": "2 3 10 15 21 22",
+ "workers": 4,
+ "reps": 5,
+ "q": {
+  "2": {
+   "mv_ms_median": 53.11244,
+   "sets": [
+    {
+     "params": {
+      "size": 42,
+      "type": "TIN",
+      "region": "AFRICA"
+     },
+     "mv_ms": 49.395283
+    },
+    {
+     "params": {
+      "size": 22,
+      "type": "COPPER",
+      "region": "MIDDLE EAST"
+     },
+     "mv_ms": 53.098997
+    },
+    {
+     "params": {
+      "size": 49,
+      "type": "COPPER",
+      "region": "AFRICA"
+     },
+     "mv_ms": 53.125883
+    },
+    {
+     "params": {
+      "size": 50,
+      "type": "TIN",
+      "region": "AMERICA"
+     },
+     "mv_ms": 53.27343
+    }
+   ]
+  },
+  "3": {
+   "mv_ms_median": 0.2918,
+   "sets": [
+    {
+     "params": {
+      "segment": "HOUSEHOLD",
+      "date": "1995-03-13"
+     },
+     "mv_ms": 0.315915
+    },
+    {
+     "params": {
+      "segment": "AUTOMOBILE",
+      "date": "1995-03-18"
+     },
+     "mv_ms": 0.285527
+    },
+    {
+     "params": {
+      "segment": "BUILDING",
+      "date": "1995-03-11"
+     },
+     "mv_ms": 0.289152
+    },
+    {
+     "params": {
+      "segment": "MACHINERY",
+      "date": "1995-03-30"
+     },
+     "mv_ms": 0.294448
+    }
+   ]
+  },
+  "10": {
+   "mv_ms_median": 1.216139,
+   "sets": [
+    {
+     "params": {
+      "date": "1994-10-01"
+     },
+     "mv_ms": 0.992994
+    },
+    {
+     "params": {
+      "date": "1993-02-01"
+     },
+     "mv_ms": 1.236883
+    },
+    {
+     "params": {
+      "date": "1994-08-01"
+     },
+     "mv_ms": 1.195395
+    },
+    {
+     "params": {
+      "date": "1994-04-01"
+     },
+     "mv_ms": 1.401579
+    }
+   ]
+  },
+  "15": {
+   "mv_ms_median": 0.812922,
+   "sets": [
+    {
+     "params": {
+      "date": "1997-09-01"
+     },
+     "mv_ms": 0.569472
+    },
+    {
+     "params": {
+      "date": "1996-11-01"
+     },
+     "mv_ms": 0.801903
+    },
+    {
+     "params": {
+      "date": "1993-05-01"
+     },
+     "mv_ms": 1.042864
+    },
+    {
+     "params": {
+      "date": "1996-07-01"
+     },
+     "mv_ms": 0.823941
+    }
+   ]
+  },
+  "21": {
+   "mv_ms_median": 2572.7985664999997,
+   "sets": [
+    {
+     "params": {
+      "nation": "PERU"
+     },
+     "mv_ms": 2570.665698
+    },
+    {
+     "params": {
+      "nation": "EGYPT"
+     },
+     "mv_ms": 2577.228188
+    },
+    {
+     "params": {
+      "nation": "JAPAN"
+     },
+     "mv_ms": 2569.665054
+    },
+    {
+     "params": {
+      "nation": "VIETNAM"
+     },
+     "mv_ms": 2574.931435
+    }
+   ]
+  },
+  "22": {
+   "mv_ms_median": 718.229073,
+   "sets": [
+    {
+     "params": {
+      "codes": [
+       "16",
+       "13",
+       "30",
+       "34",
+       "17",
+       "23",
+       "22"
+      ]
+     },
+     "mv_ms": 722.668449
+    },
+    {
+     "params": {
+      "codes": [
+       "29",
+       "17",
+       "26",
+       "15",
+       "21",
+       "24",
+       "18"
+      ]
+     },
+     "mv_ms": 717.40857
+    },
+    {
+     "params": {
+      "codes": [
+       "10",
+       "18",
+       "33",
+       "23",
+       "29",
+       "31",
+       "13"
+      ]
+     },
+     "mv_ms": 719.049576
+    },
+    {
+     "params": {
+      "codes": [
+       "11",
+       "32",
+       "31",
+       "33",
+       "34",
+       "14",
+       "30"
+      ]
+     },
+     "mv_ms": 717.218153
+    }
+   ]
+  }
+ }
+}

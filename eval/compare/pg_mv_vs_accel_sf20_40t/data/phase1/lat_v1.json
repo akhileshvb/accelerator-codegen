@@ -1,0 +1,821 @@
+{
+ "design": "v1",
+ "workers": 4,
+ "reps": 5,
+ "q": {
+  "1": {
+   "mv_ms_median": 3.6304559999999997,
+   "sets": [
+    {
+     "params": {
+      "delta": 118
+     },
+     "mv_ms": 3.889303
+    },
+    {
+     "params": {
+      "delta": 111
+     },
+     "mv_ms": 3.638765
+    },
+    {
+     "params": {
+      "delta": 119
+     },
+     "mv_ms": 3.622147
+    },
+    {
+     "params": {
+      "delta": 120
+     },
+     "mv_ms": 3.538515
+    }
+   ]
+  },
+  "2": {
+   "mv_ms_median": 101.979307,
+   "sets": [
+    {
+     "params": {
+      "size": 42,
+      "type": "TIN",
+      "region": "AFRICA"
+     },
+     "mv_ms": 101.655529
+    },
+    {
+     "params": {
+      "size": 22,
+      "type": "COPPER",
+      "region": "MIDDLE EAST"
+     },
+     "mv_ms": 102.871265
+    },
+    {
+     "params": {
+      "size": 49,
+      "type": "COPPER",
+      "region": "AFRICA"
+     },
+     "mv_ms": 102.303085
+    },
+    {
+     "params": {
+      "size": 50,
+      "type": "TIN",
+      "region": "AMERICA"
+     },
+     "mv_ms": 101.28328
+    }
+   ]
+  },
+  "3": {
+   "mv_ms_median": 470.4993275,
+   "sets": [
+    {
+     "params": {
+      "segment": "HOUSEHOLD",
+      "date": "1995-03-13"
+     },
+     "mv_ms": 465.585272
+    },
+    {
+     "params": {
+      "segment": "AUTOMOBILE",
+      "date": "1995-03-18"
+     },
+     "mv_ms": 473.561784
+    },
+    {
+     "params": {
+      "segment": "BUILDING",
+      "date": "1995-03-11"
+     },
+     "mv_ms": 467.436871
+    },
+    {
+     "params": {
+      "segment": "MACHINERY",
+      "date": "1995-03-30"
+     },
+     "mv_ms": 490.560344
+    }
+   ]
+  },
+  "4": {
+   "mv_ms_median": 557.1214165,
+   "sets": [
+    {
+     "params": {
+      "date": "1996-12-01"
+     },
+     "mv_ms": 560.00462
+    },
+    {
+     "params": {
+      "date": "1995-06-01"
+     },
+     "mv_ms": 554.379012
+    },
+    {
+     "params": {
+      "date": "1994-07-01"
+     },
+     "mv_ms": 559.863821
+    },
+    {
+     "params": {
+      "date": "1993-12-01"
+     },
+     "mv_ms": 546.154929
+    }
+   ]
+  },
+  "5": {
+   "mv_ms_median": 2.503472,
+   "sets": [
+    {
+     "params": {
+      "region": "EUROPE",
+      "date": "1995-01-01"
+     },
+     "mv_ms": 2.452108
+    },
+    {
+     "params": {
+      "region": "ASIA",
+      "date": "1994-01-01"
+     },
+     "mv_ms": 2.501273
+    },
+    {
+     "params": {
+      "region": "AFRICA",
+      "date": "1995-01-01"
+     },
+     "mv_ms": 2.505671
+    },
+    {
+     "params": {
+      "region": "MIDDLE EAST",
+      "date": "1995-01-01"
+     },
+     "mv_ms": 2.670396
+    }
+   ]
+  },
+  "6": {
+   "mv_ms_median": 24.397789500000002,
+   "sets": [
+    {
+     "params": {
+      "date": "1993-01-01",
+      "discount": 0.03,
+      "quantity": 24
+     },
+     "mv_ms": 26.548738
+    },
+    {
+     "params": {
+      "date": "1995-01-01",
+      "discount": 0.06,
+      "quantity": 24
+     },
+     "mv_ms": 24.400468
+    },
+    {
+     "params": {
+      "date": "1996-01-01",
+      "discount": 0.07,
+      "quantity": 24
+     },
+     "mv_ms": 24.395111
+    },
+    {
+     "params": {
+      "date": "1994-01-01",
+      "discount": 0.09,
+      "quantity": 25
+     },
+     "mv_ms": 22.103146
+    }
+   ]
+  },
+  "7": {
+   "mv_ms_median": 0.36097,
+   "sets": [
+    {
+     "params": {
+      "nation1": "JAPAN",
+      "nation2": "SAUDI ARABIA"
+     },
+     "mv_ms": 0.901188
+    },
+    {
+     "params": {
+      "nation1": "ROMANIA",
+      "nation2": "IRAN"
+     },
+     "mv_ms": 0.29036
+    },
+    {
+     "params": {
+      "nation1": "EGYPT",
+      "nation2": "ROMANIA"
+     },
+     "mv_ms": 0.283671
+    },
+    {
+     "params": {
+      "nation1": "JAPAN",
+      "nation2": "CHINA"
+     },
+     "mv_ms": 0.43158
+    }
+   ]
+  },
+  "8": {
+   "mv_ms_median": 0.3736215,
+   "sets": [
+    {
+     "params": {
+      "nation": "INDONESIA",
+      "type": "MEDIUM BURNISHED BRASS"
+     },
+     "mv_ms": 0.379714
+    },
+    {
+     "params": {
+      "nation": "VIETNAM",
+      "type": "LARGE POLISHED BRASS"
+     },
+     "mv_ms": 0.349796
+    },
+    {
+     "params": {
+      "nation": "GERMANY",
+      "type": "PROMO POLISHED BRASS"
+     },
+     "mv_ms": 0.37393
+    },
+    {
+     "params": {
+      "nation": "IRAQ",
+      "type": "ECONOMY PLATED STEEL"
+     },
+     "mv_ms": 0.373313
+    }
+   ]
+  },
+  "9": {
+   "mv_ms_median": 1.710505,
+   "sets": [
+    {
+     "params": {
+      "color": "white"
+     },
+     "mv_ms": 1.597726
+    },
+    {
+     "params": {
+      "color": "yellow"
+     },
+     "mv_ms": 1.707926
+    },
+    {
+     "params": {
+      "color": "snow"
+     },
+     "mv_ms": 1.713084
+    },
+    {
+     "params": {
+      "color": "pink"
+     },
+     "mv_ms": 1.834032
+    }
+   ]
+  },
+  "10": {
+   "mv_ms_median": 1664.5763955,
+   "sets": [
+    {
+     "params": {
+      "date": "1994-10-01"
+     },
+     "mv_ms": 1675.594235
+    },
+    {
+     "params": {
+      "date": "1993-02-01"
+     },
+     "mv_ms": 1637.708889
+    },
+    {
+     "params": {
+      "date": "1994-08-01"
+     },
+     "mv_ms": 1679.833201
+    },
+    {
+     "params": {
+      "date": "1994-04-01"
+     },
+     "mv_ms": 1653.558556
+    }
+   ]
+  },
+  "11": {
+   "mv_ms_median": 57.47342,
+   "sets": [
+    {
+     "params": {
+      "nation": "IRAN",
+      "fraction": "0.000005",
+      "sf": 20.0
+     },
+     "mv_ms": 57.432438
+    },
+    {
+     "params": {
+      "nation": "ARGENTINA",
+      "fraction": "0.000005",
+      "sf": 20.0
+     },
+     "mv_ms": 57.514402
+    },
+    {
+     "params": {
+      "nation": "IRAQ",
+      "fraction": "0.000005",
+      "sf": 20.0
+     },
+     "mv_ms": 57.815896
+    },
+    {
+     "params": {
+      "nation": "INDIA",
+      "fraction": "0.000005",
+      "sf": 20.0
+     },
+     "mv_ms": 55.286571
+    }
+   ]
+  },
+  "12": {
+   "mv_ms_median": 1.2246105,
+   "sets": [
+    {
+     "params": {
+      "shipmode1": "FOB",
+      "shipmode2": "RAIL",
+      "date": "1995-01-01"
+     },
+     "mv_ms": 0.805356
+    },
+    {
+     "params": {
+      "shipmode1": "TRUCK",
+      "shipmode2": "FOB",
+      "date": "1996-01-01"
+     },
+     "mv_ms": 1.254431
+    },
+    {
+     "params": {
+      "shipmode1": "RAIL",
+      "shipmode2": "SHIP",
+      "date": "1994-01-01"
+     },
+     "mv_ms": 1.19479
+    },
+    {
+     "params": {
+      "shipmode1": "SHIP",
+      "shipmode2": "RAIL",
+      "date": "1997-01-01"
+     },
+     "mv_ms": 1.579045
+    }
+   ]
+  },
+  "13": {
+   "mv_ms_median": 273.9990715,
+   "sets": [
+    {
+     "params": {
+      "word1": "unusual",
+      "word2": "deposits"
+     },
+     "mv_ms": 273.560624
+    },
+    {
+     "params": {
+      "word1": "unusual",
+      "word2": "packages"
+     },
+     "mv_ms": 281.01023
+    },
+    {
+     "params": {
+      "word1": "special",
+      "word2": "accounts"
+     },
+     "mv_ms": 273.332265
+    },
+    {
+     "params": {
+      "word1": "pending",
+      "word2": "deposits"
+     },
+     "mv_ms": 274.437519
+    }
+   ]
+  },
+  "14": {
+   "mv_ms_median": 0.22763,
+   "sets": [
+    {
+     "params": {
+      "date": "1997-02-01"
+     },
+     "mv_ms": 0.262715
+    },
+    {
+     "params": {
+      "date": "1993-04-01"
+     },
+     "mv_ms": 0.228728
+    },
+    {
+     "params": {
+      "date": "1993-01-01"
+     },
+     "mv_ms": 0.223568
+    },
+    {
+     "params": {
+      "date": "1993-12-01"
+     },
+     "mv_ms": 0.226532
+    }
+   ]
+  },
+  "15": {
+   "mv_ms_median": 543.484303,
+   "sets": [
+    {
+     "params": {
+      "date": "1997-09-01"
+     },
+     "mv_ms": 543.740859
+    },
+    {
+     "params": {
+      "date": "1996-11-01"
+     },
+     "mv_ms": 543.196687
+    },
+    {
+     "params": {
+      "date": "1993-05-01"
+     },
+     "mv_ms": 543.375118
+    },
+    {
+     "params": {
+      "date": "1996-07-01"
+     },
+     "mv_ms": 543.593488
+    }
+   ]
+  },
+  "16": {
+   "mv_ms_median": 1399.1190505,
+   "sets": [
+    {
+     "params": {
+      "brand": "Brand#24",
+      "type": "SMALL POLISHED",
+      "sizes": [
+       37,
+       2,
+       7,
+       47,
+       29,
+       4,
+       15,
+       1
+      ]
+     },
+     "mv_ms": 1402.469081
+    },
+    {
+     "params": {
+      "brand": "Brand#54",
+      "type": "LARGE ANODIZED",
+      "sizes": [
+       32,
+       23,
+       35,
+       9,
+       14,
+       6,
+       4,
+       42
+      ]
+     },
+     "mv_ms": 1395.708987
+    },
+    {
+     "params": {
+      "brand": "Brand#44",
+      "type": "SMALL PLATED",
+      "sizes": [
+       25,
+       15,
+       9,
+       26,
+       30,
+       47,
+       35,
+       32
+      ]
+     },
+     "mv_ms": 1399.513775
+    },
+    {
+     "params": {
+      "brand": "Brand#35",
+      "type": "PROMO BURNISHED",
+      "sizes": [
+       39,
+       4,
+       12,
+       46,
+       34,
+       13,
+       17,
+       18
+      ]
+     },
+     "mv_ms": 1398.724326
+    }
+   ]
+  },
+  "17": {
+   "mv_ms_median": 78.81074000000001,
+   "sets": [
+    {
+     "params": {
+      "brand": "Brand#51",
+      "container": "JUMBO BAG"
+     },
+     "mv_ms": 78.682609
+    },
+    {
+     "params": {
+      "brand": "Brand#45",
+      "container": "SM BAG"
+     },
+     "mv_ms": 77.021969
+    },
+    {
+     "params": {
+      "brand": "Brand#34",
+      "container": "WRAP DRUM"
+     },
+     "mv_ms": 80.645994
+    },
+    {
+     "params": {
+      "brand": "Brand#12",
+      "container": "JUMBO BAG"
+     },
+     "mv_ms": 78.938871
+    }
+   ]
+  },
+  "18": {
+   "mv_ms_median": 9.73181,
+   "sets": [
+    {
+     "params": {
+      "quantity": 315
+     },
+     "mv_ms": 9.620641
+    },
+    {
+     "params": {
+      "quantity": 313
+     },
+     "mv_ms": 9.842979
+    },
+    {
+     "params": {
+      "quantity": 314
+     },
+     "mv_ms": 9.457177
+    },
+    {
+     "params": {
+      "quantity": 312
+     },
+     "mv_ms": 11.01175
+    }
+   ]
+  },
+  "19": {
+   "mv_ms_median": 5.5337499999999995,
+   "sets": [
+    {
+     "params": {
+      "brands": [
+       "Brand#21",
+       "Brand#23",
+       "Brand#41"
+      ],
+      "quantities": [
+       5,
+       20,
+       30
+      ]
+     },
+     "mv_ms": 6.36645
+    },
+    {
+     "params": {
+      "brands": [
+       "Brand#43",
+       "Brand#54",
+       "Brand#55"
+      ],
+      "quantities": [
+       9,
+       12,
+       27
+      ]
+     },
+     "mv_ms": 5.854401
+    },
+    {
+     "params": {
+      "brands": [
+       "Brand#22",
+       "Brand#34",
+       "Brand#52"
+      ],
+      "quantities": [
+       1,
+       12,
+       26
+      ]
+     },
+     "mv_ms": 5.213099
+    },
+    {
+     "params": {
+      "brands": [
+       "Brand#41",
+       "Brand#41",
+       "Brand#32"
+      ],
+      "quantities": [
+       3,
+       17,
+       26
+      ]
+     },
+     "mv_ms": 4.644504
+    }
+   ]
+  },
+  "20": {
+   "mv_ms_median": 404.99424799999997,
+   "sets": [
+    {
+     "params": {
+      "date": "1993-01-01",
+      "color": "beige",
+      "nation": "VIETNAM"
+     },
+     "mv_ms": 400.393975
+    },
+    {
+     "params": {
+      "date": "1994-01-01",
+      "color": "navy",
+      "nation": "VIETNAM"
+     },
+     "mv_ms": 396.598018
+    },
+    {
+     "params": {
+      "date": "1995-01-01",
+      "color": "royal",
+      "nation": "SAUDI ARABIA"
+     },
+     "mv_ms": 409.594521
+    },
+    {
+     "params": {
+      "date": "1997-01-01",
+      "color": "smoke",
+      "nation": "EGYPT"
+     },
+     "mv_ms": 417.870413
+    }
+   ]
+  },
+  "21": {
+   "mv_ms_median": 4.0975155,
+   "sets": [
+    {
+     "params": {
+      "nation": "PERU"
+     },
+     "mv_ms": 4.063579
+    },
+    {
+     "params": {
+      "nation": "EGYPT"
+     },
+     "mv_ms": 4.131452
+    },
+    {
+     "params": {
+      "nation": "JAPAN"
+     },
+     "mv_ms": 4.036948
+    },
+    {
+     "params": {
+      "nation": "VIETNAM"
+     },
+     "mv_ms": 4.186709
+    }
+   ]
+  },
+  "22": {
+   "mv_ms_median": 46.96373,
+   "sets": [
+    {
+     "params": {
+      "codes": [
+       "16",
+       "13",
+       "30",
+       "34",
+       "17",
+       "23",
+       "22"
+      ]
+     },
+     "mv_ms": 48.008534
+    },
+    {
+     "params": {
+      "codes": [
+       "29",
+       "17",
+       "26",
+       "15",
+       "21",
+       "24",
+       "18"
+      ]
+     },
+     "mv_ms": 46.733088
+    },
+    {
+     "params": {
+      "codes": [
+       "10",
+       "18",
+       "33",
+       "23",
+       "29",
+       "31",
+       "13"
+      ]
+     },
+     "mv_ms": 46.968512
+    },
+    {
+     "params": {
+      "codes": [
+       "11",
+       "32",
+       "31",
+       "33",
+       "34",
+       "14",
+       "30"
+      ]
+     },
+     "mv_ms": 46.958948
+    }
+   ]
+  }
+ }
+}

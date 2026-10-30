@@ -1,0 +1,114 @@
+parameter draws: 1 repetition(s) x 4 sets, seeds 35489017..35489017
+Q1   ok   rows     4/4     base   22762.4 ms  mv     4.18 ms  {'delta': 118}
+Q1   ok   rows     4/4     base   22797.8 ms  mv     3.28 ms  {'delta': 111}
+Q1   ok   rows     4/4     base   22744.4 ms  mv     3.06 ms  {'delta': 119}
+Q1   ok   rows     4/4     base   22713.4 ms  mv     2.99 ms  {'delta': 120}
+Q1   ok   rows     4/4     base   23065.9 ms  mv     3.13 ms  {'delta': 60}
+Q1   ok   rows     4/4     base   22705.8 ms  mv     2.97 ms  {'delta': 120}
+Q2   ok   rows   100/100   base    5796.0 ms  mv   341.98 ms  {'size': 42, 'type': 'TIN', 'region': 'AFRICA'}
+Q2   ok   rows   100/100   base    4207.2 ms  mv   326.54 ms  {'size': 22, 'type': 'COPPER', 'region': 'MIDDLE EAST'}
+Q2   ok   rows   100/100   base    4189.3 ms  mv   312.36 ms  {'size': 49, 'type': 'COPPER', 'region': 'AFRICA'}
+Q2   ok   rows   100/100   base    4210.7 ms  mv   286.88 ms  {'size': 50, 'type': 'TIN', 'region': 'AMERICA'}
+Q3   ok   rows    10/10    base    6513.2 ms  mv   673.67 ms  {'segment': 'HOUSEHOLD', 'date': '1995-03-13'}
+Q3   ok   rows    10/10    base    6414.4 ms  mv   480.96 ms  {'segment': 'AUTOMOBILE', 'date': '1995-03-18'}
+Q3   ok   rows    10/10    base    6396.1 ms  mv   468.75 ms  {'segment': 'BUILDING', 'date': '1995-03-11'}
+Q3   ok   rows    10/10    base    6383.4 ms  mv   496.78 ms  {'segment': 'MACHINERY', 'date': '1995-03-30'}
+Q3   ok   rows    10/10    base    6418.1 ms  mv   456.35 ms  {'segment': 'AUTOMOBILE', 'date': '1995-03-01'}
+Q3   ok   rows    10/10    base    6427.1 ms  mv   447.83 ms  {'segment': 'MACHINERY', 'date': '1995-03-01'}
+Q3   ok   rows    10/10    base    6391.1 ms  mv   492.40 ms  {'segment': 'AUTOMOBILE', 'date': '1995-03-31'}
+Q3   ok   rows    10/10    base    6374.5 ms  mv   493.99 ms  {'segment': 'MACHINERY', 'date': '1995-03-31'}
+Q4   ok   rows     5/5     base    3375.8 ms  mv   636.87 ms  {'date': '1996-12-01'}
+Q4   ok   rows     5/5     base    3242.4 ms  mv   704.49 ms  {'date': '1995-06-01'}
+Q4   ok   rows     5/5     base    2933.0 ms  mv   672.42 ms  {'date': '1994-07-01'}
+Q4   ok   rows     5/5     base    2851.7 ms  mv   593.20 ms  {'date': '1993-12-01'}
+Q4   ok   rows     5/5     base    2757.0 ms  mv   589.10 ms  {'date': '1993-01-01'}
+Q4   ok   rows     5/5     base    2858.0 ms  mv   594.39 ms  {'date': '1997-10-01'}
+Q5   ok   rows     5/5     base    7336.2 ms  mv     8.29 ms  {'region': 'EUROPE', 'date': '1995-01-01'}
+Q5   ok   rows     5/5     base    7248.8 ms  mv     3.59 ms  {'region': 'ASIA', 'date': '1994-01-01'}
+Q5   ok   rows     5/5     base    7188.0 ms  mv     2.40 ms  {'region': 'AFRICA', 'date': '1995-01-01'}
+Q5   ok   rows     5/5     base    7268.1 ms  mv     3.36 ms  {'region': 'MIDDLE EAST', 'date': '1995-01-01'}
+Q5   ok   rows     5/5     base    7304.1 ms  mv     2.89 ms  {'region': 'ASIA', 'date': '1993-01-01'}
+Q5   ok   rows     5/5     base    7280.8 ms  mv     3.24 ms  {'region': 'ASIA', 'date': '1997-01-01'}
+Q6   ok   rows     1/1     base    6508.0 ms  mv    38.03 ms  {'date': '1993-01-01', 'discount': 0.03, 'quantity': 24}
+Q6   ok   rows     1/1     base    6627.9 ms  mv    32.65 ms  {'date': '1995-01-01', 'discount': 0.06, 'quantity': 24}
+Q6   ok   rows     1/1     base    5804.8 ms  mv    26.84 ms  {'date': '1996-01-01', 'discount': 0.07, 'quantity': 24}
+Q6   ok   rows     1/1     base    5938.2 ms  mv    29.80 ms  {'date': '1994-01-01', 'discount': 0.09, 'quantity': 25}
+Q6   ok   rows     1/1     base    6175.6 ms  mv    46.03 ms  {'date': '1993-01-01', 'discount': '0.02', 'quantity': 24}
+Q6   ok   rows     1/1     base    6042.1 ms  mv    30.72 ms  {'date': '1997-01-01', 'discount': '0.09', 'quantity': 25}
+Q7   ok   rows     4/4     base    6641.9 ms  mv     2.86 ms  {'nation1': 'JAPAN', 'nation2': 'SAUDI ARABIA'}
+Q7   ok   rows     4/4     base    6561.5 ms  mv     0.99 ms  {'nation1': 'ROMANIA', 'nation2': 'IRAN'}
+Q7   ok   rows     4/4     base    6533.0 ms  mv     1.08 ms  {'nation1': 'EGYPT', 'nation2': 'ROMANIA'}
+Q7   ok   rows     4/4     base    6534.1 ms  mv     0.99 ms  {'nation1': 'JAPAN', 'nation2': 'CHINA'}
+Q8   ok   rows     2/2     base    3426.3 ms  mv     1.75 ms  {'nation': 'INDONESIA', 'type': 'MEDIUM BURNISHED BRASS'}
+Q8   ok   rows     2/2     base    3314.1 ms  mv     1.05 ms  {'nation': 'VIETNAM', 'type': 'LARGE POLISHED BRASS'}
+Q8   ok   rows     2/2     base    3347.5 ms  mv     1.35 ms  {'nation': 'GERMANY', 'type': 'PROMO POLISHED BRASS'}
+Q8   ok   rows     2/2     base    3367.6 ms  mv     1.98 ms  {'nation': 'IRAQ', 'type': 'ECONOMY PLATED STEEL'}
+Q9   ok   rows   175/175   base   20100.4 ms  mv     2.03 ms  {'color': 'white'}
+Q9   ok   rows   175/175   base   18836.6 ms  mv     1.62 ms  {'color': 'yellow'}
+Q9   ok   rows   175/175   base   18860.5 ms  mv     1.55 ms  {'color': 'snow'}
+Q9   ok   rows   175/175   base   18873.5 ms  mv     1.57 ms  {'color': 'pink'}
+Q10  ok   rows    20/20    base    8475.6 ms  mv  2037.27 ms  {'date': '1994-10-01'}
+Q10  ok   rows    20/20    base    8583.8 ms  mv  1751.52 ms  {'date': '1993-02-01'}
+Q10  ok   rows    20/20    base    8457.9 ms  mv  1761.08 ms  {'date': '1994-08-01'}
+Q10  ok   rows    20/20    base    8550.9 ms  mv  1822.07 ms  {'date': '1994-04-01'}
+Q10  ok   rows    20/20    base    8406.3 ms  mv  1711.11 ms  {'date': '1993-02-01'}
+Q10  ok   rows    20/20    base    8224.9 ms  mv  1687.84 ms  {'date': '1995-01-01'}
+Q11  ok   rows 17955/17955 base    1637.8 ms  mv   125.45 ms  {'nation': 'IRAN', 'fraction': '0.000005', 'sf': 20.0}
+Q11  ok   rows 18615/18615 base    1583.5 ms  mv   122.44 ms  {'nation': 'ARGENTINA', 'fraction': '0.000005', 'sf': 20.0}
+Q11  ok   rows 18199/18199 base    1581.4 ms  mv   114.52 ms  {'nation': 'IRAQ', 'fraction': '0.000005', 'sf': 20.0}
+Q11  ok   rows 17673/17673 base    1567.0 ms  mv   104.77 ms  {'nation': 'INDIA', 'fraction': '0.000005', 'sf': 20.0}
+Q12  ok   rows     2/2     base    8439.8 ms  mv     7.72 ms  {'shipmode1': 'FOB', 'shipmode2': 'RAIL', 'date': '1995-01-01'}
+Q12  ok   rows     2/2     base    8213.7 ms  mv     2.36 ms  {'shipmode1': 'TRUCK', 'shipmode2': 'FOB', 'date': '1996-01-01'}
+Q12  ok   rows     2/2     base    8330.9 ms  mv     1.44 ms  {'shipmode1': 'RAIL', 'shipmode2': 'SHIP', 'date': '1994-01-01'}
+Q12  ok   rows     2/2     base    8377.9 ms  mv     1.39 ms  {'shipmode1': 'SHIP', 'shipmode2': 'RAIL', 'date': '1997-01-01'}
+Q12  ok   rows     2/2     base    8312.6 ms  mv     1.70 ms  {'shipmode1': 'MAIL', 'shipmode2': 'SHIP', 'date': '1993-01-01'}
+Q12  ok   rows     2/2     base    8347.6 ms  mv     1.33 ms  {'shipmode1': 'MAIL', 'shipmode2': 'SHIP', 'date': '1997-01-01'}
+Q13  ok   rows    45/45    base   29372.6 ms  mv   368.81 ms  {'word1': 'unusual', 'word2': 'deposits'}
+Q13  ok   rows    45/45    base   29506.9 ms  mv   293.83 ms  {'word1': 'unusual', 'word2': 'packages'}
+Q13  ok   rows    45/45    base   30261.4 ms  mv   303.91 ms  {'word1': 'special', 'word2': 'accounts'}
+Q13  ok   rows    45/45    base   29102.7 ms  mv   298.89 ms  {'word1': 'pending', 'word2': 'deposits'}
+Q14  ok   rows     1/1     base    2453.6 ms  mv     1.13 ms  {'date': '1997-02-01'}
+Q14  ok   rows     1/1     base    2516.7 ms  mv     0.79 ms  {'date': '1993-04-01'}
+Q14  ok   rows     1/1     base    2481.8 ms  mv     0.91 ms  {'date': '1993-01-01'}
+Q14  ok   rows     1/1     base    2433.3 ms  mv     1.08 ms  {'date': '1993-12-01'}
+Q14  ok   rows     1/1     base    2228.0 ms  mv     1.02 ms  {'date': '1993-01-01'}
+Q14  ok   rows     1/1     base    2655.0 ms  mv     1.11 ms  {'date': '1997-12-01'}
+Q15  ok   rows     1/1     base   11501.8 ms  mv   975.18 ms  {'date': '1997-09-01'}
+Q15  ok   rows     1/1     base   12417.3 ms  mv   772.41 ms  {'date': '1996-11-01'}
+Q15  ok   rows     1/1     base   12226.7 ms  mv   559.41 ms  {'date': '1993-05-01'}
+Q15  ok   rows     1/1     base   12028.4 ms  mv   756.91 ms  {'date': '1996-07-01'}
+Q15  ok   rows     1/1     base   11588.3 ms  mv   563.62 ms  {'date': '1993-01-01'}
+Q15  ok   rows     1/1     base   11654.7 ms  mv   772.99 ms  {'date': '1997-10-01'}
+Q16  ok   rows 27840/27840 base    2935.3 ms  mv  2047.78 ms  {'brand': 'Brand#24', 'type': 'SMALL POLISHED', 'sizes': [37, 2, 7, 47, 29, 4, 15, 1]}
+Q16  ok   rows 27840/27840 base    2928.1 ms  mv  1434.94 ms  {'brand': 'Brand#54', 'type': 'LARGE ANODIZED', 'sizes': [32, 23, 35, 9, 14, 6, 4, 42]}
+Q16  ok   rows 27840/27840 base    2919.3 ms  mv  1427.69 ms  {'brand': 'Brand#44', 'type': 'SMALL PLATED', 'sizes': [25, 15, 9, 26, 30, 47, 35, 32]}
+Q16  ok   rows 27840/27840 base    2963.5 ms  mv  1447.22 ms  {'brand': 'Brand#35', 'type': 'PROMO BURNISHED', 'sizes': [39, 4, 12, 46, 34, 13, 17, 18]}
+Q17  ok   rows     1/1     base  104435.0 ms  mv   115.32 ms  {'brand': 'Brand#51', 'container': 'JUMBO BAG'}
+Q17  ok   rows     1/1     base  104854.3 ms  mv   112.00 ms  {'brand': 'Brand#45', 'container': 'SM BAG'}
+Q17  ok   rows     1/1     base  104437.1 ms  mv   190.94 ms  {'brand': 'Brand#34', 'container': 'WRAP DRUM'}
+Q17  ok   rows     1/1     base  104264.3 ms  mv   117.94 ms  {'brand': 'Brand#12', 'container': 'JUMBO BAG'}
+Q18  ok   rows   128/128   base  112918.4 ms  mv    21.30 ms  {'quantity': 315}
+Q18  ok   rows   178/178   base  112717.6 ms  mv    23.59 ms  {'quantity': 313}
+Q18  ok   rows   148/148   base  113249.7 ms  mv    22.28 ms  {'quantity': 314}
+Q18  ok   rows   201/201   base  113262.8 ms  mv    22.87 ms  {'quantity': 312}
+Q18  ok   rows   201/201   base  113282.1 ms  mv    23.95 ms  {'quantity': 312}
+Q18  ok   rows   128/128   base  112578.4 ms  mv    24.09 ms  {'quantity': 315}
+Q19  ok   rows     1/1     base     641.6 ms  mv     3.44 ms  {'brands': ['Brand#21', 'Brand#23', 'Brand#41'], 'quantities': [5, 20, 30]}
+Q19  ok   rows     1/1     base     577.5 ms  mv     3.22 ms  {'brands': ['Brand#43', 'Brand#54', 'Brand#55'], 'quantities': [9, 12, 27]}
+Q19  ok   rows     1/1     base     569.3 ms  mv     3.33 ms  {'brands': ['Brand#22', 'Brand#34', 'Brand#52'], 'quantities': [1, 12, 26]}
+Q19  ok   rows     1/1     base     572.6 ms  mv     3.34 ms  {'brands': ['Brand#41', 'Brand#41', 'Brand#32'], 'quantities': [3, 17, 26]}
+Q20  ok   rows  3517/3517  base   59985.1 ms  mv   468.50 ms  {'date': '1993-01-01', 'color': 'beige', 'nation': 'VIETNAM'}
+Q20  ok   rows  3527/3527  base   60835.2 ms  mv   483.40 ms  {'date': '1994-01-01', 'color': 'navy', 'nation': 'VIETNAM'}
+Q20  ok   rows  3640/3640  base   60844.3 ms  mv   495.54 ms  {'date': '1995-01-01', 'color': 'royal', 'nation': 'SAUDI ARABIA'}
+Q20  ok   rows  3523/3523  base   61528.8 ms  mv   489.10 ms  {'date': '1997-01-01', 'color': 'smoke', 'nation': 'EGYPT'}
+Q20  ok   rows  3561/3561  base   61328.3 ms  mv   472.35 ms  {'date': '1993-01-01', 'color': 'forest', 'nation': 'CANADA'}
+Q20  ok   rows  3593/3593  base   60886.3 ms  mv   458.07 ms  {'date': '1997-01-01', 'color': 'forest', 'nation': 'CANADA'}
+Q21  ok   rows   100/100   base    7226.9 ms  mv    11.84 ms  {'nation': 'PERU'}
+Q21  ok   rows   100/100   base    7108.6 ms  mv     6.69 ms  {'nation': 'EGYPT'}
+Q21  ok   rows   100/100   base    7132.8 ms  mv     6.67 ms  {'nation': 'JAPAN'}
+Q21  ok   rows   100/100   base    7161.5 ms  mv     6.75 ms  {'nation': 'VIETNAM'}
+Q22  ok   rows     7/7     base     701.0 ms  mv    69.60 ms  {'codes': ['16', '13', '30', '34', '17', '23', '22']}
+Q22  ok   rows     7/7     base     626.8 ms  mv    52.85 ms  {'codes': ['29', '17', '26', '15', '21', '24', '18']}
+Q22  ok   rows     7/7     base     626.0 ms  mv    52.53 ms  {'codes': ['10', '18', '33', '23', '29', '31', '13']}
+Q22  ok   rows     7/7     base     630.9 ms  mv    53.94 ms  {'codes': ['11', '32', '31', '33', '34', '14', '30']}
+mismatches: 0

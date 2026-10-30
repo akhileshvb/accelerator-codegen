@@ -1,0 +1,4 @@
+# --pg-workers 4: max_parallel_workers_per_gather and table parallel_workers = 4 for every session (tables' original reloptions {'region': None, 'nation': None, 'customer': None, 'supplier': None, 'part': None, 'partsupp': None, 'orders': None, 'lineitem': None}, restored on exit)
+parameter draws: 1 repetition(s) x 1 sets, seeds 35489017..35489017
+uncapped rep 0 mv (RF: update sets, whole sets, 0 readers) 12:06:58
+   qps 0.0  read p50 0.0ms p99 0.0ms  timeouts 0  RF commits 3 (3.47e-05/s of -1) of 21 commits  commit p50 230.7ms max 194278ms  lag max 411.9s  rows/s 5 (RF 5)  errors read 0 write 0  refresh 334.2s in window (post-restore 35.6s)  final-check mismatches none  answers unchanged by writes [2, 3, 8, 10, 15, 18, 22]  RUN INVALID (an error, a failed restore or a final-check mismatch)  NO READ COMPLETED IN THE WINDOW (reads take longer than it: lengthen the window)
