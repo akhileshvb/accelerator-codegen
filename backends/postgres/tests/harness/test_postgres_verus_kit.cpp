@@ -5,7 +5,7 @@
 //   test_postgres_verus_kit validate     <spec_dir> <query_sql_file>
 //   test_postgres_verus_kit differential <accel_id> <spec_dir> <query_sql_file> [every=10]
 //   test_postgres_verus_kit snapshots    <accel_id> <spec_dir> <query_sql_file> [writes=200] [readers=4] [seed=1] [rr|rc]
-//                                        [commit|abort|rebuild|kill]
+//                                        [commit|abort|rebuild|truncate|drop|kill]
 //
 // <query_sql_file>: the query with $n parameters (workloads/<bench>/q<N>.sql).  Each run works on a copy of the connection's database (CREATE DATABASE ... TEMPLATE), dropped at the
 // end: the spec's setup.sql and transactions change data.  The spec is DuckDB SQL (eval/harness/suite.hpp):
@@ -14,11 +14,13 @@
 //   (accel_<id>(...)) is compared with the query at the same snapshot.
 // snapshots: rr (default): readers in REPEATABLE READ transactions run the accelerator, the query, the
 //   accelerator again while a writer commits; all three must agree.  rc: READ COMMITTED readers run
-//   both answers in one statement (one snapshot); the rows must agree (no bounds, no tie leeway).
+//   both answers in one statement (one snapshot), compared as in differential and rr (ties, LIMIT cuts, bounds).
 // The writer of snapshots: commit (the spec's transactions), abort (every third one rolled back, every
-//   third one a savepoint rolled back to before its commit), rebuild (every 15th write TRUNCATEs a table
-//   of the query and reloads it, which makes the shard rebuild), kill (its backend is terminated at random
-//   moments, mid-commit among them; it reconnects).  Readers must see 0 mismatches and 0 fallbacks.
+//   third one a savepoint rolled back to before its commit), rebuild (every 15th write deletes a table of the
+//   query and reloads it), kill (its backend is terminated at random moments, mid-commit among them; it
+//   reconnects).  Readers must see 0 mismatches and 0 fallbacks.  truncate (as rebuild, with TRUNCATE, which is
+//   not MVCC-safe) and drop (every 5th commit message is not shipped, accel.fault_drop_commit_every: the worker
+//   must rebuild) only require 0 wrong answers: reads may be answered from SQL.
 // VERUS_KIT_BOUNDS_SQL=<file>: the query's bounds query (eval/harness/float_bounds.hpp), as for DuckDB.
 // A call the accelerator answered from SQL counts as a fallback (reported, and a failure of the run).
 // Connection: libpq's PG* environment, database TPCH_PG_DB (host.sh's) or PGDATABASE.
@@ -381,36 +383,66 @@ void Warm(PgConn &c, const std::string &id, const std::string &tuple) {
   throw std::runtime_error("the accelerator " + id + " did not build in 180 s");
 }
 
-// Both answers in ONE statement, so one snapshot even at READ COMMITTED: the accelerator's rows, then
-// the query's with its $n replaced by the tuple's expressions.  Cells come back as a text array.
-std::pair<Rows, Rows> Together(PgConn &c, const std::string &id, const std::string &query, const std::string &tuple) {
-  std::string q = query;
+// The answers of one statement, hence of one snapshot even at READ COMMITTED: the accelerator's rows, the
+// query's, and, when the ordering asks for them, the query's rows without its LIMIT and the bounds query's.
+struct Together {
+  Rows accel, query, full;
+  float_bounds::Probe probe;
+};
+
+// `sql` with its $n replaced by the tuple's expressions.
+std::string Inlined(std::string sql, const std::string &tuple) {
   const auto items = SplitTuple(tuple);
   for (std::size_t i = items.size(); i > 0; --i)
-    q = std::regex_replace(q, std::regex("\\$" + std::to_string(i) + "(?![0-9])"), "(" + items[i - 1] + ")");
-  while (!q.empty() && (q.back() == ';' || std::isspace(static_cast<unsigned char>(q.back()))))
-    q.pop_back();
-  const char *cells = "ARRAY(SELECT value FROM json_each_text(row_to_json(t)))::text";
-  const auto rows = c.Exec(std::string("SELECT 'a', ") + cells + " FROM accel_" + id + "(" + tuple +
-                           ") t UNION ALL SELECT 'q', " + cells + " FROM (" + q + ") t").rows;
-  std::pair<Rows, Rows> out;
-  for (const auto &r : rows) {
-    std::vector<std::string> cellsOf;
-    const std::string &text = r[1];
-    for (std::size_t i = 1; i < text.size() && text[i] != '}';) {
-      std::string cell;
-      if (text[i] == '"') {
-        for (++i; text[i] != '"'; ++i)
-          cell += text[i] == '\\' ? text[++i] : text[i];
-        ++i;
-      } else {
-        for (; text[i] != ',' && text[i] != '}'; ++i)
-          cell += text[i];
-      }
-      cellsOf.push_back(cell);
-      ++i; // , or }
+    sql = std::regex_replace(sql, std::regex("\\$" + std::to_string(i) + "(?![0-9])"), "(" + items[i - 1] + ")");
+  while (!sql.empty() && (sql.back() == ';' || std::isspace(static_cast<unsigned char>(sql.back()))))
+    sql.pop_back();
+  return sql;
+}
+
+// A text array literal "{a,"b c",...}" as its elements.
+std::vector<std::string> ArrayCells(const std::string &text) {
+  std::vector<std::string> cells;
+  for (std::size_t i = 1; i < text.size() && text[i] != '}';) {
+    std::string cell;
+    if (text[i] == '"') {
+      for (++i; text[i] != '"'; ++i)
+        cell += text[i] == '\\' ? text[++i] : text[i];
+      ++i;
+    } else {
+      for (; text[i] != ',' && text[i] != '}'; ++i)
+        cell += text[i];
     }
-    (r[0] == "a" ? out.first : out.second).push_back(std::move(cellsOf));
+    cells.push_back(cell);
+    ++i; // , or }
+  }
+  return cells;
+}
+
+Together RunTogether(PgConn &c, const std::string &id, const std::string &query, const std::string &tuple, const Ordering &ordering) {
+  const char *cells = "ARRAY(SELECT value FROM json_each_text(row_to_json(t)))::text";
+  const char *names = "ARRAY(SELECT key FROM json_each_text(row_to_json(t)))::text";
+  const auto branch = [&](const char *tag, const std::string &from, bool with_names) {
+    return std::string(" UNION ALL SELECT '") + tag + "', " + cells + ", " + (with_names ? names : "''") + " FROM (" + from + ") t";
+  };
+  std::string sql = std::string("SELECT 'a', ") + cells + ", '' FROM accel_" + id + "(" + tuple + ") t" +
+                    branch("q", Inlined(query, tuple), false);
+  if (ordering.limited)
+    sql += branch("u", Inlined(ordering.unlimited_sql, tuple), false);
+  if (!ordering.bounds_sql.empty()) { // the names come from a row of NULLs: the bounds query may have no rows
+    const std::string bounds = Inlined(ordering.bounds_sql, tuple);
+    sql += branch("p", bounds, false) + branch("n", "SELECT b.* FROM (SELECT 1) one LEFT JOIN (" + bounds + ") b ON false", true);
+  }
+  Together out;
+  for (const auto &r : c.Exec(sql).rows) {
+    const auto row = ArrayCells(r[1]);
+    switch (r[0][0]) {
+    case 'a': out.accel.push_back(row); break;
+    case 'q': out.query.push_back(row); break;
+    case 'u': out.full.push_back(row); break;
+    case 'n': out.probe.names = ArrayCells(r[2]); break;
+    default: out.probe.rows.push_back(row);
+    }
   }
   return out;
 }
@@ -496,14 +528,17 @@ void WriteOnce(PgConn &w, Dialect &dialect, const std::string &mode, int i, cons
     w.Exec("BEGIN; SAVEPOINT s; " + dialect(a) + "\n; ROLLBACK TO s; SAVEPOINT t; " + dialect(b) + "\n; RELEASE t; COMMIT");
     return;
   }
-  if (mode == "rebuild" && i % 15 == 14 && !tables.empty()) {
-    // The TRUNCATE queues behind readers' locks and the worker's build scan queues behind it, while those
-    // readers wait for the worker: the lock timeout cancels the TRUNCATE and the reload is tried again.
+  if ((mode == "rebuild" || mode == "truncate") && i % 15 == 14 && !tables.empty()) {
+    // rebuild empties the table with DELETE (MVCC: older snapshots keep their rows) and reloads it.  TRUNCATE is not
+    // MVCC-safe, so truncate only checks that no answer is wrong: its lock queues behind readers' locks and the
+    // worker's build scan queues behind it, while those readers wait for the worker; the lock timeout cancels the
+    // TRUNCATE and the reload is tried again.
     const auto &t = tables[(i / 15) % tables.size()];
+    const std::string empty = mode == "truncate" ? "TRUNCATE " : "DELETE FROM ";
     w.Exec("SET lock_timeout = '150ms'");
     for (int attempt = 0; attempt < 40; ++attempt) {
       try {
-        w.Exec("BEGIN; CREATE TEMP TABLE reload ON COMMIT DROP AS SELECT * FROM " + t + "; TRUNCATE " + t + "; INSERT INTO " + t +
+        w.Exec("BEGIN; CREATE TEMP TABLE reload ON COMMIT DROP AS SELECT * FROM " + t + "; " + empty + t + "; INSERT INTO " + t +
                " SELECT * FROM reload; COMMIT");
         break;
       } catch (const std::exception &e) {
@@ -530,6 +565,8 @@ int Snapshots(const std::string &id, const Spec &spec, const std::string &query,
   writer.ResetCounts();
   const auto tables = QueryTables(writer, query);
   auto session = std::make_unique<PgConn>(scratch.name); // the writes' session (kill replaces it)
+  if (mode == "drop")
+    session->Exec("SET accel.fault_drop_commit_every = 5");
   std::atomic<int> session_pid{std::atoi(session->Exec("SELECT pg_backend_pid()").rows[0][0].c_str())};
   CauseTotals causes;
   Tally tally;
@@ -546,11 +583,12 @@ int Snapshots(const std::string &id, const Spec &spec, const std::string &query,
           const auto &p = spec.params[rng() % spec.params.size()];
           if (read_committed) { // one statement holds both answers
             const long before = rc.Fallbacks();
-            const auto [a, b] = Together(rc, id, query, p);
+            const auto together = RunTogether(rc, id, query, p, s.ordering);
             std::lock_guard<std::mutex> lock(mutex);
             if (rc.Fallbacks() > before)
               tally.NoteFallback("reader " + std::to_string(t), p, "fallback", "answered from SQL");
-            tally.Check("reader " + std::to_string(t) + " rc", p, a, b);
+            tally.Check("reader " + std::to_string(t) + " rc", p, together.accel, together.query, s.ordering,
+                        [&] { return together.full; }, [&] { return together.probe; });
             continue;
           }
           rc.Exec("BEGIN ISOLATION LEVEL REPEATABLE READ");
@@ -632,8 +670,9 @@ int Snapshots(const std::string &id, const Spec &spec, const std::string &query,
             << ",\"write_error_example\":" << Json(write_error_example) << ",\"readers\":" << readers
             << ",\"writer\":" << Json(mode) << ",\"kills\":" << kills << ",\"reader_failures\":" << failures << ","
             << Tail(writer, tally, fallbacks, causes) << "}" << std::endl;
+  const bool answers_from_sql_allowed = mode == "truncate" || mode == "drop";
   return tally.mismatches + tally.order_mismatches == 0 && failures == 0 && write_errors < writes && tally.checks > 0 &&
-                 fallbacks == 0
+                 (fallbacks == 0 || answers_from_sql_allowed)
              ? 0
              : 1;
 }

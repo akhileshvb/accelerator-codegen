@@ -129,6 +129,9 @@ void PreCommit() {
 void Ship() {
   const auto deadline = std::chrono::steady_clock::now() + shared::CommitShipTimeout();
   for (const auto &commit : g_xact.commits) {
+    if (shared::FaultDropsCommit()) {
+      continue;
+    }
     try {
       std::string bytes;
       EncodeCommit(commit, bytes);

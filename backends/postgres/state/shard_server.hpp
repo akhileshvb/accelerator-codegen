@@ -28,6 +28,8 @@ public:
   void Covered(runtime::Epoch through);
   // Waits until every commit through `epoch` has arrived; false on deadline.
   bool WaitThrough(runtime::Epoch epoch, Clock::time_point deadline);
+  // The first epoch that has not arrived.
+  runtime::Epoch Missing();
 
 private:
   void Advance();

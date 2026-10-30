@@ -53,6 +53,8 @@ constexpr auto kStopWait = milliseconds(10000);
 // How long a maintenance pass waits for the commits its snapshot sees to
 // reach the worker (they are shipped right after they commit).
 constexpr auto kArrivalWait = milliseconds(50);
+// How long after its shipping timeout a commit may be missing before it counts as lost.
+constexpr auto kLostCommitGrace = milliseconds(1000);
 // Maintenance also runs without commits arriving: gaps and the version floor.
 constexpr auto kIdlePump = milliseconds(250);
 constexpr auto kHorizonEvery = milliseconds(250);
@@ -316,6 +318,7 @@ void ApplyPhaseLimits(runtime::ThreadBudget &threads) {
   uint64_t commits_seen = 0;
   auto last_pump = Clock::time_point();
   auto last_horizon = Clock::time_point();
+  auto missing_since = Clock::time_point::max(); // since when a pass waits for a commit that has not arrived
   // The members apply a shipped commit together and end it together: the world's one version per commit.
   host.GroupCommitEnds();
   for (;;) {
@@ -354,8 +357,20 @@ void ApplyPhaseLimits(runtime::ThreadBudget &threads) {
           runtime->Pump();
         }
       }
+      missing_since = arrived ? Clock::time_point::max() : std::min(missing_since, now);
+      // A commit that never arrives (its backend died or gave up shipping it) is a gap: the members rebuild
+      // from the pass's snapshot, which covers it, instead of waiting for it for ever.
+      const bool lost = !arrived && epoch && now - missing_since >= shared::CommitShipTimeout() + kLostCommitGrace;
+      if (lost) {
+        elog(LOG, "accel shard worker %s: commit %llu did not arrive; rebuilding", id.c_str(),
+             static_cast<unsigned long long>(arrivals.Missing()));
+        for (auto *runtime : runtimes) {
+          runtime->InvalidateFrom(arrivals.Missing());
+          runtime->Pump();
+        }
+      }
       bool again = host.EndDeferredCommits(); // a member waited for the commit that just ended
-      if (arrived && epoch && !again) {
+      if ((arrived || lost) && epoch && !again) {
         if (exact_versions) {
           shared::PublishCatchingUp(index, !all_synced());
         }
