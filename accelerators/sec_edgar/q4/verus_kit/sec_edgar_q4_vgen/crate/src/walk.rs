@@ -4,8 +4,18 @@ use std::sync::Arc;
 use verus_common::bytes::*;
 use verus_prooflib::ordered::{Index, Key, KeyView, key_lt, ordered_rows, lower_rows, lemma_lower_bindings, lemma_ordered_unique};
 use crate::cells::*;
+use crate::gen_spec::Params;
+use crate::rec::opt_bytes;
 
 verus! {
+
+/// The rows are exactly the stored groups of (p4, p3) with sic in [p1, p2], each once.
+pub open spec fn rows_cover(rows: Seq<(Key, Arc<Cell>)>, g: Index<Index<Cell>>, p: Params) -> bool {
+    &&& forall|j: int| 0 <= j < rows.len() ==> p.p1 <= (#[trigger] rows[j]).1.sic as int <= p.p2
+            && cell_at(g, p.p4, p.p3, rows[j].1.sic as int, opt_bytes(rows[j].1.tlabel)) == Some(*rows[j].1)
+    &&& forall|sc: int, tl: Option<Seq<u8>>| p.p1 <= sc <= p.p2 && #[trigger] cell_at(g, p.p4, p.p3, sc, tl) is Some ==>
+            exists|j: int| 0 <= j < rows.len() && rows[j].1.sic as int == sc && opt_bytes(rows[j].1.tlabel) == tl
+}
 
 pub open spec fn entries_of(rows: Seq<(Key, Arc<Cell>)>) -> Seq<(KeyView, Cell)> {
     rows.map_values(|row: (Key, Arc<Cell>)| (row.0.view(), *row.1))
