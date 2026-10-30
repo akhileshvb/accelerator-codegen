@@ -7,7 +7,7 @@ semantics: `pipeline/prompts/engine_backend/api_contract.md`.
 
 | role | headers | symbols |
 |---|---|---|
-| registration | `api/runtime.hpp`, `api/accelerators.hpp`, `api/catalog/query_catalog.hpp` | `PostgresQueryExecutorRegistrar`, `PostgresQuerySqlRegistrar`, `ExecutePostgresQuery`, `PostgresAcceleratorRegistrar`, `PostgresQueryCatalogRegistrar`, `RegisterPostgresQuery` |
+| registration | `api/runtime.hpp`, `api/accelerators.hpp`, `api/catalog/query_catalog.hpp`, `api/verus_host.hpp` | `PostgresQueryExecutorRegistrar`, `PostgresQuerySqlRegistrar`, `ExecutePostgresQuery`, `PostgresAcceleratorRegistrar`, `PostgresQueryCatalogRegistrar`, `RegisterPostgresQuery`, `SpiVerusHost`, `RegisterVerusKitFunctions` |
 | runtime | `api/engine_runtime.hpp`, `api/accelerators.hpp`, `api/pg_sink.hpp`, `api/base/runtime_internal.hpp` | `Runtime`, `RuntimeRegistrar`, `PostgresAccelerator`, `PgSink` |
 | scan | `api/engine_helpers.hpp`, `api/base/pg_base.hpp` | `ScanPartitioned`, `ScanTypedTuples`, `BuildBatch`, `DecimalColumn`, `TypedText`, `ScanTablePartitioned`, `KernelRegistrar` |
 | sql_fallback | `api/sql_fallback.hpp` | `AnswerFromPostgresSql` |
