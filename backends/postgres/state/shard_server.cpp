@@ -101,6 +101,7 @@ void ShardServer::Stop() {
     return;
   }
   stopping = true;
+  core::g_pending_waits_cancelled = true; // a pass that died mid-commit leaves it pending for good
   segment.Close();
   for (auto &thread : threads) {
     thread.join();

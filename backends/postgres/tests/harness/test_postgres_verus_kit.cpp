@@ -5,7 +5,7 @@
 //   test_postgres_verus_kit validate     <spec_dir> <query_sql_file>
 //   test_postgres_verus_kit differential <accel_id> <spec_dir> <query_sql_file> [every=10]
 //   test_postgres_verus_kit snapshots    <accel_id> <spec_dir> <query_sql_file> [writes=200] [readers=4] [seed=1] [rr|rc]
-//                                        [commit|abort|rebuild|truncate|drop|kill]
+//                                        [commit|abort|rebuild|truncate|drop|kill|workerkill]
 //
 // <query_sql_file>: the query with $n parameters (workloads/<bench>/q<N>.sql).  Each run works on a copy of the connection's database (CREATE DATABASE ... TEMPLATE), dropped at the
 // end: the spec's setup.sql and transactions change data.  The spec is DuckDB SQL (eval/harness/suite.hpp):
@@ -19,8 +19,9 @@
 //   third one a savepoint rolled back to before its commit), rebuild (every 15th write deletes a table of the
 //   query and reloads it), kill (its backend is terminated at random moments, mid-commit among them; it
 //   reconnects).  Readers must see 0 mismatches and 0 fallbacks.  truncate (as rebuild, with TRUNCATE, which is
-//   not MVCC-safe) and drop (every 5th commit message is not shipped, accel.fault_drop_commit_every: the worker
-//   must rebuild) only require 0 wrong answers: reads may be answered from SQL.
+//   not MVCC-safe), drop (every 5th commit message is not shipped, accel.fault_drop_commit_every: the worker
+//   must rebuild) and workerkill (the shard worker is terminated every few seconds) only require 0 wrong
+//   answers: reads may be answered from SQL.  Every run ends by checking that the stopped workers exit.
 // VERUS_KIT_BOUNDS_SQL=<file>: the query's bounds query (eval/harness/float_bounds.hpp), as for DuckDB.
 // A call the accelerator answered from SQL counts as a fallback (reported, and a failure of the run).
 // Connection: libpq's PG* environment, database TPCH_PG_DB (host.sh's) or PGDATABASE.
@@ -579,6 +580,7 @@ int Snapshots(const std::string &id, const Spec &spec, const std::string &query,
       std::mt19937_64 rng(seed * 1000003 + static_cast<uint64_t>(t));
       try {
         PgConn rc(scratch.name);
+        const std::string pid = rc.Exec("SELECT pg_backend_pid()").rows[0][0];
         while (!done.load()) {
           const auto &p = spec.params[rng() % spec.params.size()];
           if (read_committed) { // one statement holds both answers
@@ -612,8 +614,8 @@ int Snapshots(const std::string &id, const Spec &spec, const std::string &query,
           const auto probe = [&] { return RunProbe(rc, s.ordering.bounds_sql, p); };
           std::lock_guard<std::mutex> lock(mutex);
           const std::string served = std::string(" [first ") + (fb1 > fb0 ? "sql" : "accel") + ", again " + (fb2 > fb1 ? "sql" : "accel") + "]";
-          tally.Check("reader " + std::to_string(t) + " first" + served, p, a, b, s.ordering, full, probe);
-          tally.Check("reader " + std::to_string(t) + " again" + served, p, c, b, s.ordering, full, probe);
+          tally.Check("reader " + std::to_string(t) + " pid " + pid + " first" + served, p, a, b, s.ordering, full, probe);
+          tally.Check("reader " + std::to_string(t) + " pid " + pid + " again" + served, p, c, b, s.ordering, full, probe);
           rc.Exec("COMMIT");
         }
         causes.Add(rc);
@@ -623,13 +625,18 @@ int Snapshots(const std::string &id, const Spec &spec, const std::string &query,
       }
     });
   std::thread killer;
-  if (mode == "kill")
+  if (mode == "kill" || mode == "workerkill")
     killer = std::thread([&] {
       std::mt19937_64 krng(seed ^ 0x5bd1e995);
       PgConn admin(scratch.name);
       while (!done.load()) {
-        std::this_thread::sleep_for(std::chrono::microseconds(500 + krng() % 40000));
-        admin.Exec("SELECT pg_terminate_backend(" + std::to_string(session_pid.load()) + ")");
+        if (mode == "kill") {
+          std::this_thread::sleep_for(std::chrono::microseconds(500 + krng() % 40000));
+          admin.Exec("SELECT pg_terminate_backend(" + std::to_string(session_pid.load()) + ")");
+        } else { // the shard worker, wherever it is in a pass; it restarts on demand
+          std::this_thread::sleep_for(std::chrono::milliseconds(2000 + krng() % 4000));
+          admin.Exec("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE backend_type = 'accel shard worker' AND datname = '" + scratch.name + "'");
+        }
       }
     });
   std::mt19937_64 rng(seed);
@@ -666,13 +673,22 @@ int Snapshots(const std::string &id, const Spec &spec, const std::string &query,
   int fallbacks = 0;
   for (const auto &[kind, count] : tally.fallback_kinds)
     fallbacks += count;
+  // Liveness: asked to stop, the shard workers exit (one stuck on a commit left pending holds the database).
+  writer.Exec("SELECT accel_stop_shard_workers()");
+  const auto workers = [&] {
+    return std::atol(writer.Exec("SELECT count(*) FROM pg_stat_activity WHERE backend_type = 'accel shard worker' AND datname = '" +
+                                 scratch.name + "'").rows[0][0].c_str());
+  };
+  for (int tries = 0; tries < 300 && workers() > 0; ++tries)
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  const long lingering = workers();
   std::cout << "{\"mode\":\"snapshots\",\"writes\":" << writes << ",\"write_errors\":" << write_errors
             << ",\"write_error_example\":" << Json(write_error_example) << ",\"readers\":" << readers
-            << ",\"writer\":" << Json(mode) << ",\"kills\":" << kills << ",\"reader_failures\":" << failures << ","
+            << ",\"writer\":" << Json(mode) << ",\"kills\":" << kills << ",\"lingering_workers\":" << lingering << ",\"reader_failures\":" << failures << ","
             << Tail(writer, tally, fallbacks, causes) << "}" << std::endl;
-  const bool answers_from_sql_allowed = mode == "truncate" || mode == "drop";
+  const bool answers_from_sql_allowed = mode == "truncate" || mode == "drop" || mode == "workerkill";
   return tally.mismatches + tally.order_mismatches == 0 && failures == 0 && write_errors < writes && tally.checks > 0 &&
-                 (fallbacks == 0 || answers_from_sql_allowed)
+                 (fallbacks == 0 || answers_from_sql_allowed) && lingering == 0
              ? 0
              : 1;
 }
