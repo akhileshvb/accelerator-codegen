@@ -48,9 +48,10 @@
 // read happens (`read_instant`, TRUSTED, a fact about the engine at that
 // instant, so a predicate, not an invariant).  Nothing else is assumed.
 //
-// Hosts keep the promises as follows.  DuckDB: the capture fork's single commit number.  Postgres
-// (backends/postgres/state/shared.cpp): one shard per world; a commit that wrote a captured table
-// takes the shard's gate in PRE_COMMIT, takes the next dense epoch n, publishes (n, xid) (so it is
+// Hosts keep the promises as follows.  A host with one commit number (a capture hook at commit)
+// uses it.  A host whose backends are separate processes (the shard design of its backend's state/
+// code, docs/paper-verified-section-review.md): a commit that wrote a captured table takes the
+// shard's gate in its pre-commit callback, takes the next dense epoch n, publishes (n, xid) (so it is
 // pending before it can be visible), and releases the gate after it is visible, so visibility order
 // is n order; a snapshot's epoch E is the newest n whose xid it sees.  The shard's worker applies
 // commits after they are visible, each under the database as of its own epoch (its maintenance
@@ -58,7 +59,8 @@
 // every commit has its own version; it serves a reader at E only once every commit through E is
 // applied (the runtime's applied-through check) and never a reader in a range a rebuild or a lost
 // anchor collapsed into one version; a missed commit rebuilds.  Both are host code, trusted with the
-// engine model.
+// engine model.  The kit hands the store every engine epoch plus one (epoch 0 = newest above), so an
+// engine epoch 0 (nothing committed yet) is a snapshot, not "the newest".
 //
 // Still trusted (world.rs, the FFI): the engine model and the clauses above;
 // that the state a writer prepares answers for the database at its version

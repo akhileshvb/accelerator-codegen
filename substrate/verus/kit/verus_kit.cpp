@@ -284,7 +284,7 @@ void NoteDecline() {
 }
 
 // The verified store reads epoch 0 as "the newest version", so engine epochs are stored one higher:
-// Postgres has an epoch 0 (the database before any captured commit), and a reader there must not get
+// an engine may have an epoch 0 (the database before any captured commit), and a reader there must not get
 // the newest version.
 constexpr core::Version StoreEpoch(core::Version engine) {
   return engine == std::numeric_limits<core::Version>::max() ? engine : engine + 1;
