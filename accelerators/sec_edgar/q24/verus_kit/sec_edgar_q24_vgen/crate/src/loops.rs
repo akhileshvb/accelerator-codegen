@@ -89,6 +89,7 @@ pub fn acc_rescan(tab: &Pow2Tab, acc: &mut Index<AccEnt>, rows: &Vec<NumRt>, c2:
         acc_ok(*final(acc)),
         forall|k: GK| #![trigger acc_c(*final(acc), k)] acc_c(*final(acc), k) == acc_c(*old(acc), k) + sum(num_rt_seq_view(rows@), |n: NumRow| rescan_w(rp, dp)(n) * ic(k)(n)),
         forall|k: GK| #![trigger acc_s(*final(acc), k)] acc_s(*final(acc), k) == acc_s(*old(acc), k) + sum(num_rt_seq_view(rows@), |n: NumRow| rescan_w(rp, dp)(n) * iv(k)(n)),
+        forall|k: GK| #![trigger acc_a(*final(acc), k)] acc_a(*final(acc), k) == acc_a(*old(acc), k) + sum(num_rt_seq_view(rows@), |n: NumRow| rescan_w(rp, dp)(n) * ia(k)(n)),
 {
     let ghost acc0 = *acc;
     let mut i = 0;
@@ -101,12 +102,17 @@ pub fn acc_rescan(tab: &Pow2Tab, acc: &mut Index<AccEnt>, rows: &Vec<NumRt>, c2:
             assert(num_rt_seq_view(rows@.take(0)) =~= Seq::<NumRow>::empty());
             lemma_sum_empty(Seq::<NumRow>::empty(), |n: NumRow| rescan_w(rp, dp)(n) * iv(k)(n));
         }
+        assert forall|k: GK| #![trigger acc_a(*acc, k)] acc_a(*acc, k) == acc_a(acc0, k) + sum(num_rt_seq_view(rows@.take(0)), |n: NumRow| rescan_w(rp, dp)(n) * ia(k)(n)) by {
+            assert(num_rt_seq_view(rows@.take(0)) =~= Seq::<NumRow>::empty());
+            lemma_sum_empty(Seq::<NumRow>::empty(), |n: NumRow| rescan_w(rp, dp)(n) * ia(k)(n));
+        }
     }
     while i < rows.len()
         invariant
             i <= rows.len(), tab.ok(), acc_ok(*acc), counts_ok(*c2, *c1, rp, dp),
             forall|k: GK| #![trigger acc_c(*acc, k)] acc_c(*acc, k) == acc_c(acc0, k) + sum(num_rt_seq_view(rows@.take(i as int)), |n: NumRow| rescan_w(rp, dp)(n) * ic(k)(n)),
             forall|k: GK| #![trigger acc_s(*acc, k)] acc_s(*acc, k) == acc_s(acc0, k) + sum(num_rt_seq_view(rows@.take(i as int)), |n: NumRow| rescan_w(rp, dp)(n) * iv(k)(n)),
+            forall|k: GK| #![trigger acc_a(*acc, k)] acc_a(*acc, k) == acc_a(acc0, k) + sum(num_rt_seq_view(rows@.take(i as int)), |n: NumRow| rescan_w(rp, dp)(n) * ia(k)(n)),
         decreases rows.len() - i,
     {
         let r = &rows[i];
@@ -131,6 +137,9 @@ pub fn acc_rescan(tab: &Pow2Tab, acc: &mut Index<AccEnt>, rows: &Vec<NumRt>, c2:
             assert forall|k: GK| #![trigger acc_s(*acc, k)] acc_s(*acc, k) == acc_s(acc0, k) + sum(num_rt_seq_view(tk), |n: NumRow| rescan_w(rp, dp)(n) * iv(k)(n)) by {
                 lemma_sum_push(vs, n, |n: NumRow| rescan_w(rp, dp)(n) * iv(k)(n));
             }
+            assert forall|k: GK| #![trigger acc_a(*acc, k)] acc_a(*acc, k) == acc_a(acc0, k) + sum(num_rt_seq_view(tk), |n: NumRow| rescan_w(rp, dp)(n) * ia(k)(n)) by {
+                lemma_sum_push(vs, n, |n: NumRow| rescan_w(rp, dp)(n) * ia(k)(n));
+            }
         }
         i += 1;
     }
@@ -146,6 +155,7 @@ pub fn acc_changed(tab: &Pow2Tab, acc: &mut Index<AccEnt>, dn: &Vec<NumDelta>, c
         acc_ok(*final(acc)),
         forall|k: GK| #![trigger acc_c(*final(acc), k)] acc_c(*final(acc), k) == acc_c(*old(acc), k) + wsum(num_delta_seq_view(dn@), |n: NumRow| z1(rp, dp, n) * ic(k)(n)),
         forall|k: GK| #![trigger acc_s(*final(acc), k)] acc_s(*final(acc), k) == acc_s(*old(acc), k) + wsum(num_delta_seq_view(dn@), |n: NumRow| z1(rp, dp, n) * iv(k)(n)),
+        forall|k: GK| #![trigger acc_a(*final(acc), k)] acc_a(*final(acc), k) == acc_a(*old(acc), k) + wsum(num_delta_seq_view(dn@), |n: NumRow| z1(rp, dp, n) * ia(k)(n)),
 {
     let ghost acc0 = *acc;
     let mut i = 0;
@@ -157,6 +167,9 @@ pub fn acc_changed(tab: &Pow2Tab, acc: &mut Index<AccEnt>, dn: &Vec<NumDelta>, c
         assert forall|k: GK| #![trigger acc_s(*acc, k)] acc_s(*acc, k) == acc_s(acc0, k) + wsum(num_delta_seq_view(dn@.take(0)), |n: NumRow| z1(rp, dp, n) * iv(k)(n)) by {
             lemma_sum_empty(Seq::<(NumRow, int)>::empty(), |x: (NumRow, int)| x.1 * (|n: NumRow| z1(rp, dp, n) * iv(k)(n))(x.0));
         }
+        assert forall|k: GK| #![trigger acc_a(*acc, k)] acc_a(*acc, k) == acc_a(acc0, k) + wsum(num_delta_seq_view(dn@.take(0)), |n: NumRow| z1(rp, dp, n) * ia(k)(n)) by {
+            lemma_sum_empty(Seq::<(NumRow, int)>::empty(), |x: (NumRow, int)| x.1 * (|n: NumRow| z1(rp, dp, n) * ia(k)(n))(x.0));
+        }
     }
     while i < dn.len()
         invariant
@@ -164,6 +177,7 @@ pub fn acc_changed(tab: &Pow2Tab, acc: &mut Index<AccEnt>, dn: &Vec<NumDelta>, c
             forall|i: int| 0 <= i < dn.len() ==> (#[trigger] dn@[i]).sign == 1 || dn@[i].sign == -1,
             forall|k: GK| #![trigger acc_c(*acc, k)] acc_c(*acc, k) == acc_c(acc0, k) + wsum(num_delta_seq_view(dn@.take(i as int)), |n: NumRow| z1(rp, dp, n) * ic(k)(n)),
             forall|k: GK| #![trigger acc_s(*acc, k)] acc_s(*acc, k) == acc_s(acc0, k) + wsum(num_delta_seq_view(dn@.take(i as int)), |n: NumRow| z1(rp, dp, n) * iv(k)(n)),
+            forall|k: GK| #![trigger acc_a(*acc, k)] acc_a(*acc, k) == acc_a(acc0, k) + wsum(num_delta_seq_view(dn@.take(i as int)), |n: NumRow| z1(rp, dp, n) * ia(k)(n)),
         decreases dn.len() - i,
     {
         let d = &dn[i];
@@ -188,6 +202,10 @@ pub fn acc_changed(tab: &Pow2Tab, acc: &mut Index<AccEnt>, dn: &Vec<NumDelta>, c
                 lemma_sum_push(vs, (n, d.sign as int), |x: (NumRow, int)| x.1 * (|n: NumRow| z1(rp, dp, n) * iv(k)(n))(x.0));
                 assert((d.sign as int) * (z1(rp, dp, n) * iv(k)(n)) == (d.sign * z1(rp, dp, n)) * iv(k)(n)) by (nonlinear_arith);
             }
+            assert forall|k: GK| #![trigger acc_a(*acc, k)] acc_a(*acc, k) == acc_a(acc0, k) + wsum(num_delta_seq_view(tk), |n: NumRow| z1(rp, dp, n) * ia(k)(n)) by {
+                lemma_sum_push(vs, (n, d.sign as int), |x: (NumRow, int)| x.1 * (|n: NumRow| z1(rp, dp, n) * ia(k)(n))(x.0));
+                assert((d.sign as int) * (z1(rp, dp, n) * ia(k)(n)) == (d.sign * z1(rp, dp, n)) * ia(k)(n)) by (nonlinear_arith);
+            }
         }
         i += 1;
     }
@@ -203,6 +221,7 @@ pub fn acc_scan(tab: &Pow2Tab, acc: &mut Index<AccEnt>, rows: &Vec<NumRt>, c: &C
         acc_ok(*final(acc)),
         forall|k: GK| #![trigger acc_c(*final(acc), k)] acc_c(*final(acc), k) == acc_c(*old(acc), k) + sum(num_rt_seq_view(rows@), |n: NumRow| z2(rp, n) * ic(k)(n)),
         forall|k: GK| #![trigger acc_s(*final(acc), k)] acc_s(*final(acc), k) == acc_s(*old(acc), k) + sum(num_rt_seq_view(rows@), |n: NumRow| z2(rp, n) * iv(k)(n)),
+        forall|k: GK| #![trigger acc_a(*final(acc), k)] acc_a(*final(acc), k) == acc_a(*old(acc), k) + sum(num_rt_seq_view(rows@), |n: NumRow| z2(rp, n) * ia(k)(n)),
 {
     let ghost acc0 = *acc;
     let mut i = 0;
@@ -215,6 +234,10 @@ pub fn acc_scan(tab: &Pow2Tab, acc: &mut Index<AccEnt>, rows: &Vec<NumRt>, c: &C
             assert(num_rt_seq_view(rows@.take(0)) =~= Seq::<NumRow>::empty());
             lemma_sum_empty(Seq::<NumRow>::empty(), |n: NumRow| z2(rp, n) * iv(k)(n));
         }
+        assert forall|k: GK| #![trigger acc_a(*acc, k)] acc_a(*acc, k) == acc_a(acc0, k) + sum(num_rt_seq_view(rows@.take(0)), |n: NumRow| z2(rp, n) * ia(k)(n)) by {
+            assert(num_rt_seq_view(rows@.take(0)) =~= Seq::<NumRow>::empty());
+            lemma_sum_empty(Seq::<NumRow>::empty(), |n: NumRow| z2(rp, n) * ia(k)(n));
+        }
     }
     while i < rows.len()
         invariant
@@ -222,6 +245,7 @@ pub fn acc_scan(tab: &Pow2Tab, acc: &mut Index<AccEnt>, rows: &Vec<NumRt>, c: &C
             forall|a: Seq<u8>, t: Seq<u8>, v: Seq<u8>| #[trigger] cm_at(*c, a, t, v) == pc(rp, a, t, v),
             forall|k: GK| #![trigger acc_c(*acc, k)] acc_c(*acc, k) == acc_c(acc0, k) + sum(num_rt_seq_view(rows@.take(i as int)), |n: NumRow| z2(rp, n) * ic(k)(n)),
             forall|k: GK| #![trigger acc_s(*acc, k)] acc_s(*acc, k) == acc_s(acc0, k) + sum(num_rt_seq_view(rows@.take(i as int)), |n: NumRow| z2(rp, n) * iv(k)(n)),
+            forall|k: GK| #![trigger acc_a(*acc, k)] acc_a(*acc, k) == acc_a(acc0, k) + sum(num_rt_seq_view(rows@.take(i as int)), |n: NumRow| z2(rp, n) * ia(k)(n)),
         decreases rows.len() - i,
     {
         let r = &rows[i];
@@ -243,6 +267,9 @@ pub fn acc_scan(tab: &Pow2Tab, acc: &mut Index<AccEnt>, rows: &Vec<NumRt>, c: &C
             }
             assert forall|k: GK| #![trigger acc_s(*acc, k)] acc_s(*acc, k) == acc_s(acc0, k) + sum(num_rt_seq_view(tk), |n: NumRow| z2(rp, n) * iv(k)(n)) by {
                 lemma_sum_push(vs, n, |n: NumRow| z2(rp, n) * iv(k)(n));
+            }
+            assert forall|k: GK| #![trigger acc_a(*acc, k)] acc_a(*acc, k) == acc_a(acc0, k) + sum(num_rt_seq_view(tk), |n: NumRow| z2(rp, n) * ia(k)(n)) by {
+                lemma_sum_push(vs, n, |n: NumRow| z2(rp, n) * ia(k)(n));
             }
         }
         i += 1;

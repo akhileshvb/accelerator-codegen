@@ -260,7 +260,7 @@ pub proof fn lemma_abs_sum<A>(s: Seq<A>, f: spec_fn(A) -> int, g: spec_fn(A) -> 
 pub proof fn lemma_cnt_facts(db: Db, k: GK)
     ensures
         cntk(db, k) >= 0, cntk(db, k) <= db.num.len(),
-        cntk(db, k) == 0 ==> sumk(db, k) == 0,
+        cntk(db, k) == 0 ==> sumk(db, k) == 0 && absk(db, k) == 0,
         abs(sumk(db, k)) <= absk(db, k),
 {
     let f = uw(db.pre, ic(k));
@@ -288,6 +288,14 @@ pub proof fn lemma_cnt_facts(db: Db, k: GK)
             if um(db.pre, n) == 1 { assert(!(dq(n) && gk_of(n) == k)); }
         }
         lemma_sum_zero(db.num, g);
+        assert forall|i: int| 0 <= i < db.num.len() implies a(#[trigger] db.num[i]) == 0 by {
+            lemma_sum_ge_term(db.num, f, i);
+            lemma_mc_nonneg(db.pre, db.num[i]);
+            let n = db.num[i];
+            assert(f(n) == 0);
+            if um(db.pre, n) == 1 { assert(!(dq(n) && gk_of(n) == k)); }
+        }
+        lemma_sum_zero(db.num, a);
     }
 }
 

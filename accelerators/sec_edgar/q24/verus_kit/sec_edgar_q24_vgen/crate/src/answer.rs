@@ -20,6 +20,7 @@ use crate::f64bits::*;
 use crate::rank::*;
 use crate::emit::*;
 use crate::kernel::{state_ok, state_vals};
+use crate::engine;
 use crate::merge::arc_val;
 
 verus! {
@@ -146,7 +147,7 @@ proof fn lemma_skip(t: Index<OutR>, entries: Seq<(KeyView, Grp)>, i: int, db: Db
 /// After the last entry the temp index holds exactly the answer rows of the class, in order.
 proof fn lemma_finish(db: Db, p: Params, mm: GMap, iv: Index<Grp>, entries: Seq<(KeyView, Grp)>, t: Index<OutR>)
     requires
-        gv_ok(mm, db),
+        gv_ok(mm, db), engine::safe(db, p),
         mm.at(okey(p.p1, p.p2)) == Some(iv), iv.wf(), entries == iv.entries(), entries_ok(entries),
         t.wf(),
         tmp_a(t, entries, entries.len() as int, db, p), tmp_b(t, entries, entries.len() as int),
@@ -208,13 +209,36 @@ proof fn lemma_finish(db: Db, p: Params, mm: GMap, iv: Index<Grp>, entries: Seq<
     }
 }
 
+/// Every stored group of the class passes the engine's check: the query is safe.
+proof fn lemma_all_safe(db: Db, p: Params, mm: GMap, iv: Index<Grp>, entries: Seq<(KeyView, Grp)>)
+    requires
+        gv_ok(mm, db),
+        mm.at(okey(p.p1, p.p2)) == Some(iv), iv.wf(), entries == iv.entries(),
+        forall|j: int| 0 <= j < entries.len() ==> engine::grp_ok(#[trigger] entries[j].1.abs@),
+    ensures
+        engine::safe(db, p),
+{
+    engine::lemma_safe_iff(db, p);
+    assert forall|k: GK| #![trigger cntk(db, k)] k.y == p.p1 && k.uom == p.p2 && cntk(db, k) > 0 implies engine::grp_ok(absk(db, k)) by {
+        assert(gv_c(mm, k) == cntk(db, k));
+        assert(gk_at(mm, k) is Some);
+        let g = gk_at(mm, k)->0;
+        assert(okey(k.y, k.uom) == okey(p.p1, p.p2));
+        assert(iv.at(ikey(k.tag, k.ver)) == Some(g));
+        iv.model();
+        let j = choose|j: int| 0 <= j < entries.len() && entries[j].0 == ikey(k.tag, k.ver);
+        assert(entries[j].1 == g);
+        assert(gv_a(mm, k) == absk(db, k));
+    }
+}
+
 #[verifier::rlimit(1000)]
 #[verifier::spinoff_prover]
 pub fn gather(m: &GMap, tab: &Pow2Tab, Ghost(db): Ghost<Db>, p1: i64, p2: &[u8]) -> (t: Option<Index<OutR>>)
     requires state_ok(*m, *tab, db),
     ensures
         t matches Some(ix) ==> tmp_ok(db, params(p1 as int, p2@), ix),
-        envelope(db) ==> t is Some,
+        envelope(db) && engine::safe(db, params(p1 as int, p2@)) ==> t is Some,
 {
     let ghost p = params(p1 as int, p2@);
     let ghost mm = *m;
@@ -234,6 +258,12 @@ pub fn gather(m: &GMap, tab: &Pow2Tab, Ghost(db): Ghost<Db>, p1: i64, p2: &[u8])
                     lemma_aggs(db, p, g_tag, g_ver);
                     let k = k_of(p, g_tag, g_ver);
                     assert(gv_c(mm, k) == cntk(db, k));
+                    assert(gk_at(mm, k) is None);
+                }
+                engine::lemma_safe_iff(db, p);
+                assert forall|k: GK| #![trigger cntk(db, k)] k.y == p.p1 && k.uom == p.p2 && cntk(db, k) > 0 implies engine::grp_ok(absk(db, k)) by {
+                    assert(gv_c(mm, k) == cntk(db, k));
+                    assert(okey(k.y, k.uom) == okey(p.p1, p.p2));
                     assert(gk_at(mm, k) is None);
                 }
                 let es = t.entries();
@@ -275,6 +305,7 @@ pub fn gather(m: &GMap, tab: &Pow2Tab, Ghost(db): Ghost<Db>, p1: i64, p2: &[u8])
             t.wf(),
             tmp_a(t, entries, i as int, db, p),
             tmp_b(t, entries, i as int),
+            forall|j: int| 0 <= j < i ==> engine::grp_ok(#[trigger] entries[j].1.abs@),
         decreases ents.len() - i,
     {
         let ent = &ents[i];
@@ -287,8 +318,21 @@ pub fn gather(m: &GMap, tab: &Pow2Tab, Ghost(db): Ghost<Db>, p1: i64, p2: &[u8])
             assert(iv.at(ent.0.view()) == Some(gv));
             assert(ent.0.view() == gv.ik());
             assert(gk_at(mm, k) == Some(gv));
-            assert(gv_c(mm, k) == gv.cnt@ && gv_s(mm, k) == gv.sum@);
+            assert(gv_c(mm, k) == gv.cnt@ && gv_s(mm, k) == gv.sum@ && gv_a(mm, k) == gv.abs@);
             assert(gv.cnt@ == cntk(db, k) && gv.sum@ == sumk(db, k));
+        }
+        if !engine::abs_ok(&maxv, &g.abs) {
+            proof {
+                assert(gv.cnt@ > 0);
+                if envelope(db) && engine::safe(db, p) {
+                    engine::lemma_safe_iff(db, p);
+                    assert(k.y == p.p1 && k.uom == p.p2 && cntk(db, k) > 0);
+                    assert(engine::grp_ok(absk(db, k)));
+                    assert(gv.abs@ == absk(db, k));
+                    assert(false);
+                }
+            }
+            return None;
         }
         if !g.cnt.lt(&eleven) {
             proof { lemma_cnt_facts(db, k); }
@@ -321,7 +365,11 @@ pub fn gather(m: &GMap, tab: &Pow2Tab, Ghost(db): Ghost<Db>, p1: i64, p2: &[u8])
         }
         i += 1;
     }
-    proof { assert(gv_ok(mm, db)); lemma_finish(db, p, mm, iv, entries, t); }
+    proof {
+        assert(gv_ok(mm, db));
+        lemma_all_safe(db, p, mm, iv, entries);
+        lemma_finish(db, p, mm, iv, entries, t);
+    }
     Some(t)
 }
 

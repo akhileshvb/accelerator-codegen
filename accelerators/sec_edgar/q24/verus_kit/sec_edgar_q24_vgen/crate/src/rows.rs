@@ -38,6 +38,7 @@ pub fn emit_num(tab: &Pow2Tab, acc: &mut Index<AccEnt>, r: &NumRt, w: i64)
         acc_ok(*final(acc)),
         forall|k: GK| #![trigger acc_c(*final(acc), k)] acc_c(*final(acc), k) == acc_c(*old(acc), k) + w * ic(k)(num_rt_view(*r)),
         forall|k: GK| #![trigger acc_s(*final(acc), k)] acc_s(*final(acc), k) == acc_s(*old(acc), k) + w * iv(k)(num_rt_view(*r)),
+        forall|k: GK| #![trigger acc_a(*final(acc), k)] acc_a(*final(acc), k) == acc_a(*old(acc), k) + w * ia(k)(num_rt_view(*r)),
 {
     let ghost n = num_rt_view(*r);
     if r.value__null == 0 && r.uom__null == 0 && r.ddate__null == 0 {
@@ -48,9 +49,11 @@ pub fn emit_num(tab: &Pow2Tab, acc: &mut Index<AccEnt>, r: &NumRt, w: i64)
             let wv = wide_of_bits(tab, r.value);
             let dc = Wide::from_i128(w as i128);
             let ds = dc.mul(&wv);
+            let av = if wv.is_neg() { wv.neg() } else { wv.dup() };
+            let da = dc.mul(&av);
             let ghost k0 = GK { y: y as int, uom: r.uom@, tag: ov(tag), ver: ov(ver) };
             let ghost old_acc = *acc;
-            acc_add(acc, y, r.uom.as_slice(), &tag, &ver, &dc, &ds);
+            acc_add(acc, y, r.uom.as_slice(), &tag, &ver, &dc, &ds, &da);
             proof {
                 assert(dq(n));
                 assert(gk_of(n) == k0);
@@ -60,6 +63,9 @@ pub fn emit_num(tab: &Pow2Tab, acc: &mut Index<AccEnt>, r: &NumRt, w: i64)
                 assert forall|k: GK| #![trigger acc_s(*acc, k)] acc_s(*acc, k) == acc_s(old_acc, k) + w * iv(k)(n) by {
                     if k == k0 { assert(iv(k)(n) == f64_val(r.value)); } else { assert(iv(k)(n) == 0); assert(w * 0 == 0); }
                 }
+                assert forall|k: GK| #![trigger acc_a(*acc, k)] acc_a(*acc, k) == acc_a(old_acc, k) + w * ia(k)(n) by {
+                    if k == k0 { assert(ia(k)(n) == abs(f64_val(r.value))); assert(av@ == abs(wv@)); } else { assert(ia(k)(n) == 0); assert(w * 0 == 0); }
+                }
             }
             return;
         }
@@ -68,6 +74,7 @@ pub fn emit_num(tab: &Pow2Tab, acc: &mut Index<AccEnt>, r: &NumRt, w: i64)
         assert(!dq(n));
         assert forall|k: GK| #![trigger acc_c(*acc, k)] acc_c(*acc, k) == acc_c(*acc, k) + w * ic(k)(n) by { assert(ic(k)(n) == 0); assert(w * 0 == 0); }
         assert forall|k: GK| #![trigger acc_s(*acc, k)] acc_s(*acc, k) == acc_s(*acc, k) + w * iv(k)(n) by { assert(iv(k)(n) == 0); assert(w * 0 == 0); }
+        assert forall|k: GK| #![trigger acc_a(*acc, k)] acc_a(*acc, k) == acc_a(*acc, k) + w * ia(k)(n) by { assert(ia(k)(n) == 0); assert(w * 0 == 0); }
     }
 }
 

@@ -6,6 +6,8 @@ pub mod gen_spec;
 #[path = "postgres/gen_obligations.rs"]
 pub mod gen_obligations;
 pub mod kernel;
+#[path = "postgres/engine.rs"]
+pub mod engine;
 pub mod gen_world;
 pub mod gen_ffi;
 pub mod model;

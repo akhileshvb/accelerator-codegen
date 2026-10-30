@@ -21,6 +21,7 @@ use crate::keys::*;
 use crate::loops::*;
 use crate::emit::*;
 use crate::answer::*;
+use crate::engine;
 use crate::rank::*;
 use crate::wideval::*;
 
@@ -29,6 +30,7 @@ verus! {
 pub open spec fn state_vals(groups: GMap, db: Db) -> bool {
     &&& forall|k: GK| #![trigger gv_c(groups, k)] gv_c(groups, k) == cntk(db, k)
     &&& forall|k: GK| #![trigger gv_s(groups, k)] gv_s(groups, k) == sumk(db, k)
+    &&& forall|k: GK| #![trigger gv_a(groups, k)] gv_a(groups, k) == absk(db, k)
 }
 
 pub open spec fn state_ok(groups: GMap, tab: Pow2Tab, db: Db) -> bool {
@@ -114,13 +116,17 @@ proof fn lemma_apply_acc(db: Db, db2: Db, dn: Seq<(NumRow, int)>, dp: Seq<(PreRo
     ensures
         cntk(db2, k) == cntk(db, k) + sum(rn, |n: NumRow| rescan_w(rp, dp)(n) * ic(k)(n)) + wsum(dn, |n: NumRow| z1(rp, dp, n) * ic(k)(n)),
         sumk(db2, k) == sumk(db, k) + sum(rn, |n: NumRow| rescan_w(rp, dp)(n) * iv(k)(n)) + wsum(dn, |n: NumRow| z1(rp, dp, n) * iv(k)(n)),
+        absk(db2, k) == absk(db, k) + sum(rn, |n: NumRow| rescan_w(rp, dp)(n) * ia(k)(n)) + wsum(dn, |n: NumRow| z1(rp, dp, n) * ia(k)(n)),
 {
     lemma_apply_identity(db, db2, dn, dp, keys, rn, rp, ic(k));
     lemma_apply_identity(db, db2, dn, dp, keys, rn, rp, iv(k));
+    lemma_apply_identity(db, db2, dn, dp, keys, rn, rp, ia(k));
     assert forall|n: NumRow| #[trigger] ((z2(rp, n) - z1(rp, dp, n)) * ic(k)(n)) == rescan_w(rp, dp)(n) * ic(k)(n) by {}
     assert forall|n: NumRow| #[trigger] ((z2(rp, n) - z1(rp, dp, n)) * iv(k)(n)) == rescan_w(rp, dp)(n) * iv(k)(n) by {}
     lemma_sum_ext_all(rn, |n: NumRow| (z2(rp, n) - z1(rp, dp, n)) * ic(k)(n), |n: NumRow| rescan_w(rp, dp)(n) * ic(k)(n));
     lemma_sum_ext_all(rn, |n: NumRow| (z2(rp, n) - z1(rp, dp, n)) * iv(k)(n), |n: NumRow| rescan_w(rp, dp)(n) * iv(k)(n));
+    assert forall|n: NumRow| #[trigger] ((z2(rp, n) - z1(rp, dp, n)) * ia(k)(n)) == rescan_w(rp, dp)(n) * ia(k)(n) by {}
+    lemma_sum_ext_all(rn, |n: NumRow| (z2(rp, n) - z1(rp, dp, n)) * ia(k)(n), |n: NumRow| rescan_w(rp, dp)(n) * ia(k)(n));
 }
 
 pub fn apply(
@@ -170,14 +176,14 @@ pub fn apply(
     let c1 = old_counts(&c2, pre_delta, Ghost(rp));
     let mut acc: Index<AccEnt> = Index::new();
     let ghost acc0 = acc;
-    proof { assert(acc_ok(acc)); assert forall|k: GK| #[trigger] acc_c(acc0, k) == 0 && acc_s(acc0, k) == 0 by {} }
+    proof { assert(acc_ok(acc)); assert forall|k: GK| #[trigger] acc_c(acc0, k) == 0 && acc_s(acc0, k) == 0 && acc_a(acc0, k) == 0 by {} }
     acc_rescan(&s.tab, &mut acc, nums_by_filing_rows, &c2, &c1, Ghost(rp), Ghost(dp));
     acc_changed(&s.tab, &mut acc, num_delta, &c2, &c1, Ghost(rp), Ghost(dp));
     let mut groups = s.groups.share();
     let ghost g0 = groups;
     proof {
         assert forall|ok: KeyView| #![trigger g0.at(ok)] g0.at(ok) == s.groups.at(ok) by {}
-        assert forall|k: GK| #![trigger gv_c(g0, k)] gv_c(g0, k) == gv_c(s.groups, k) && gv_s(g0, k) == gv_s(s.groups, k) by {}
+        assert forall|k: GK| #![trigger gv_c(g0, k)] gv_c(g0, k) == gv_c(s.groups, k) && gv_s(g0, k) == gv_s(s.groups, k) && gv_a(g0, k) == gv_a(s.groups, k) by {}
         assert(gm_ok(g0) && pos_ok(g0)) by {
             assert forall|ok: KeyView, ik: KeyView| #![trigger gm_at(g0, ok, ik)] gm_at(g0, ok, ik) == gm_at(s.groups, ok, ik) by {}
         }
@@ -191,14 +197,19 @@ pub fn apply(
             lemma_apply_acc(db, db2, dn, dp, kall, rn, rp, k);
             assert(gv_s(s.groups, k) == sumk(db, k));
         }
+        assert forall|k: GK| #![trigger gv_a(g0, k)] gv_a(g0, k) + acc_a(acc, k) == absk(db2, k) by {
+            lemma_apply_acc(db, db2, dn, dp, kall, rn, rp, k);
+            assert(gv_a(s.groups, k) == absk(db, k));
+        }
         assert forall|k: GK| #![trigger gv_c(g0, k)] gv_c(g0, k) + acc_c(acc, k) >= 0 by { lemma_cnt_facts(db2, k); }
-        assert forall|k: GK| #![trigger gv_c(g0, k)] gv_c(g0, k) + acc_c(acc, k) == 0 ==> gv_s(g0, k) + acc_s(acc, k) == 0 by { lemma_cnt_facts(db2, k); }
+        assert forall|k: GK| #![trigger gv_c(g0, k)] gv_c(g0, k) + acc_c(acc, k) == 0 ==> gv_s(g0, k) + acc_s(acc, k) == 0 && gv_a(g0, k) + acc_a(acc, k) == 0 by { lemma_cnt_facts(db2, k); }
     }
     merge_acc(&mut groups, &acc);
     let tab = s.tab.clone();
     proof {
         assert forall|k: GK| #![trigger gv_c(groups, k)] gv_c(groups, k) == cntk(db2, k) by {}
         assert forall|k: GK| #![trigger gv_s(groups, k)] gv_s(groups, k) == sumk(db2, k) by {}
+        assert forall|k: GK| #![trigger gv_a(groups, k)] gv_a(groups, k) == absk(db2, k) by {}
         assert(state_vals(groups, db2));
     }
     Ok(State { groups, tab, db: Ghost(db2) })
@@ -222,22 +233,24 @@ pub fn build(
     let c = count_pres(&pres);
     let mut acc: Index<AccEnt> = Index::new();
     let ghost acc0 = acc;
-    proof { assert(acc_ok(acc)); assert forall|k: GK| #[trigger] acc_c(acc0, k) == 0 && acc_s(acc0, k) == 0 by {} }
+    proof { assert(acc_ok(acc)); assert forall|k: GK| #[trigger] acc_c(acc0, k) == 0 && acc_s(acc0, k) == 0 && acc_a(acc0, k) == 0 by {} }
     acc_scan(&tab, &mut acc, &nums, &c, Ghost(rp));
     let mut groups: GMap = Index::new();
     let ghost g0 = groups;
     proof {
-        assert forall|k: GK| #![trigger gv_c(g0, k)] gv_c(g0, k) == 0 && gv_s(g0, k) == 0 by {}
+        assert forall|k: GK| #![trigger gv_c(g0, k)] gv_c(g0, k) == 0 && gv_s(g0, k) == 0 && gv_a(g0, k) == 0 by {}
         assert(gm_ok(g0) && pos_ok(g0));
         assert forall|k: GK| #![trigger gv_c(g0, k)] gv_c(g0, k) + acc_c(acc, k) == cntk(db, k) by { lemma_build_identity(db, rn, rp, ic(k)); }
         assert forall|k: GK| #![trigger gv_s(g0, k)] gv_s(g0, k) + acc_s(acc, k) == sumk(db, k) by { lemma_build_identity(db, rn, rp, iv(k)); }
+        assert forall|k: GK| #![trigger gv_a(g0, k)] gv_a(g0, k) + acc_a(acc, k) == absk(db, k) by { lemma_build_identity(db, rn, rp, ia(k)); }
         assert forall|k: GK| #![trigger gv_c(g0, k)] gv_c(g0, k) + acc_c(acc, k) >= 0 by { lemma_cnt_facts(db, k); }
-        assert forall|k: GK| #![trigger gv_c(g0, k)] gv_c(g0, k) + acc_c(acc, k) == 0 ==> gv_s(g0, k) + acc_s(acc, k) == 0 by { lemma_cnt_facts(db, k); }
+        assert forall|k: GK| #![trigger gv_c(g0, k)] gv_c(g0, k) + acc_c(acc, k) == 0 ==> gv_s(g0, k) + acc_s(acc, k) == 0 && gv_a(g0, k) + acc_a(acc, k) == 0 by { lemma_cnt_facts(db, k); }
     }
     merge_acc(&mut groups, &acc);
     proof {
         assert forall|k: GK| #![trigger gv_c(groups, k)] gv_c(groups, k) == cntk(db, k) by {}
         assert forall|k: GK| #![trigger gv_s(groups, k)] gv_s(groups, k) == sumk(db, k) by {}
+        assert forall|k: GK| #![trigger gv_a(groups, k)] gv_a(groups, k) == absk(db, k) by {}
         assert(state_vals(groups, db));
     }
     Some(State { groups, tab, db: Ghost(db) })
@@ -269,6 +282,7 @@ pub fn execute(
     proof { use_type_invariant(s); }
     let ghost db = s.db();
     let ghost p = params(p1 as int, p2@);
+    proof { engine::lemma_fits_safe(db, p); }
     let t = match gather(&s.groups, &s.tab, Ghost(db), p1, p2) {
         Some(t) => t,
         None => return None,

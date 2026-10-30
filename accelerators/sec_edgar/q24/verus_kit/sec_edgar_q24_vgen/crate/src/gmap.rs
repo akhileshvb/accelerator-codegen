@@ -15,6 +15,7 @@ pub struct Grp {
     pub ver: Option<Vec<u8>>,
     pub cnt: Wide,
     pub sum: Wide,
+    pub abs: Wide,
 }
 
 impl Grp {
