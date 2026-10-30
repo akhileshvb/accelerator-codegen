@@ -4,6 +4,7 @@
 #pragma once
 
 #include <algorithm>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -33,6 +34,10 @@ inline uint64_t PendingWaitMicrosFromEnv() {
   const char *value = std::getenv("ACCEL_AUX_PENDING_WAIT_US");
   return value && *value ? std::strtoull(value, nullptr, 10) : kWaitForPublish;
 }
+
+// Set when the process serving reads shuts down: a reader waiting for a pending commit stops waiting (the
+// writer that would end it may be gone) and finds no state.
+inline std::atomic<bool> g_pending_waits_cancelled{false};
 
 enum class MutationKind : uint8_t {
   Insert,

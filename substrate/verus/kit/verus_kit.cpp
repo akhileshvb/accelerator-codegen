@@ -291,13 +291,13 @@ const void *ReadAwaitingPublish(uint64_t pending_wait_micros, core::Version at, 
   // The verified store's own "newest" is 0 (its engines' epochs are positive).
   if (at == core::kNewestVersion || Fault() == "ignore_snapshot")
     at = 0;
-  if (pending_wait_micros == core::kWaitForPublish)
-    return read(at, std::numeric_limits<uint64_t>::max(), &status);
-  const auto deadline = std::chrono::steady_clock::now() + std::chrono::microseconds(pending_wait_micros);
+  const bool unbounded = pending_wait_micros == core::kWaitForPublish;
+  const auto deadline = unbounded ? std::chrono::steady_clock::time_point::max()
+                                  : std::chrono::steady_clock::now() + std::chrono::microseconds(pending_wait_micros);
   const void *state = nullptr;
   do {
     state = read(at, 64, &status);
-  } while (status == 2 && std::chrono::steady_clock::now() < deadline);
+  } while (status == 2 && std::chrono::steady_clock::now() < deadline && !core::g_pending_waits_cancelled.load());
   return state;
 }
 
