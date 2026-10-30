@@ -164,11 +164,16 @@ bool StartWorker(int index) {
 
 ShardSegment *g_segment = nullptr; // the worker's own shard
 ShardServer *g_server = nullptr;
+runtime::RuntimeHost *g_host = nullptr;
 int g_index = -1;
 
 void WorkerExit(int, Datum) {
   if (g_segment) {
     g_segment->state = ShardSegment::kStopping;
+  }
+  if (g_host) { // readers wait for a commit that is applied in part: it never ends
+    g_host->AbandonDeferredCommits();
+    g_host->StopReads();
   }
   if (g_server) {
     g_server->Stop();
@@ -278,10 +283,13 @@ void ApplyPhaseLimits(runtime::ThreadBudget &threads) {
   PgSlots slots(index, members, arrivals);
   runtime::RuntimeHost host(slots, shared::ThreadBudget(), shared::ThreadTokens(index));
   ApplyPhaseLimits(host.Threads());
+  g_host = &host;
   std::vector<runtime::AcceleratorRuntime *> runtimes;
   for (std::size_t i = 0; i < members.size(); i++) {
     runtimes.push_back(&host.Register(members[i]->Module(), members[i]->Stores(), tables[i]));
   }
+  slots.SetPerCommit(PerCommitVersions() &&
+                     std::any_of(members.begin(), members.end(), [](auto *m) { return m->Stores() != nullptr; }));
   slots.NotePreRegistrationWriters();
   ShardServer server(*segment, index, runtimes, arrivals);
   g_server = &server;
@@ -312,6 +320,24 @@ void ApplyPhaseLimits(runtime::ThreadBudget &threads) {
   if (exact_versions) {
     shared::PublishCatchingUp(index, true); // until the first pass has found every member synced
   }
+  // What the maintenance snapshots may be released for: the state of every synced member is applied
+  // through it (no member synced: nothing to look up).
+  const auto synced_through = [&] {
+    runtime::Epoch through = std::numeric_limits<runtime::Epoch>::max();
+    for (auto *runtime : runtimes) {
+      if (runtime->IsSynced()) {
+        through = std::min(through, runtime->AppliedThrough());
+      }
+    }
+    return through;
+  };
+  const auto applied_sum = [&] {
+    uint64_t sum = 0;
+    for (auto *runtime : runtimes) {
+      sum += runtime->AppliedThrough();
+    }
+    return sum;
+  };
   const auto all_synced = [&] {
     return std::all_of(runtimes.begin(), runtimes.end(), [](auto *runtime) { return runtime->IsSynced(); });
   };
@@ -347,15 +373,27 @@ void ApplyPhaseLimits(runtime::ThreadBudget &threads) {
         runtime->AnnounceCommit(shared::AssignedEpoch(index));
       }
       // One maintenance pass under one snapshot S (epoch s): once every commit through s has arrived,
-      // each synced member applies them (one version at s); then the builds the pass asked for read
-      // S too, so a rebuilt member joins the others at s and the commits after s apply on top.
+      // each synced member applies them, one version per commit (or one at s without per-commit
+      // lookups); then the builds the pass asked for read S too, so a rebuilt member joins the others at
+      // s and the commits after s apply on top.
       diagnostics.TakeForced();
       const auto epoch = slots.BeginMaintenance();
       const bool arrived = !epoch || arrivals.WaitThrough(*epoch, now + kArrivalWait);
-      if (arrived) {
+      bool again = false;
+      // One commit per member and round when the lookups are per commit, all that are ready otherwise.
+      for (bool progressed = arrived; progressed;) {
+        const uint64_t before = applied_sum();
         for (auto *runtime : runtimes) {
           runtime->Pump();
         }
+        again = host.EndDeferredCommits(); // a member waited for the commit that just ended
+        progressed = applied_sum() != before;
+        if (exact_versions && all_synced()) {
+          shared::PublishApplied(index, applied_through());
+        }
+      }
+      if (!arrived) {
+        again = host.EndDeferredCommits();
       }
       missing_since = arrived ? Clock::time_point::max() : std::min(missing_since, now);
       // A commit that never arrives (its backend died or gave up shipping it) is a gap: the members rebuild
@@ -389,7 +427,7 @@ void ApplyPhaseLimits(runtime::ThreadBudget &threads) {
         last_horizon = now;
         slots.RefreshHorizon();
       }
-      slots.EndMaintenance();
+      slots.EndMaintenance(synced_through());
       diagnostics.Publish();
     }
 

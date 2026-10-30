@@ -64,6 +64,9 @@ public:
   // then applies everything through that epoch as one change (or waits for
   // the changes that have not arrived).
   virtual Epoch MaintenanceLookupEpoch(Epoch through) { return through; }
+  // True if MaintenanceLookupEpoch(e) can see exactly epoch e for any e a reader may be at: the runtime
+  // then applies one commit at a time, one version per commit, and nothing is collapsed.
+  virtual bool PerCommitLookups() const { return false; }
 
   // ---- S6 placement ----
   // Where engine-facing work runs. In-process engines run builds and

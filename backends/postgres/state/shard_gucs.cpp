@@ -20,6 +20,7 @@ int g_phase_build_threads = 0;
 int g_phase_maint_threads = 0;
 bool g_build_tuning = true;
 bool g_force_fallback = false;
+bool g_per_commit = true;
 
 } // namespace
 
@@ -32,6 +33,7 @@ int PhaseMaintenanceThreads() { return g_phase_maint_threads; }
 int IdleExitSeconds() { return g_idle_exit_s; }
 bool BuildTuning() { return g_build_tuning; }
 bool ForceFallback() { return g_force_fallback; }
+bool PerCommitVersions() { return g_per_commit; }
 
 void DefineGucs() {
   DefineCustomIntVariable("accel.read_timeout_ms",
@@ -61,6 +63,11 @@ void DefineGucs() {
   DefineCustomBoolVariable("accel.force_fallback",
                            "Answer every accelerated query from SQL (differential tests).", nullptr,
                            &g_force_fallback, false, PGC_USERSET, 0, nullptr, nullptr, nullptr);
+  DefineCustomBoolVariable("accel.per_commit_versions",
+                           "A verified-store shard's worker applies each commit under the database as of "
+                           "it (one version per commit). Off: a lagging run of commits is one version, and "
+                           "readers inside it answer from SQL.",
+                           nullptr, &g_per_commit, true, PGC_SIGHUP, 0, nullptr, nullptr, nullptr);
   DefineCustomBoolVariable("accel.build_tuning",
                            "Plan the one-off state build with in-memory hash joins (work_mem, no "
                            "nested loop / merge joins, no JIT) instead of the session settings.",

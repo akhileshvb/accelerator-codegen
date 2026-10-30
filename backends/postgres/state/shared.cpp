@@ -308,6 +308,24 @@ void AwaitCatchUp(int index, Slot &slot) {
     pg_usleep(100);
   }
 }
+
+// Commits the worker may lag behind by: the ring holds kRingSize, and a snapshot older than it has no
+// epoch. Writers wait for the worker (at most accel.commit_apply_wait_ms) instead.
+constexpr Epoch kMaxBacklog = kRingSize / 2;
+
+void AwaitBacklog(int index, Slot &slot) {
+  if (!pg_atomic_read_u32(&slot.exact)) {
+    return;
+  }
+  const auto give_up = std::chrono::steady_clock::now() + std::chrono::milliseconds(g_apply_wait_ms);
+  while (pg_atomic_read_u64(&slot.assigned) > pg_atomic_read_u64(&slot.applied) + kMaxBacklog) {
+    if (!shard::WorkerRunning(index) || std::chrono::steady_clock::now() > give_up) {
+      return;
+    }
+    CHECK_FOR_INTERRUPTS();
+    pg_usleep(200);
+  }
+}
 } // namespace
 
 std::vector<Epoch> TakeCommitEpochs(const std::vector<int> &indices, TransactionId xid) {
@@ -320,6 +338,7 @@ std::vector<Epoch> TakeCommitEpochs(const std::vector<int> &indices, Transaction
   }
   for (const int index : indices) {
     AwaitCatchUp(index, registry.slots[index]);
+    AwaitBacklog(index, registry.slots[index]);
   }
   std::vector<Epoch> epochs;
   epochs.reserve(indices.size());
@@ -389,6 +408,19 @@ std::optional<Epoch> ReaderEpoch(int index, Snapshot snapshot) {
   // ring. Gates make the committed epochs it sees a prefix, so the newest one
   // is k.
   return NewestCommitted(index, [&](TransactionId xid) { return !XidInMVCCSnapshot(xid, snapshot); });
+}
+
+std::optional<std::vector<TransactionId>> CommitXids(int index, Epoch after, Epoch through) {
+  Slot &slot = Reg().slots[index];
+  std::vector<TransactionId> xids;
+  for (Epoch epoch = after + 1; epoch <= through; epoch++) {
+    TransactionId xid;
+    if (!ReadEntry(slot, epoch, xid)) {
+      return std::nullopt;
+    }
+    xids.push_back(xid);
+  }
+  return xids;
 }
 
 Epoch HorizonEpoch(int index) {

@@ -152,7 +152,7 @@ struct AcceleratorRuntime::Impl {
   Epoch store_epoch = 0; // what the store's epoch provider returns
   bool registration_checked = false;
   std::shared_ptr<CommitGroup> group; // shipped applies leave their commit open in it
-  Epoch deferred_end = 0;
+  std::atomic<Epoch> deferred_end{0}; // set under commit_mutex; AbandonDeferredEnd takes it without
 
   // state_mutex: everything below; shared with readers, never held across
   // module or store calls.
@@ -166,6 +166,7 @@ struct AcceleratorRuntime::Impl {
   Epoch unserved_from = 0;
   Epoch in_flight_from = kNever;
   std::vector<std::pair<Epoch, Epoch>> collapsed;
+  bool stopping = false; // the host is leaving: waiting reads give up
   bool build_scheduled = false;
   bool build_invalidated = false; // the state became invalid while a build ran
   std::optional<Epoch> build_epoch;     // the snapshot of the running build or of the state
@@ -347,7 +348,7 @@ AcceleratorRuntime::ReadGuard AcceleratorRuntime::BeginRead(const ReadOptions &o
     constexpr auto kReweigh = std::chrono::milliseconds(50);
     const auto deadline = Clock::now() + std::chrono::microseconds(options.max_wait_us);
     const auto done = [&] {
-      return Servable(epoch, options.require_applied_through) || Collapsed(epoch) ||
+      return Servable(epoch, options.require_applied_through) || Collapsed(epoch) || impl->stopping ||
              impl->stats.build_failures + impl->stats.builds_abandoned != ended;
     };
     while (!done()) {
@@ -360,7 +361,9 @@ AcceleratorRuntime::ReadGuard AcceleratorRuntime::BeginRead(const ReadOptions &o
       impl->state_cv.wait_until(lock, std::min(deadline, now + kReweigh), done);
     }
     if (Collapsed(epoch) || !Servable(epoch, options.require_applied_through)) {
-      core::RecordAuxFallbackCause(Collapsed(epoch) ? "runtime:collapsed" : "runtime:unsynced_build_ended");
+      core::RecordAuxFallbackCause(Collapsed(epoch)      ? "runtime:collapsed"
+                                   : impl->stopping ? "runtime:stopping"
+                                                    : "runtime:unsynced_build_ended");
       impl->stats.reads_fallback++;
       return ReadGuard(false, nullptr);
     }
@@ -562,9 +565,22 @@ void AcceleratorRuntime::SetCommitGroup(std::shared_ptr<CommitGroup> group) {
   impl->group = std::move(group);
 }
 
-Epoch AcceleratorRuntime::TakeDeferredEnd() {
-  std::lock_guard<CommitLock> commit(impl->commit_mutex);
-  return std::exchange(impl->deferred_end, 0);
+Epoch AcceleratorRuntime::TakeDeferredEnd() { return impl->deferred_end.exchange(0); }
+
+void AcceleratorRuntime::StopReads() {
+  {
+    std::lock_guard<std::mutex> lock(impl->state_mutex);
+    impl->stopping = true;
+  }
+  impl->state_cv.notify_all();
+}
+
+// A leaving worker may have been interrupted while applying, holding commit_mutex.
+void AcceleratorRuntime::AbandonDeferredEnd() {
+  if (const Epoch epoch = TakeDeferredEnd()) {
+    impl->store.store->AbortCommit(id);
+    impl->store.store->EndCommit(epoch);
+  }
 }
 
 void AcceleratorRuntime::AnnounceCommit(Seq seq) {
@@ -588,11 +604,14 @@ void AcceleratorRuntime::ApplyReady() {
     if (ready.empty()) {
       return;
     }
-    Epoch last = 0;
+    Epoch last = 0, first_ready = kNever;
     for (const auto &change : ready) {
       last = std::max(last, change.epoch);
+      first_ready = std::min(first_ready, change.epoch);
     }
-    const Epoch seen = slots.MaintenanceLookupEpoch(last);
+    // Exact lookups serve the oldest ready commit alone; if they fall back to a later epoch, everything
+    // through it is applied as one change, as without them.
+    const Epoch seen = slots.MaintenanceLookupEpoch(slots.PerCommitLookups() ? first_ready : last);
     auto later = std::stable_partition(ready.begin(), ready.end(),
                                        [&](const auto &change) { return change.epoch <= seen; });
     std::vector<CommittedChange> held(std::make_move_iterator(later),
@@ -656,7 +675,9 @@ void AcceleratorRuntime::ApplyReady() {
     }
     if (!held.empty()) {
       requeue(held);
-      return;
+      if (!slots.PerCommitLookups()) {
+        return;
+      }
     }
     if (impl->group) { // the next change begins a new commit, after this one ends
       return;

@@ -71,7 +71,7 @@ public:
       : slots(slots_p), epoch(epoch_p), shared(shared_p) {}
   ~PgBuildSnapshot() override {
     if (!shared) {
-      slots.End(std::uncaught_exceptions() > 0);
+      slots.ClosePass();
     }
   }
   runtime::Epoch SnapshotEpoch() const override { return epoch; }
@@ -94,43 +94,110 @@ PostgresAccelerator &PgSlots::Member(const core::AcceleratorId &id) const {
   throw std::logic_error("accelerator " + id + " is not a member of the shard");
 }
 
-void PgSlots::Begin() {
-  SetCurrentStatementStartTimestamp();
-  StartTransactionCommand();
-  XactIsoLevel = XACT_REPEATABLE_READ;
-  PushActiveSnapshot(GetTransactionSnapshot());
-  open = true;
+void PgSlots::OpenPass() {
+  if (!transaction_open) {
+    SetCurrentStatementStartTimestamp();
+    StartTransactionCommand();
+    XactIsoLevel = XACT_READ_COMMITTED; // each pass takes its own snapshot; the anchors hold the old ones
+    transaction_open = true;
+  }
+  pass_context = CurrentMemoryContext;
+  pass_owner = CurrentResourceOwner;
+  BeginInternalSubTransaction(nullptr);
+  MemoryContextSwitchTo(pass_context);
+  pass_snapshot = RegisterSnapshotOnOwner(GetTransactionSnapshot(), TopTransactionResourceOwner);
+  PushActiveSnapshot(pass_snapshot);
+  pass_open = true;
+  lookup_epoch = shared::ReaderEpoch(index, pass_snapshot);
+  if (lookup_epoch) {
+    anchors.push_back({pass_snapshot, *lookup_epoch});
+  } else {
+    UnregisterSnapshotFromOwner(pass_snapshot, TopTransactionResourceOwner);
+  }
 }
 
-void PgSlots::End(bool failed) {
-  if (!open) {
+void PgSlots::ClosePass() {
+  if (!pass_open) {
     return;
   }
-  open = false;
-  lookup_epoch.reset();
-  if (failed) {
-    AbortCurrentTransaction();
-    return;
-  }
+  DropDerived();
   PopActiveSnapshot();
-  CommitTransactionCommand();
+  RollbackAndReleaseCurrentSubTransaction();
+  MemoryContextSwitchTo(pass_context);
+  CurrentResourceOwner = pass_owner;
+  pass_open = false;
+  pass_snapshot = nullptr;
+  lookup_epoch.reset();
+}
+
+void PgSlots::DropDerived() {
+  if (derived) {
+    PopActiveSnapshot();
+    derived = false;
+  }
+}
+
+bool PgSlots::Derive(runtime::Epoch epoch) {
+  if (derived && derived_epoch == epoch) {
+    return true;
+  }
+  const auto xids = shared::CommitXids(index, epoch, *lookup_epoch);
+  if (!xids) {
+    return false;
+  }
+  // Every commit that wrote the accelerator's tables is in the ring, so hiding those after `epoch`
+  // (as in progress: their subtransactions resolve to them through pg_subtrans) leaves exactly the
+  // database at `epoch` for those tables.  The anchors keep what it needs from being vacuumed.
+  SnapshotData hidden = *pass_snapshot;
+  std::vector<TransactionId> in_progress(pass_snapshot->xip, pass_snapshot->xip + pass_snapshot->xcnt);
+  for (const TransactionId xid : *xids) {
+    in_progress.push_back(xid);
+    if (TransactionIdPrecedes(xid, hidden.xmin)) {
+      hidden.xmin = xid;
+    }
+  }
+  hidden.xip = in_progress.data();
+  hidden.xcnt = static_cast<uint32>(in_progress.size());
+  hidden.subxip = nullptr;
+  hidden.subxcnt = 0;
+  hidden.suboverflowed = true;
+  hidden.copied = false;
+  hidden.active_count = 0;
+  hidden.regd_count = 0;
+  DropDerived();
+  PushActiveSnapshot(&hidden);
+  derived = true;
+  derived_epoch = epoch;
+  return true;
 }
 
 void PgSlots::NotePreRegistrationWriters() {
-  Begin();
-  const Snapshot snapshot = GetActiveSnapshot();
-  pre_registration.assign(snapshot->xip, snapshot->xip + snapshot->xcnt);
-  End(false);
+  OpenPass();
+  pre_registration.assign(pass_snapshot->xip, pass_snapshot->xip + pass_snapshot->xcnt);
+  ClosePass();
 }
 
 std::optional<runtime::Epoch> PgSlots::BeginMaintenance() {
-  End(false);
-  Begin();
-  lookup_epoch = shared::ReaderEpoch(index, GetActiveSnapshot());
+  ClosePass();
+  OpenPass();
   return lookup_epoch;
 }
 
-void PgSlots::EndMaintenance() { End(false); }
+void PgSlots::EndMaintenance(runtime::Epoch applied) {
+  ClosePass();
+  // Keep the newest snapshot taken at or before the applied epoch and all later ones: the commits not
+  // applied yet are all after it.
+  std::size_t keep = 0;
+  for (std::size_t i = 0; i < anchors.size(); i++) {
+    if (anchors[i].epoch <= applied) {
+      keep = i;
+    }
+  }
+  for (; keep > 0; keep--) {
+    UnregisterSnapshotFromOwner(anchors.front().snapshot, TopTransactionResourceOwner);
+    anchors.pop_front();
+  }
+}
 
 void PgSlots::RefreshHorizon() { horizon = shared::HorizonEpoch(index); }
 
@@ -152,33 +219,40 @@ std::unique_ptr<runtime::BuildSnapshot>
 PgSlots::OpenBuildSnapshot(runtime::AcceleratorRuntime &runtime) {
   // Inside a maintenance pass every build reads the pass's snapshot: the members that were not stale
   // have applied everything through its epoch, so the builds and the applies are one version at b.
-  const bool in_pass = open && lookup_epoch;
+  const bool in_pass = pass_open && lookup_epoch;
   if (!in_pass) {
-    End(false); // maintenance a previous build left open
-    Begin();
+    ClosePass(); // maintenance a previous build left open
+    OpenPass();
   }
-  const auto epoch = shared::ReaderEpoch(index, GetActiveSnapshot());
-  if (!epoch) {
-    End(true);
+  DropDerived();
+  if (!lookup_epoch) {
+    ClosePass();
     throw std::runtime_error("the build snapshot is older than the epoch ring or the accelerator's activation");
   }
+  const auto epoch = *lookup_epoch;
   // The build contains every commit through `epoch`, including those no one
   // shipped (before this worker started): they have arrived, and a commit
   // standing for them keeps the sequence the runtime catches up from dense.
-  arrivals.Covered(*epoch);
-  if (*epoch > 0) {
-    runtime.OfferCommit(runtime::CommittedChange{*epoch, *epoch, {}, false, false});
+  arrivals.Covered(epoch);
+  if (epoch > 0) {
+    runtime.OfferCommit(runtime::CommittedChange{epoch, epoch, {}, false, false});
   }
-  return std::make_unique<PgBuildSnapshot>(*this, *epoch, in_pass);
+  return std::make_unique<PgBuildSnapshot>(*this, epoch, in_pass);
 }
 
-// Postgres applies a commit after it is visible, so the lookups of a
-// maintenance pass see everything visible to the snapshot it runs under.
-runtime::Epoch PgSlots::MaintenanceLookupEpoch(runtime::Epoch) {
-  if (!open) { // the catch-up at the end of a build
-    BeginMaintenance();
+// Postgres applies a commit after it is visible: the lookups of a pass see everything visible to its
+// snapshot, unless the runtime applies commit by commit and the commit is one the anchors can still
+// look up (the database as of it is derived from the snapshot).
+runtime::Epoch PgSlots::MaintenanceLookupEpoch(runtime::Epoch through) {
+  if (!pass_open) { // the catch-up at the end of a build
+    OpenPass();
   }
-  return lookup_epoch.value_or(0);
+  const runtime::Epoch seen = lookup_epoch.value_or(0);
+  if (per_commit && through < seen && !anchors.empty() && through >= anchors.front().epoch && Derive(through)) {
+    return through;
+  }
+  DropDerived();
+  return seen;
 }
 
 void PgSlots::RunBuild(runtime::AcceleratorRuntime &runtime, runtime::BuildSnapshot &,

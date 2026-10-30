@@ -119,7 +119,8 @@ Remote RemoteRead(int index, uint32_t member, runtime::Epoch epoch, const core::
     g_held.waiting_index = index;
   }
 
-  const auto deadline = Clock::now() + milliseconds(ReadTimeoutMs());
+  // The worker may hold the read for accel.read_wait_ms; the reply comes after that at the latest.
+  const auto deadline = Clock::now() + milliseconds(std::max(ReadTimeoutMs(), ReadWaitMs() + 5000));
   ReadRequest request;
   request.slot = slot;
   request.member = member;

@@ -70,6 +70,11 @@ public:
   // Ends the commits applied since the last call; true if an accelerator had to wait for one (call
   // the pump again).
   bool EndDeferredCommits();
+  // A worker that is leaving: drops the commits applied since the last end, so that readers waiting for
+  // their publish stop (the store is going away with the worker).
+  void AbandonDeferredCommits();
+  // The same, for the reads waiting for an accelerator's state.
+  void StopReads();
 
   ThreadBudget &Threads();
   EngineSlots &Slots() { return slots; }

@@ -16,6 +16,7 @@
 #include <map>
 #include <mutex>
 #include <stdexcept>
+#include <thread>
 #include <utility>
 #include <variant>
 
@@ -282,11 +283,11 @@ void NoteDecline() {
                                                   : "kit:host_conversion");
 }
 
-// The verified store's epoch 0 means "the newest" (as a reader's) and "current for every snapshot" (as a
-// version's), but an engine's epochs start at 0 (Postgres: the database before any commit).  The store is
-// given every engine epoch plus one.
-uint64_t StoreEpoch(uint64_t engine_epoch) {
-  return engine_epoch == std::numeric_limits<uint64_t>::max() ? engine_epoch : engine_epoch + 1;
+// The verified store reads epoch 0 as "the newest version", so engine epochs are stored one higher:
+// Postgres has an epoch 0 (the database before any captured commit), and a reader there must not get
+// the newest version.
+constexpr core::Version StoreEpoch(core::Version engine) {
+  return engine == std::numeric_limits<core::Version>::max() ? engine : engine + 1;
 }
 
 // Reads the Verus store's version at `at` through `read(at, tries, &status)`.
@@ -295,11 +296,19 @@ uint64_t StoreEpoch(uint64_t engine_epoch) {
 template <class Read>
 const void *ReadAwaitingPublish(uint64_t pending_wait_micros, core::Version at, int32_t &status,
                                 const Read &read) {
-  // The verified store's own "newest" is 0 (its engines' epochs are positive).
   at = at == core::kNewestVersion || Fault() == "ignore_snapshot" ? 0 : StoreEpoch(at);
-  const bool unbounded = pending_wait_micros == core::kWaitForPublish;
-  const auto deadline = unbounded ? std::chrono::steady_clock::time_point::max()
-                                  : std::chrono::steady_clock::now() + std::chrono::microseconds(pending_wait_micros);
+  if (pending_wait_micros == core::kWaitForPublish) { // polls, off the CPU once the publish takes a while
+    const void *state = nullptr;
+    for (int polls = 0; (state = read(at, 64, &status), status == 2) && !core::g_pending_waits_cancelled.load();
+         ++polls) {
+      if (polls < 16)
+        std::this_thread::yield();
+      else
+        std::this_thread::sleep_for(std::chrono::microseconds(50));
+    }
+    return state;
+  }
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::microseconds(pending_wait_micros);
   const void *state = nullptr;
   do {
     state = read(at, 64, &status);
@@ -436,7 +445,7 @@ public:
 
 private:
   Epoch CurrentEpoch() const { return StoreEpoch(epoch ? epoch() : 0); }
-  Epoch CurrentFloor() const { return StoreEpoch(floor ? floor() : std::numeric_limits<Epoch>::max()); }
+  Epoch CurrentFloor() const { return floor ? StoreEpoch(floor()) : std::numeric_limits<Epoch>::max(); }
 
   // status: see ReadAwaitingPublish.
   std::shared_ptr<const KitImage> Resolve(core::Version at, int32_t &status) const {
@@ -792,7 +801,7 @@ public:
 
 private:
   Epoch CurrentEpoch() const { return StoreEpoch(epoch ? epoch() : 0); }
-  Epoch CurrentFloor() const { return StoreEpoch(floor ? floor() : std::numeric_limits<Epoch>::max()); }
+  Epoch CurrentFloor() const { return floor ? StoreEpoch(floor()) : std::numeric_limits<Epoch>::max(); }
 
   // The slot's change: the last update's staged slot, or none (invalid); `set` false if
   // the commit leaves the slot as it is.

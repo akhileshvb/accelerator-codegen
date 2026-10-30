@@ -53,9 +53,12 @@
 // takes the shard's gate in PRE_COMMIT, takes the next dense epoch n, publishes (n, xid) (so it is
 // pending before it can be visible), and releases the gate after it is visible, so visibility order
 // is n order; a snapshot's epoch E is the newest n whose xid it sees.  The shard's worker applies
-// commits after they are visible, so it serves a reader at E only once every commit through E is
-// applied (the runtime's applied-through check) and never a reader in a range it collapsed into
-// one version; a missed commit rebuilds.  Both are host code, trusted with the engine model.
+// commits after they are visible, each under the database as of its own epoch (its maintenance
+// snapshot with the later commits' xids hidden; anchor snapshots keep their versions from vacuum), so
+// every commit has its own version; it serves a reader at E only once every commit through E is
+// applied (the runtime's applied-through check) and never a reader in a range a rebuild or a lost
+// anchor collapsed into one version; a missed commit rebuilds.  Both are host code, trusted with the
+// engine model.
 //
 // Still trusted (world.rs, the FFI): the engine model and the clauses above;
 // that the state a writer prepares answers for the database at its version
