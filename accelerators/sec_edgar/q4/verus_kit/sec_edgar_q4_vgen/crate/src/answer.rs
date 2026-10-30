@@ -7,6 +7,7 @@ use verus_prooflib::wide::Wide;
 use verus_prooflib::lemma_sum_ones;
 use crate::cells::*;
 use crate::f64bits::*;
+use crate::fsafe::*;
 use crate::facts::*;
 use crate::gen_obligations::*;
 use crate::gen_spec::*;
@@ -321,6 +322,7 @@ pub open spec fn sorted_rows(p: Params, cands: Seq<Cand>, sorted: Seq<usize>) ->
 /// The candidates, sorted by their total descending, are a full answer.
 proof fn lemma_sorted_full(db: Db, p: Params, cands: Seq<Cand>, sorted: Seq<usize>)
     requires
+        engine_safe(db, p),
         cands.len() <= usize::MAX,
         forall|j: int| 0 <= j < cands.len() ==> row_ok(db, p, cand_row(p, #[trigger] cands[j])),
         forall|j: int, m: int| 0 <= j < m < cands.len() ==>
@@ -429,6 +431,7 @@ pub fn finish(mut cands: Vec<Cand>, stmt: &[u8], c: &Consts, Ghost(db): Ghost<Db
     -> (r: Option<Vec<Out>>)
     requires
         p.p3 == stmt@,
+        engine_safe(db, p),
         consts_ok(*c),
         forall|j: int| 0 <= j < cands.len() ==> cand_sound(db, p, #[trigger] cands[j]) && !cands[j].avg_done,
         forall|j: int, m: int| 0 <= j < m < cands.len() ==>
@@ -682,6 +685,11 @@ pub fn answer(groups: &Index<Index<Cell>>, p1: i64, p2: i64, p3: &[u8], p4: &[u8
             Vec::new()
         },
     };
+    proof { assert(rows_cover(rows@, g, p)); }
+    if !rows_safe(&rows, c, Ghost(db), Ghost(p), Ghost(g)) {
+        proof { lemma_unsafe_unanswerable(db, p); }
+        return None;
+    }
     let cands = make_cands(&rows, c, Ghost(db), Ghost(p), Ghost(g));
     finish(cands, p3, c, Ghost(db), Ghost(p))
 }
