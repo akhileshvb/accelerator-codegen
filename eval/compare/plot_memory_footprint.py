@@ -19,7 +19,7 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[2]
 
 BASE_TABLE_GB = 5.4  # tpch_sf20.duckdb is 5,416,693,760 bytes
-STATELESS_GB = 10.3
+STATELESS_GB = 5.4
 STATEFUL_GB = 28.4
 BESPOKE_GB = 16.12
 GENDB_GB = 18.1
@@ -31,9 +31,11 @@ STATEFUL_COLOR = "#1A2654"
 VERIFIED_COLOR = "#3B1F6B"
 BASE_COLOR = "#D9577A"
 
-LABEL_SIZE = 22
-TICK_SIZE = 22
-AXIS_LABEL_SIZE = 26
+LABEL_SIZE = 7
+TICK_SIZE = 7
+AXIS_LABEL_SIZE = 8
+TITLE_SIZE = 9
+COLUMN_WIDTH_IN = 3.33
 
 
 def main() -> None:
@@ -45,13 +47,14 @@ def main() -> None:
     # (label, own footprint, base tables stacked on top, color)
     systems = [
         ("JetStream\n(stateless)", STATELESS_GB, 0.0, STATELESS_COLOR),
-        ("Bespoke OLAP", BESPOKE_GB, BASE_TABLE_GB, BESPOKE_COLOR),
+        ("Bespoke\nOLAP", BESPOKE_GB, BASE_TABLE_GB, BESPOKE_COLOR),
         ("GenDB", GENDB_GB, BASE_TABLE_GB, GENDB_COLOR),
         ("JetStream\n(stateful)", STATEFUL_GB, 0.0, STATEFUL_COLOR),
-        ("JetStream\n(stateful, verified)", verified_gb, 0.0, VERIFIED_COLOR),
+        ("JetStream\n(stateful,\nverified)", verified_gb, 0.0, VERIFIED_COLOR),
     ]
 
-    fig, ax = plt.subplots(figsize=(13, 8), facecolor="white")
+    fig, ax = plt.subplots(figsize=(COLUMN_WIDTH_IN, 2.2), facecolor="white", layout="constrained")
+    fig.get_layout_engine().set(w_pad=0.01, h_pad=0.01, rect=(0, 0, 0.98, 1))
     x = np.arange(len(systems))
     width = 0.58
     own = [s[1] for s in systems]
@@ -66,7 +69,7 @@ def main() -> None:
                 fontsize=LABEL_SIZE, fontweight="bold")
     for xi, o, b in zip(x, own, base):
         if b:
-            ax.text(xi, o + b / 2, f"+{b:g}", ha="center", va="center", fontsize=LABEL_SIZE - 4,
+            ax.text(xi, o + b / 2, f"+{b:g}", ha="center", va="center", fontsize=LABEL_SIZE - 1,
                     color="white", fontweight="bold", zorder=4)
 
     ax.set_xticks(x)
@@ -74,14 +77,13 @@ def main() -> None:
     ax.tick_params(axis="y", labelsize=TICK_SIZE)
     ax.set_ylabel("Memory footprint (GB)", fontsize=AXIS_LABEL_SIZE)
     ax.set_ylim(0, max(totals) * 1.15)
-    ax.grid(axis="y", linestyle=":", alpha=0.5, zorder=0)
-    ax.set_title("TPC-H (SF=20): Memory Footprint", fontsize=28)
-    ax.legend(handles=[base_bars], loc="upper left", frameon=False, fontsize=LABEL_SIZE - 2)
-    fig.tight_layout()
+    ax.set_title("TPC-H (SF=20): Persistent Memory Footprint", fontsize=TITLE_SIZE)
+    ax.legend(handles=[base_bars], loc="upper left", frameon=False, fontsize=LABEL_SIZE - 1,
+              handlelength=1.2, borderaxespad=0.3)
 
     out_prefix.parent.mkdir(parents=True, exist_ok=True)
     for ext in ("png", "pdf"):
-        fig.savefig(out_prefix.with_suffix(f".{ext}"), dpi=200, bbox_inches="tight", facecolor="white")
+        fig.savefig(out_prefix.with_suffix(f".{ext}"), dpi=600, facecolor="white")
         print(f"wrote {out_prefix.with_suffix('.' + ext)}")
 
 
